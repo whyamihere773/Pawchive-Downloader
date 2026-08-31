@@ -238,6 +238,11 @@ class FilterEngine:
 
     @classmethod
     def sanitize_filename(cls, filename: str, options: FilterOptions) -> str:
+        # Strip trailing punctuation/whitespace BEFORE splitext.
+        # Without this, 'cover.jpeg,' splits into name='cover.jpeg', ext=','
+        # which results in a doubled/corrupt extension like 'cover.jpeg,'.
+        filename = filename.rstrip(".,;!? \t")
+
         name, ext = os.path.splitext(filename)
 
         if options.remove_words:
