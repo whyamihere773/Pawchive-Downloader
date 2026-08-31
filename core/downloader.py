@@ -351,6 +351,9 @@ class KemonoDownloader:
                     file_index=file_idx,
                     options=options
                 )
+                # Strip trailing punctuation/commas that would corrupt the ?f= CDN query parameter
+                # and trigger ERR_RESPONSE_HEADERS_MULTIPLE_CONTENT_DISPOSITION in browsers.
+                sanitized_name = sanitized_name.rstrip(".,;!? \t")
 
                 # Normalize relative path (strip full host prefixes if present in inline content)
                 original_url = None  # preserve original full URL as first candidate
@@ -1069,17 +1072,17 @@ class KemonoDownloader:
                                 pass
 
                             # Still 403 — rotate to next mirror
-                            logger.debug(f"  ↪ Mirror 403 on {attempt_url[:60]}, trying next mirror...", category="file")
+                            logger.debug(f"  ↪ Mirror 403 on {attempt_url}, trying next mirror...", category="file")
                             continue
                         elif resp.status_code == 429:
                             # 429 on this mirror — smoothly rotate to next available mirror
-                            logger.debug(f"  ↪ Mirror 429 on {attempt_url[:60]}, rotating to next mirror...", category="file")
+                            logger.debug(f"  ↪ Mirror 429 on {attempt_url}, rotating to next mirror...", category="file")
                             continue
                         elif resp.status_code == 404 and len(urls_to_try) > 1:
-                            logger.debug(f"  ↪ Mirror 404 on {attempt_url[:60]}, trying next mirror...", category="file")
+                            logger.debug(f"  ↪ Mirror 404 on {attempt_url}, trying next mirror...", category="file")
                             continue
                     except Exception as ex:
-                        logger.debug(f"  ↪ Mirror connect error on {attempt_url[:60]}: {ex}", category="file")
+                        logger.debug(f"  ↪ Mirror connect error on {attempt_url}: {ex}", category="file")
                         continue
 
                 if resp and resp.status_code in (200, 206, 416):

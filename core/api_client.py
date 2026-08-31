@@ -138,11 +138,11 @@ class KemonoApiClient:
             if status in (200, 206):
                 logger.debug(
                     f"HTTP {status}  {elapsed:6.0f}ms  {content_len//1024:>5}KB  "
-                    f"{content_type}  ← {url[:80]}",
+                    f"{content_type}  ← {url}",
                     category="http"
                 )
             elif status == 416:
-                logger.debug(f"HTTP 416 (Already complete)  ← {url[:80]}", category="http")
+                logger.debug(f"HTTP 416 (Already complete)  ← {url}", category="http")
             elif status == 403:
                 logger.warning(
                     f"HTTP 403 Forbidden — {hint}. Add a session cookie in Settings.",
@@ -156,7 +156,7 @@ class KemonoApiClient:
                 )
             else:
                 logger.warning(
-                    f"HTTP {status}  {elapsed:6.0f}ms  {hint or 'Unexpected status'}  ← {url[:80]}",
+                    f"HTTP {status}  {elapsed:6.0f}ms  {hint or 'Unexpected status'}  ← {url}",
                     category="http"
                 )
 
@@ -168,7 +168,7 @@ class KemonoApiClient:
             logger.error(f"Connection failed (server unreachable?): {e}", category="http")
         except requests.exceptions.Timeout:
             elapsed = (time.time() - t0) * 1000
-            logger.error(f"Request timed out after {elapsed:.0f}ms — {url[:80]}", category="http")
+            logger.error(f"Request timed out after {elapsed:.0f}ms — {url}", category="http")
         except Exception as e:
             logger.error(f"Unexpected HTTP error: {type(e).__name__}: {e}", category="http")
 

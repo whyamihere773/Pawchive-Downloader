@@ -346,14 +346,34 @@ Rectangle {
                         }
                     }
 
-                    // Message
-                    Text {
+                    // Message — URLs are rendered as clickable links
+                    TextEdit {
                         Layout.fillWidth: true
-                        text: model.message
+                        text: {
+                            // Detect URLs and wrap them in HTML anchor tags
+                            var raw = model.message
+                            var escaped = raw.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+                            var linked = escaped.replace(/(https?:\/\/[^\s<>"]+)/g, '<a href="$1" style="color:#38BDF8; text-decoration:underline;">$1</a>')
+                            return linked
+                        }
                         font.family: "Cascadia Code, Consolas, monospace"
                         font.pixelSize: 11
                         color: model.levelColor
-                        wrapMode: Text.WrapAnywhere
+                        wrapMode: TextEdit.WrapAnywhere
+                        readOnly: true
+                        selectByMouse: true
+                        textFormat: TextEdit.RichText
+                        selectedTextColor: "#FFFFFF"
+                        selectionColor: "#2563EB"
+                        // Remove background / frame
+                        background: null
+                        padding: 0
+                        onLinkActivated: (link) => Qt.openUrlExternally(link)
+                        MouseArea {
+                            anchors.fill: parent
+                            acceptedButtons: Qt.NoButton
+                            cursorShape: parent.hoveredLink ? Qt.PointingHandCursor : Qt.IBeamCursor
+                        }
                     }
                 }
 
