@@ -109,6 +109,14 @@ def main():
     out_folder = os.path.join(project_root, "dist", "Pawchive Downloader")
     post_build_setup(out_folder)
 
+    # Clean intermediate compiler files from build/ so only dist/ remains
+    build_temp = os.path.join(project_root, "build")
+    if os.path.isdir(build_temp):
+        try:
+            shutil.rmtree(build_temp)
+        except Exception:
+            pass
+
     exe_path = os.path.join(out_folder, "Pawchive Downloader.exe")
 
     print("=" * 65)
@@ -116,6 +124,12 @@ def main():
     print(f"  📁 Output Folder: {out_folder}")
     print(f"  🚀 Executable:    {exe_path}")
     print("=" * 65)
+
+    # Open output folder in Windows Explorer
+    try:
+        os.startfile(out_folder)
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":
