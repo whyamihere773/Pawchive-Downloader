@@ -352,7 +352,9 @@ Rectangle {
                         text: {
                             var raw = model.message
                             var escaped = raw.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-                            var linked = escaped.replace(/(https?:\/\/[^\s<>"]+)/g, '<a href="$1" style="color:#38BDF8; text-decoration:underline;">$1</a>')
+                            var linked = escaped.replace(/(https?:\/\/[^\s<>"']+?)([.,;:!?)]*(?=\s|$))/g, function(match, url, punct) {
+                                return '<a href="' + url + '" style="color:#38BDF8; text-decoration:underline;">' + url + '</a>' + punct;
+                            })
                             return linked
                         }
                         font.family: "Cascadia Code, Consolas, monospace"

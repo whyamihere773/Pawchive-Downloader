@@ -285,6 +285,7 @@ class KemonoApiClient:
         page_end: int = 999999,
         page_size: int = 50,
         progress_callback: Optional[Callable] = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> List[Dict[str, Any]]:
         """
         Paginates through user posts from page_start to page_end.
@@ -303,6 +304,10 @@ class KemonoApiClient:
         )
 
         while current_page <= page_end:
+            if cancel_event and cancel_event.is_set():
+                logger.warning("Post enumeration cancelled by user.", category="api")
+                break
+
             if parsed.domain == "cum.st":
                 url = (
                     f"https://cum.st/api/v1/{parsed.service}"
@@ -318,6 +323,10 @@ class KemonoApiClient:
                 progress_callback(current_page, len(all_posts))
 
             resp = self._get_with_log(url, timeout=25)
+
+            if cancel_event and cancel_event.is_set():
+                logger.warning("Post enumeration cancelled by user.", category="api")
+                break
 
             if resp is None:
                 consecutive_errors += 1

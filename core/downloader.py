@@ -312,6 +312,9 @@ class KemonoDownloader:
                     continue
 
                 raw_name = fobj.get("name") or fobj.get("originalFilename") or ""
+                # API responses can include trailing commas/punctuation in filenames
+                # (e.g. "cover.jpeg,") that corrupt CDN query params and file extensions.
+                raw_name = raw_name.strip().rstrip(".,;!?")
                 # Derive extension from mimeType when filename is missing or has no extension
                 _mime_ext_map = {
                     "image/jpeg": ".jpg", "image/jpg": ".jpg", "image/png": ".png",
@@ -690,19 +693,17 @@ class KemonoDownloader:
                 clean_cookie = f"session={clean_cookie}"
             logger.debug(f"Applied authenticated session cookie ({len(clean_cookie)} chars)", category="downloader")
 
-        # Use Googlebot UA + Accept: text/css — the same approach used by the reference
-        # Kemono Downloader. The CDN rate-limits browser-style UAs aggressively but
-        # lets Googlebot/crawler UAs through at much higher concurrency.
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Accept": "*/*",
-            "Referer": "https://kemono.su/"
-        }
-        if clean_cookie:
-            headers["Cookie"] = clean_cookie
-
         session = requests.Session()
-        session.headers.update(headers)
+        # Configure high-concurrency connection adapter to prevent connection pool starvation across worker threads
+        adapter = requests.adapters.HTTPAdapter(pool_connections=64, pool_maxsize=64, max_retries=1)
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "*/*"
+        })
+        if clean_cookie:
+            session.headers["Cookie"] = clean_cookie
 
         active_futures = {}
         auto_retried_once = False
@@ -1058,28 +1059,51 @@ class KemonoDownloader:
                                 except Exception:
                                     pass
 
-                            # Try without cookie (CDN may reject session cookies)
+                            # Try without cookie and with full browser navigation headers (bypasses Cloudflare burst bot filter)
                             try:
-                                clean_headers = {k: v for k, v in req_headers.items() if k.lower() != "range"}
-                                clean_resp = requests.get(attempt_url, stream=True, timeout=30, headers=clean_headers)
+                                browser_headers = {
+                                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+                                    "Sec-Fetch-Dest": "document",
+                                    "Sec-Fetch-Mode": "navigate",
+                                    "Sec-Fetch-Site": "none",
+                                    "Sec-Fetch-User": "?1",
+                                    "Upgrade-Insecure-Requests": "1",
+                                }
+                                clean_resp = requests.get(attempt_url, stream=True, timeout=30, headers=browser_headers)
                                 if clean_resp.status_code in (200, 206):
                                     resp = clean_resp
                                     task.url = attempt_url
                                     mode = "wb"
                                     existing_size = 0
                                     break
+                                elif clean_resp.status_code == 403 and len(urls_to_try) == 1:
+                                    # Single-mirror CDN (like file.pawchive.pw) transient burst 403 — progressive pause & retry
+                                    for delay in (1.5, 3.0):
+                                        time.sleep(delay)
+                                        if self._cancel_event.is_set():
+                                            break
+                                        retry_resp = requests.get(attempt_url, stream=True, timeout=30, headers=browser_headers)
+                                        if retry_resp.status_code in (200, 206):
+                                            resp = retry_resp
+                                            task.url = attempt_url
+                                            mode = "wb"
+                                            existing_size = 0
+                                            break
+                                    if resp and resp.status_code in (200, 206):
+                                        break
                             except Exception:
                                 pass
 
                             # Still 403 — rotate to next mirror
-                            logger.debug(f"  ↪ Mirror 403 on {attempt_url}, trying next mirror...", category="file")
+                            logger.debug(f"  ↪ Mirror 403 on {attempt_url} — trying next mirror...", category="file")
                             continue
                         elif resp.status_code == 429:
                             # 429 on this mirror — smoothly rotate to next available mirror
-                            logger.debug(f"  ↪ Mirror 429 on {attempt_url}, rotating to next mirror...", category="file")
+                            logger.debug(f"  ↪ Mirror 429 on {attempt_url} — rotating to next mirror...", category="file")
                             continue
                         elif resp.status_code == 404 and len(urls_to_try) > 1:
-                            logger.debug(f"  ↪ Mirror 404 on {attempt_url}, trying next mirror...", category="file")
+                            logger.debug(f"  ↪ Mirror 404 on {attempt_url} — trying next mirror...", category="file")
                             continue
                     except Exception as ex:
                         logger.debug(f"  ↪ Mirror connect error on {attempt_url}: {ex}", category="file")

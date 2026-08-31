@@ -12,7 +12,7 @@ ApplicationWindow {
     minimumWidth: 900
     minimumHeight: 600
     visible: true
-    title: "Kemono & Pawchive Suite"
+    title: "Pawchive Downloader v1.0.0"
     color: "#0F1117"
 
     // Stop active downloads and persist session gracefully when user closes the app
@@ -259,6 +259,26 @@ ApplicationWindow {
                 }
 
                 Item { Layout.fillWidth: true }
+
+                // Version Badge
+                Rectangle {
+                    height: 24
+                    implicitWidth: verText.implicitWidth + 14
+                    radius: 12
+                    color: "#131722"
+                    border.color: "#222B3D"
+                    border.width: 1
+
+                    Text {
+                        id: verText
+                        anchors.centerIn: parent
+                        text: "v1.0.0"
+                        font.family: "Segoe UI, sans-serif"
+                        font.pixelSize: 11
+                        font.weight: Font.DemiBold
+                        color: "#64748B"
+                    }
+                }
 
                 // Console toggle button
                 Rectangle {
@@ -847,11 +867,23 @@ ApplicationWindow {
                 handle: Rectangle {
                     id: splitHandle
                     implicitWidth: 6
-                    // Capture attached properties at this scope
                     property bool isHovered: SplitHandle.hovered || SplitHandle.pressed
                     color: isHovered ? "#38BDF8" : "#1E2330"
 
                     Behavior on color { ColorAnimation { duration: 150 } }
+
+                    property bool wasPressed: false
+                    Connections {
+                        target: SplitHandle
+                        function onPressedChanged() {
+                            if (!SplitHandle.pressed && splitHandle.wasPressed) {
+                                if (consoleContainer.visible && consoleContainer.width >= 320 && appBridge) {
+                                    appBridge.consoleWidth = Math.round(consoleContainer.width)
+                                }
+                            }
+                            splitHandle.wasPressed = SplitHandle.pressed
+                        }
+                    }
 
                     // Dotted grip indicator in the middle
                     Column {
@@ -869,12 +901,10 @@ ApplicationWindow {
                     }
                 }
 
-
                 // Left Panel: Active Tab View
                 Rectangle {
                     SplitView.fillWidth: true
-                    SplitView.preferredWidth: 620
-                    SplitView.minimumWidth: 400
+                    SplitView.minimumWidth: 340
                     color: "#0F1117"
 
                     StackLayout {
@@ -951,8 +981,9 @@ ApplicationWindow {
 
                 // Right Panel: Live Console Log View
                 Rectangle {
-                    SplitView.preferredWidth: 520
-                    SplitView.minimumWidth: 280
+                    id: consoleContainer
+                    SplitView.preferredWidth: appBridge ? appBridge.consoleWidth : 680
+                    SplitView.minimumWidth: 320
                     visible: appWindow.showConsole
                     color: "#0B0D12"
 

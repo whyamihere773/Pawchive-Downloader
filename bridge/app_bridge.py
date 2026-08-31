@@ -89,6 +89,7 @@ class AppBridge(QObject):
     playCompletionSoundChanged = Signal()
     filesCountTextChanged = Signal()
     harvestedLinksChanged = Signal()
+    consoleWidthChanged = Signal()
 
     _progressSignal  = Signal(dict)    # carries progress info dict
     _taskSignal      = Signal(object)  # carries a DownloadTask object
@@ -152,9 +153,11 @@ class AppBridge(QObject):
         self._download_embeds = bool(saved_settings.get("download_embeds", True))
         self._open_folder_on_complete = bool(saved_settings.get("open_folder_on_complete", False))
         self._play_completion_sound = bool(saved_settings.get("play_completion_sound", False))
+        self._console_width = int(saved_settings.get("console_width", 620))
         self._creator_name = ""
 
-        # Cloud downloader state
+        # Scan & Cloud cancellation state
+        self._scan_cancel_event = threading.Event()
         self._cloud_cancel_event = threading.Event()
         self._cloud_pause_event = threading.Event()
         self._is_cloud_downloading = False
@@ -638,6 +641,18 @@ class AppBridge(QObject):
             self.playCompletionSoundChanged.emit()
             self.saveSettings()
 
+    @Property(int, notify=consoleWidthChanged)
+    def consoleWidth(self) -> int:
+        return self._console_width
+
+    @consoleWidth.setter
+    def consoleWidth(self, val: int):
+        val = max(280, min(1400, int(val)))
+        if self._console_width != val:
+            self._console_width = val
+            self.consoleWidthChanged.emit()
+            self.saveSettings()
+
     # Model Properties
     @Property(QObject, constant=True)
     def logModel(self) -> LogModel:
@@ -725,6 +740,7 @@ class AppBridge(QObject):
             logger.error(f"Invalid URL: {parsed.error_msg}", category="parser")
             return
 
+        self._scan_cancel_event.clear()
         self._has_error = False
         self.hasErrorChanged.emit()
         self._is_downloading = True
@@ -748,6 +764,7 @@ class AppBridge(QObject):
             logger.error(f"Invalid URL: {parsed.error_msg}", category="parser")
             return
 
+        self._scan_cancel_event.clear()
         threading.Thread(
             target=self._async_fetch_and_start,
             args=(parsed, False),
@@ -756,6 +773,13 @@ class AppBridge(QObject):
 
     def _async_fetch_and_start(self, parsed: URLParseResult, auto_start: bool):
         try:
+            if self._scan_cancel_event.is_set():
+                self._is_downloading = False
+                self._status_text = "Progress: Cancelled"
+                self.isDownloadingChanged.emit()
+                self.statusTextChanged.emit()
+                return
+
             options = self._get_filter_options()
 
             # ── Handle Integrated Third-Party Providers ───────────────────────
@@ -822,6 +846,13 @@ class AppBridge(QObject):
                 self._creator_name = creator_name
                 self.creatorNameChanged.emit()
 
+                if self._scan_cancel_event.is_set():
+                    self._is_downloading = False
+                    self._status_text = "Progress: Cancelled"
+                    self.isDownloadingChanged.emit()
+                    self.statusTextChanged.emit()
+                    return
+
                 # 2. Fetch posts
                 if parsed.is_single_post:
                     single = self.api_client.fetch_single_post(parsed)
@@ -830,8 +861,16 @@ class AppBridge(QObject):
                     posts = self.api_client.fetch_user_posts(
                         parsed=parsed,
                         page_start=self._page_start,
-                        page_end=self._page_end
+                        page_end=self._page_end,
+                        cancel_event=self._scan_cancel_event
                     )
+
+                if self._scan_cancel_event.is_set():
+                    self._is_downloading = False
+                    self._status_text = "Progress: Cancelled"
+                    self.isDownloadingChanged.emit()
+                    self.statusTextChanged.emit()
+                    return
 
                 if not posts:
                     logger.warning(f"No posts found for {creator_name} ({parsed.service}).", category="api")
@@ -844,10 +883,19 @@ class AppBridge(QObject):
                 # If character filter uses comments scope, attach comments to post dictionaries
                 if options.character_scope in ("comments", "all"):
                     for p in posts:
+                        if self._scan_cancel_event.is_set():
+                            break
                         pid = str(p.get("id", ""))
                         if pid:
                             comms = self.api_client.fetch_post_comments(parsed.domain, parsed.service, parsed.user_id, pid)
                             p["comments_text"] = "\n".join(c.get("content", "") for c in comms if isinstance(c, dict))
+
+                if self._scan_cancel_event.is_set():
+                    self._is_downloading = False
+                    self._status_text = "Progress: Cancelled"
+                    self.isDownloadingChanged.emit()
+                    self.statusTextChanged.emit()
+                    return
 
                 # 3. Build tasks
                 tasks = self.downloader.build_tasks_from_posts(
@@ -858,6 +906,13 @@ class AppBridge(QObject):
                     base_dir=self._download_dir,
                     options=options
                 )
+
+            if self._scan_cancel_event.is_set():
+                self._is_downloading = False
+                self._status_text = "Progress: Cancelled"
+                self.isDownloadingChanged.emit()
+                self.statusTextChanged.emit()
+                return
 
             if options.file_type == "links":
                 h_count = len(self.downloader.harvested_links_records)
@@ -1275,6 +1330,78 @@ class AppBridge(QObject):
             logger.warning("Cloud downloads cancellation requested.", category="downloader")
 
     @Slot()
+    def cancelDownload(self):
+        self._scan_cancel_event.set()
+        self.downloader.cancel()
+        self.cancelCloudDownloads()
+        self._is_downloading = False
+        self.isDownloadingChanged.emit()
+        self._status_text = "Progress: Cancelled"
+        self.statusTextChanged.emit()
+
+    @Slot()
+    def pauseDownload(self):
+        self.downloader.pause()
+        self._cloud_pause_event.set()
+        self._status_text = "Progress: Paused"
+        self.statusTextChanged.emit()
+
+    @Slot()
+    def resumeDownload(self):
+        self.downloader.resume()
+        self._cloud_pause_event.clear()
+        self._status_text = "Progress: Resumed"
+        self.statusTextChanged.emit()
+
+    @Slot()
+    def selectDownloadDirectory(self):
+        folder = QFileDialog.getExistingDirectory(
+            None,
+            "Select Download Directory",
+            self._download_dir
+        )
+        if folder:
+            self.downloadDir = folder
+            self.saveSettings()
+
+    @Slot()
+    def exportAllLinks(self):
+        # In links-only mode, export the harvested external cloud links
+        harvested = self.downloader.harvested_links
+        if harvested:
+            save_path, _ = QFileDialog.getSaveFileName(
+                None,
+                "Export Harvested Links",
+                os.path.join(self._download_dir, "harvested_links.txt"),
+                "Text Files (*.txt);;All Files (*)"
+            )
+            if not save_path:
+                return
+
+            lines = [
+                f"Kemono Downloader — Harvested External Links",
+                f"Exported: {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                "=" * 60,
+                "",
+            ]
+            total = 0
+            for platform, urls in sorted(harvested.items()):
+                lines.append(f"[{platform.upper()}]  ({len(urls)} link(s))")
+                for u in urls:
+                    lines.append(f"  {u}")
+                    total += 1
+                lines.append("")
+            lines.append(f"Total: {total} unique link(s)")
+
+            try:
+                with open(save_path, "w", encoding="utf-8") as f:
+                    f.write("\n".join(lines))
+                logger.success(f"🔗 Exported {total} harvested link(s) to: {save_path}", category="session")
+            except Exception as e:
+                logger.error(f"Failed to export harvested links: {e}", category="session")
+            return
+
+    @Slot()
     def exportLogs(self):
         save_path, _ = QFileDialog.getSaveFileName(
             None,
@@ -1419,7 +1546,8 @@ class AppBridge(QObject):
             "save_post_metadata": self._save_post_metadata,
             "download_embeds": self._download_embeds,
             "open_folder_on_complete": self._open_folder_on_complete,
-            "play_completion_sound": self._play_completion_sound
+            "play_completion_sound": self._play_completion_sound,
+            "console_width": self._console_width
         }
         self.session_manager.save_settings(settings_dict, silent=True)
 

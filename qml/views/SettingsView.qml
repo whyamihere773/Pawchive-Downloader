@@ -113,10 +113,37 @@ ScrollView {
             }
         }
 
-        // Action Buttons
+        // Action Buttons & About
         RowLayout {
             Layout.fillWidth: true
             spacing: 8
+
+            // Version info
+            RowLayout {
+                spacing: 6
+                Text {
+                    text: "Pawchive Downloader"
+                    font.family: "Segoe UI, sans-serif"
+                    font.pixelSize: 12
+                    font.weight: Font.DemiBold
+                    color: "#94A3B8"
+                }
+                Rectangle {
+                    height: 20
+                    implicitWidth: sVerText.implicitWidth + 10
+                    radius: 10
+                    color: "#1E293B"
+                    Text {
+                        id: sVerText
+                        anchors.centerIn: parent
+                        text: "v1.0.0"
+                        font.family: "Segoe UI, sans-serif"
+                        font.pixelSize: 10
+                        font.weight: Font.Bold
+                        color: "#38BDF8"
+                    }
+                }
+            }
 
             Item { Layout.fillWidth: true }
 
