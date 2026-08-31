@@ -5,6 +5,7 @@ reactive properties, slots, session persistence, telemetry signals, and async or
 """
 
 import os
+import sys
 import time
 import subprocess
 import threading
@@ -12,6 +13,11 @@ from typing import Optional, Dict, Any, List
 from PySide6.QtCore import QObject, Signal, Property, Slot, Qt, QUrl
 from PySide6.QtGui import QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import QFileDialog, QApplication
+
+if __name__ == "__main__" or "core" not in sys.modules:
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
 
 from core.logger import logger
 from core.parser import KemonoURLParser, URLParseResult

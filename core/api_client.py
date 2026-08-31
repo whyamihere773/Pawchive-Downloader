@@ -4,12 +4,20 @@ Handles communication with Kemono, Pawchive, Coomer, and Cum.st REST endpoints
 with exponential backoff, rate limiting recovery, and diagnostic logging.
 """
 
+import os
+import sys
 import time
 import requests
 from urllib.parse import urljoin
 from typing import Dict, Any, List, Optional, Callable
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+if __name__ == "__main__" or "core" not in sys.modules:
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+
 from core.logger import logger
 from core.parser import URLParseResult
 

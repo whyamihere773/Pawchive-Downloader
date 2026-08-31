@@ -136,7 +136,7 @@ ScrollView {
                     Text {
                         id: sVerText
                         anchors.centerIn: parent
-                        text: "v1.0.0"
+                        text: "v1.0.1"
                         font.family: "Segoe UI, sans-serif"
                         font.pixelSize: 10
                         font.weight: Font.Bold

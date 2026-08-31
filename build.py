@@ -9,6 +9,11 @@ import shutil
 import subprocess
 import argparse
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 
 def check_and_install_dependencies():
     """Ensures all runtime dependencies and PyInstaller are installed."""

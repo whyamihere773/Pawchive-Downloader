@@ -1,17 +1,13 @@
-"""
-Project Kemono & Pawchive Desktop Suite
-Main application entry point initializing Qt/QML runtime and core bridge context.
-"""
-
 import sys
 import os
+import signal
 
 os.environ["QT_QUICK_CONTROLS_STYLE"] = "Basic"
 os.environ["QSG_RENDER_LOOP"] = "basic"
 
 from PySide6.QtWidgets import QApplication
 from PySide6.QtQml import QQmlApplicationEngine
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import QUrl, QTimer
 from PySide6.QtGui import QIcon
 
 from core.logger import logger
@@ -19,10 +15,18 @@ from bridge.app_bridge import AppBridge
 
 
 def main():
+    # Handle Ctrl+C gracefully
+    signal.signal(signal.SIGINT, lambda *args: QApplication.quit())
+
     app = QApplication(sys.argv)
     app.setApplicationName("PawchiveDownloader")
     app.setOrganizationName("PawchiveProject")
     app.setApplicationDisplayName("Pawchive Downloader")
+
+    # Periodic heartbeat timer to allow Python signal handling in Qt event loop
+    sig_timer = QTimer()
+    sig_timer.start(300)
+    sig_timer.timeout.connect(lambda: None)
 
     if getattr(sys, 'frozen', False):
         if hasattr(sys, '_MEIPASS') and os.path.exists(os.path.join(sys._MEIPASS, "qml")):

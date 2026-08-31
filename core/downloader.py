@@ -5,6 +5,7 @@ multipart acceleration, WebP conversion, retry queues, and telemetry reporting.
 """
 
 import os
+import sys
 import re
 import time
 import datetime
@@ -14,6 +15,12 @@ import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any, Optional, Callable
 from PIL import Image
+
+# Ensure project root is on sys.path even when executed directly
+if __name__ == "__main__" or "core" not in sys.modules:
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
 
 from core.logger import logger
 from core.filter_engine import FilterEngine, FilterOptions, MediaTypes
@@ -1382,39 +1389,44 @@ class KemonoDownloader:
         else:
             elapsed_str = f"{elapsed_int}s"
 
-        # Calculate ETA
+        # Calculate ETA based on general progress
         remaining_tasks = total - completed - failed
-
-        # Overall progress bar: file count based (X/N files done)
         percent = int((completed + failed) / total * 100) if total > 0 else 0
 
-        # ETA uses actual bytes downloaded (from disk polling) for accuracy
-        total_task_bytes = sum(t.file_size for t in self.tasks if t.file_size > 0)
-        done_task_bytes = sum(
-            t.downloaded_bytes for t in self.tasks
-            if t.status in ("completed", "failed", "downloading")
-        )
-
         eta_str = "--"
-        if speed > 0 and done_task_bytes > 0 and total_task_bytes > 0:
-            remaining_bytes = max(0, total_task_bytes - done_task_bytes)
-            eta_seconds = int(remaining_bytes / speed)
-            if eta_seconds > 3600:
-                eta_str = f"{eta_seconds//3600}h {(eta_seconds%3600)//60}m"
-            elif eta_seconds > 60:
-                eta_str = f"{eta_seconds//60}m {eta_seconds%60}s"
-            else:
+        if total > 0 and (completed + failed) > 0 and remaining_tasks > 0:
+            # General progress ratio
+            progress_ratio = (completed + failed) / total
+            # ETA derived from elapsed time and general progress
+            total_est_seconds = elapsed / progress_ratio
+            eta_seconds = max(0, int(total_est_seconds - elapsed))
+
+            if eta_seconds >= 3600:
+                eta_str = f"{eta_seconds // 3600}h {(eta_seconds % 3600) // 60}m"
+            elif eta_seconds >= 60:
+                eta_str = f"{eta_seconds // 60}m {eta_seconds % 60}s"
+            elif eta_seconds > 0:
                 eta_str = f"{eta_seconds}s"
-        elif speed > 0 and (completed + failed) > 0 and remaining_tasks > 0:
-            avg_bytes_per_task = self.downloaded_bytes / max(1, completed + failed)
-            estimated_remaining_bytes = remaining_tasks * avg_bytes_per_task
-            eta_seconds = int(estimated_remaining_bytes / speed)
-            if eta_seconds > 3600:
-                eta_str = f"{eta_seconds//3600}h {(eta_seconds%3600)//60}m"
-            elif eta_seconds > 60:
-                eta_str = f"{eta_seconds//60}m {eta_seconds%60}s"
             else:
-                eta_str = f"{eta_seconds}s"
+                eta_str = "< 1s"
+        elif total > 0 and (completed + failed) >= total:
+            eta_str = "Done"
+        elif speed > 0 and remaining_tasks > 0:
+            # Initial estimate before first task finishes
+            total_task_bytes = sum(t.file_size for t in self.tasks if t.file_size > 0)
+            done_task_bytes = sum(
+                t.downloaded_bytes for t in self.tasks
+                if t.status in ("completed", "failed", "downloading")
+            )
+            if total_task_bytes > 0 and done_task_bytes > 0:
+                rem_bytes = max(0, total_task_bytes - done_task_bytes)
+                eta_seconds = int(rem_bytes / speed)
+                if eta_seconds >= 3600:
+                    eta_str = f"{eta_seconds // 3600}h {(eta_seconds % 3600) // 60}m"
+                elif eta_seconds >= 60:
+                    eta_str = f"{eta_seconds // 60}m {eta_seconds % 60}s"
+                elif eta_seconds > 0:
+                    eta_str = f"{eta_seconds}s"
 
         dl_mb = self.downloaded_bytes / (1024 * 1024)
         if self.downloaded_bytes > 1024 * 1024 * 1024:

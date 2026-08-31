@@ -287,54 +287,50 @@ Rectangle {
                                 elide: Text.ElideMiddle
                             }
 
-                            // Size and Telemetry (Speed / ETA / Size)
+                            // Progress Percentage badge & Retry Action
                             Row {
                                 spacing: 6
                                 Layout.alignment: Qt.AlignRight
 
-                                // Live Speed badge (visible when downloading)
+                                // Percentage Badge
                                 Rectangle {
-                                    height: 18
-                                    width: speedText.implicitWidth + 8
-                                    radius: 3
-                                    color: "#0F2840"
-                                    visible: model.status === "downloading" && model.speed !== "0 B/s"
-
-                                    Text {
-                                        id: speedText
-                                        anchors.centerIn: parent
-                                        text: model.speed
-                                        font.family: "Cascadia Code, monospace"
-                                        font.pixelSize: 9
-                                        color: "#38BDF8"
+                                    height: 20
+                                    width: pctText.implicitWidth + 14
+                                    radius: 4
+                                    color: {
+                                        if (model.status === "completed") return "#064E3B"
+                                        if (model.status === "downloading") return "#0C4A6E"
+                                        if (model.status === "failed") return "#450A0A"
+                                        return "#1E293B"
                                     }
-                                }
-
-                                // Live ETA badge (visible when downloading)
-                                Rectangle {
-                                    height: 18
-                                    width: etaText.implicitWidth + 8
-                                    radius: 3
-                                    color: "#1E293B"
-                                    visible: model.status === "downloading" && model.eta !== "--"
-
-                                    Text {
-                                        id: etaText
-                                        anchors.centerIn: parent
-                                        text: "ETA " + model.eta
-                                        font.family: "Segoe UI, sans-serif"
-                                        font.pixelSize: 9
-                                        color: "#FBBF24"
+                                    border.color: {
+                                        if (model.status === "completed") return "#10B981"
+                                        if (model.status === "downloading") return "#38BDF8"
+                                        if (model.status === "failed") return "#EF4444"
+                                        return "#334155"
                                     }
-                                }
-
-                                // Size / Progress Percentage
-                                Text {
-                                    text: model.downloadedBytes + " / " + model.fileSize + (model.percentage > 0 && model.percentage < 100 ? (" (" + model.percentage + "%)") : "")
-                                    font.family: "Cascadia Code, monospace"
-                                    font.pixelSize: 10
-                                    color: "#94A3B8"
+                                    border.width: 1
                                     anchors.verticalCenter: parent.verticalCenter
+
+                                    Text {
+                                        id: pctText
+                                        anchors.centerIn: parent
+                                        text: {
+                                            if (model.status === "completed") return "100%"
+                                            if (model.status === "failed") return "Failed"
+                                            if (model.status === "downloading") return model.percentage + "%"
+                                            return "0%"
+                                        }
+                                        font.family: "Cascadia Code, Consolas, monospace"
+                                        font.pixelSize: 10
+                                        font.weight: Font.Bold
+                                        color: {
+                                            if (model.status === "completed") return "#34D399"
+                                            if (model.status === "downloading") return "#38BDF8"
+                                            if (model.status === "failed") return "#FCA5A5"
+                                            return "#94A3B8"
+                                        }
+                                    }
                                 }
 
                                 // Single Item Retry Button (Visible for failed items)
