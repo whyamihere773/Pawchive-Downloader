@@ -24,8 +24,12 @@ def main():
     app.setOrganizationName("PawchiveProject")
     app.setApplicationDisplayName("Pawchive Downloader")
 
-    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-        base_dir = sys._MEIPASS
+    if getattr(sys, 'frozen', False):
+        if hasattr(sys, '_MEIPASS') and os.path.exists(os.path.join(sys._MEIPASS, "qml")):
+            base_dir = sys._MEIPASS
+        else:
+            cand = os.path.join(os.path.dirname(sys.executable), "_internal")
+            base_dir = cand if os.path.exists(cand) else os.path.dirname(sys.executable)
     else:
         base_dir = os.path.dirname(os.path.abspath(__file__))
 

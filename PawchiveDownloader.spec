@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
 PyInstaller Specification File for Pawchive Downloader
-Windows Windowed Desktop Distribution (One Directory with Hidden Console)
+Creates a clean directory layout with all internal binaries tucked inside '_internal'.
 """
 
 import sys
@@ -115,18 +115,19 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='PawchiveDownloader',
+    name='Pawchive Downloader',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=False,  # Windows GUI (Console Hidden)
+    console=False,  # Hidden console for clean GUI
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
     icon=icon_path,
+    contents_directory='_internal',
 )
 
 coll = COLLECT(
@@ -137,5 +138,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='PawchiveDownloader',
+    name='Pawchive Downloader',
 )
