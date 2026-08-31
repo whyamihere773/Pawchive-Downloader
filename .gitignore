@@ -1,0 +1,67 @@
+# Python & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+
+# User Configurations & Session Data
+config/settings.json
+config/history.json
+config/session.json
+config/Known.txt
+
+# Downloaded files, logs & temporary data
+*.part
+*.log
+*.tmp
+logs/
+scratch/
+p/
+path2/
+test_*/
+
+# Standalone Executables & Large Binaries
+dependencies/*.exe
+dependencies/*.zip
+dependencies/*.tar.gz
+
+# Reference Code & Third-Party Repos
+Kemono-Downloader-main/
+
+# IDE & Editor Settings
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db

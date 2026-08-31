@@ -1,0 +1,68 @@
+Custom Source-Available License
+Copyright (c) 2026 Project Kemono Contributors
+
+---
+
+## Terms & Conditions
+
+### 1. Permitted Use
+You are free to:
+- Use this software for **personal, non-commercial purposes**
+- Study and learn from the source code
+- Fork and modify the code for **private, non-commercial use**
+
+### 2. Restrictions
+
+**Commercial Use Prohibited Without Permission**
+You may NOT sell, license, sublicense, or otherwise commercialize this software
+or any derivative work based on it without prior written permission from the
+original author. This includes but is not limited to: paid downloads, bundling
+in paid products, SaaS offerings, or monetized distributions.
+
+**Attribution Required for Redistribution**
+If you modify this software and publish or distribute your version publicly,
+you MUST:
+- Clearly credit the original project and author in your README, About page,
+  or equivalent prominent location.
+- Include a link to this original repository.
+- Indicate what changes were made.
+- Retain this license file in your distribution.
+
+Suggested attribution format:
+> Based on Project Kemono (https://github.com/your-username/project-kemono)
+
+**No Misrepresentation**
+You may not claim original authorship of this project or present derivative
+works in a way that misrepresents their origin.
+
+### 3. Disclaimer
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+## Inspiration & Attribution
+
+This project was heavily inspired by the work of **Yuvi9587** and their
+[Kemono Downloader](https://github.com/Yuvi9587/Kemono-Downloader) project.
+While this codebase was rewritten entirely from scratch with a different
+architecture, UI framework, and heavelly modified feature set, it would not exist without that
+original work serving as a foundation and reference point. Credit and sincere
+appreciation go to Yuvi9587 for their contribution to the community.
+
+---
+
+## Third-Party Components
+
+This project bundles a pre-compiled copy of **yt-dlp** in the `dependencies/`
+folder to assist with downloading embedded streaming media (Vimeo, YouTube,
+Streamable, RedGifs, etc.). yt-dlp is an open-source project released into the
+public domain under the Unlicense.
+
+- yt-dlp repository: https://github.com/yt-dlp/yt-dlp
