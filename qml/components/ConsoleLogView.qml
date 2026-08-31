@@ -350,7 +350,6 @@ Rectangle {
                     TextEdit {
                         Layout.fillWidth: true
                         text: {
-                            // Detect URLs and wrap them in HTML anchor tags
                             var raw = model.message
                             var escaped = raw.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
                             var linked = escaped.replace(/(https?:\/\/[^\s<>"]+)/g, '<a href="$1" style="color:#38BDF8; text-decoration:underline;">$1</a>')
@@ -365,9 +364,6 @@ Rectangle {
                         textFormat: TextEdit.RichText
                         selectedTextColor: "#FFFFFF"
                         selectionColor: "#2563EB"
-                        // Remove background / frame
-                        background: null
-                        padding: 0
                         onLinkActivated: (link) => Qt.openUrlExternally(link)
                         MouseArea {
                             anchors.fill: parent
