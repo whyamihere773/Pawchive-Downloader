@@ -16,6 +16,7 @@ class KnownModel(QAbstractListModel):
     def __init__(self, known_manager: KnownManager, parent=None):
         super().__init__(parent)
         self.known_manager = known_manager
+        self.known_manager.on_entries_changed = self.refresh
         self._filtered_entries: List[str] = list(self.known_manager.entries)
         self._search_query: str = ""
 

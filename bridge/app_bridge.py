@@ -10,7 +10,7 @@ import time
 import subprocess
 import threading
 from typing import Optional, Dict, Any, List
-from PySide6.QtCore import QObject, Signal, Property, Slot, Qt, QUrl
+from PySide6.QtCore import QObject, Signal, Property, Slot, Qt, QUrl, QCoreApplication
 from PySide6.QtGui import QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import QFileDialog, QApplication
 
@@ -96,6 +96,8 @@ class AppBridge(QObject):
     filesCountTextChanged = Signal()
     harvestedLinksChanged = Signal()
     consoleWidthChanged = Signal()
+    postDownloadActionChanged = Signal()
+    knownRecognitionModeChanged = Signal()
 
     _progressSignal  = Signal(dict)    # carries progress info dict
     _taskSignal      = Signal(object)  # carries a DownloadTask object
@@ -159,6 +161,9 @@ class AppBridge(QObject):
         self._download_embeds = bool(saved_settings.get("download_embeds", True))
         self._open_folder_on_complete = bool(saved_settings.get("open_folder_on_complete", False))
         self._play_completion_sound = bool(saved_settings.get("play_completion_sound", False))
+        self._post_download_action = str(saved_settings.get("post_download_action", "none"))
+        self._known_recognition_mode = str(saved_settings.get("known_recognition_mode", "hybrid"))
+        self.known_manager.set_mode(self._known_recognition_mode)
         self._console_width = int(saved_settings.get("console_width", 620))
         self._creator_name = ""
 
@@ -657,6 +662,35 @@ class AppBridge(QObject):
         if self._console_width != val:
             self._console_width = val
             self.consoleWidthChanged.emit()
+            self.saveSettings()
+
+    @Property(str, notify=postDownloadActionChanged)
+    def postDownloadAction(self) -> str:
+        return self._post_download_action
+
+    @postDownloadAction.setter
+    def postDownloadAction(self, val: str):
+        allowed = {"none", "close_app", "sleep", "hibernate", "shutdown", "restart"}
+        if val not in allowed:
+            val = "none"
+        if self._post_download_action != val:
+            self._post_download_action = val
+            self.postDownloadActionChanged.emit()
+            self.saveSettings()
+
+    @Property(str, notify=knownRecognitionModeChanged)
+    def knownRecognitionMode(self) -> str:
+        return self._known_recognition_mode
+
+    @knownRecognitionMode.setter
+    def knownRecognitionMode(self, val: str):
+        allowed = {"hybrid", "database_only", "learning_only"}
+        if val not in allowed:
+            val = "hybrid"
+        if self._known_recognition_mode != val:
+            self._known_recognition_mode = val
+            self.known_manager.set_mode(val)
+            self.knownRecognitionModeChanged.emit()
             self.saveSettings()
 
     # Model Properties
@@ -1553,6 +1587,8 @@ class AppBridge(QObject):
             "download_embeds": self._download_embeds,
             "open_folder_on_complete": self._open_folder_on_complete,
             "play_completion_sound": self._play_completion_sound,
+            "post_download_action": self._post_download_action,
+            "known_recognition_mode": self._known_recognition_mode,
             "console_width": self._console_width
         }
         self.session_manager.save_settings(settings_dict, silent=True)
@@ -1600,6 +1636,53 @@ class AppBridge(QObject):
     def _handle_set_tasks(self, tasks: list):
         self._queue_model.setTasks(tasks)
 
+    def _execute_post_action(self):
+        """Executes the chosen post-download system/app action (close app, sleep, shutdown, restart, hibernate)."""
+        action = getattr(self, "_post_download_action", "none")
+        if not action or action == "none":
+            return
+
+        logger.info(f"Executing post-download action: {action}", category="system")
+        
+        try:
+            if action == "close_app":
+                logger.info("Closing application as requested after download.", category="system")
+                app = QCoreApplication.instance() or QGuiApplication.instance()
+                if app:
+                    app.quit()
+                else:
+                    sys.exit(0)
+            elif action == "shutdown":
+                if sys.platform == "win32":
+                    subprocess.run(["shutdown", "/s", "/t", "10", "/c", "Pawchive Downloader completed. Shutting down system in 10s..."], check=False)
+                elif sys.platform == "darwin":
+                    subprocess.run(["osascript", "-e", 'tell app "System Events" to shut down'], check=False)
+                else:
+                    subprocess.run(["shutdown", "-h", "now"], check=False)
+            elif action == "restart":
+                if sys.platform == "win32":
+                    subprocess.run(["shutdown", "/r", "/t", "10", "/c", "Pawchive Downloader completed. Restarting system in 10s..."], check=False)
+                elif sys.platform == "darwin":
+                    subprocess.run(["osascript", "-e", 'tell app "System Events" to restart'], check=False)
+                else:
+                    subprocess.run(["shutdown", "-r", "now"], check=False)
+            elif action == "sleep":
+                if sys.platform == "win32":
+                    subprocess.run(["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"], check=False)
+                elif sys.platform == "darwin":
+                    subprocess.run(["pmset", "sleepnow"], check=False)
+                else:
+                    subprocess.run(["systemctl", "suspend"], check=False)
+            elif action == "hibernate":
+                if sys.platform == "win32":
+                    subprocess.run(["shutdown", "/h"], check=False)
+                elif sys.platform == "darwin":
+                    subprocess.run(["pmset", "sleepnow"], check=False)
+                else:
+                    subprocess.run(["systemctl", "hibernate"], check=False)
+        except Exception as e:
+            logger.error(f"Failed to execute post-download action '{action}': {e}", category="system")
+
     @Slot(bool, str)
     def _handle_finished(self, success: bool, message: str):
         self._is_downloading = False
@@ -1631,12 +1714,27 @@ class AppBridge(QObject):
             self.session_manager.discard_session()
             self._has_saved_session = False
             self.hasSavedSessionChanged.emit()
-            # Post-completion actions
+            
+            # 1. Play sound if requested
+            if self._play_completion_sound:
+                try:
+                    if sys.platform == "win32":
+                        import winsound
+                        winsound.MessageBeep(winsound.MB_ICONASTERISK)
+                except Exception:
+                    pass
+
+            # 2. Open folder if requested
             if self._open_folder_on_complete and self._download_dir:
                 try:
                     QDesktopServices.openUrl(QUrl.fromLocalFile(self._download_dir))
                 except Exception:
                     pass
+
+            # 3. Post-download action (close app, shutdown, sleep, etc.)
+            if self._post_download_action and self._post_download_action != "none":
+                self._execute_post_action()
+
 
     def _async_resolve_creator_name(self, parsed: URLParseResult):
         try:

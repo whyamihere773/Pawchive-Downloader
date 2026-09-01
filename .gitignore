@@ -43,6 +43,7 @@ config/Known.txt
 *.part
 *.log
 *.tmp
+data/
 logs/
 scratch/
 p/
