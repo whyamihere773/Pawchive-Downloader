@@ -57,13 +57,15 @@ def clean_build_artifacts():
 
 
 def post_build_setup(output_dir: str):
-    """Sets up runtime folders and config templates next to the executable."""
+    """Sets up runtime folders, data files, and config templates next to the executable."""
     print("\n📁 Configuring clean runtime environment...")
 
-    # Create config and dependencies directories next to executable
+    # Create config, data, and dependencies directories next to executable
     config_dir = os.path.join(output_dir, "config")
+    data_dir = os.path.join(output_dir, "data")
     deps_dir = os.path.join(output_dir, "dependencies")
     os.makedirs(config_dir, exist_ok=True)
+    os.makedirs(data_dir, exist_ok=True)
     os.makedirs(deps_dir, exist_ok=True)
 
     # Copy example settings into config/
@@ -72,6 +74,19 @@ def post_build_setup(output_dir: str):
     if os.path.exists(src_example):
         shutil.copy2(src_example, dst_example)
         print(f"   Copied {src_example} -> {dst_example}")
+
+    # Copy master_characters.json and master_characters.bin into data/
+    src_master_json = os.path.join("data", "master_characters.json")
+    dst_master_json = os.path.join(data_dir, "master_characters.json")
+    if os.path.exists(src_master_json):
+        shutil.copy2(src_master_json, dst_master_json)
+        print(f"   Copied {src_master_json} -> {dst_master_json}")
+
+    src_master_bin = os.path.join("data", "master_characters.bin")
+    dst_master_bin = os.path.join(data_dir, "master_characters.bin")
+    if os.path.exists(src_master_bin):
+        shutil.copy2(src_master_bin, dst_master_bin)
+        print(f"   Copied {src_master_bin} -> {dst_master_bin}")
 
     print("✅ Runtime environment configured successfully.\n")
 
@@ -124,10 +139,17 @@ def main():
 
     exe_path = os.path.join(out_folder, "Pawchive Downloader.exe")
 
+    # Create release zip archive
+    zip_base = os.path.join(project_root, "dist", "Pawchive-Downloader-v1.0.2-Windows")
+    print("\n📦 Compressing release into ZIP archive...")
+    zip_path = shutil.make_archive(zip_base, "zip", root_dir=os.path.join(project_root, "dist"), base_dir="Pawchive Downloader")
+    print(f"   Created {zip_path}")
+
     print("=" * 65)
     print("  🎉 Build Completed Successfully!")
     print(f"  📁 Output Folder: {out_folder}")
     print(f"  🚀 Executable:    {exe_path}")
+    print(f"  📦 Release ZIP:   {zip_path}")
     print("=" * 65)
 
     # Open output folder in Windows Explorer
@@ -139,3 +161,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
