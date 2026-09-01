@@ -12,7 +12,7 @@ ApplicationWindow {
     minimumWidth: 900
     minimumHeight: 600
     visible: true
-    title: "Pawchive Downloader v1.0.2"
+    title: "Pawchive Downloader v1.0.3"
     color: "#0F1117"
 
     // Stop active downloads and persist session gracefully when user closes the app
@@ -272,7 +272,7 @@ ApplicationWindow {
                     Text {
                         id: verText
                         anchors.centerIn: parent
-                        text: "v1.0.2"
+                        text: "v1.0.3"
                         font.family: "Segoe UI, sans-serif"
                         font.pixelSize: 11
                         font.weight: Font.DemiBold
