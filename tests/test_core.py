@@ -836,6 +836,39 @@ class TestSmartETA(unittest.TestCase):
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+    def test_speed_learning_and_transient_dip_dampening(self):
+        from core.downloader import KemonoDownloader
+        from core.known_manager import KnownManager
+        from core.session_manager import SessionManager
+
+        temp_dir = tempfile.mkdtemp()
+        try:
+            km = KnownManager(os.path.join(temp_dir, "Known.txt"))
+            sm = SessionManager(temp_dir)
+            dl = KemonoDownloader(km, sm)
+
+            dl.start_time = 1000.0
+            dl.downloaded_bytes = 90 * 1024 * 1024  # 90 MB downloaded in 60s (1.5 MB/s average)
+
+            # Seed speed samples over the last 10 seconds at 1.5 MB/s
+            for t_offset in range(50, 61):
+                dl._speed_samples.append((1000.0 + t_offset, int(t_offset * 1.5 * 1024 * 1024)))
+            
+            speed_60s = dl._calculate_instant_speed(1060.0)
+            self.assertGreater(speed_60s, 1.2 * 1024 * 1024)
+
+            # Transient dip: file finished and next file just started (only 100 KB downloaded in next 2s)
+            dl.downloaded_bytes += 100 * 1024
+            dl._speed_samples.append((1062.0, dl.downloaded_bytes))
+            speed_dip = dl._calculate_instant_speed(1062.0)
+
+            # Because of learning blend with the 60s 1.5 MB/s baseline, speed should remain smooth (> 1.0 MB/s)
+            # instead of crashing down to 50 KB/s
+            self.assertGreater(speed_dip, 1.0 * 1024 * 1024)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+
 
 class TestFranchiseHierarchyAndModes(unittest.TestCase):
     def test_franchise_sections_parsing_and_matching(self):

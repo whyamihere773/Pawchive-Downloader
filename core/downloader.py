@@ -120,10 +120,12 @@ class KemonoDownloader:
         self._learned_stable_ceiling: Optional[int] = None
         self._stable_clean_count: int = 0
 
-        # Smart ETA and speed smoothing telemetry
-        self._speed_samples = deque(maxlen=20)
+        # Smart Learning ETA and speed smoothing telemetry
+        self._speed_samples = deque(maxlen=40)
         self._smoothed_speed: float = 0.0
+        self._medium_speed: float = 0.0
         self._smoothed_eta: Optional[float] = None
+        self._last_eta_calc_time: float = 0.0
         self._last_progress_emit_time: float = 0.0
 
         # Harvested external cloud links (populated in links-only mode)
@@ -701,7 +703,9 @@ class KemonoDownloader:
         self.downloaded_bytes = 0
         self._speed_samples.clear()
         self._smoothed_speed = 0.0
+        self._medium_speed = 0.0
         self._smoothed_eta = None
+        self._last_eta_calc_time = 0.0
         self._last_progress_emit_time = 0.0
         cpu_cores = max(4, os.cpu_count() or 16)
         target_max_workers = cpu_cores if options.adaptive_threading else max(1, self.max_workers)
@@ -1401,91 +1405,139 @@ class KemonoDownloader:
             logger.debug(f"WebP compression skipped for {file_path}: {e}", category="downloader")
 
     def _calculate_instant_speed(self, now: float) -> int:
-        """Calculates moving window throughput over recent seconds."""
+        """
+        Calculates a robust, learning-averaged download throughput.
+        Blends short-term window velocity, medium-term exponential moving average,
+        and long-term cumulative session throughput to prevent erratic fluctuations.
+        """
         with self._lock:
             current_bytes = self.downloaded_bytes
-            
+
         self._speed_samples.append((now, current_bytes))
 
-        # Keep samples within a ~4-5 second window
-        while len(self._speed_samples) > 2 and (now - self._speed_samples[0][0] > 5.0):
+        # Keep samples within a ~8-10 second rolling window
+        while len(self._speed_samples) > 2 and (now - self._speed_samples[0][0] > 10.0):
             self._speed_samples.popleft()
 
+        # 1. Short-term window velocity
+        window_speed = 0.0
         if len(self._speed_samples) >= 2:
             dt = now - self._speed_samples[0][0]
             db = current_bytes - self._speed_samples[0][1]
             if dt >= 0.4 and db >= 0:
-                inst_speed = db / dt
-                if self._smoothed_speed <= 0:
-                    self._smoothed_speed = inst_speed
-                else:
-                    self._smoothed_speed = 0.35 * inst_speed + 0.65 * self._smoothed_speed
-                return int(self._smoothed_speed)
+                window_speed = db / dt
 
-        # Fallback to session average
-        elapsed = max(0.1, now - self.start_time)
-        return int(current_bytes / elapsed)
+        # 2. Cumulative session average speed (the true historical ground truth)
+        elapsed = max(0.5, now - self.start_time)
+        session_avg_speed = current_bytes / elapsed
+
+        # Initialize trackers if starting fresh
+        if self._smoothed_speed <= 0:
+            self._smoothed_speed = window_speed if window_speed > 0 else session_avg_speed
+        if self._medium_speed <= 0:
+            self._medium_speed = self._smoothed_speed
+
+        # 3. Update Medium-term EMA (smooth trend tracker)
+        if window_speed > 0:
+            self._medium_speed = 0.12 * window_speed + 0.88 * self._medium_speed
+        elif session_avg_speed > 0:
+            self._medium_speed = 0.05 * session_avg_speed + 0.95 * self._medium_speed
+
+        # 4. Learning blend: As session elapsed time increases, progressively anchor to
+        # the proven session average so transient dips (e.g. 1.5 MB/s -> 500 KB/s for 10s)
+        # do not cause erratic jumps.
+        learn_weight = min(0.70, max(0.15, (elapsed - 5.0) / 75.0))
+        effective_speed = (1.0 - learn_weight) * self._medium_speed + learn_weight * session_avg_speed
+        self._smoothed_speed = 0.15 * effective_speed + 0.85 * self._smoothed_speed
+
+        return max(0, int(self._smoothed_speed))
 
     def _calculate_smart_eta(self, completed: int, failed: int, total: int, speed: int, elapsed: float) -> str:
         """
-        Calculates highly accurate, countdown-stable ETA using byte-level progress
-        and dynamic task completion rate.
+        Calculates a learning, countdown-stable ETA using:
+        1. Learned empirical file sizes from completed tasks.
+        2. Dual-model blending (byte-throughput model + task-cadence model).
+        3. Monotonic drift control (steady 1-second countdown with gentle regression).
         """
         remaining_tasks = total - completed - failed
         if total <= 0 or remaining_tasks <= 0:
+            self._smoothed_eta = None
             return "Done"
 
-        # 1. Byte totals and remaining estimation
-        known_tasks_bytes = [t.file_size for t in self.tasks if t.file_size > 0]
+        now = time.time()
+        time_since_last_calc = (now - self._last_eta_calc_time) if self._last_eta_calc_time > 0 else 0.0
+        self._last_eta_calc_time = now
+
+        # ── 1. Learned File Size Estimation ──────────────────────────────────
         completed_tasks_bytes = [t.downloaded_bytes for t in self.tasks if t.status == "completed" and t.downloaded_bytes > 0]
+        known_pending_bytes = [t.file_size for t in self.tasks if t.status in ("pending", "downloading") and t.file_size > 0]
 
-        if known_tasks_bytes:
-            avg_file_size = sum(known_tasks_bytes) / len(known_tasks_bytes)
-        elif completed_tasks_bytes:
-            avg_file_size = sum(completed_tasks_bytes) / len(completed_tasks_bytes)
+        if completed_tasks_bytes:
+            learned_avg_file_size = sum(completed_tasks_bytes) / len(completed_tasks_bytes)
+        elif known_pending_bytes:
+            learned_avg_file_size = sum(known_pending_bytes) / len(known_pending_bytes)
         else:
-            avg_file_size = 5.0 * 1024 * 1024  # 5 MB reasonable estimate for artwork/media
+            learned_avg_file_size = 4.5 * 1024 * 1024  # 4.5 MB realistic artwork fallback
 
-        total_estimated_bytes = 0
-        current_downloaded_bytes = 0
-
+        # Calculate estimated remaining bytes
+        total_remaining_bytes = 0.0
         for t in self.tasks:
-            size = t.file_size if t.file_size > 0 else avg_file_size
-            total_estimated_bytes += size
-            current_downloaded_bytes += min(size, t.downloaded_bytes if t.downloaded_bytes > 0 else (size if t.status == "completed" else 0))
+            if t.status in ("pending", "downloading"):
+                task_size = t.file_size if t.file_size > 0 else learned_avg_file_size
+                rem = max(0.0, float(task_size - t.downloaded_bytes))
+                total_remaining_bytes += rem
 
-        remaining_bytes = max(0, total_estimated_bytes - current_downloaded_bytes)
+        # ── 2. Dual-Model Target ETA Derivation ──────────────────────────────
+        target_candidates = []
 
-        # 2. Derive target ETA
-        target_eta_seconds = None
+        # Model A: Byte-Throughput ETA
+        if speed > 512 and total_remaining_bytes > 0:
+            target_candidates.append(total_remaining_bytes / speed)
 
-        if speed > 1024 and remaining_bytes > 0:
-            target_eta_seconds = remaining_bytes / speed
-        elif (completed + failed) > 0 and elapsed > 3.0:
-            task_rate = (completed + failed) / elapsed  # tasks per second
-            if task_rate > 0:
-                target_eta_seconds = remaining_tasks / task_rate
+        # Model B: Task Completion Rate ETA (empirically learned tasks/sec)
+        done_count = completed + failed
+        if done_count > 0 and elapsed > 2.0:
+            tasks_per_second = done_count / elapsed
+            if tasks_per_second > 0:
+                target_candidates.append(remaining_tasks / tasks_per_second)
 
-        if target_eta_seconds is None or target_eta_seconds <= 0:
+        if not target_candidates:
             if remaining_tasks == 0:
                 return "Done"
             return "--"
 
-        # 3. Dynamic Exponential Smoothing (prevents jitter, ensures steady countdown)
+        # Blend models (65% byte-throughput + 35% task completion rate if both available)
+        if len(target_candidates) == 2:
+            target_eta_seconds = 0.65 * target_candidates[0] + 0.35 * target_candidates[1]
+        else:
+            target_eta_seconds = target_candidates[0]
+
+        # ── 3. Monotonic Countdown & Anti-Fluctuation Damping ────────────────
         if self._smoothed_eta is None:
             self._smoothed_eta = target_eta_seconds
         else:
-            # If current ETA estimate deviates greatly from smoothed ETA, blend faster, otherwise damp
-            diff_ratio = abs(target_eta_seconds - self._smoothed_eta) / max(1.0, self._smoothed_eta)
-            alpha = 0.40 if diff_ratio > 0.5 else 0.20
-            self._smoothed_eta = alpha * target_eta_seconds + (1.0 - alpha) * self._smoothed_eta
+            # First, tick down naturally by the elapsed real time
+            if 0 < time_since_last_calc < 3.0:
+                self._smoothed_eta = max(1.0, self._smoothed_eta - time_since_last_calc)
 
-        eta_sec = max(1, int(self._smoothed_eta))
+            # Then gently nudge towards target ETA using adaptive damping
+            deviation = abs(target_eta_seconds - self._smoothed_eta) / max(1.0, self._smoothed_eta)
+            if deviation > 0.60:
+                alpha = 0.12
+            elif deviation > 0.25:
+                alpha = 0.06
+            else:
+                alpha = 0.02
 
+            self._smoothed_eta = (1.0 - alpha) * self._smoothed_eta + alpha * target_eta_seconds
+
+        eta_sec = max(1, int(round(self._smoothed_eta)))
+
+        # ── 4. Format Output String ──────────────────────────────────────────
         if eta_sec >= 86400:
             return f"{eta_sec // 86400}d {(eta_sec % 86400) // 3600}h"
         elif eta_sec >= 3600:
-            return f"{eta_sec // 3600}h {(eta_sec % 3600) // 60}m"
+            return f"{eta_sec // 3600}h {(eta_sec % 3600) // 60}m {eta_sec % 60}s"
         elif eta_sec >= 60:
             return f"{eta_sec // 60}m {eta_sec % 60}s"
         elif eta_sec > 1:
