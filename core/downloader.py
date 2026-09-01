@@ -1406,58 +1406,40 @@ class KemonoDownloader:
 
     def _calculate_instant_speed(self, now: float) -> int:
         """
-        Calculates a robust, learning-averaged download throughput.
-        Blends short-term window velocity, medium-term exponential moving average,
-        and long-term cumulative session throughput to prevent erratic fluctuations.
+        Calculates 100% accurate, real-time download throughput.
+        Tracks byte delta over recent 1.0-2.0 second window for responsive, accurate network monitoring.
         """
         with self._lock:
             current_bytes = self.downloaded_bytes
 
         self._speed_samples.append((now, current_bytes))
 
-        # Keep samples within a ~8-10 second rolling window
-        while len(self._speed_samples) > 2 and (now - self._speed_samples[0][0] > 10.0):
+        # Keep samples within a ~2.0 second active rolling window for accurate real-time response
+        while len(self._speed_samples) > 2 and (now - self._speed_samples[0][0] > 2.0):
             self._speed_samples.popleft()
 
-        # 1. Short-term window velocity
-        window_speed = 0.0
         if len(self._speed_samples) >= 2:
             dt = now - self._speed_samples[0][0]
             db = current_bytes - self._speed_samples[0][1]
-            if dt >= 0.4 and db >= 0:
-                window_speed = db / dt
+            if dt >= 0.2 and db >= 0:
+                raw_speed = db / dt
+                if self._smoothed_speed <= 0:
+                    self._smoothed_speed = raw_speed
+                else:
+                    self._smoothed_speed = 0.90 * raw_speed + 0.10 * self._smoothed_speed
+                return int(self._smoothed_speed)
 
-        # 2. Cumulative session average speed (the true historical ground truth)
-        elapsed = max(0.5, now - self.start_time)
-        session_avg_speed = current_bytes / elapsed
-
-        # Initialize trackers if starting fresh
-        if self._smoothed_speed <= 0:
-            self._smoothed_speed = window_speed if window_speed > 0 else session_avg_speed
-        if self._medium_speed <= 0:
-            self._medium_speed = self._smoothed_speed
-
-        # 3. Update Medium-term EMA (smooth trend tracker)
-        if window_speed > 0:
-            self._medium_speed = 0.12 * window_speed + 0.88 * self._medium_speed
-        elif session_avg_speed > 0:
-            self._medium_speed = 0.05 * session_avg_speed + 0.95 * self._medium_speed
-
-        # 4. Learning blend: As session elapsed time increases, progressively anchor to
-        # the proven session average so transient dips (e.g. 1.5 MB/s -> 500 KB/s for 10s)
-        # do not cause erratic jumps.
-        learn_weight = min(0.70, max(0.15, (elapsed - 5.0) / 75.0))
-        effective_speed = (1.0 - learn_weight) * self._medium_speed + learn_weight * session_avg_speed
-        self._smoothed_speed = 0.15 * effective_speed + 0.85 * self._smoothed_speed
-
-        return max(0, int(self._smoothed_speed))
+        elapsed = max(0.1, now - self.start_time)
+        return int(current_bytes / elapsed)
 
     def _calculate_smart_eta(self, completed: int, failed: int, total: int, speed: int, elapsed: float) -> str:
         """
-        Calculates a learning, countdown-stable ETA using:
-        1. Learned empirical file sizes from completed tasks.
-        2. Dual-model blending (byte-throughput model + task-cadence model).
-        3. Monotonic drift control (steady 1-second countdown with gentle regression).
+        Calculates a learning, countdown-stable ETA that resists transient network dips/crashes.
+        Uses:
+        1. Long-term learned session throughput average + medium-term EMA (instead of fluctuating instant speed).
+        2. Empirical average file size learned from completed tasks.
+        3. Dual-model blending (throughput model + task completion rate).
+        4. Monotonic steady countdown with anti-jitter damping.
         """
         remaining_tasks = total - completed - failed
         if total <= 0 or remaining_tasks <= 0:
@@ -1487,12 +1469,31 @@ class KemonoDownloader:
                 rem = max(0.0, float(task_size - t.downloaded_bytes))
                 total_remaining_bytes += rem
 
-        # ── 2. Dual-Model Target ETA Derivation ──────────────────────────────
+        # ── 2. Derive Learning ETA Throughput Baseline ────────────────────────
+        # Rather than using the raw 1-second fluctuating speed (which jumps on dips/crashes),
+        # we compute a learned throughput baseline from historical session performance.
+        with self._lock:
+            current_bytes = self.downloaded_bytes
+
+        session_avg_speed = current_bytes / max(1.0, elapsed)
+
+        # Track medium-term pace
+        if self._medium_speed <= 0:
+            self._medium_speed = float(speed if speed > 0 else session_avg_speed)
+        else:
+            self._medium_speed = 0.05 * speed + 0.95 * self._medium_speed
+
+        # Progressive learning anchor: As elapsed time increases, anchor heavily to the
+        # sustained empirical average so brief speed crashes (e.g. 1.5MB/s -> 500KB/s) don't affect ETA
+        learn_weight = min(0.85, max(0.20, (elapsed - 5.0) / 60.0))
+        learned_eta_speed = (1.0 - learn_weight) * self._medium_speed + learn_weight * session_avg_speed
+
+        # ── 3. Dual-Model Target ETA Derivation ──────────────────────────────
         target_candidates = []
 
-        # Model A: Byte-Throughput ETA
-        if speed > 512 and total_remaining_bytes > 0:
-            target_candidates.append(total_remaining_bytes / speed)
+        # Model A: Byte-Throughput ETA using learned sustained speed
+        if learned_eta_speed > 512 and total_remaining_bytes > 0:
+            target_candidates.append(total_remaining_bytes / learned_eta_speed)
 
         # Model B: Task Completion Rate ETA (empirically learned tasks/sec)
         done_count = completed + failed
@@ -1512,7 +1513,7 @@ class KemonoDownloader:
         else:
             target_eta_seconds = target_candidates[0]
 
-        # ── 3. Monotonic Countdown & Anti-Fluctuation Damping ────────────────
+        # ── 4. Monotonic Countdown & Anti-Fluctuation Damping ────────────────
         if self._smoothed_eta is None:
             self._smoothed_eta = target_eta_seconds
         else:
@@ -1523,17 +1524,17 @@ class KemonoDownloader:
             # Then gently nudge towards target ETA using adaptive damping
             deviation = abs(target_eta_seconds - self._smoothed_eta) / max(1.0, self._smoothed_eta)
             if deviation > 0.60:
-                alpha = 0.12
+                alpha = 0.10
             elif deviation > 0.25:
-                alpha = 0.06
+                alpha = 0.04
             else:
-                alpha = 0.02
+                alpha = 0.015
 
             self._smoothed_eta = (1.0 - alpha) * self._smoothed_eta + alpha * target_eta_seconds
 
         eta_sec = max(1, int(round(self._smoothed_eta)))
 
-        # ── 4. Format Output String ──────────────────────────────────────────
+        # ── 5. Format Output String ──────────────────────────────────────────
         if eta_sec >= 86400:
             return f"{eta_sec // 86400}d {(eta_sec % 86400) // 3600}h"
         elif eta_sec >= 3600:

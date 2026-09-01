@@ -837,7 +837,7 @@ class TestSmartETA(unittest.TestCase):
             shutil.rmtree(temp_dir, ignore_errors=True)
 
     def test_speed_learning_and_transient_dip_dampening(self):
-        from core.downloader import KemonoDownloader
+        from core.downloader import KemonoDownloader, DownloadTask
         from core.known_manager import KnownManager
         from core.session_manager import SessionManager
 
@@ -850,21 +850,48 @@ class TestSmartETA(unittest.TestCase):
             dl.start_time = 1000.0
             dl.downloaded_bytes = 90 * 1024 * 1024  # 90 MB downloaded in 60s (1.5 MB/s average)
 
-            # Seed speed samples over the last 10 seconds at 1.5 MB/s
-            for t_offset in range(50, 61):
+            # Create 10 mock tasks of 10 MB each
+            tasks = [
+                DownloadTask(
+                    url=f"https://example.com/file_{i}.jpg",
+                    target_path=f"/fake/file_{i}.jpg",
+                    post_title=f"Post {i}",
+                    creator_name="Artist",
+                    service="patreon",
+                    post_id=str(i),
+                    file_id=str(i),
+                    file_size=10 * 1024 * 1024
+                )
+                for i in range(10)
+            ]
+            dl.tasks = tasks
+
+            # Seed speed samples over the last 3 seconds at 1.5 MB/s
+            for t_offset in range(58, 61):
                 dl._speed_samples.append((1000.0 + t_offset, int(t_offset * 1.5 * 1024 * 1024)))
             
             speed_60s = dl._calculate_instant_speed(1060.0)
             self.assertGreater(speed_60s, 1.2 * 1024 * 1024)
 
-            # Transient dip: file finished and next file just started (only 100 KB downloaded in next 2s)
+            # ETA at 60s with 9 completed (10 MB remaining at 1.5 MB/s ~ 6-7s)
+            for i in range(9):
+                tasks[i].status = "completed"
+                tasks[i].downloaded_bytes = 10 * 1024 * 1024
+            eta_before_dip = dl._calculate_smart_eta(completed=9, failed=0, total=10, speed=speed_60s, elapsed=60.0)
+            self.assertIn("s", eta_before_dip)
+
+            # Transient dip: next file just started and speed drops to 100 KB/s
             dl.downloaded_bytes += 100 * 1024
             dl._speed_samples.append((1062.0, dl.downloaded_bytes))
             speed_dip = dl._calculate_instant_speed(1062.0)
 
-            # Because of learning blend with the 60s 1.5 MB/s baseline, speed should remain smooth (> 1.0 MB/s)
-            # instead of crashing down to 50 KB/s
-            self.assertGreater(speed_dip, 1.0 * 1024 * 1024)
+            # Real-time speed accurately drops to reflect network reality (< 500 KB/s)
+            self.assertLess(speed_dip, 500 * 1024)
+
+            # BUT the ETA stays stable (anchored to the learned 1.5 MB/s session rate) and doesn't jump to minutes!
+            eta_during_dip = dl._calculate_smart_eta(completed=9, failed=0, total=10, speed=speed_dip, elapsed=62.0)
+            self.assertIn("s", eta_during_dip)
+            self.assertNotIn("m", eta_during_dip)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
