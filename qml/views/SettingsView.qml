@@ -113,6 +113,174 @@ ScrollView {
             }
         }
 
+        // Character & Franchise Recognition Engine (Master Database vs Auto-Learning)
+        CardSection {
+            Layout.fillWidth: true
+            title: "Character & Franchise Recognition (Known Engine)"
+            iconText: "🏷️"
+
+            ColumnLayout {
+                width: parent.width
+                spacing: 10
+
+                Text {
+                    text: "Choose how the engine identifies characters and structures folders (Franchise ➔ Character):"
+                    font.family: "Segoe UI, sans-serif"
+                    font.pixelSize: 11
+                    color: "#94A3B8"
+                }
+
+                Flow {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    FilterCheckbox {
+                        label: "Master DB + Auto-Learn (Hybrid)"
+                        iconText: "✨"
+                        activeColor: "#38BDF8"
+                        tooltip: "Combines the comprehensive 100k+ game & anime database with automatic learning of new tags into Known.txt (Recommended)"
+                        checked: root.bridge ? (root.bridge.knownRecognitionMode === "hybrid" || root.bridge.knownRecognitionMode === "") : true
+                        onClicked: if (root.bridge) root.bridge.knownRecognitionMode = "hybrid"
+                    }
+
+                    FilterCheckbox {
+                        label: "Master Database Only"
+                        iconText: "📚"
+                        activeColor: "#818CF8"
+                        tooltip: "Only matches against the curated 100k+ video game/anime database (prevents modifying Known.txt)"
+                        checked: root.bridge ? root.bridge.knownRecognitionMode === "database_only" : false
+                        onClicked: if (root.bridge) root.bridge.knownRecognitionMode = "database_only"
+                    }
+
+                    FilterCheckbox {
+                        label: "Custom Known.txt Only"
+                        iconText: "📝"
+                        activeColor: "#34D399"
+                        tooltip: "Only uses your custom Known.txt and learns new character tags as downloads run"
+                        checked: root.bridge ? root.bridge.knownRecognitionMode === "learning_only" : false
+                        onClicked: if (root.bridge) root.bridge.knownRecognitionMode = "learning_only"
+                    }
+                }
+
+                Text {
+                    text: "ℹ️ When 'Separate folders by Known' is enabled, downloads will automatically sort into: 'Franchise Name / Character Name / Post Folder'."
+                    font.family: "Segoe UI, sans-serif"
+                    font.pixelSize: 11
+                    color: "#64748B"
+                }
+            }
+        }
+
+        // Post-Download & System Actions (What to do after done)
+        CardSection {
+            Layout.fillWidth: true
+            title: "Post-Download & System Actions"
+            iconText: "⚡"
+
+            ColumnLayout {
+                width: parent.width
+                spacing: 12
+
+                // Convenient checkboxes for notifications / folders
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 16
+
+                    StyledCheckBox {
+                        text: "Open download directory when complete"
+                        tooltip: "Automatically open Windows File Explorer to the downloaded creator folder"
+                        checked: root.bridge ? root.bridge.openFolderOnComplete : false
+                        onCheckedChanged: if (root.bridge) root.bridge.openFolderOnComplete = checked
+                    }
+
+                    StyledCheckBox {
+                        text: "Play chime sound when complete"
+                        tooltip: "Play an audible notification chime when all download tasks finish"
+                        checked: root.bridge ? root.bridge.playCompletionSound : false
+                        onCheckedChanged: if (root.bridge) root.bridge.playCompletionSound = checked
+                    }
+                }
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    height: 1
+                    color: "#1E293B"
+                }
+
+                // Power/App Action Selector
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+
+                    Text {
+                        text: "What to do after download finishes:"
+                        font.family: "Segoe UI, sans-serif"
+                        font.pixelSize: 11
+                        font.weight: Font.DemiBold
+                        color: "#94A3B8"
+                    }
+
+                    Flow {
+                        Layout.fillWidth: true
+                        spacing: 8
+
+                        FilterCheckbox {
+                            label: "Do Nothing"
+                            iconText: "⏸️"
+                            tooltip: "Keep application open and system running normally"
+                            checked: root.bridge ? (root.bridge.postDownloadAction === "none" || root.bridge.postDownloadAction === "") : true
+                            onClicked: if (root.bridge) root.bridge.postDownloadAction = "none"
+                        }
+
+                        FilterCheckbox {
+                            label: "Close App"
+                            iconText: "🚪"
+                            activeColor: "#38BDF8"
+                            tooltip: "Automatically exit Pawchive Downloader when all files finish downloading"
+                            checked: root.bridge ? root.bridge.postDownloadAction === "close_app" : false
+                            onClicked: if (root.bridge) root.bridge.postDownloadAction = "close_app"
+                        }
+
+                        FilterCheckbox {
+                            label: "Sleep System"
+                            iconText: "🌙"
+                            activeColor: "#A78BFA"
+                            tooltip: "Put the computer into sleep / suspend mode after download completes"
+                            checked: root.bridge ? root.bridge.postDownloadAction === "sleep" : false
+                            onClicked: if (root.bridge) root.bridge.postDownloadAction = "sleep"
+                        }
+
+                        FilterCheckbox {
+                            label: "Hibernate"
+                            iconText: "💤"
+                            activeColor: "#818CF8"
+                            tooltip: "Save memory to disk and turn off power (Hibernate)"
+                            checked: root.bridge ? root.bridge.postDownloadAction === "hibernate" : false
+                            onClicked: if (root.bridge) root.bridge.postDownloadAction = "hibernate"
+                        }
+
+                        FilterCheckbox {
+                            label: "Shut Down"
+                            iconText: "🔌"
+                            activeColor: "#F43F5E"
+                            tooltip: "Safely shut down the computer when all downloads finish (includes 10s cancel buffer)"
+                            checked: root.bridge ? root.bridge.postDownloadAction === "shutdown" : false
+                            onClicked: if (root.bridge) root.bridge.postDownloadAction = "shutdown"
+                        }
+
+                        FilterCheckbox {
+                            label: "Restart"
+                            iconText: "🔄"
+                            activeColor: "#F59E0B"
+                            tooltip: "Restart the operating system when all downloads finish"
+                            checked: root.bridge ? root.bridge.postDownloadAction === "restart" : false
+                            onClicked: if (root.bridge) root.bridge.postDownloadAction = "restart"
+                        }
+                    }
+                }
+            }
+        }
+
         // Action Buttons & About
         RowLayout {
             Layout.fillWidth: true
@@ -136,7 +304,7 @@ ScrollView {
                     Text {
                         id: sVerText
                         anchors.centerIn: parent
-                        text: "v1.0.1"
+                        text: "v1.0.2"
                         font.family: "Segoe UI, sans-serif"
                         font.pixelSize: 10
                         font.weight: Font.Bold

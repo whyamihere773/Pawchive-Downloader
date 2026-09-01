@@ -12,6 +12,7 @@ import datetime
 import hashlib
 import threading
 import requests
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any, Optional, Callable
 from PIL import Image
@@ -119,6 +120,12 @@ class KemonoDownloader:
         self._learned_stable_ceiling: Optional[int] = None
         self._stable_clean_count: int = 0
 
+        # Smart ETA and speed smoothing telemetry
+        self._speed_samples = deque(maxlen=20)
+        self._smoothed_speed: float = 0.0
+        self._smoothed_eta: Optional[float] = None
+        self._last_progress_emit_time: float = 0.0
+
         # Harvested external cloud links (populated in links-only mode)
         self.harvested_links: Dict[str, List[str]] = {}
         self.harvested_links_records: List[Dict[str, Any]] = []
@@ -170,6 +177,14 @@ class KemonoDownloader:
                 pid = str(p.get("id", "0"))
                 return (pub, pid)
             posts_to_process.sort(key=_post_date_key)
+
+        # Smart character auto-discovery from posts
+        new_chars = self.known_manager.add_candidates_from_posts(posts_to_process)
+        if new_chars:
+            logger.info(
+                f"✨ Auto-learned {len(new_chars)} character(s) into Known list: {', '.join(new_chars[:6])}{'...' if len(new_chars) > 6 else ''}",
+                category="known"
+            )
 
         logger.info(f"Structuring download plan for {len(posts_to_process)} posts...", category="downloader")
 
@@ -243,11 +258,19 @@ class KemonoDownloader:
             # Determine parent directory for this post
             folder_parts = [base_dir]
 
-            # Separate by Known.txt if requested
+            # Separate by Known.txt if requested (Franchise -> Character hierarchy)
             if options.separate_by_known:
-                matched_cat = self.known_manager.find_matching_category(post_title)
-                if matched_cat:
-                    folder_parts.append(matched_cat)
+                matched_hierarchy = self.known_manager.find_matching_hierarchy(
+                    post_title, tags=post.get("tags")
+                )
+                if matched_hierarchy:
+                    franchise, char_name = matched_hierarchy
+                    if franchise and franchise.strip() and franchise != "Other":
+                        clean_fr = FilterEngine.clean_filesystem_text(franchise, max_len=60, fallback="Franchise")
+                        folder_parts.append(clean_fr)
+                    if char_name and char_name.strip() and char_name.lower() != (franchise or "").lower():
+                        clean_ch = FilterEngine.clean_filesystem_text(char_name, max_len=60, fallback="Character")
+                        folder_parts.append(clean_ch)
                 else:
                     folder_parts.append("Other")
 
@@ -676,6 +699,10 @@ class KemonoDownloader:
     def _run_download_loop(self, options: FilterOptions, cookie_str: str):
         self.start_time = time.time()
         self.downloaded_bytes = 0
+        self._speed_samples.clear()
+        self._smoothed_speed = 0.0
+        self._smoothed_eta = None
+        self._last_progress_emit_time = 0.0
         cpu_cores = max(4, os.cpu_count() or 16)
         target_max_workers = cpu_cores if options.adaptive_threading else max(1, self.max_workers)
         last_scale_time = time.time()
@@ -1373,12 +1400,111 @@ class KemonoDownloader:
         except Exception as e:
             logger.debug(f"WebP compression skipped for {file_path}: {e}", category="downloader")
 
-    def _emit_progress(self, completed: int, failed: int, total: int):
+    def _calculate_instant_speed(self, now: float) -> int:
+        """Calculates moving window throughput over recent seconds."""
+        with self._lock:
+            current_bytes = self.downloaded_bytes
+            
+        self._speed_samples.append((now, current_bytes))
+
+        # Keep samples within a ~4-5 second window
+        while len(self._speed_samples) > 2 and (now - self._speed_samples[0][0] > 5.0):
+            self._speed_samples.popleft()
+
+        if len(self._speed_samples) >= 2:
+            dt = now - self._speed_samples[0][0]
+            db = current_bytes - self._speed_samples[0][1]
+            if dt >= 0.4 and db >= 0:
+                inst_speed = db / dt
+                if self._smoothed_speed <= 0:
+                    self._smoothed_speed = inst_speed
+                else:
+                    self._smoothed_speed = 0.35 * inst_speed + 0.65 * self._smoothed_speed
+                return int(self._smoothed_speed)
+
+        # Fallback to session average
+        elapsed = max(0.1, now - self.start_time)
+        return int(current_bytes / elapsed)
+
+    def _calculate_smart_eta(self, completed: int, failed: int, total: int, speed: int, elapsed: float) -> str:
+        """
+        Calculates highly accurate, countdown-stable ETA using byte-level progress
+        and dynamic task completion rate.
+        """
+        remaining_tasks = total - completed - failed
+        if total <= 0 or remaining_tasks <= 0:
+            return "Done"
+
+        # 1. Byte totals and remaining estimation
+        known_tasks_bytes = [t.file_size for t in self.tasks if t.file_size > 0]
+        completed_tasks_bytes = [t.downloaded_bytes for t in self.tasks if t.status == "completed" and t.downloaded_bytes > 0]
+
+        if known_tasks_bytes:
+            avg_file_size = sum(known_tasks_bytes) / len(known_tasks_bytes)
+        elif completed_tasks_bytes:
+            avg_file_size = sum(completed_tasks_bytes) / len(completed_tasks_bytes)
+        else:
+            avg_file_size = 5.0 * 1024 * 1024  # 5 MB reasonable estimate for artwork/media
+
+        total_estimated_bytes = 0
+        current_downloaded_bytes = 0
+
+        for t in self.tasks:
+            size = t.file_size if t.file_size > 0 else avg_file_size
+            total_estimated_bytes += size
+            current_downloaded_bytes += min(size, t.downloaded_bytes if t.downloaded_bytes > 0 else (size if t.status == "completed" else 0))
+
+        remaining_bytes = max(0, total_estimated_bytes - current_downloaded_bytes)
+
+        # 2. Derive target ETA
+        target_eta_seconds = None
+
+        if speed > 1024 and remaining_bytes > 0:
+            target_eta_seconds = remaining_bytes / speed
+        elif (completed + failed) > 0 and elapsed > 3.0:
+            task_rate = (completed + failed) / elapsed  # tasks per second
+            if task_rate > 0:
+                target_eta_seconds = remaining_tasks / task_rate
+
+        if target_eta_seconds is None or target_eta_seconds <= 0:
+            if remaining_tasks == 0:
+                return "Done"
+            return "--"
+
+        # 3. Dynamic Exponential Smoothing (prevents jitter, ensures steady countdown)
+        if self._smoothed_eta is None:
+            self._smoothed_eta = target_eta_seconds
+        else:
+            # If current ETA estimate deviates greatly from smoothed ETA, blend faster, otherwise damp
+            diff_ratio = abs(target_eta_seconds - self._smoothed_eta) / max(1.0, self._smoothed_eta)
+            alpha = 0.40 if diff_ratio > 0.5 else 0.20
+            self._smoothed_eta = alpha * target_eta_seconds + (1.0 - alpha) * self._smoothed_eta
+
+        eta_sec = max(1, int(self._smoothed_eta))
+
+        if eta_sec >= 86400:
+            return f"{eta_sec // 86400}d {(eta_sec % 86400) // 3600}h"
+        elif eta_sec >= 3600:
+            return f"{eta_sec // 3600}h {(eta_sec % 3600) // 60}m"
+        elif eta_sec >= 60:
+            return f"{eta_sec // 60}m {eta_sec % 60}s"
+        elif eta_sec > 1:
+            return f"{eta_sec}s"
+        else:
+            return "< 1s"
+
+    def _emit_progress(self, completed: int, failed: int, total: int, force: bool = False):
         if not self.on_progress_update:
             return
 
-        elapsed = max(0.1, time.time() - self.start_time)
-        speed = int(self.downloaded_bytes / elapsed) # B/s
+        now = time.time()
+        # Throttle progress emissions to max 5 times per second unless forced
+        if not force and (now - self._last_progress_emit_time < 0.20):
+            return
+        self._last_progress_emit_time = now
+
+        elapsed = max(0.1, now - self.start_time)
+        speed = self._calculate_instant_speed(now)
 
         # Format elapsed time
         elapsed_int = int(elapsed)
@@ -1389,44 +1515,16 @@ class KemonoDownloader:
         else:
             elapsed_str = f"{elapsed_int}s"
 
-        # Calculate ETA based on general progress
-        remaining_tasks = total - completed - failed
-        percent = int((completed + failed) / total * 100) if total > 0 else 0
+        # Calculate ETA
+        eta_str = self._calculate_smart_eta(completed, failed, total, speed, elapsed)
 
-        eta_str = "--"
-        if total > 0 and (completed + failed) > 0 and remaining_tasks > 0:
-            # General progress ratio
-            progress_ratio = (completed + failed) / total
-            # ETA derived from elapsed time and general progress
-            total_est_seconds = elapsed / progress_ratio
-            eta_seconds = max(0, int(total_est_seconds - elapsed))
-
-            if eta_seconds >= 3600:
-                eta_str = f"{eta_seconds // 3600}h {(eta_seconds % 3600) // 60}m"
-            elif eta_seconds >= 60:
-                eta_str = f"{eta_seconds // 60}m {eta_seconds % 60}s"
-            elif eta_seconds > 0:
-                eta_str = f"{eta_seconds}s"
-            else:
-                eta_str = "< 1s"
-        elif total > 0 and (completed + failed) >= total:
-            eta_str = "Done"
-        elif speed > 0 and remaining_tasks > 0:
-            # Initial estimate before first task finishes
-            total_task_bytes = sum(t.file_size for t in self.tasks if t.file_size > 0)
-            done_task_bytes = sum(
-                t.downloaded_bytes for t in self.tasks
-                if t.status in ("completed", "failed", "downloading")
-            )
-            if total_task_bytes > 0 and done_task_bytes > 0:
-                rem_bytes = max(0, total_task_bytes - done_task_bytes)
-                eta_seconds = int(rem_bytes / speed)
-                if eta_seconds >= 3600:
-                    eta_str = f"{eta_seconds // 3600}h {(eta_seconds % 3600) // 60}m"
-                elif eta_seconds >= 60:
-                    eta_str = f"{eta_seconds // 60}m {eta_seconds % 60}s"
-                elif eta_seconds > 0:
-                    eta_str = f"{eta_seconds}s"
+        # Calculate progress percent
+        if total > 0:
+            task_ratio = (completed + failed) / total
+            percent = int(task_ratio * 100)
+            percent = max(0, min(100, percent))
+        else:
+            percent = 0
 
         dl_mb = self.downloaded_bytes / (1024 * 1024)
         if self.downloaded_bytes > 1024 * 1024 * 1024:
@@ -1462,4 +1560,5 @@ class KemonoDownloader:
         elif bps > 1024:
             return f"{bps / 1024:.1f} KB/s"
         return f"{bps} B/s"
+
 

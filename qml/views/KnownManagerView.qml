@@ -57,7 +57,7 @@ Rectangle {
                     StyledTextField {
                         id: newNameInput
                         Layout.fillWidth: true
-                        placeholderText: "Add new series / character name..."
+                        placeholderText: "Add a name, or aliases: Katarin | Katarin Bokha"
                         leadingIcon: "➕"
                         onAccepted: addBtn.clicked()
                     }

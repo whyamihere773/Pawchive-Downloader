@@ -130,7 +130,11 @@ class SessionManager:
             "keep_duplicates": False,
             "scan_content_images": True,
             "dark_theme": True,
-            "auto_sync_known": True
+            "auto_sync_known": True,
+            "open_folder_on_complete": False,
+            "play_completion_sound": False,
+            "post_download_action": "none",
+            "known_recognition_mode": "hybrid"
         }
 
         if os.path.exists(self.settings_file):
