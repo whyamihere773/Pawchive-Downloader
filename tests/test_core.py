@@ -207,6 +207,7 @@ class TestKemonoFullSuite(unittest.TestCase):
             km = KnownManager(file_path=tmp_path)
             self.assertEqual(len(km.entries), 3)
             self.assertEqual(km.find_matching_category("Beautiful Tifa Lockhart in high res"), "Tifa")
+            self.assertEqual(km.find_matching_category("tifa_lockhart_set_01"), "Tifa")
             self.assertEqual(km.find_matching_category("aerith gainsborough sketch"), "Aerith")
             self.assertIsNone(km.find_matching_category("Random unrelated title xyz"))
         finally:
@@ -244,6 +245,49 @@ class TestKemonoFullSuite(unittest.TestCase):
         # Ensure Pawchive route is file.pawchive.pw
         self.assertTrue(task.url.startswith("https://file.pawchive.pw/data/"))
         self.assertIn("?f=tifa_cover.png", task.url)
+
+    def test_separate_by_known_keeps_katarin_out_of_other(self):
+        """Underscore titles like katarin_story must not create a second folder under Other."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as f:
+            f.write("Katarin\n")
+            tmp_path = f.name
+        try:
+            km = KnownManager(file_path=tmp_path)
+            sm = SessionManager()
+            downloader = KemonoDownloader(known_manager=km, session_manager=sm, max_workers=2)
+            posts = [
+                {
+                    "id": "1",
+                    "title": "katarin_story_12",
+                    "published": "2024-01-01",
+                    "file": {"name": "a.png", "path": "/11/22/aabb.png"},
+                    "attachments": []
+                },
+                {
+                    "id": "2",
+                    "title": "random landscape",
+                    "published": "2024-01-02",
+                    "file": {"name": "b.png", "path": "/11/22/ccdd.png"},
+                    "attachments": []
+                },
+            ]
+            opts = FilterOptions(separate_by_known=True, subfolder_per_post=True, date_prefix=False)
+            tasks = downloader.build_tasks_from_posts(
+                posts=posts,
+                creator_name="Soboro",
+                service="patreon",
+                domain="kemono.su",
+                base_dir=r"C:\Users\silvi\Desktop\Soboro",
+                options=opts,
+            )
+            self.assertEqual(len(tasks), 2)
+            katarin_path = next(t.target_path for t in tasks if t.filename == "a.png")
+            other_path = next(t.target_path for t in tasks if t.filename == "b.png")
+            self.assertIn(os.path.join("Katarin", "Soboro [patreon]"), katarin_path)
+            self.assertNotIn(os.path.sep + "Other" + os.path.sep, katarin_path)
+            self.assertIn(os.path.join("Other", "Soboro [patreon]"), other_path)
+        finally:
+            os.unlink(tmp_path)
 
     def test_speed_and_eta_formatting(self):
         self.assertEqual(KemonoDownloader.format_speed(500), "500 B/s")
@@ -620,7 +664,242 @@ class TestKemonoFullSuite(unittest.TestCase):
         self.assertEqual(len(extracted["dropbox"]), 1)
         self.assertEqual(len(extracted["gofile"]), 1)
 
+    def test_known_matching_tokenizes_underscores_and_picks_longest(self):
+        """katarin_story must land in Katarin, not Other; longer names beat prefixes."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as f:
+            f.write("Miao\nKatarin | Katarin Bokha\nMiao Ying\nAna\n")
+            tmp_path = f.name
+        try:
+            km = KnownManager(file_path=tmp_path)
+            km.set_mode("learning_only")
+            self.assertEqual(km.find_matching_category("katarin_story_12"), "Katarin")
+            self.assertEqual(km.find_matching_category("Katarin-Story 03"), "Katarin")
+            self.assertEqual(km.find_matching_category("update", tags=["Katarin Bokha"]), "Katarin")
+            self.assertEqual(km.find_matching_category("miao_ying_story"), "Miao Ying")
+            self.assertEqual(km.find_matching_category("Miao story 02 Remake 01~08"), "Miao Ying")
+            self.assertEqual(km.find_matching_category("kat video works finished"), "Katarin")
+            self.assertEqual(km.find_matching_category("Beautiful Tifa Lockhart in high res"), None)
+            self.assertIsNone(km.find_matching_category("Anastasia portrait"))
+            self.assertIsNone(km.find_matching_category("Random unrelated title xyz"))
+        finally:
+            os.unlink(tmp_path)
+
+    def test_smart_character_learning(self):
+        """Verify KnownManager extracts character candidates and auto-learns them into Known list."""
+        temp_dir = tempfile.mkdtemp()
+        try:
+            known_file = os.path.join(temp_dir, "Known.txt")
+            km = KnownManager(known_file)
+            
+            sample_posts = [
+                {
+                    "title": "[Genshin Impact] Raiden Shogun - Summer Outfit",
+                    "tags": ["Raiden Shogun", "Genshin Impact", "nsfw", "4k", "art"]
+                },
+                {
+                    "title": "(Overwatch) D.Va Hana Song",
+                    "tags": ["D.Va", "Overwatch", "patreon", "illustration"]
+                },
+                {
+                    "title": "Tifa Lockhart & Aerith Gainsborough - 4K Set",
+                    "tags": ["Tifa Lockhart", "Aerith Gainsborough", "Final Fantasy VII"]
+                },
+                {
+                    "title": "【東方】博麗霊夢",
+                    "tags": ["東方Project", "博麗霊夢", "R18"]
+                }
+            ]
+            
+            # Test candidate extraction on single post
+            cands = km.extract_character_candidates(sample_posts[0])
+            self.assertIn("Raiden Shogun", cands)
+            self.assertNotIn("Genshin Impact", cands)
+            self.assertNotIn("nsfw", [c.lower() for c in cands])
+            self.assertNotIn("4k", [c.lower() for c in cands])
+            
+            # Test auto-learning from batch
+            added = km.add_candidates_from_posts(sample_posts)
+            self.assertGreater(len(km.entries), 10)
+            self.assertTrue(any("D.Va" in e for e in km.entries))
+            self.assertTrue(any("Raiden Shogun" in e for e in km.entries))
+            self.assertTrue(any("博麗霊夢" in e for e in km.entries))
+            
+            # Verify searching matches
+            found = km.find_matching_category("New render of Raiden Shogun in pool")
+            self.assertIsNotNone(found)
+
+            soboro = [
+                {"title": "Alarielle Story 01 01~06"},
+                {"title": "Lara Croft Stroy 01 00~08"},
+                {"title": "Taoyan Final fix ver"},
+                {"title": "Miao story 02 Remake 01~08"},
+                {"title": "miao and Taoyan"},
+                {"title": "Alarielle's new outfit"},
+                {"title": "Miao_Kat st 01 00~08"},
+            ]
+            extracted = []
+            for p in soboro:
+                extracted.extend(km.extract_character_candidates(p))
+            extracted_l = [e.lower() for e in extracted]
+            self.assertTrue(any(e == "alarielle" for e in extracted_l))
+            self.assertTrue(any("lara" in e for e in extracted_l))
+            self.assertTrue(any(e == "taoyan" for e in extracted_l))
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+class TestPostDownloadActions(unittest.TestCase):
+    def test_post_download_action_settings(self):
+        from bridge.app_bridge import AppBridge
+        from unittest.mock import patch, MagicMock
+
+        temp_dir = tempfile.mkdtemp()
+        try:
+            # Test setting and getting
+            bridge = AppBridge()
+            bridge.postDownloadAction = "close_app"
+            self.assertEqual(bridge.postDownloadAction, "close_app")
+
+            bridge.postDownloadAction = "sleep"
+            self.assertEqual(bridge.postDownloadAction, "sleep")
+
+            bridge.postDownloadAction = "shutdown"
+            self.assertEqual(bridge.postDownloadAction, "shutdown")
+
+            bridge.postDownloadAction = "invalid_value"
+            self.assertEqual(bridge.postDownloadAction, "none")
+
+            # Test execution dispatch with mocking
+            with patch("subprocess.run") as mock_run:
+                bridge.postDownloadAction = "shutdown"
+                bridge._execute_post_action()
+                self.assertTrue(mock_run.called)
+
+            with patch("subprocess.run") as mock_run:
+                bridge.postDownloadAction = "restart"
+                bridge._execute_post_action()
+                self.assertTrue(mock_run.called)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+class TestSmartETA(unittest.TestCase):
+    def test_smart_eta_countdown_and_estimation(self):
+        from core.downloader import KemonoDownloader, DownloadTask
+        from core.known_manager import KnownManager
+        from core.session_manager import SessionManager
+
+        temp_dir = tempfile.mkdtemp()
+        try:
+            km = KnownManager(os.path.join(temp_dir, "Known.txt"))
+            sm = SessionManager(temp_dir)
+            dl = KemonoDownloader(km, sm)
+
+            # Create 10 mock tasks of 10 MB each (total 100 MB)
+            tasks = []
+            for i in range(10):
+                t = DownloadTask(
+                    url=f"https://example.com/file_{i}.jpg",
+                    target_path=f"/fake/file_{i}.jpg",
+                    post_title=f"Post {i}",
+                    creator_name="Artist",
+                    service="patreon",
+                    post_id=str(i),
+                    file_id=str(i),
+                    file_size=10 * 1024 * 1024
+                )
+                tasks.append(t)
+            dl.tasks = tasks
+
+            # Test 1: When 0 completed, speed = 10 MB/s, ETA should be around 10s
+            speed = 10 * 1024 * 1024
+            eta1 = dl._calculate_smart_eta(completed=0, failed=0, total=10, speed=speed, elapsed=1.0)
+            self.assertIn("s", eta1)
+            self.assertNotEqual(eta1, "--")
+            self.assertNotEqual(eta1, "Done")
+
+            # Test 2: Progressing through download - ETA should count down steadily
+            # 5 completed (50 MB remaining), speed = 10 MB/s -> remaining ~ 5s
+            for i in range(5):
+                tasks[i].status = "completed"
+                tasks[i].downloaded_bytes = 10 * 1024 * 1024
+            
+            eta2 = dl._calculate_smart_eta(completed=5, failed=0, total=10, speed=speed, elapsed=6.0)
+            self.assertIn("s", eta2)
+
+            # Test 3: All finished -> should report Done
+            for t in tasks:
+                t.status = "completed"
+                t.downloaded_bytes = 10 * 1024 * 1024
+            eta3 = dl._calculate_smart_eta(completed=10, failed=0, total=10, speed=speed, elapsed=10.0)
+            self.assertEqual(eta3, "Done")
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+class TestFranchiseHierarchyAndModes(unittest.TestCase):
+    def test_franchise_sections_parsing_and_matching(self):
+        from core.known_manager import KnownManager
+
+        temp_dir = tempfile.mkdtemp()
+        try:
+            txt_path = os.path.join(temp_dir, "Known.txt")
+            custom_content = """# Custom test list
+[Final Fantasy VII]
+Tifa Lockhart
+Aerith Gainsborough
+
+[The Witcher]
+Ciri
+Yennefer
+
+[Overwatch]
+D.Va
+Mercy
+"""
+            with open(txt_path, "w", encoding="utf-8") as f:
+                f.write(custom_content)
+
+            km = KnownManager(txt_path)
+            self.assertIn("Final Fantasy VII", km.franchise_sections)
+            self.assertIn("The Witcher", km.franchise_sections)
+            self.assertEqual(km.entry_franchise_map.get("tifa lockhart"), "Final Fantasy VII")
+            self.assertEqual(km.entry_franchise_map.get("ciri"), "The Witcher")
+
+            # Test hierarchical matching
+            match = km.find_matching_hierarchy("Tifa Lockhart Cowboy Outfit 4K")
+            self.assertIsNotNone(match)
+            self.assertEqual(match, ("Final Fantasy VII", "Tifa Lockhart"))
+
+            match2 = km.find_matching_hierarchy("Ciri Story 01")
+            self.assertIsNotNone(match2)
+            self.assertEqual(match2, ("The Witcher", "Ciri"))
+
+            cat = km.find_matching_category("Tifa Lockhart Cowboy Outfit 4K")
+            self.assertEqual(cat, "Tifa Lockhart")
+
+            # Test master database fallback in hybrid mode
+            # (Raiden Shogun is in master DB under Genshin Impact even if not in custom Known.txt)
+            match_master = km.find_matching_hierarchy("Raiden Shogun in pool")
+            self.assertIsNotNone(match_master)
+            self.assertEqual(match_master, ("Genshin Impact", "Raiden Shogun"))
+
+            # Test database_only mode (ignores custom entries not in master)
+            km.set_mode("database_only")
+            learned = km.add_candidates_from_posts([{"title": "CustomNewCharacter works"}])
+            self.assertEqual(len(learned), 0)
+
+            # Test learning_only mode (ignores master db entries not in Known.txt)
+            km.set_mode("learning_only")
+            match_genshin = km.find_matching_hierarchy("Raiden Shogun in pool")
+            self.assertIsNone(match_genshin)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
 if __name__ == "__main__":
     unittest.main()
+
+
+
 
 
