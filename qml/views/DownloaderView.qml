@@ -479,6 +479,7 @@ ScrollView {
                         }
 
                         ToolTip {
+                            id: lockToolTip
                             visible: lockMouse.containsMouse
                             delay: 400
                             timeout: 5000
@@ -486,7 +487,7 @@ ScrollView {
                                   ? "Thread Lock Active: Worker concurrency is locked at " + (root.bridge ? root.bridge.threadsCount : 4) + ". Adaptive scaling is disabled and HTTP 429 cooldown is 30s."
                                   : "Lock Thread Sweetspot: Lock current concurrency. Disables adaptive scaling and prevents rate limits from altering your thread count."
                             contentItem: Text {
-                                text: parent.text
+                                text: lockToolTip.text
                                 font.family: "Segoe UI, Inter, sans-serif"
                                 font.pixelSize: 11
                                 color: "#F1F5F9"
