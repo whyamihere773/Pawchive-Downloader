@@ -211,8 +211,9 @@ class TestServicesAndExpansion(unittest.TestCase):
         }
         self.assertTrue(FilterEngine.should_keep_post(post_match, opts)[0])
     # ── 8. Third-Party Provider 429 Retry Tests ──────────────────────────────
+    @patch("services.bunkr_client.time.sleep")
     @patch("services.bunkr_client.requests.Session.get")
-    def test_bunkr_429_retry_success(self, mock_get):
+    def test_bunkr_429_retry_success(self, mock_get, mock_sleep):
         mock_429 = MagicMock(status_code=429)
         mock_200 = MagicMock(status_code=200, text="<html><title>Sample Bunkr</title><a href='https://bunkr.is/v/test.mp4'>video</a></html>")
         mock_get.side_effect = [mock_429, mock_200]
@@ -222,8 +223,9 @@ class TestServicesAndExpansion(unittest.TestCase):
         self.assertEqual(len(files), 1)
         self.assertEqual(files[0]["filename"], "test.mp4")
 
+    @patch("services.erome_client.time.sleep")
     @patch("services.erome_client.requests.Session.get")
-    def test_erome_429_retry_success(self, mock_get):
+    def test_erome_429_retry_success(self, mock_get, mock_sleep):
         mock_429 = MagicMock(status_code=429)
         mock_200 = MagicMock(status_code=200, text='<html><title>Sample Erome</title><meta property="og:title" content="Sample Erome"><source src="https://s1.erome.com/video.mp4"></html>')
         mock_get.side_effect = [mock_429, mock_200]

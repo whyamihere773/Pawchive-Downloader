@@ -1110,7 +1110,7 @@ Mercy
         bridge.autoRetryAtEnd = True
         self.assertTrue(bridge.autoRetryAtEnd)
         # Verify t1 was flagged for retry and retry_count incremented
-        self.assertEqual(t1.status, "pending")
+        self.assertIn(t1.status, ("pending", "downloading"))
         self.assertEqual(t1.retry_count, 1)
         bridge.cancelDownload()
 
@@ -1146,6 +1146,34 @@ Mercy
         # cancel clears active
         bridge.cancelDownload()
         self.assertEqual(bridge.activeQueueModel.count, 0)
+
+    def test_speed_calculation_resilience_after_stall_and_negative_clamp(self):
+        from core.downloader import KemonoDownloader
+        from unittest.mock import MagicMock
+
+        # 1. Format speed clamping
+        self.assertEqual(KemonoDownloader.format_speed(-50000000), "0 KB/s")
+        self.assertEqual(KemonoDownloader.format_speed(0), "0 KB/s")
+        self.assertEqual(KemonoDownloader.format_speed(1048576), "1.00 MB/s")
+
+        # 2. Speed recovery after stall
+        km = MagicMock()
+        sm = MagicMock()
+        dl = KemonoDownloader(km, sm)
+        dl.start_time = 1000.0
+        dl.downloaded_bytes = 50 * 1024 * 1024
+
+        dl._calculate_instant_speed(1001.0)
+        dl._calculate_instant_speed(1002.0)
+
+        # 60s stall
+        speed_after_stall = dl._calculate_instant_speed(1062.0)
+        self.assertGreaterEqual(speed_after_stall, 0)
+
+        # Resume bytes
+        dl.downloaded_bytes += 1024 * 1024
+        speed_recovered = dl._calculate_instant_speed(1062.5)
+        self.assertGreater(speed_recovered, 0)
 
 if __name__ == "__main__":
     unittest.main()

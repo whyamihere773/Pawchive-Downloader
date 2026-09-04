@@ -114,6 +114,13 @@ def download_multipart_file(
                     if written >= expected_len:
                         return True, ""
             except Exception as e:
+                is_disk_full = (
+                    getattr(e, "errno", None) == 28
+                    or getattr(e, "winerror", None) == 112
+                    or "space" in str(e).lower()
+                )
+                if is_disk_full:
+                    return False, f"Disk full: {e}"
                 if attempt == 2:
                     return False, f"Chunk {chunk_idx} failed: {e}"
                 time.sleep(1.5 * (attempt + 1))
@@ -134,6 +141,8 @@ def download_multipart_file(
             _cleanup_parts(part_files)
             if cancel_event and cancel_event.is_set():
                 return False, "Download cancelled"
+            if "disk full" in err.lower():
+                return False, err
             # Fallback to single stream if multipart fails
             return _fallback_single_download(
                 url, target_path, req_headers, progress_callback, cancel_event, pause_event, timeout, req_session
@@ -161,6 +170,13 @@ def download_multipart_file(
         return True, ""
     except Exception as e:
         _cleanup_parts(part_files)
+        is_disk_full = (
+            getattr(e, "errno", None) == 28
+            or getattr(e, "winerror", None) == 112
+            or "space" in str(e).lower()
+        )
+        if is_disk_full:
+            return False, f"Disk full: {e}"
         return False, f"Error stitching chunks: {e}"
 
 
@@ -240,6 +256,13 @@ def _fallback_single_download(
                 os.remove(temp_target)
             except OSError:
                 pass
+        is_disk_full = (
+            getattr(e, "errno", None) == 28
+            or getattr(e, "winerror", None) == 112
+            or "space" in str(e).lower()
+        )
+        if is_disk_full:
+            return False, f"Disk full: {e}"
         return False, str(e)
 
 

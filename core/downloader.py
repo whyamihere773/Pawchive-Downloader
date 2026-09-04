@@ -6,6 +6,7 @@ multipart acceleration, WebP conversion, retry queues, and telemetry reporting.
 
 import os
 import sys
+import shutil
 import re
 import time
 import datetime
@@ -155,6 +156,8 @@ class KemonoDownloader:
 
     def resume(self):
         self._pause_event.clear()
+        self._speed_samples.clear()
+        self._smoothed_speed = 0.0
         logger.info("Download resumed.", category="downloader")
 
     def build_tasks_from_posts(
@@ -660,6 +663,10 @@ class KemonoDownloader:
             t.status = "pending"
             t.error_msg = ""
             t.progress_pct = 0
+            t.downloaded_bytes = 0
+            t.speed_bps = 0
+            t.speed_str = "0 KB/s"
+            t.eta_str = "--"
             if self.on_task_status_changed:
                 self.on_task_status_changed(t)
 
@@ -690,6 +697,10 @@ class KemonoDownloader:
             t.status = "pending"
             t.error_msg = ""
             t.progress_pct = 0
+            t.downloaded_bytes = 0
+            t.speed_bps = 0
+            t.speed_str = "0 KB/s"
+            t.eta_str = "--"
             if self.on_task_status_changed:
                 self.on_task_status_changed(t)
 
@@ -838,6 +849,17 @@ class KemonoDownloader:
                                     self.on_task_status_changed(task)
                                 self._trigger_rate_limit_backoff(threads_locked=is_locked)
                                 last_scale_time = time.time() + float(wait_secs)
+                            elif "Disk full" in msg:
+                                task.status = "pending"
+                                task.error_msg = msg
+                                if self.on_task_status_changed:
+                                    self.on_task_status_changed(task)
+                                if not self._pause_event.is_set():
+                                    self.pause()
+                                    logger.warning(
+                                        "⚠️ [Disk Full Alert] Destination drive ran out of space! Downloads paused to prevent file corruption. Please free space on your drive and click Resume.",
+                                        category="downloader"
+                                    )
                             else:
                                 task.status = "failed"
                                 task.error_msg = msg
@@ -888,6 +910,10 @@ class KemonoDownloader:
                                     t.status = "pending"
                                     t.error_msg = ""
                                     t.progress_pct = 0
+                                    t.downloaded_bytes = 0
+                                    t.speed_bps = 0
+                                    t.speed_str = "0 KB/s"
+                                    t.eta_str = "--"
                                     if self.on_task_status_changed:
                                         self.on_task_status_changed(t)
                                 time.sleep(0.5)
@@ -1242,6 +1268,19 @@ class KemonoDownloader:
                 category="file"
             )
 
+            # ── Pre-flight disk space verification ─────────────────────────────
+            try:
+                target_dir = os.path.dirname(os.path.abspath(task.target_path))
+                usage = shutil.disk_usage(target_dir)
+                needed = max(10 * 1024 * 1024, task.file_size)
+                if usage.free < needed and usage.free < 25 * 1024 * 1024:
+                    resp.close()
+                    msg = f"Disk full: Only {usage.free / (1024*1024):.1f} MB free space on drive"
+                    logger.error(f"  ✖ {task.filename}: {msg}", category="file")
+                    return False, msg
+            except Exception:
+                pass
+
             # ── Fast-path: Multipart chunking for large files (>= 25 MB) ─────
             accept_ranges = resp.headers.get("Accept-Ranges", "").lower()
             if task.file_size >= 25 * 1024 * 1024 and existing_size == 0 and ("bytes" in accept_ranges or status == 206):
@@ -1256,6 +1295,7 @@ class KemonoDownloader:
                 _part_paths = [f"{task.target_path}.part{i}" for i in range(4)]
                 _prev_disk_bytes = [0]
                 _last_poll_emit = [time.time()]
+                _last_speed_disk_bytes = [0]
 
                 def _disk_poll():
                     while not _poll_stop.is_set():
@@ -1266,36 +1306,46 @@ class KemonoDownloader:
                             # Also count the target file itself if it already started assembling
                             if os.path.exists(task.target_path):
                                 disk_bytes = max(disk_bytes, os.path.getsize(task.target_path))
-                            if disk_bytes > 0:
+
+                            if disk_bytes < _prev_disk_bytes[0]:
+                                # Files on disk dropped (cleanup or error) — reset baseline
+                                _prev_disk_bytes[0] = disk_bytes
+                                delta = 0
+                            else:
                                 delta = disk_bytes - _prev_disk_bytes[0]
                                 if delta > 0:
                                     with self._lock:
                                         self.downloaded_bytes += delta
                                     _prev_disk_bytes[0] = disk_bytes
-                                task.downloaded_bytes = disk_bytes
+
+                            task.downloaded_bytes = disk_bytes
+                            if task.file_size > 0:
+                                task.progress_pct = min(99, int(disk_bytes / task.file_size * 100))
+                            if self.on_task_status_changed:
+                                self.on_task_status_changed(task)
+
+                            # Push live speed + overall progress to the global bar once per second
+                            now_poll = time.time()
+                            dt_poll = now_poll - _last_poll_emit[0]
+                            if dt_poll >= 1.0:
+                                bytes_diff = max(0, disk_bytes - _last_speed_disk_bytes[0])
+                                _last_speed_disk_bytes[0] = disk_bytes
+                                _last_poll_emit[0] = now_poll
+                                completed_c = sum(1 for t in self.tasks if t.status == "completed")
+                                failed_c = sum(1 for t in self.tasks if t.status == "failed")
+                                self._emit_progress(completed_c, failed_c, len(self.tasks), force=True)
+
+                                # Compute live speed + ETA for task progress tracking
                                 if task.file_size > 0:
-                                    task.progress_pct = min(99, int(disk_bytes / task.file_size * 100))
-                                if self.on_task_status_changed:
-                                    self.on_task_status_changed(task)
-
-                                # Push live speed + overall progress to the global bar once per second
-                                now_poll = time.time()
-                                if now_poll - _last_poll_emit[0] >= 1.0:
-                                    _last_poll_emit[0] = now_poll
-                                    completed_c = sum(1 for t in self.tasks if t.status == "completed")
-                                    failed_c = sum(1 for t in self.tasks if t.status == "failed")
-                                    self._emit_progress(completed_c, failed_c, len(self.tasks), force=True)
-
-                                    # Compute live speed + ETA for task progress tracking
-                                    if task.file_size > 0:
-                                        spd_bps = delta  # bytes in last ~1s poll window
-                                        task.speed_str = KemonoDownloader.format_speed(int(spd_bps))
-                                        if spd_bps > 0:
-                                            rem = max(0, task.file_size - disk_bytes)
-                                            s = int(rem / spd_bps)
-                                            task.eta_str = f"{s//60}m {s%60}s" if s > 60 else f"{s}s"
-                                        else:
-                                            task.eta_str = "--"
+                                    spd_bps = max(0.0, bytes_diff / max(0.1, dt_poll))
+                                    task.speed_bps = int(spd_bps)
+                                    task.speed_str = KemonoDownloader.format_speed(task.speed_bps)
+                                    if task.speed_bps > 0:
+                                        rem = max(0, task.file_size - disk_bytes)
+                                        s = int(rem / task.speed_bps)
+                                        task.eta_str = f"{s//60}m {s%60}s" if s > 60 else f"{s}s"
+                                    else:
+                                        task.eta_str = "--"
                         except Exception:
                             pass
                         _poll_stop.wait(0.5)
@@ -1340,7 +1390,6 @@ class KemonoDownloader:
                 if not mp_ok:
                     if self._cancel_event.is_set():
                         return False, "Cancelled"
-                    logger.info(f"  ↪ Multipart fallback: {mp_err} — switching to standard single stream download...", category="file")
 
                     # Clean up any partial parts or tmp files from multipart attempt
                     for p in _part_paths:
@@ -1354,6 +1403,23 @@ class KemonoDownloader:
                             os.remove(f"{task.target_path}.tmp")
                         except OSError:
                             pass
+
+                    # Reset task progress tracking
+                    with self._lock:
+                        if task.downloaded_bytes > 0:
+                            self.downloaded_bytes = max(0, self.downloaded_bytes - task.downloaded_bytes)
+                    task.downloaded_bytes = 0
+                    task.progress_pct = 0
+                    task.speed_bps = 0
+                    task.speed_str = "0 KB/s"
+                    task.eta_str = "--"
+
+                    if "Disk full" in mp_err:
+                        return False, mp_err
+
+                    logger.info(f"  ↪ Multipart fallback: {mp_err} — switching to standard single stream download...", category="file")
+                    existing_size = 0
+                    mode = "wb"
 
                     # Re-acquire single stream response stream since resp was closed for multipart
                     try:
@@ -1385,7 +1451,9 @@ class KemonoDownloader:
                         except Exception:
                             pass
                         return False, "Cancelled"
+                    was_paused = False
                     while self._pause_event.is_set():
+                        was_paused = True
                         time.sleep(0.3)
                         if self._cancel_event.is_set():
                             try:
@@ -1393,6 +1461,9 @@ class KemonoDownloader:
                             except Exception:
                                 pass
                             return False, "Cancelled"
+                    if was_paused:
+                        last_speed_time = time.time()
+                        bytes_since_speed = 0
 
                     if not chunk:
                         continue
@@ -1492,8 +1563,23 @@ class KemonoDownloader:
             logger.error(f"  ✖ {task.filename}: {msg}", category="file")
             return False, msg
         except OSError as e:
-            msg = f"Disk/IO error: {e}"
+            is_disk_full = (
+                getattr(e, "errno", None) == 28
+                or getattr(e, "winerror", None) == 112
+                or "space" in str(e).lower()
+            )
+            msg = "Disk full: Not enough free space on drive" if is_disk_full else f"Disk/IO error: {e}"
             logger.error(f"  ✖ {task.filename}: {msg}", category="file")
+            if os.path.exists(task.target_path):
+                try:
+                    os.remove(task.target_path)
+                except OSError:
+                    pass
+            task.downloaded_bytes = 0
+            task.progress_pct = 0
+            task.speed_bps = 0
+            task.speed_str = "0 KB/s"
+            task.eta_str = "--"
             return False, msg
         except Exception as e:
             logger.error(f"  ✖ {task.filename}: {type(e).__name__}: {e}", category="file")
@@ -1520,23 +1606,29 @@ class KemonoDownloader:
 
         self._speed_samples.append((now, current_bytes))
 
-        # Keep samples within a ~2.0 second active rolling window for accurate real-time response
-        while len(self._speed_samples) > 2 and (now - self._speed_samples[0][0] > 2.0):
+        # If there was a stall/gap (> 2.0s without progress calls), clear stale samples
+        if self._speed_samples and (now - self._speed_samples[-1][0] > 2.0):
+            self._speed_samples.clear()
+            self._smoothed_speed = 0.0
+
+        self._speed_samples.append((now, current_bytes))
+
+        # Evict all samples older than 2.0 seconds
+        while self._speed_samples and (now - self._speed_samples[0][0] > 2.0):
             self._speed_samples.popleft()
 
         if len(self._speed_samples) >= 2:
             dt = now - self._speed_samples[0][0]
             db = current_bytes - self._speed_samples[0][1]
-            if dt >= 0.2 and db >= 0:
-                raw_speed = db / dt
+            if dt >= 0.2:
+                raw_speed = max(0.0, db / dt)
                 if self._smoothed_speed <= 0:
                     self._smoothed_speed = raw_speed
                 else:
-                    self._smoothed_speed = 0.90 * raw_speed + 0.10 * self._smoothed_speed
-                return int(self._smoothed_speed)
+                    self._smoothed_speed = 0.85 * raw_speed + 0.15 * self._smoothed_speed
+                return max(0, int(self._smoothed_speed))
 
-        elapsed = max(0.1, now - self.start_time)
-        return int(current_bytes / elapsed)
+        return max(0, int(self._smoothed_speed))
 
     def _calculate_smart_eta(self, completed: int, failed: int, total: int, speed: int, elapsed: float) -> str:
         """
@@ -1714,9 +1806,11 @@ class KemonoDownloader:
 
     @staticmethod
     def format_speed(bps: int) -> str:
-        if bps > 1024 * 1024:
+        if bps <= 0:
+            return "0 KB/s"
+        if bps >= 1024 * 1024:
             return f"{bps / (1024 * 1024):.2f} MB/s"
-        elif bps > 1024:
+        elif bps >= 1024:
             return f"{bps / 1024:.1f} KB/s"
         return f"{bps} B/s"
 
