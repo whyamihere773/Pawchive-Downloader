@@ -134,7 +134,8 @@ class SessionManager:
             "open_folder_on_complete": False,
             "play_completion_sound": False,
             "post_download_action": "none",
-            "known_recognition_mode": "hybrid"
+            "known_recognition_mode": "hybrid",
+            "language": "auto"
         }
 
         if os.path.exists(self.settings_file):

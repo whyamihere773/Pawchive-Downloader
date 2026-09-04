@@ -9,6 +9,13 @@ Rectangle {
     property var bridge: null
     color: "#0F1117"
 
+    function tr(key, fallback) {
+        if (!Lang) return fallback !== undefined ? fallback : key
+        var _ = Lang.activeLanguage
+        var res = Lang.t(key)
+        return (res && res !== key) ? res : (fallback !== undefined ? fallback : res)
+    }
+
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: 12
@@ -17,7 +24,7 @@ Rectangle {
         // Header & Quick Add
         CardSection {
             Layout.fillWidth: true
-            title: "Known Series & Characters (for folder categorization & filters)"
+            title: root.tr("title_known", "Known Series & Characters (for folder categorization & filters)")
             iconText: "🏷️"
 
             ColumnLayout {
@@ -32,7 +39,7 @@ Rectangle {
                     StyledTextField {
                         id: searchBox
                         Layout.fillWidth: true
-                        placeholderText: "Search characters or series..."
+                        placeholderText: root.tr("placeholder_search_known", "Search characters or series...")
                         leadingIcon: "🔍"
                         onTextChanged: {
                             if (root.bridge && root.bridge.knownModel) {
@@ -42,7 +49,7 @@ Rectangle {
                     }
 
                     StyledButton {
-                        text: "Open Known.txt"
+                        text: root.tr("btn_open_known", "Open Known.txt")
                         iconText: "📄"
                         variant: "outline"
                         onClicked: if (root.bridge) root.bridge.openKnownTxt()
@@ -57,14 +64,14 @@ Rectangle {
                     StyledTextField {
                         id: newNameInput
                         Layout.fillWidth: true
-                        placeholderText: "Add a name, or aliases: Katarin | Katarin Bokha"
+                        placeholderText: root.tr("placeholder_add_known", "Add a name, or aliases: Katarin | Katarin Bokha")
                         leadingIcon: "➕"
                         onAccepted: addBtn.clicked()
                     }
 
                     StyledButton {
                         id: addBtn
-                        text: "Add"
+                        text: root.tr("btn_add", "Add")
                         iconText: "➕"
                         variant: "primary"
                         onClicked: {
@@ -77,6 +84,7 @@ Rectangle {
                 }
             }
         }
+
 
         // Characters Grid / ListView
         Rectangle {
@@ -141,7 +149,7 @@ Rectangle {
                         }
 
                         StyledButton {
-                            text: "+ Add to Filter"
+                            text: root.tr("btn_add_to_filter", "+ Add to Filter")
                             variant: "outline"
                             implicitHeight: 26
                             implicitWidth: 100
@@ -151,7 +159,7 @@ Rectangle {
                         }
 
                         StyledButton {
-                            text: "Delete"
+                            text: root.tr("btn_delete", "Delete")
                             variant: "ghost"
                             implicitHeight: 26
                             implicitWidth: 60
@@ -164,12 +172,13 @@ Rectangle {
 
                 Text {
                     anchors.centerIn: parent
-                    text: "No characters or series found."
+                    text: root.tr("empty_known", "No characters or series found.")
                     color: "#64748B"
                     font.family: "Segoe UI, sans-serif"
                     visible: knownList.count === 0
                 }
             }
+
         }
     }
 }

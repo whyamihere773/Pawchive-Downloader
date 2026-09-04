@@ -13,6 +13,13 @@ Item {
     property string savedText: "0 MB"
     property bool active: false
 
+    function tr(key, fallback) {
+        if (!Lang) return fallback !== undefined ? fallback : key
+        var _ = Lang.activeLanguage
+        var res = Lang.t(key)
+        return (res && res !== key) ? res : (fallback !== undefined ? fallback : res)
+    }
+
     implicitHeight: 40
     implicitWidth: 300
 
@@ -26,7 +33,7 @@ Item {
             spacing: 8
 
             Text {
-                text: root.active ? "Downloading:" : root.statusText
+                text: root.active ? root.tr("status_downloading_colon", "Downloading:") : root.statusText
                 font.family: "Segoe UI, Inter, sans-serif"
                 font.pixelSize: 11
                 font.weight: Font.DemiBold
@@ -130,7 +137,7 @@ Item {
                         spacing: 4
                         Text { text: "⏳"; font.pixelSize: 10; anchors.verticalCenter: parent.verticalCenter }
                         Text {
-                            text: "ETA " + root.etaText
+                            text: tr("label_eta", "ETA") + " " + root.etaText
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 10
                             color: "#38BDF8"

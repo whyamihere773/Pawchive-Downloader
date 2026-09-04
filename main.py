@@ -41,10 +41,17 @@ def main():
     if os.path.exists(icon_path):
         app.setWindowIcon(QIcon(icon_path))
 
+    from bridge.translation_manager import TranslationManager
     app_bridge = AppBridge()
+
+    locales_dir = os.path.join(base_dir, "locales")
+    translation_manager = TranslationManager(locales_dir=locales_dir)
+    translation_manager.setLanguage(app_bridge.language)
+    app_bridge.languageChanged.connect(lambda: translation_manager.setLanguage(app_bridge.language))
 
     engine = QQmlApplicationEngine()
     engine.rootContext().setContextProperty("appBridge", app_bridge)
+    engine.rootContext().setContextProperty("Lang", translation_manager)
 
     qml_file = os.path.join(base_dir, "qml", "main.qml")
 

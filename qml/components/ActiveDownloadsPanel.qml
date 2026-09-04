@@ -9,7 +9,15 @@ Rectangle {
     property var bridge: null
     property bool isCollapsed: false
 
+    function tr(key, fallback) {
+        if (!Lang) return fallback !== undefined ? fallback : key
+        var _ = Lang.activeLanguage
+        var res = Lang.t(key)
+        return (res && res !== key) ? res : (fallback !== undefined ? fallback : res)
+    }
+
     readonly property int activeCount: (bridge && bridge.activeQueueModel) ? bridge.activeQueueModel.count : 0
+
 
     // Live refresh timer: prompts active rows to refresh speed, ETA, and progress smoothly in-place
     Timer {
@@ -123,7 +131,7 @@ Rectangle {
 
             // Title
             Text {
-                text: "⚡ Active Downloads"
+                text: panelRoot.tr("title_active_downloads", "⚡ Active Downloads")
                 font.family: "Segoe UI, Inter, sans-serif"
                 font.pixelSize: 12
                 font.weight: Font.Bold
@@ -150,7 +158,7 @@ Rectangle {
                 Text {
                     id: countText
                     anchors.centerIn: parent
-                    text: panelRoot.activeCount + " active"
+                    text: panelRoot.activeCount + " " + (panelRoot.tr("qtab_active", "Active")).toLowerCase()
                     font.family: "Segoe UI, Inter, sans-serif"
                     font.pixelSize: 10
                     font.weight: Font.DemiBold
@@ -235,10 +243,11 @@ Rectangle {
                     cursorShape: Qt.PointingHandCursor
                     ToolTip.visible: containsMouse
                     ToolTip.delay: 400
-                    ToolTip.text: panelRoot.isCollapsed ? "Expand active downloads panel" : "Collapse panel"
+                    ToolTip.text: panelRoot.isCollapsed ? panelRoot.tr("tip_expand_panel", "Expand active downloads panel") : panelRoot.tr("tip_collapse_panel", "Collapse panel")
                     onClicked: panelRoot.isCollapsed = !panelRoot.isCollapsed
                 }
             }
+
         }
 
         // Fluid divider
@@ -442,7 +451,7 @@ Rectangle {
 
                         // ETA
                         Text {
-                            text: "ETA: " + (model.eta || "--")
+                            text: tr("label_eta", "ETA") + ": " + (model.eta || "--")
                             font.family: "Segoe UI, Inter, sans-serif"
                             font.pixelSize: 10
                             color: "#94A3B8"

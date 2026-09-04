@@ -10,12 +10,20 @@ Rectangle {
     property string activeLevel: "ALL"
     property bool statusOnlyMode: false
 
+    function tr(key, fallback) {
+        if (!Lang) return fallback !== undefined ? fallback : key
+        var _ = Lang.activeLanguage
+        var res = Lang.t(key)
+        return (res && res !== key) ? res : (fallback !== undefined ? fallback : res)
+    }
+
     signal exportLogsRequested()
     signal clearLogsRequested()
     signal exportLinksRequested()
     signal downloadLinksRequested()
 
     color: "#0D0F14"
+
     border.color: "#242A38"
     border.width: 1
     radius: 10
@@ -39,7 +47,7 @@ Rectangle {
                     anchors.verticalCenter: parent.verticalCenter
                 }
                 Text {
-                    text: "Progress Log"
+                    text: root.tr("title_progress_log", "Progress Log")
                     font.family: "Segoe UI, Inter, sans-serif"
                     font.pixelSize: 12
                     font.weight: Font.DemiBold
@@ -83,7 +91,7 @@ Rectangle {
                             cursorShape: Qt.PointingHandCursor
                             ToolTip.visible: containsMouse
                             ToolTip.delay: 400
-                            ToolTip.text: modelData === "ALL" ? "Show all log messages" : (modelData === "INFO" ? "Filter by Info level" : (modelData === "WARN" ? "Filter by Warnings" : "Filter by Errors"))
+                            ToolTip.text: modelData === "ALL" ? root.tr("tip_log_all", "Show all log messages") : (modelData === "INFO" ? root.tr("tip_log_info", "Filter by Info level") : (modelData === "WARN" ? root.tr("tip_log_warn", "Filter by Warnings") : root.tr("tip_log_err", "Filter by Errors")))
                             onClicked: {
                                 root.activeLevel = modelData
                                 var lvl = modelData === "WARN" ? "WARNING" : (modelData === "ERR" ? "ERROR" : modelData)
@@ -108,7 +116,7 @@ Rectangle {
                     spacing: 4
                     Text { text: "☁️"; font.pixelSize: 10 }
                     Text {
-                        text: "Download Links"
+                        text: root.tr("btn_download_links", "Download Links")
                         font.family: "Segoe UI, sans-serif"
                         font.pixelSize: 10
                         color: "#2DD4BF"
@@ -123,7 +131,7 @@ Rectangle {
                     cursorShape: Qt.PointingHandCursor
                     ToolTip.visible: containsMouse
                     ToolTip.delay: 400
-                    ToolTip.text: "Open dialog to download harvested links via Mega.nz, Google Drive, Dropbox, or GoFile"
+                    ToolTip.text: root.tr("tip_download_links", "Open dialog to download harvested links via Mega.nz, Google Drive, Dropbox, or GoFile")
                     onClicked: root.downloadLinksRequested()
                 }
             }
@@ -142,7 +150,7 @@ Rectangle {
                     spacing: 4
                     Text { text: "🔗"; font.pixelSize: 10 }
                     Text {
-                        text: "Export Links"
+                        text: root.tr("btn_export_links", "Export Links")
                         font.family: "Segoe UI, sans-serif"
                         font.pixelSize: 10
                         color: "#34D399"
@@ -157,7 +165,7 @@ Rectangle {
                     cursorShape: Qt.PointingHandCursor
                     ToolTip.visible: containsMouse
                     ToolTip.delay: 400
-                    ToolTip.text: "Extract and export all external cloud links to a text file"
+                    ToolTip.text: root.tr("tip_export_links", "Extract and export all external cloud links to a text file")
                     onClicked: root.exportLinksRequested()
                 }
             }
@@ -188,7 +196,7 @@ Rectangle {
                     cursorShape: Qt.PointingHandCursor
                     ToolTip.visible: containsMouse
                     ToolTip.delay: 400
-                    ToolTip.text: root.statusOnlyMode ? "Status-Only mode active (click to show all file details)" : "Click to hide individual file names and show status only"
+                    ToolTip.text: root.statusOnlyMode ? root.tr("tip_status_only_active", "Status-Only mode active (click to show all file details)") : root.tr("tip_status_only", "Click to hide individual file names and show status only")
                     onClicked: {
                         root.statusOnlyMode = !root.statusOnlyMode
                         if (root.logModel) root.logModel.setStatusOnly(root.statusOnlyMode)
@@ -210,7 +218,7 @@ Rectangle {
                     spacing: 3
                     Text { text: "↻"; font.pixelSize: 11; color: "#F87171" }
                     Text {
-                        text: "Reset"
+                        text: root.tr("btn_reset", "Reset")
                         font.family: "Segoe UI, sans-serif"
                         font.pixelSize: 10
                         color: "#F87171"
@@ -225,7 +233,7 @@ Rectangle {
                     cursorShape: Qt.PointingHandCursor
                     ToolTip.visible: containsMouse
                     ToolTip.delay: 400
-                    ToolTip.text: "Clear all progress console logs"
+                    ToolTip.text: root.tr("tip_reset_logs", "Clear all progress console logs")
                     onClicked: root.clearLogsRequested()
                 }
             }
@@ -259,11 +267,12 @@ Rectangle {
 
                     Text {
                         anchors.fill: parent
-                        text: "Filter console output..."
+                        text: root.tr("placeholder_search_logs", "Filter console output...")
                         color: "#475569"
                         font.pixelSize: 11
                         visible: !searchInput.text && !searchInput.activeFocus
                     }
+
 
                     onTextChanged: {
                         if (root.logModel) root.logModel.setSearchQuery(text)
@@ -346,11 +355,12 @@ Rectangle {
                         }
                     }
 
-                    // Message — URLs are rendered as clickable links
+                    // Message — URLs are rendered as clickable links (translated dynamically except errors)
                     TextEdit {
                         Layout.fillWidth: true
                         text: {
-                            var raw = model.message
+                            var _ = Lang ? Lang.activeLanguage : ""
+                            var raw = Lang ? Lang.translateLog(model.message, model.level || "") : model.message
                             var escaped = raw.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
                             var linked = escaped.replace(/(https?:\/\/[^\s<>"']+?)([.,;:!?)]*(?=\s|$))/g, function(match, url, punct) {
                                 return '<a href="' + url + '" style="color:#38BDF8; text-decoration:underline;">' + url + '</a>' + punct;
@@ -415,7 +425,7 @@ Rectangle {
                         anchors.verticalCenter: parent.verticalCenter
                     }
                     Text {
-                        text: "Jump to latest"
+                        text: root.tr("btn_jump_to_latest", "Jump to latest")
                         font.family: "Segoe UI, Inter, sans-serif"
                         font.pixelSize: 10
                         font.weight: Font.DemiBold

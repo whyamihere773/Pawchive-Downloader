@@ -12,7 +12,7 @@ ApplicationWindow {
     minimumWidth: 900
     minimumHeight: 600
     visible: true
-    title: "Pawchive Downloader v1.0.4"
+    title: "Pawchive Downloader v1.0.5"
     color: "#0F1117"
 
     // Stop active downloads and persist session gracefully when user closes the app
@@ -24,6 +24,14 @@ ApplicationWindow {
 
     property bool showConsole: true
     property int currentTab: 0 // 0: Downloader, 1: Queue, 2: Known, 3: History, 4: Settings
+
+    function tr(key, fallback) {
+        if (!Lang) return fallback !== undefined ? fallback : key
+        var _ = Lang.activeLanguage
+        var res = Lang.t(key)
+        return (res && res !== key) ? res : (fallback !== undefined ? fallback : res)
+    }
+
 
     ColumnLayout {
         anchors.fill: parent
@@ -45,7 +53,7 @@ ApplicationWindow {
 
                 // Tab: Downloader
                 Rectangle {
-                    width: 130
+                    width: Math.max(110, tab0Row.implicitWidth + 24)
                     height: 30
                     radius: 6
                     color: appWindow.currentTab === 0 ? "#181B22" : (tab0Mouse.containsMouse ? "#141720" : "transparent")
@@ -62,11 +70,12 @@ ApplicationWindow {
                     Behavior on border.color { ColorAnimation { duration: 150; easing.type: Easing.OutCubic } }
 
                     Row {
+                        id: tab0Row
                         anchors.centerIn: parent
                         spacing: 6
                         Text { text: "📥"; font.pixelSize: 12 }
                         Text {
-                            text: "Downloader"
+                            text: appWindow.tr("tab_downloader", "Downloader")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
                             font.weight: appWindow.currentTab === 0 ? Font.DemiBold : Font.Normal
@@ -81,14 +90,14 @@ ApplicationWindow {
                         cursorShape: Qt.PointingHandCursor
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
-                        ToolTip.text: "Downloader configuration and execution"
+                        ToolTip.text: appWindow.tr("tab_downloader_tip", "Downloader configuration and execution")
                         onClicked: appWindow.currentTab = 0
                     }
                 }
 
                 // Tab: Queue
                 Rectangle {
-                    width: 110
+                    width: Math.max(90, tab1Row.implicitWidth + 24)
                     height: 30
                     radius: 6
                     color: appWindow.currentTab === 1 ? "#181B22" : (tab1Mouse.containsMouse ? "#141720" : "transparent")
@@ -105,11 +114,12 @@ ApplicationWindow {
                     Behavior on border.color { ColorAnimation { duration: 150; easing.type: Easing.OutCubic } }
 
                     Row {
+                        id: tab1Row
                         anchors.centerIn: parent
                         spacing: 6
                         Text { text: "📋"; font.pixelSize: 12 }
                         Text {
-                            text: "Queue"
+                            text: appWindow.tr("tab_queue", "Queue")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
                             font.weight: appWindow.currentTab === 1 ? Font.DemiBold : Font.Normal
@@ -124,14 +134,14 @@ ApplicationWindow {
                         cursorShape: Qt.PointingHandCursor
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
-                        ToolTip.text: "Task queue and file download monitoring"
+                        ToolTip.text: appWindow.tr("tab_queue_tip", "Task queue and file download monitoring")
                         onClicked: appWindow.currentTab = 1
                     }
                 }
 
                 // Tab: Known Characters
                 Rectangle {
-                    width: 140
+                    width: Math.max(120, tab2Row.implicitWidth + 24)
                     height: 30
                     radius: 6
                     color: appWindow.currentTab === 2 ? "#181B22" : (tab2Mouse.containsMouse ? "#141720" : "transparent")
@@ -148,11 +158,12 @@ ApplicationWindow {
                     Behavior on border.color { ColorAnimation { duration: 150; easing.type: Easing.OutCubic } }
 
                     Row {
+                        id: tab2Row
                         anchors.centerIn: parent
                         spacing: 6
                         Text { text: "🏷️"; font.pixelSize: 12 }
                         Text {
-                            text: "Known Series"
+                            text: appWindow.tr("tab_known", "Known Series")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
                             font.weight: appWindow.currentTab === 2 ? Font.DemiBold : Font.Normal
@@ -167,14 +178,14 @@ ApplicationWindow {
                         cursorShape: Qt.PointingHandCursor
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
-                        ToolTip.text: "Known character and series directory rules (Known.txt)"
+                        ToolTip.text: appWindow.tr("tab_known_tip", "Known character and series directory rules (Known.txt)")
                         onClicked: appWindow.currentTab = 2
                     }
                 }
 
                 // Tab: History
                 Rectangle {
-                    width: 100
+                    width: Math.max(90, tab3Row.implicitWidth + 24)
                     height: 30
                     radius: 6
                     color: appWindow.currentTab === 3 ? "#181B22" : (tab3Mouse.containsMouse ? "#141720" : "transparent")
@@ -191,11 +202,12 @@ ApplicationWindow {
                     Behavior on border.color { ColorAnimation { duration: 150; easing.type: Easing.OutCubic } }
 
                     Row {
+                        id: tab3Row
                         anchors.centerIn: parent
                         spacing: 6
                         Text { text: "📜"; font.pixelSize: 12 }
                         Text {
-                            text: "History"
+                            text: appWindow.tr("tab_history", "History")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
                             font.weight: appWindow.currentTab === 3 ? Font.DemiBold : Font.Normal
@@ -210,14 +222,14 @@ ApplicationWindow {
                         cursorShape: Qt.PointingHandCursor
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
-                        ToolTip.text: "Completed downloads and past batch sessions"
+                        ToolTip.text: appWindow.tr("tab_history_tip", "Completed downloads and past batch sessions")
                         onClicked: appWindow.currentTab = 3
                     }
                 }
 
                 // Tab: Settings
                 Rectangle {
-                    width: 100
+                    width: Math.max(90, tab4Row.implicitWidth + 24)
                     height: 30
                     radius: 6
                     color: appWindow.currentTab === 4 ? "#181B22" : (tab4Mouse.containsMouse ? "#141720" : "transparent")
@@ -234,11 +246,12 @@ ApplicationWindow {
                     Behavior on border.color { ColorAnimation { duration: 150; easing.type: Easing.OutCubic } }
 
                     Row {
+                        id: tab4Row
                         anchors.centerIn: parent
                         spacing: 6
                         Text { text: "⚙️"; font.pixelSize: 12 }
                         Text {
-                            text: "Settings"
+                            text: appWindow.tr("tab_settings", "Settings")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
                             font.weight: appWindow.currentTab === 4 ? Font.DemiBold : Font.Normal
@@ -253,7 +266,7 @@ ApplicationWindow {
                         cursorShape: Qt.PointingHandCursor
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
-                        ToolTip.text: "Global application and network configuration"
+                        ToolTip.text: appWindow.tr("tab_settings_tip", "Global application and network configuration")
                         onClicked: appWindow.currentTab = 4
                     }
                 }
@@ -272,7 +285,7 @@ ApplicationWindow {
                     Text {
                         id: verText
                         anchors.centerIn: parent
-                        text: "v1.0.4"
+                        text: "v1.0.5"
                         font.family: "Segoe UI, sans-serif"
                         font.pixelSize: 11
                         font.weight: Font.DemiBold
@@ -311,8 +324,9 @@ ApplicationWindow {
                         cursorShape: Qt.PointingHandCursor
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
-                        ToolTip.text: appWindow.showConsole ? "Hide Progress Log console" : "Show Progress Log console"
+                        ToolTip.text: appWindow.showConsole ? appWindow.tr("console_hide_tip", "Hide Progress Log console") : appWindow.tr("console_show_tip", "Show Progress Log console")
                         onClicked: appWindow.showConsole = !appWindow.showConsole
+
                     }
                 }
             }
@@ -375,7 +389,7 @@ ApplicationWindow {
                 }
 
                 Text {
-                    text: "Creator:"
+                    text: tr("label_creator", "Creator:")
                     font.family: "Segoe UI, sans-serif"
                     font.pixelSize: 11
                     color: "#64748B"
@@ -468,7 +482,7 @@ ApplicationWindow {
                     property bool isLinksMode: appBridge ? appBridge.filterType === "links" : false
                     property bool isDownloading: appBridge ? appBridge.isDownloading : false
 
-                    Layout.preferredWidth: isLinksMode ? 162 : 148
+                    Layout.preferredWidth: Math.max(isLinksMode ? 162 : 148, startBtnRow.implicitWidth + 28)
                     Layout.preferredHeight: 34
                     radius: 7
 
@@ -490,6 +504,7 @@ ApplicationWindow {
                     Behavior on Layout.preferredWidth { NumberAnimation { duration: 200; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
 
                     Row {
+                        id: startBtnRow
                         anchors.centerIn: parent
                         spacing: 6
                         Text {
@@ -498,8 +513,8 @@ ApplicationWindow {
                             anchors.verticalCenter: parent.verticalCenter
                         }
                         Text {
-                            text: mainStartBtn.isDownloading ? "Downloading…"
-                                : (mainStartBtn.isLinksMode ? "Extract Links" : "Start Download")
+                            text: mainStartBtn.isDownloading ? appWindow.tr("action_downloading", "Downloading…")
+                                : (mainStartBtn.isLinksMode ? appWindow.tr("action_extract_links", "Extract Links") : appWindow.tr("action_start_download", "Start Download"))
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
                             font.weight: Font.DemiBold
@@ -517,15 +532,15 @@ ApplicationWindow {
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
                         ToolTip.text: mainStartBtn.isLinksMode
-                            ? "Scan posts for external cloud links (Mega.nz, Drive, Dropbox, etc.) — no files downloaded"
-                            : "Fetch posts from the URL and start downloading immediately"
+                            ? appWindow.tr("tip_extract_links", "Scan posts for external cloud links (Mega.nz, Drive, Dropbox, etc.) — no files downloaded")
+                            : appWindow.tr("tip_start_download", "Fetch posts from the URL and start downloading immediately")
                         onClicked: if (appBridge) appBridge.startDownload()
                     }
                 }
 
                 // ── Add to Queue ────────────────────────────────────────────
                 Rectangle {
-                    Layout.preferredWidth: 116
+                    Layout.preferredWidth: Math.max(116, queueRow.implicitWidth + 24)
                     Layout.preferredHeight: 34
                     radius: 7
                     color: queueBtnMouse.containsMouse ? "#1A1F2E" : "#131722"
@@ -534,11 +549,12 @@ ApplicationWindow {
                     Behavior on color { ColorAnimation { duration: 120 } }
 
                     Row {
+                        id: queueRow
                         anchors.centerIn: parent
                         spacing: 6
                         Text { text: "➕"; font.pixelSize: 11; anchors.verticalCenter: parent.verticalCenter }
                         Text {
-                            text: "Add to Queue"
+                            text: appWindow.tr("action_add_to_queue", "Add to Queue")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
                             color: "#CBD5E1"
@@ -553,7 +569,7 @@ ApplicationWindow {
                         cursorShape: Qt.PointingHandCursor
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
-                        ToolTip.text: "Add all matched files to the queue without auto-starting download"
+                        ToolTip.text: appWindow.tr("tip_add_to_queue", "Add all matched files to the queue without auto-starting download")
                         onClicked: if (appBridge) appBridge.addToQueue()
                     }
                 }
@@ -563,7 +579,7 @@ ApplicationWindow {
 
                 // ── Pause / Resume (shown only while downloading) ───────────
                 Rectangle {
-                    Layout.preferredWidth: 100
+                    Layout.preferredWidth: Math.max(100, pauseRow.implicitWidth + 24)
                     Layout.preferredHeight: 34
                     radius: 7
                     visible: appBridge ? appBridge.isDownloading : false
@@ -573,6 +589,7 @@ ApplicationWindow {
                     Behavior on color { ColorAnimation { duration: 120 } }
 
                     Row {
+                        id: pauseRow
                         anchors.centerIn: parent
                         spacing: 6
                         Text {
@@ -581,7 +598,7 @@ ApplicationWindow {
                             anchors.verticalCenter: parent.verticalCenter
                         }
                         Text {
-                            text: (appBridge && appBridge.statusText.indexOf("Paused") >= 0) ? "Resume" : "Pause"
+                            text: (appBridge && appBridge.statusText.indexOf("Paused") >= 0) ? appWindow.tr("action_resume", "Resume") : appWindow.tr("action_pause", "Pause")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
                             color: "#FBBF24"
@@ -597,7 +614,7 @@ ApplicationWindow {
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
                         ToolTip.text: (appBridge && appBridge.statusText.indexOf("Paused") >= 0)
-                                      ? "Resume paused download" : "Pause the active download (can be resumed)"
+                                      ? appWindow.tr("tip_resume_download", "Resume paused download") : appWindow.tr("tip_pause_download", "Pause the active download (can be resumed)")
                         onClicked: {
                             if (!appBridge) return
                             if (appBridge.statusText.indexOf("Paused") >= 0)
@@ -610,7 +627,7 @@ ApplicationWindow {
 
                 // ── Cancel (shown only while downloading) ───────────────────
                 Rectangle {
-                    Layout.preferredWidth: 86
+                    Layout.preferredWidth: Math.max(86, cancelRow.implicitWidth + 24)
                     Layout.preferredHeight: 34
                     radius: 7
                     visible: appBridge ? appBridge.isDownloading : false
@@ -620,11 +637,12 @@ ApplicationWindow {
                     Behavior on color { ColorAnimation { duration: 120 } }
 
                     Row {
+                        id: cancelRow
                         anchors.centerIn: parent
                         spacing: 6
                         Text { text: "⏹"; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
                         Text {
-                            text: "Cancel"
+                            text: appWindow.tr("action_cancel", "Cancel")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
                             color: "#F87171"
@@ -639,7 +657,7 @@ ApplicationWindow {
                         cursorShape: Qt.PointingHandCursor
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
-                        ToolTip.text: "Cancel the active download (session preserved for restore)"
+                        ToolTip.text: appWindow.tr("tip_cancel_download", "Cancel the active download (session preserved for restore)")
                         onClicked: if (appBridge) appBridge.cancelDownload()
                     }
                 }
@@ -651,7 +669,7 @@ ApplicationWindow {
                 Rectangle {
                     id: retryFailedBtn
                     property int failedCount: (appBridge && appBridge.queueModel) ? appBridge.queueModel.failedCount : 0
-                    Layout.preferredWidth: failedCount > 0 ? (retryFailedRow.implicitWidth + 20) : 106
+                    Layout.preferredWidth: Math.max(106, retryFailedRow.implicitWidth + 22)
                     Layout.preferredHeight: 34
                     radius: 7
                     color: failedCount > 0
@@ -670,8 +688,8 @@ ApplicationWindow {
                         Text { text: "🔁"; font.pixelSize: 11; anchors.verticalCenter: parent.verticalCenter }
                         Text {
                             text: retryFailedBtn.failedCount > 0
-                                  ? "Retry Failed (" + retryFailedBtn.failedCount + ")"
-                                  : "Retry Failed"
+                                  ? appWindow.tr("action_retry_failed_count", "Retry Failed (%1)").replace("%1", retryFailedBtn.failedCount)
+                                  : appWindow.tr("action_retry_failed", "Retry Failed")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
                             color: retryFailedBtn.failedCount > 0 ? "#FCA5A5" : "#64748B"
@@ -686,7 +704,7 @@ ApplicationWindow {
                         cursorShape: Qt.PointingHandCursor
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
-                        ToolTip.text: "Open dialog to inspect and retry failed downloads"
+                        ToolTip.text: appWindow.tr("tip_retry_failed_dialog", "Open dialog to inspect and retry failed downloads")
                         onClicked: mainRetryModal.isOpen = true
                     }
                 }
@@ -696,7 +714,7 @@ ApplicationWindow {
                     id: cloudDownloadStickyBtn
                     property int count: appBridge ? appBridge.harvestedLinksCount : 0
                     visible: count > 0
-                    Layout.preferredWidth: 165
+                    Layout.preferredWidth: Math.max(165, cloudRow.implicitWidth + 24)
                     Layout.preferredHeight: 34
                     radius: 7
                     color: cloudBtnMouse.containsMouse ? "#0D3330" : "#0A2825"
@@ -709,11 +727,12 @@ ApplicationWindow {
                     Behavior on color { ColorAnimation { duration: 120 } }
 
                     Row {
+                        id: cloudRow
                         anchors.centerIn: parent
                         spacing: 6
                         Text { text: "☁️"; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
                         Text {
-                            text: "Download Links (" + cloudDownloadStickyBtn.count + ")"
+                            text: appWindow.tr("action_download_links_count", "Download Links (%1)").replace("%1", cloudDownloadStickyBtn.count)
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
                             font.weight: Font.DemiBold
@@ -729,14 +748,14 @@ ApplicationWindow {
                         cursorShape: Qt.PointingHandCursor
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
-                        ToolTip.text: "Open dialog to download harvested links via Mega, Google Drive, Dropbox, or GoFile"
+                        ToolTip.text: appWindow.tr("tip_cloud_download_dialog", "Open dialog to download harvested links via Mega, Google Drive, Dropbox, or GoFile")
                         onClicked: mainCloudModal.isOpen = true
                     }
                 }
 
                 // ── Auto-Retry toggle ───────────────────────────────────────
                 Rectangle {
-                    Layout.preferredWidth: 118
+                    Layout.preferredWidth: Math.max(118, autoRetryRow.implicitWidth + 24)
                     Layout.preferredHeight: 34
                     radius: 7
                     color: autoRetryMouse.containsMouse
@@ -748,6 +767,7 @@ ApplicationWindow {
                     Behavior on border.color { ColorAnimation { duration: 120 } }
 
                     Row {
+                        id: autoRetryRow
                         anchors.centerIn: parent
                         spacing: 6
                         Text {
@@ -757,7 +777,7 @@ ApplicationWindow {
                             anchors.verticalCenter: parent.verticalCenter
                         }
                         Text {
-                            text: "Auto-Retry"
+                            text: appWindow.tr("action_auto_retry", "Auto-Retry")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
                             color: (appBridge && appBridge.autoRetryAtEnd) ? "#34D399" : "#64748B"
@@ -773,8 +793,8 @@ ApplicationWindow {
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 300
                         ToolTip.text: (appBridge && appBridge.autoRetryAtEnd)
-                                      ? "Auto-Retry is ON (automatically retries failed files at end of queue, or immediately if clicked with failed files)"
-                                      : "Auto-Retry is OFF (click to enable auto-retry for failed downloads)"
+                                      ? appWindow.tr("tip_auto_retry_on", "Auto-Retry is ON (automatically retries failed files at end of queue, or immediately if clicked with failed files)")
+                                      : appWindow.tr("tip_auto_retry_off", "Auto-Retry is OFF (click to enable auto-retry for failed downloads)")
                         onClicked: if (appBridge) appBridge.toggleAutoRetry()
                     }
                 }
@@ -785,12 +805,30 @@ ApplicationWindow {
                     property string currentAction: appBridge ? appBridge.postDownloadAction : "none"
 
                     function getActionLabel(act) {
-                        if (act === "close_app") return "Close App"
-                        if (act === "sleep") return "Sleep"
-                        if (act === "hibernate") return "Hibernate (-F)"
-                        if (act === "shutdown") return "Shut Down (-F)"
-                        if (act === "restart") return "Restart (-F)"
-                        return "Do Nothing"
+                        if (act === "close_app") return appWindow.tr("post_action_close", "Close App")
+                        if (act === "sleep") return appWindow.tr("post_action_sleep_short", "Sleep")
+                        if (act === "hibernate") return appWindow.tr("post_action_hibernate_short", "Hibernate (-F)")
+                        if (act === "shutdown") return appWindow.tr("post_action_shutdown_short", "Shut Down (-F)")
+                        if (act === "restart") return appWindow.tr("post_action_restart_short", "Restart (-F)")
+                        return appWindow.tr("post_action_none_short", "Do Nothing")
+                    }
+
+                    function getOptionLabel(actId) {
+                        if (actId === "close_app") return appWindow.tr("post_action_close", "Close App")
+                        if (actId === "sleep") return appWindow.tr("post_action_sleep", "Sleep System")
+                        if (actId === "hibernate") return appWindow.tr("post_action_hibernate", "Hibernate (-F Force)")
+                        if (actId === "shutdown") return appWindow.tr("post_action_shutdown", "Shut Down (-F Force)")
+                        if (actId === "restart") return appWindow.tr("post_action_restart", "Restart (-F Force)")
+                        return appWindow.tr("post_action_none", "Do Nothing (Default)")
+                    }
+
+                    function getOptionDesc(actId) {
+                        if (actId === "close_app") return appWindow.tr("post_action_close_desc", "Exit Pawchive Downloader")
+                        if (actId === "sleep") return appWindow.tr("post_action_sleep_desc", "Suspend / sleep computer")
+                        if (actId === "hibernate") return appWindow.tr("post_action_hibernate_desc", "Force save to disk and power down")
+                        if (actId === "shutdown") return appWindow.tr("post_action_shutdown_desc", "Force close apps & turn off (10s buffer)")
+                        if (actId === "restart") return appWindow.tr("post_action_restart_desc", "Force close apps & reboot computer")
+                        return appWindow.tr("post_action_none_desc", "Keep app & system running")
                     }
 
                     function getActionIcon(act) {
@@ -850,7 +888,7 @@ ApplicationWindow {
                             anchors.verticalCenter: parent.verticalCenter
                         }
                         Text {
-                            text: "When Done: " + postActionBtn.getActionLabel(postActionBtn.currentAction)
+                            text: appWindow.tr("action_when_done", "When Done: %1").replace("%1", postActionBtn.getActionLabel(postActionBtn.currentAction))
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
                             font.weight: postActionBtn.currentAction !== "none" ? Font.DemiBold : Font.Normal
@@ -872,7 +910,7 @@ ApplicationWindow {
                         cursorShape: Qt.PointingHandCursor
                         ToolTip.visible: containsMouse && !postActionPopup.opened
                         ToolTip.delay: 300
-                        ToolTip.text: "Choose what action to execute when downloads finish (resets to 'Do Nothing' after execution)"
+                        ToolTip.text: appWindow.tr("tip_when_done", "Choose what action to execute when downloads finish (resets to 'Do Nothing' after execution)")
                         onClicked: {
                             if (postActionPopup.opened) {
                                 postActionPopup.close()
@@ -902,7 +940,7 @@ ApplicationWindow {
                             spacing: 4
 
                             Text {
-                                text: "ACTION WHEN COMPLETED"
+                                text: appWindow.tr("post_action_header", "ACTION WHEN COMPLETED")
                                 font.family: "Segoe UI, sans-serif"
                                 font.pixelSize: 9
                                 font.weight: Font.Bold
@@ -914,12 +952,12 @@ ApplicationWindow {
 
                             ListModel {
                                 id: postActionOptionsModel
-                                ListElement { actionId: "none"; actionLabel: "Do Nothing (Default)"; actionIcon: "⏸️"; actionColor: "#94A3B8"; desc: "Keep app & system running" }
-                                ListElement { actionId: "close_app"; actionLabel: "Close App"; actionIcon: "🚪"; actionColor: "#38BDF8"; desc: "Exit Pawchive Downloader" }
-                                ListElement { actionId: "sleep"; actionLabel: "Sleep System"; actionIcon: "🌙"; actionColor: "#A78BFA"; desc: "Suspend / sleep computer" }
-                                ListElement { actionId: "hibernate"; actionLabel: "Hibernate (-F Force)"; actionIcon: "💤"; actionColor: "#818CF8"; desc: "Force save to disk and power down" }
-                                ListElement { actionId: "shutdown"; actionLabel: "Shut Down (-F Force)"; actionIcon: "🔌"; actionColor: "#F43F5E"; desc: "Force close apps & turn off (10s buffer)" }
-                                ListElement { actionId: "restart"; actionLabel: "Restart (-F Force)"; actionIcon: "🔄"; actionColor: "#F59E0B"; desc: "Force close apps & reboot computer" }
+                                ListElement { actionId: "none"; actionIcon: "⏸️"; actionColor: "#94A3B8" }
+                                ListElement { actionId: "close_app"; actionIcon: "🚪"; actionColor: "#38BDF8" }
+                                ListElement { actionId: "sleep"; actionIcon: "🌙"; actionColor: "#A78BFA" }
+                                ListElement { actionId: "hibernate"; actionIcon: "💤"; actionColor: "#818CF8" }
+                                ListElement { actionId: "shutdown"; actionIcon: "🔌"; actionColor: "#F43F5E" }
+                                ListElement { actionId: "restart"; actionIcon: "🔄"; actionColor: "#F59E0B" }
                             }
 
                             Repeater {
@@ -949,14 +987,14 @@ ApplicationWindow {
                                             Layout.fillWidth: true
                                             spacing: 1
                                             Text {
-                                                text: model.actionLabel
+                                                text: postActionBtn.getOptionLabel(model.actionId)
                                                 font.family: "Segoe UI, sans-serif"
                                                 font.pixelSize: 11
                                                 font.weight: isCurrent ? Font.DemiBold : Font.Normal
                                                 color: isCurrent ? model.actionColor : "#E2E8F0"
                                             }
                                             Text {
-                                                text: model.desc
+                                                text: postActionBtn.getOptionDesc(model.actionId)
                                                 font.family: "Segoe UI, sans-serif"
                                                 font.pixelSize: 9
                                                 color: "#64748B"
@@ -1006,7 +1044,7 @@ ApplicationWindow {
                                     font.pixelSize: 10
                                 }
                                 Text {
-                                    text: "Automatically resets to 'Do Nothing' after each task."
+                                    text: appWindow.tr("post_action_footer", "Automatically resets to 'Do Nothing' after each task.")
                                     font.family: "Segoe UI, sans-serif"
                                     font.pixelSize: 9
                                     color: "#64748B"
@@ -1022,7 +1060,7 @@ ApplicationWindow {
 
                 // ── Restore Session ─────────────────────────────────────────
                 Rectangle {
-                    Layout.preferredWidth: 120
+                    Layout.preferredWidth: Math.max(120, restoreRow.implicitWidth + 24)
                     Layout.preferredHeight: 34
                     radius: 7
                     visible: appBridge ? appBridge.hasSavedSession : false
@@ -1032,11 +1070,12 @@ ApplicationWindow {
                     Behavior on color { ColorAnimation { duration: 120 } }
 
                     Row {
+                        id: restoreRow
                         anchors.centerIn: parent
                         spacing: 6
                         Text { text: "🔄"; font.pixelSize: 11; anchors.verticalCenter: parent.verticalCenter }
                         Text {
-                            text: "Restore Session"
+                            text: appWindow.tr("action_restore_session", "Restore Session")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 11
                             color: "#34D399"
@@ -1051,14 +1090,14 @@ ApplicationWindow {
                         cursorShape: Qt.PointingHandCursor
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
-                        ToolTip.text: "Resume the previously saved incomplete download session"
+                        ToolTip.text: appWindow.tr("tip_restore_session", "Resume the previously saved incomplete download session")
                         onClicked: if (appBridge) appBridge.restoreDownload()
                     }
                 }
 
                 // ── Discard Session ─────────────────────────────────────────
                 Rectangle {
-                    Layout.preferredWidth: 88
+                    Layout.preferredWidth: Math.max(88, discardRow.implicitWidth + 24)
                     Layout.preferredHeight: 34
                     radius: 7
                     visible: appBridge ? appBridge.hasSavedSession : false
@@ -1068,11 +1107,12 @@ ApplicationWindow {
                     Behavior on color { ColorAnimation { duration: 120 } }
 
                     Row {
+                        id: discardRow
                         anchors.centerIn: parent
                         spacing: 6
                         Text { text: "🗑"; font.pixelSize: 11; anchors.verticalCenter: parent.verticalCenter }
                         Text {
-                            text: "Discard"
+                            text: appWindow.tr("action_discard", "Discard")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
                             color: "#FCA5A5"
@@ -1087,7 +1127,7 @@ ApplicationWindow {
                         cursorShape: Qt.PointingHandCursor
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
-                        ToolTip.text: "Clear the saved session and queue (cannot be undone)"
+                        ToolTip.text: appWindow.tr("tip_discard_session", "Clear the saved session and queue (cannot be undone)")
                         onClicked: if (appBridge) appBridge.discardSession()
                     }
                 }
@@ -1367,7 +1407,7 @@ ApplicationWindow {
                         Text { text: "📁"; font.pixelSize: 10 }
                         Text {
                             id: sessStateText
-                            text: "Session Active"
+                            text: appWindow.tr("badge_session_active", "Session Active")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 10
                             color: "#FBBF24"

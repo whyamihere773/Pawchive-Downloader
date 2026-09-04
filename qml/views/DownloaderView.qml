@@ -8,6 +8,13 @@ ScrollView {
 
     property var bridge: null
 
+    function tr(key, fallback) {
+        if (!Lang) return fallback !== undefined ? fallback : key
+        var _ = Lang.activeLanguage
+        var res = Lang.t(key)
+        return (res && res !== key) ? res : (fallback !== undefined ? fallback : res)
+    }
+
     contentWidth: availableWidth
     contentHeight: contentCol.implicitHeight + 16
     clip: true
@@ -23,7 +30,7 @@ ScrollView {
         // Section 1: Download Location
         CardSection {
             Layout.fillWidth: true
-            title: "Download Destination"
+            title: root.tr("section_destination", "Download Destination")
             iconText: "📁"
 
             RowLayout {
@@ -44,21 +51,21 @@ ScrollView {
                 }
 
                 StyledButton {
-                    text: "Browse..."
+                    text: root.tr("btn_browse", "Browse...")
                     iconText: "📂"
                     variant: "outline"
-                    tooltip: "Select destination folder for downloads"
+                    tooltip: root.tr("btn_browse_tip", "Select destination folder for downloads")
                     onClicked: {
                         if (root.bridge) root.bridge.selectDownloadDirectory()
                     }
                 }
 
                 StyledButton {
-                    text: "Open"
+                    text: root.tr("btn_open", "Open")
                     iconText: "↗"
                     variant: "ghost"
                     implicitWidth: 70
-                    tooltip: "Open current downloads directory in Windows File Explorer"
+                    tooltip: root.tr("btn_open_tip", "Open current downloads directory in Windows File Explorer")
                     onClicked: {
                         if (root.bridge) root.bridge.openDownloadFolder()
                     }
@@ -69,7 +76,7 @@ ScrollView {
         // Section 2: Character & Keyword Filters
         CardSection {
             Layout.fillWidth: true
-            title: "Filters & Keyword Rules"
+            title: root.tr("section_filters", "Filters & Keyword Rules")
             iconText: "🎯"
 
             ColumnLayout {
@@ -85,14 +92,14 @@ ScrollView {
                         Layout.fillWidth: true
                         spacing: 4
                         Text {
-                            text: "Filter by Character(s) (comma-separated):"
+                            text: root.tr("label_filter_characters", "Filter by Character(s) (comma-separated):")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 11
                             color: "#94A3B8"
                         }
                         StyledTextField {
                             Layout.fillWidth: true
-                            placeholderText: "e.g., Tifa, Aerith, (Cloud, Zack)"
+                            placeholderText: root.tr("placeholder_characters", "e.g., Tifa, Aerith, (Cloud, Zack)")
                             text: root.bridge ? root.bridge.filterCharacters : ""
                             onTextChanged: {
                                 if (root.bridge && root.bridge.filterCharacters !== text) {
@@ -106,16 +113,22 @@ ScrollView {
                     ColumnLayout {
                         spacing: 4
                         Text {
-                            text: "Scope:"
+                            text: root.tr("label_scope", "Scope:")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 11
                             color: "#94A3B8"
                         }
                         StyledButton {
                             implicitWidth: 100
-                            text: root.bridge ? ("Filter: " + (root.bridge.characterScope.charAt(0).toUpperCase() + root.bridge.characterScope.slice(1))) : "Filter: Title"
+                            text: {
+                                if (!root.bridge) return root.tr("scope_filter_title", "Filter: Title")
+                                var s = root.bridge.characterScope
+                                if (s === "content") return root.tr("scope_filter_content", "Filter: Content")
+                                if (s === "both") return root.tr("scope_filter_both", "Filter: Both")
+                                return root.tr("scope_filter_title", "Filter: Title")
+                            }
                             variant: "outline"
-                            tooltip: "Switch character filtering scope (Title, Content, or Both)"
+                            tooltip: root.tr("tooltip_scope_character", "Switch character filtering scope (Title, Content, or Both)")
                             onClicked: {
                                 if (!root.bridge) return
                                 if (root.bridge.characterScope === "title") root.bridge.characterScope = "content"
@@ -138,7 +151,7 @@ ScrollView {
                         spacing: 4
 
                         Text {
-                            text: "🚫 Skip with words (comma-separated):"
+                            text: root.tr("label_skip_words", "🚫 Skip with words (comma-separated):")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 11
                             color: "#94A3B8"
@@ -150,7 +163,7 @@ ScrollView {
 
                             StyledTextField {
                                 Layout.fillWidth: true
-                                placeholderText: "e.g., WM, WIP, sketch, preview"
+                                placeholderText: root.tr("placeholder_skip_words", "e.g., WM, WIP, sketch, preview")
                                 text: root.bridge ? root.bridge.skipWords : ""
                                 onTextChanged: {
                                     if (root.bridge && root.bridge.skipWords !== text) {
@@ -161,9 +174,14 @@ ScrollView {
 
                             StyledButton {
                                 implicitWidth: 100
-                                text: root.bridge ? ("Scope: " + (root.bridge.skipScope.charAt(0).toUpperCase() + root.bridge.skipScope.slice(1))) : "Scope: Posts"
+                                text: {
+                                    if (!root.bridge) return root.tr("scope_skip_posts", "Scope: Posts")
+                                    return (root.bridge.skipScope === "files")
+                                        ? root.tr("scope_skip_files", "Scope: Files")
+                                        : root.tr("scope_skip_posts", "Scope: Posts")
+                                }
                                 variant: "outline"
-                                tooltip: "Switch skip filter scope between Post Titles and Filenames"
+                                tooltip: root.tr("tooltip_skip_scope", "Switch skip filter scope between Post Titles and Filenames")
                                 onClicked: {
                                     if (!root.bridge) return
                                     root.bridge.skipScope = (root.bridge.skipScope === "posts") ? "files" : "posts"
@@ -179,7 +197,7 @@ ScrollView {
                         spacing: 4
 
                         Text {
-                            text: "✂️ Remove words from name:"
+                            text: root.tr("label_remove_words", "✂️ Remove words from name:")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 11
                             color: "#94A3B8"
@@ -187,7 +205,7 @@ ScrollView {
 
                         StyledTextField {
                             Layout.fillWidth: true
-                            placeholderText: "e.g., patreon, HD, [sample]"
+                            placeholderText: root.tr("placeholder_remove_words", "e.g., patreon, HD, [sample]")
                             text: root.bridge ? root.bridge.removeWords : ""
                             onTextChanged: {
                                 if (root.bridge && root.bridge.removeWords !== text) {
@@ -200,10 +218,11 @@ ScrollView {
             }
         }
 
+
         // Section 3: File Types & Content Filters
         CardSection {
             Layout.fillWidth: true
-            title: "Filter Files & Content Mode"
+            title: root.tr("section_file_types", "Filter Files & Content Mode")
             iconText: "🗂️"
 
             ColumnLayout {
@@ -216,49 +235,49 @@ ScrollView {
                     spacing: 6
 
                     FilterCheckbox {
-                        label: "All Files"
+                        label: root.tr("filter_all_files", "All Files")
                         iconText: "📁"
-                        tooltip: "Download all attachments and media files"
+                        tooltip: root.tr("filter_all_files_tip", "Download all attachments and media files")
                         checked: root.bridge ? root.bridge.filterType === "all" : true
                         onClicked: if (root.bridge) root.bridge.filterType = "all"
                     }
 
                     FilterCheckbox {
-                        label: "Images/GIFs"
+                        label: root.tr("filter_images", "Images/GIFs")
                         iconText: "🖼️"
-                        tooltip: "Download image formats (PNG, JPG, GIF, WebP, BMP)"
+                        tooltip: root.tr("filter_images_tip", "Download image formats (PNG, JPG, GIF, WebP, BMP)")
                         checked: root.bridge ? root.bridge.filterType === "images" : false
                         onClicked: if (root.bridge) root.bridge.filterType = "images"
                     }
 
                     FilterCheckbox {
-                        label: "Videos"
+                        label: root.tr("filter_videos", "Videos")
                         iconText: "🎬"
-                        tooltip: "Download video formats (MP4, MKV, WebM, MOV, M4V)"
+                        tooltip: root.tr("filter_videos_tip", "Download video formats (MP4, MKV, WebM, MOV, M4V)")
                         checked: root.bridge ? root.bridge.filterType === "videos" : false
                         onClicked: if (root.bridge) root.bridge.filterType = "videos"
                     }
 
                     FilterCheckbox {
-                        label: "Archives"
+                        label: root.tr("filter_archives", "Archives")
                         iconText: "📦"
-                        tooltip: "Download compressed archive packages (ZIP, RAR, 7Z, TAR)"
+                        tooltip: root.tr("filter_archives_tip", "Download compressed archive packages (ZIP, RAR, 7Z, TAR)")
                         checked: root.bridge ? root.bridge.filterType === "archives" : false
                         onClicked: if (root.bridge) root.bridge.filterType = "archives"
                     }
 
                     FilterCheckbox {
-                        label: "Audio"
+                        label: root.tr("filter_audio", "Audio")
                         iconText: "🎵"
-                        tooltip: "Download audio formats (MP3, FLAC, WAV, M4A, OGG)"
+                        tooltip: root.tr("filter_audio_tip", "Download audio formats (MP3, FLAC, WAV, M4A, OGG)")
                         checked: root.bridge ? root.bridge.filterType === "audio" : false
                         onClicked: if (root.bridge) root.bridge.filterType = "audio"
                     }
 
                     FilterCheckbox {
-                        label: "Links Only"
+                        label: root.tr("filter_links_only", "Links Only")
                         iconText: "🔗"
-                        tooltip: "Scan post descriptions & comments for external cloud links (Mega.nz, Google Drive, Dropbox, Pixeldrain, etc.) — no media files are downloaded. Use 'Export Links' in Queue tab to save results."
+                        tooltip: root.tr("filter_links_only_tip", "Scan post descriptions & comments for external cloud links (Mega.nz, Google Drive, Dropbox, Pixeldrain, etc.) — no media files are downloaded. Use 'Export Links' in Queue tab to save results.")
                         checked: root.bridge ? root.bridge.filterType === "links" : false
                         onClicked: if (root.bridge) root.bridge.filterType = "links"
                     }
@@ -270,52 +289,52 @@ ScrollView {
                     spacing: 12
 
                     FilterCheckbox {
-                        label: "Favorite Mode"
+                        label: root.tr("opt_favorite_mode", "Favorite Mode")
                         iconText: "⭐"
                         activeColor: "#FBBF24"
-                        tooltip: "Only download posts favorited/bookmarked by the creator"
+                        tooltip: root.tr("opt_favorite_mode_tip", "Only download posts favorited/bookmarked by the creator")
                         checked: root.bridge ? root.bridge.favoriteMode : false
                         onClicked: if (root.bridge) root.bridge.favoriteMode = !root.bridge.favoriteMode
                     }
 
                     StyledCheckBox {
-                        text: "Skip Archives"
-                        tooltip: "Skip all archive files (.zip, .rar, .7z) regardless of active category"
+                        text: root.tr("opt_skip_archives", "Skip Archives")
+                        tooltip: root.tr("opt_skip_archives_tip", "Skip all archive files (.zip, .rar, .7z) regardless of active category")
                         checked: root.bridge ? root.bridge.skipArchives : false
                         onCheckedChanged: if (root.bridge) root.bridge.skipArchives = checked
                     }
 
                     StyledCheckBox {
-                        text: "Download thumbnails only"
-                        tooltip: "Download lightweight preview thumbnails instead of full original files"
+                        text: root.tr("opt_thumbnails_only", "Download thumbnails only")
+                        tooltip: root.tr("opt_thumbnails_only_tip", "Download lightweight preview thumbnails instead of full original files")
                         checked: root.bridge ? root.bridge.downloadThumbnailsOnly : false
                         onCheckedChanged: if (root.bridge) root.bridge.downloadThumbnailsOnly = checked
                     }
 
                     StyledCheckBox {
-                        text: "Scan content for images"
-                        tooltip: "Scan HTML post descriptions for embedded inline artwork"
+                        text: root.tr("opt_scan_content_images", "Scan content for images")
+                        tooltip: root.tr("opt_scan_content_images_tip", "Scan HTML post descriptions for embedded inline artwork")
                         checked: root.bridge ? root.bridge.scanContentImages : true
                         onCheckedChanged: if (root.bridge) root.bridge.scanContentImages = checked
                     }
 
                     StyledCheckBox {
-                        text: "Compress to WebP"
-                        tooltip: "Convert downloaded PNG and JPG images to compressed WebP format"
+                        text: root.tr("opt_compress_webp", "Compress to WebP")
+                        tooltip: root.tr("opt_compress_webp_tip", "Convert downloaded PNG and JPG images to compressed WebP format")
                         checked: root.bridge ? root.bridge.compressWebp : false
                         onCheckedChanged: if (root.bridge) root.bridge.compressWebp = checked
                     }
 
                     StyledCheckBox {
-                        text: "Download Embedded Media (yt-dlp)"
-                        tooltip: "Download embedded video players (Vimeo, YouTube, Streamable, RedGifs, etc.) via standalone yt-dlp"
+                        text: root.tr("opt_download_embeds", "Download Embedded Media (yt-dlp)")
+                        tooltip: root.tr("opt_download_embeds_tip", "Download embedded video players (Vimeo, YouTube, Streamable, RedGifs, etc.) via standalone yt-dlp")
                         checked: root.bridge ? root.bridge.downloadEmbeds : true
                         onCheckedChanged: if (root.bridge) root.bridge.downloadEmbeds = checked
                     }
 
                     StyledCheckBox {
-                        text: "Keep Duplicates"
-                        tooltip: "Re-download files even if identical files already exist in destination"
+                        text: root.tr("opt_keep_duplicates", "Keep Duplicates")
+                        tooltip: root.tr("opt_keep_duplicates_tip", "Re-download files even if identical files already exist in destination")
                         checked: root.bridge ? root.bridge.keepDuplicates : false
                         onCheckedChanged: if (root.bridge) root.bridge.keepDuplicates = checked
                     }
@@ -326,7 +345,7 @@ ScrollView {
         // Section 4: Advanced Settings
         CardSection {
             Layout.fillWidth: true
-            title: "Advanced Structure & Performance"
+            title: root.tr("section_advanced", "Advanced Structure & Performance")
             iconText: "⚙️"
 
             ColumnLayout {
@@ -338,39 +357,39 @@ ScrollView {
                     spacing: 14
 
                     StyledCheckBox {
-                        text: "Subfolder per post"
-                        tooltip: "Organize downloads into subfolders named after each post"
+                        text: root.tr("opt_subfolder_per_post", "Subfolder per post")
+                        tooltip: root.tr("opt_subfolder_per_post_tip", "Organize downloads into subfolders named after each post")
                         checked: root.bridge ? root.bridge.subfolderPerPost : true
                         onCheckedChanged: if (root.bridge) root.bridge.subfolderPerPost = checked
                     }
 
                     StyledCheckBox {
-                        text: "Date Prefix"
-                        tooltip: "Prefix subfolder names with the post publication date [YYYY-MM-DD]"
+                        text: root.tr("opt_date_prefix", "Date Prefix")
+                        tooltip: root.tr("opt_date_prefix_tip", "Prefix subfolder names with the post publication date [YYYY-MM-DD]")
                         checked: root.bridge ? root.bridge.datePrefix : true
                         onCheckedChanged: if (root.bridge) root.bridge.datePrefix = checked
                     }
 
                     StyledCheckBox {
-                        text: "Separate folders by Known.txt"
-                        tooltip: "Sort files into subfolders corresponding to matched characters/series from Known.txt"
+                        text: root.tr("opt_separate_known", "Separate folders by Known.txt")
+                        tooltip: root.tr("opt_separate_known_tip", "Sort files into subfolders corresponding to matched characters/series from Known.txt")
                         checked: root.bridge ? root.bridge.separateFoldersByKnown : false
                         onCheckedChanged: if (root.bridge) root.bridge.separateFoldersByKnown = checked
                     }
 
                     StyledCheckBox {
-                        text: "Download Revisions"
-                        tooltip: "Download older superseded revisions of edited posts"
+                        text: root.tr("opt_download_revisions", "Download Revisions")
+                        tooltip: root.tr("opt_download_revisions_tip", "Download older superseded revisions of edited posts")
                         checked: root.bridge ? root.bridge.downloadRevisions : false
                         onCheckedChanged: if (root.bridge) root.bridge.downloadRevisions = checked
                     }
 
                     StyledCheckBox {
                         id: adaptiveCheck
-                        text: "Adaptive Threading"
+                        text: root.tr("opt_adaptive_threading", "Adaptive Threading")
                         tooltip: (root.bridge && root.bridge.threadsLocked)
-                                 ? "Adaptive Threading is disabled because Thread Lock is active"
-                                 : "Automatically scale worker thread count based on network conditions and 429 rate limits"
+                                 ? root.tr("opt_adaptive_disabled_tip", "Adaptive Threading is disabled because Thread Lock is active")
+                                 : root.tr("opt_adaptive_threading_tip", "Automatically scale worker thread count based on network conditions and 429 rate limits")
                         enabled: root.bridge ? !root.bridge.threadsLocked : true
                         opacity: enabled ? 1.0 : 0.38
                         Behavior on opacity { NumberAnimation { duration: 180 } }
@@ -379,8 +398,8 @@ ScrollView {
                     }
 
                     StyledCheckBox {
-                        text: "Manga Mode (Oldest First)"
-                        tooltip: "Sort posts chronologically (oldest first) so chapters and pages download in reading order"
+                        text: root.tr("opt_manga_mode", "Manga Mode (Oldest First)")
+                        tooltip: root.tr("opt_manga_mode_tip", "Sort posts chronologically (oldest first) so chapters and pages download in reading order")
                         checked: root.bridge ? root.bridge.mangaMode : false
                         onCheckedChanged: if (root.bridge) root.bridge.mangaMode = checked
                     }
@@ -394,7 +413,7 @@ ScrollView {
                     Behavior on opacity { NumberAnimation { duration: 180 } }
 
                     Text {
-                        text: "Concurrent Workers:"
+                        text: root.tr("label_concurrent_workers", "Concurrent Workers:")
                         font.family: "Segoe UI, sans-serif"
                         font.pixelSize: 12
                         color: "#94A3B8"
@@ -458,7 +477,9 @@ ScrollView {
                             }
 
                             Text {
-                                text: (root.bridge && root.bridge.threadsLocked) ? "Locked" : "Lock"
+                                text: (root.bridge && root.bridge.threadsLocked)
+                                      ? root.tr("btn_thread_locked", "Locked")
+                                      : root.tr("btn_thread_lock", "Lock")
                                 font.family: "Segoe UI, sans-serif"
                                 font.bold: true
                                 font.pixelSize: 11
@@ -484,8 +505,8 @@ ScrollView {
                             delay: 400
                             timeout: 5000
                             text: (root.bridge && root.bridge.threadsLocked)
-                                  ? "Thread Lock Active: Worker concurrency is locked at " + (root.bridge ? root.bridge.threadsCount : 4) + ". Adaptive scaling is disabled and HTTP 429 cooldown is 30s."
-                                  : "Lock Thread Sweetspot: Lock current concurrency. Disables adaptive scaling and prevents rate limits from altering your thread count."
+                                  ? (root.tr("tip_thread_locked_active", "Thread Lock Active: Worker concurrency is locked. Adaptive scaling is disabled and HTTP 429 cooldown is 30s."))
+                                  : (root.tr("tip_thread_lock", "Lock Thread Sweetspot: Lock current concurrency. Disables adaptive scaling and prevents rate limits from altering your thread count."))
                             contentItem: Text {
                                 text: lockToolTip.text
                                 font.family: "Segoe UI, Inter, sans-serif"
@@ -513,10 +534,10 @@ ScrollView {
                             id: cpuBadgeText
                             anchors.centerIn: parent
                             text: (root.bridge && root.bridge.threadsLocked)
-                                  ? ("🔒 Locked: " + root.bridge.threadsCount + "T")
+                                  ? ("🔒 " + root.tr("badge_locked", "Locked:") + " " + root.bridge.threadsCount + "T")
                                   : (root.bridge && root.bridge.adaptiveThreading
-                                     ? "⚡ Adaptive"
-                                     : (root.bridge ? ("⚡ CPU Cores: " + root.bridge.maxCpuThreads) : "⚡ CPU Auto"))
+                                     ? root.tr("badge_adaptive", "⚡ Adaptive")
+                                     : (root.bridge ? (root.tr("badge_cpu_cores", "⚡ CPU Cores:") + " " + root.bridge.maxCpuThreads) : root.tr("badge_cpu_auto", "⚡ CPU Auto")))
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 10
                             color: (root.bridge && root.bridge.threadsLocked)
@@ -531,7 +552,7 @@ ScrollView {
                     spacing: 10
 
                     Text {
-                        text: "⏱️ Thread Delay After Download:"
+                        text: root.tr("label_thread_delay", "⏱️ Thread Delay After Download:")
                         font.family: "Segoe UI, sans-serif"
                         font.pixelSize: 12
                         color: "#94A3B8"
@@ -562,12 +583,13 @@ ScrollView {
                     }
 
                     Text {
-                        text: "(anti-429 cooldown)"
+                        text: root.tr("label_anti_429", "(anti-429 cooldown)")
                         font.family: "Segoe UI, sans-serif"
                         font.pixelSize: 11
                         color: "#64748B"
                     }
                 }
+
 
                 // Post-completion toggles
                 RowLayout {
@@ -623,7 +645,7 @@ ScrollView {
                                 spacing: 1
                                 Layout.fillWidth: true
                                 Text {
-                                    text: "Save post_info.txt"
+                                    text: root.tr("toggle_save_post_info", "Save post_info.txt")
                                     color: saveMetaToggle.active ? "#E2E8F0" : "#64748B"
                                     font.pixelSize: 12
                                     font.family: "Segoe UI, sans-serif"
@@ -631,7 +653,7 @@ ScrollView {
                                     Behavior on color { ColorAnimation { duration: 180 } }
                                 }
                                 Text {
-                                    text: "caption, tags & comments"
+                                    text: root.tr("toggle_save_post_info_sub", "caption, tags & comments")
                                     color: saveMetaToggle.active ? "#7C3AED" : "#374151"
                                     font.pixelSize: 9
                                     font.family: "Segoe UI, sans-serif"
@@ -702,7 +724,7 @@ ScrollView {
                                 spacing: 1
                                 Layout.fillWidth: true
                                 Text {
-                                    text: "Open folder when done"
+                                    text: root.tr("toggle_open_folder", "Open folder when done")
                                     color: openFolderToggle.active ? "#E2E8F0" : "#64748B"
                                     font.pixelSize: 12
                                     font.family: "Segoe UI, sans-serif"
@@ -710,7 +732,7 @@ ScrollView {
                                     Behavior on color { ColorAnimation { duration: 180 } }
                                 }
                                 Text {
-                                    text: "auto-opens on completion"
+                                    text: root.tr("toggle_open_folder_sub", "auto-opens on completion")
                                     color: openFolderToggle.active ? "#10B981" : "#374151"
                                     font.pixelSize: 9
                                     font.family: "Segoe UI, sans-serif"
@@ -743,7 +765,7 @@ ScrollView {
         // Batch Queue Section
         CardSection {
             Layout.fillWidth: true
-            title: "Batch Download Queue"
+            title: root.tr("section_batch_queue", "Batch Download Queue")
             iconText: "📋"
 
             ColumnLayout {
@@ -751,7 +773,7 @@ ScrollView {
                 spacing: 10
 
                 Text {
-                    text: "Paste multiple creator / album URLs below, one per line. Each URL uses its own folder inside the download destination."
+                    text: root.tr("desc_batch_queue", "Paste multiple creator / album URLs below, one per line. Each URL uses its own folder inside the download destination.")
                     font.family: "Segoe UI, sans-serif"
                     font.pixelSize: 11
                     color: "#64748B"
@@ -785,10 +807,10 @@ ScrollView {
                     spacing: 8
 
                     StyledButton {
-                        text: "Add All to Queue"
+                        text: root.tr("btn_add_all_queue", "Add All to Queue")
                         iconText: "▶"
                         variant: "primary"
-                        tooltip: "Parse and start downloading all URLs above"
+                        tooltip: root.tr("btn_add_all_queue_tip", "Parse and start downloading all URLs above")
                         enabled: batchInput.text.trim().length > 0 && root.bridge && !root.bridge.isDownloading
                         onClicked: {
                             if (root.bridge) {
@@ -801,7 +823,7 @@ ScrollView {
                     }
 
                     StyledButton {
-                        text: "Clear"
+                        text: root.tr("btn_clear", "Clear")
                         iconText: "✕"
                         variant: "ghost"
                         onClicked: batchInput.text = ""
@@ -810,7 +832,7 @@ ScrollView {
                     Text {
                         id: batchCountLabel
                         text: batchInput.text.trim().length > 0 ?
-                              batchInput.text.split("\n").filter(function(l){ return l.trim().startsWith("http") }).length + " URL(s) detected" : ""
+                              (batchInput.text.split("\n").filter(function(l){ return l.trim().startsWith("http") }).length + " " + root.tr("label_urls_detected", "URL(s) detected")) : ""
                         color: "#64748B"
                         font.pixelSize: 11
                         font.family: "Segoe UI, sans-serif"
@@ -818,6 +840,7 @@ ScrollView {
                 }
             }
         }
+
 
     }
 

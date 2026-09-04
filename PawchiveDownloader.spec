@@ -15,6 +15,7 @@ project_root = os.path.abspath(SPECPATH)
 datas = [
     (os.path.join(project_root, 'qml'), 'qml'),
     (os.path.join(project_root, 'assets'), 'assets'),
+    (os.path.join(project_root, 'locales'), 'locales'),
     (os.path.join(project_root, 'config', 'settings.example.json'), 'config'),
 ]
 

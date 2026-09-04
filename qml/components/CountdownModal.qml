@@ -10,8 +10,16 @@ Item {
     property var bridge: null
     property bool isOpen: false
 
+    function tr(key, fallback) {
+        if (!Lang) return fallback !== undefined ? fallback : key
+        var _ = Lang.activeLanguage
+        var res = Lang.t(key)
+        return (res && res !== key) ? res : (fallback !== undefined ? fallback : res)
+    }
+
     // Action label displayed to the user ("Shutdown", "Restart", etc.)
     property string actionLabel: ""
+
 
     readonly property int totalSeconds: 15
 
@@ -157,7 +165,7 @@ Item {
                     Layout.fillWidth: true
 
                     Text {
-                        text: root.actionLabel + " in..."
+                        text: root.actionLabel + " " + root.tr("modal_countdown_in", "in...")
                         font.family: "Segoe UI, Inter, sans-serif"
                         font.pixelSize: 16
                         font.weight: Font.Bold
@@ -165,7 +173,7 @@ Item {
                     }
 
                     Text {
-                        text: "Download finished. Click Cancel to abort."
+                        text: root.tr("modal_download_finished", "Download finished. Click Cancel to abort.")
                         font.family: "Segoe UI, Inter, sans-serif"
                         font.pixelSize: 11
                         color: "#94A3B8"
@@ -273,12 +281,8 @@ Item {
                         leftMargin: 14; rightMargin: 14
                     }
                     text: {
-                        if (root.actionLabel === "Shutdown")   return "Your PC will shut down when the timer reaches 0."
-                        if (root.actionLabel === "Restart")    return "Your PC will restart when the timer reaches 0."
-                        if (root.actionLabel === "Hibernate")  return "Your PC will hibernate when the timer reaches 0."
-                        if (root.actionLabel === "Sleep")      return "Your PC will go to sleep when the timer reaches 0."
-                        if (root.actionLabel === "Close App")  return "Pawchive Downloader will close when the timer reaches 0."
-                        return "The action will run when the timer reaches 0."
+                        if (root.actionLabel === "Close App") return root.tr("modal_auto_close_notice", "Pawchive Downloader will close when the timer reaches 0.")
+                        return root.tr("modal_auto_action_notice", "The action will run when the timer reaches 0.")
                     }
                     font.family: "Segoe UI, Inter, sans-serif"
                     font.pixelSize: 12
@@ -317,7 +321,7 @@ Item {
                     }
 
                     Text {
-                        text: "Cancel — Don't " + root.actionLabel
+                        text: root.tr("modal_cancel_action", "Cancel — Don't") + " " + root.actionLabel
                         font.family: "Segoe UI, Inter, sans-serif"
                         font.pixelSize: 13
                         font.weight: Font.DemiBold
@@ -325,6 +329,7 @@ Item {
                         anchors.verticalCenter: parent.verticalCenter
                     }
                 }
+
 
                 MouseArea {
                     id: cancelMouse

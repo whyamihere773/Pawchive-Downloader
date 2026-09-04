@@ -10,6 +10,13 @@ Rectangle {
     signal queueRequested()
     signal settingsRequested()
 
+    function tr(key, fallback) {
+        if (!Lang) return fallback !== undefined ? fallback : key
+        var _ = Lang.activeLanguage
+        var res = Lang.t(key)
+        return (res && res !== key) ? res : (fallback !== undefined ? fallback : res)
+    }
+
     color: "#12151C"
     border.color: "#242A38"
     border.width: 1
@@ -45,7 +52,7 @@ Rectangle {
                     cursorShape: Qt.PointingHandCursor
                     ToolTip.visible: containsMouse
                     ToolTip.delay: 400
-                    ToolTip.text: "Navigate back"
+                    ToolTip.text: tr("nav_back", "Navigate back")
                 }
             }
 
@@ -88,7 +95,7 @@ Rectangle {
                     cursorShape: Qt.PointingHandCursor
                     ToolTip.visible: containsMouse
                     ToolTip.delay: 400
-                    ToolTip.text: root.bridge && root.bridge.isDownloading ? "Cancel active download" : "Refresh & Start download"
+                    ToolTip.text: root.bridge && root.bridge.isDownloading ? (tr("nav_cancel_download", "Cancel active download")) : (tr("nav_start_download", "Refresh & Start download"))
                     onClicked: {
                         if (root.bridge && root.bridge.isDownloading) {
                             root.bridge.cancelDownload()
@@ -204,7 +211,7 @@ Rectangle {
                         cursorShape: Qt.PointingHandCursor
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
-                        ToolTip.text: "Clear address bar"
+                        ToolTip.text: tr("nav_clear_url", "Clear address bar")
                         onClicked: urlInput.text = ""
                     }
                 }
@@ -228,7 +235,7 @@ Rectangle {
                 spacing: 6
 
                 Text {
-                    text: "📄 Pages:"
+                    text: tr("nav_pages", "📄 Pages:")
                     font.family: "Segoe UI, sans-serif"
                     font.pixelSize: 11
                     font.weight: Font.Medium
@@ -246,11 +253,11 @@ Rectangle {
                     border.width: 1
 
                     ToolTip {
-                        text: "Start page number (blank = 1)"
+                        text: tr("nav_start_page_tip", "Start page number (blank = 1)")
                         visible: pStartMouse.containsMouse
                         delay: 400
                         contentItem: Text {
-                            text: "Start page number (blank = 1)"
+                            text: tr("nav_start_page_tip", "Start page number (blank = 1)")
                             font.family: "Segoe UI, Inter, sans-serif"
                             font.pixelSize: 11
                             color: "#F1F5F9"
@@ -320,11 +327,11 @@ Rectangle {
                     border.width: 1
 
                     ToolTip {
-                        text: "End page number (blank = all pages)"
+                        text: tr("nav_end_page_tip", "End page number (blank = all pages)")
                         visible: pEndMouse.containsMouse
                         delay: 400
                         contentItem: Text {
-                            text: "End page number (blank = all pages)"
+                            text: tr("nav_end_page_tip", "End page number (blank = all pages)")
                             font.family: "Segoe UI, Inter, sans-serif"
                             font.pixelSize: 11
                             color: "#F1F5F9"
@@ -359,7 +366,7 @@ Rectangle {
 
                         Text {
                             anchors.centerIn: parent
-                            text: "All"
+                            text: tr("nav_all_pages", "All")
                             color: "#64748B"
                             font.pixelSize: 11
                             visible: !pEndInput.text

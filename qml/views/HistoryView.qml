@@ -9,6 +9,13 @@ Rectangle {
     property var bridge: null
     color: "#0F1117"
 
+    function tr(key, fallback) {
+        if (!Lang) return fallback !== undefined ? fallback : key
+        var _ = Lang.activeLanguage
+        var res = Lang.t(key)
+        return (res && res !== key) ? res : (fallback !== undefined ? fallback : res)
+    }
+
     // Reload history whenever something changes
     Connections {
         target: root.bridge
@@ -51,7 +58,7 @@ Rectangle {
             spacing: 8
 
             Text {
-                text: "📜 Download History"
+                text: "📜 " + root.tr("title_history", "Download History")
                 font.family: "Segoe UI, Inter, sans-serif"
                 font.pixelSize: 14
                 font.weight: Font.Bold
@@ -72,7 +79,7 @@ Rectangle {
             Item { Layout.fillWidth: true }
 
             StyledButton {
-                text: "Refresh"
+                text: root.tr("btn_refresh", "Refresh")
                 iconText: "🔄"
                 variant: "outline"
                 implicitHeight: 28
@@ -80,7 +87,7 @@ Rectangle {
             }
 
             StyledButton {
-                text: "Clear History"
+                text: root.tr("btn_clear_history", "Clear History")
                 iconText: "🗑"
                 variant: "ghost"
                 implicitHeight: 28
@@ -90,6 +97,7 @@ Rectangle {
                 }
             }
         }
+
 
         // History list
         Rectangle {
@@ -211,7 +219,7 @@ Rectangle {
                                 Layout.alignment: Qt.AlignRight
                                 Text { text: "📦"; font.pixelSize: 10 }
                                 Text {
-                                    text: model.files + " files"
+                                    text: model.files + " " + root.tr("label_files", "files")
                                     font.family: "Segoe UI, sans-serif"
                                     font.pixelSize: 11
                                     color: "#94A3B8"
@@ -258,13 +266,14 @@ Rectangle {
                 // Empty state
                 Text {
                     anchors.centerIn: parent
-                    text: "No download history yet.\nStart downloading a creator to see entries here."
+                    text: root.tr("empty_history", "No download history yet.\nStart downloading a creator to see entries here.")
                     color: "#475569"
                     font.family: "Segoe UI, sans-serif"
                     font.pixelSize: 13
                     horizontalAlignment: Text.AlignHCenter
                     visible: historyList.count === 0
                 }
+
             }
         }
     }

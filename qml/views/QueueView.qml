@@ -9,6 +9,13 @@ Rectangle {
     property var bridge: null
     color: "#0F1117"
 
+    function tr(key, fallback) {
+        if (!Lang) return fallback !== undefined ? fallback : key
+        var _ = Lang.activeLanguage
+        var res = Lang.t(key)
+        return (res && res !== key) ? res : (fallback !== undefined ? fallback : res)
+    }
+
     // 1-second live refresh timer — forces active downloading rows to repaint live speed/ETA
     Timer {
         id: liveRefreshTimer
@@ -36,7 +43,7 @@ Rectangle {
             spacing: 8
 
             Text {
-                text: "📋 Task Queue"
+                text: "📋 " + root.tr("title_task_queue", "Task Queue")
                 font.family: "Segoe UI, Inter, sans-serif"
                 font.pixelSize: 14
                 font.weight: Font.Bold
@@ -63,11 +70,11 @@ Rectangle {
 
                 StyledButton {
                     id: retryFailedBtn
-                    text: "Retry Failed"
+                    text: root.tr("btn_retry_failed", "Retry Failed")
                     iconText: "🔁"
                     variant: (root.bridge && root.bridge.queueModel && root.bridge.queueModel.failedCount > 0) ? "danger" : "ghost"
                     implicitHeight: 28
-                    tooltip: "Open selective retry dialog to inspect and re-download failed files"
+                    tooltip: root.tr("tip_retry_failed", "Open selective retry dialog to inspect and re-download failed files")
                     opacity: (root.bridge && root.bridge.queueModel && root.bridge.queueModel.failedCount > 0) ? 1.0 : 0.45
                     Behavior on opacity { NumberAnimation { duration: 180 } }
                     onClicked: {
@@ -77,30 +84,30 @@ Rectangle {
             }
 
             StyledButton {
-                text: "Download Links"
+                text: root.tr("btn_download_links", "Download Links")
                 iconText: "☁️"
                 variant: (root.bridge && root.bridge.hasHarvestedLinks) ? "primary" : "outline"
                 implicitHeight: 28
-                tooltip: "Open dialog to download harvested links via Mega.nz, Google Drive, Dropbox, or GoFile"
+                tooltip: root.tr("tip_download_links", "Open dialog to download harvested links via Mega.nz, Google Drive, Dropbox, or GoFile")
                 opacity: (root.bridge && root.bridge.hasHarvestedLinks) ? 1.0 : 0.6
                 onClicked: cloudModal.isOpen = true
             }
 
             StyledButton {
-                text: "Export Links"
+                text: root.tr("btn_export_links", "Export Links")
                 iconText: "🔗"
                 variant: "outline"
                 implicitHeight: 28
-                tooltip: "Export harvested external cloud links to text file"
+                tooltip: root.tr("tip_export_links", "Export harvested external cloud links to text file")
                 onClicked: if (root.bridge) root.bridge.exportAllLinks()
             }
 
             StyledButton {
-                text: "Clear Queue"
+                text: root.tr("btn_clear_queue", "Clear Queue")
                 iconText: "🗑"
                 variant: "ghost"
                 implicitHeight: 28
-                tooltip: "Remove all tasks from queue"
+                tooltip: root.tr("tip_clear_queue", "Remove all tasks from queue")
                 onClicked: if (root.bridge && root.bridge.queueModel) root.bridge.queueModel.clear()
             }
         }
@@ -113,10 +120,10 @@ Rectangle {
             // Filter Tab Component
             Repeater {
                 model: [
-                    { key: "all", label: "All", icon: "📁", count: root.bridge && root.bridge.queueModel ? root.bridge.queueModel.totalCount : 0, color: "#38BDF8", tip: "Show all download tasks in queue" },
-                    { key: "downloading", label: "Active", icon: "⚡", count: root.bridge && root.bridge.queueModel ? root.bridge.queueModel.downloadingCount : 0, color: "#0EA5E9", tip: "Show active/in-progress downloads" },
-                    { key: "completed", label: "Completed", icon: "✔", count: root.bridge && root.bridge.queueModel ? root.bridge.queueModel.completedCount : 0, color: "#10B981", tip: "Show successfully completed downloads" },
-                    { key: "failed", label: "Errors / Failed", icon: "✖", count: root.bridge && root.bridge.queueModel ? root.bridge.queueModel.failedCount : 0, color: "#EF4444", tip: "Show failed download tasks" }
+                    { key: "all", labelKey: "qtab_all", defaultLabel: "All", icon: "📁", count: root.bridge && root.bridge.queueModel ? root.bridge.queueModel.totalCount : 0, color: "#38BDF8", tipKey: "qtab_all_tip", defaultTip: "Show all download tasks in queue" },
+                    { key: "downloading", labelKey: "qtab_active", defaultLabel: "Active", icon: "⚡", count: root.bridge && root.bridge.queueModel ? root.bridge.queueModel.downloadingCount : 0, color: "#0EA5E9", tipKey: "qtab_active_tip", defaultTip: "Show active/in-progress downloads" },
+                    { key: "completed", labelKey: "qtab_completed", defaultLabel: "Completed", icon: "✔", count: root.bridge && root.bridge.queueModel ? root.bridge.queueModel.completedCount : 0, color: "#10B981", tipKey: "qtab_completed_tip", defaultTip: "Show successfully completed downloads" },
+                    { key: "failed", labelKey: "qtab_failed", defaultLabel: "Errors / Failed", icon: "✖", count: root.bridge && root.bridge.queueModel ? root.bridge.queueModel.failedCount : 0, color: "#EF4444", tipKey: "qtab_failed_tip", defaultTip: "Show failed download tasks" }
                 ]
 
                 delegate: Rectangle {
@@ -152,7 +159,7 @@ Rectangle {
                         }
 
                         Text {
-                            text: modelData.label
+                            text: root.tr(modelData.labelKey, modelData.defaultLabel)
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 11
                             font.weight: isSelected ? Font.DemiBold : Font.Normal
@@ -187,7 +194,7 @@ Rectangle {
                         cursorShape: Qt.PointingHandCursor
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
-                        ToolTip.text: modelData.tip
+                        ToolTip.text: root.tr(modelData.tipKey, modelData.defaultTip)
                         onClicked: {
                             if (root.bridge && root.bridge.queueModel) {
                                 root.bridge.queueModel.filterStatus = modelData.key
@@ -196,6 +203,7 @@ Rectangle {
                     }
                 }
             }
+
 
             Item { Layout.fillWidth: true }
         }
@@ -436,7 +444,7 @@ Rectangle {
                                 }
 
                                 Text {
-                                    text: (model.retryCount > 0 ? ("[" + (model.retryCount === 1 ? "1 retry" : model.retryCount + " retries") + " failed] ") : "") + model.errorMsg
+                                    text: (model.retryCount > 0 ? ("[" + model.retryCount + " " + (model.retryCount === 1 ? root.tr("label_failed_retry", "retry failed") : root.tr("label_failed_retries", "retries failed")) + "] ") : "") + model.errorMsg
                                     font.family: "Segoe UI, sans-serif"
                                     font.pixelSize: 11
                                     color: "#FCA5A5"
@@ -445,7 +453,7 @@ Rectangle {
                                 }
 
                                 StyledButton {
-                                    text: "Retry"
+                                    text: root.tr("btn_retry", "Retry")
                                     iconText: "↻"
                                     variant: "danger"
                                     implicitHeight: 20
@@ -465,16 +473,17 @@ Rectangle {
                     anchors.centerIn: parent
                     text: {
                         var status = root.bridge && root.bridge.queueModel ? root.bridge.queueModel.filterStatus : "all"
-                        if (status === "failed") return "🎉 No failed downloads!\nAll tasks completed without errors."
-                        if (status === "downloading") return "⚡ No active downloads running.\nStart a download to see active files."
-                        if (status === "completed") return "📁 No completed downloads yet."
-                        return "No download tasks in queue.\nEnter a URL and click 'Start Download' or 'Add to Queue'."
+                        if (status === "failed") return root.tr("empty_no_failed", "🎉 No failed downloads!\nAll tasks completed without errors.")
+                        if (status === "downloading") return root.tr("empty_no_active", "⚡ No active downloads running.\nStart a download to see active files.")
+                        if (status === "completed") return root.tr("empty_no_completed", "📁 No completed downloads yet.")
+                        return root.tr("empty_no_tasks", "No download tasks in queue.\nEnter a URL and click 'Start Download' or 'Add to Queue'.")
                     }
                     color: "#475569"
                     font.family: "Segoe UI, sans-serif"
                     font.pixelSize: 13
                     horizontalAlignment: Text.AlignHCenter
                     visible: queueList.count === 0
+
                 }
             }
         }

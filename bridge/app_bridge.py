@@ -99,6 +99,7 @@ class AppBridge(QObject):
     consoleWidthChanged = Signal()
     postDownloadActionChanged = Signal()
     knownRecognitionModeChanged = Signal()
+    languageChanged = Signal()
     postActionCountdownStarted = Signal(str)  # carries human label e.g. "Shutdown"
 
     _progressSignal  = Signal(dict)    # carries progress info dict
@@ -172,6 +173,7 @@ class AppBridge(QObject):
         self._post_download_action = "none" # Always default to 'none' (Do Nothing) on startup
         self._known_recognition_mode = str(saved_settings.get("known_recognition_mode", "hybrid"))
         self.known_manager.set_mode(self._known_recognition_mode)
+        self._language = str(saved_settings.get("language", "auto"))
         self._console_width = int(saved_settings.get("console_width", 620))
         self._creator_name = ""
 
@@ -648,6 +650,17 @@ class AppBridge(QObject):
     @Property(str, notify=creatorNameChanged)
     def creatorName(self) -> str:
         return self._creator_name
+
+    @Property(str, notify=languageChanged)
+    def language(self) -> str:
+        return self._language
+
+    @language.setter
+    def language(self, val: str):
+        if self._language != val:
+            self._language = val
+            self.languageChanged.emit()
+            self.saveSettings()
 
     @Property(float, notify=downloadDelayChanged)
     def downloadDelay(self) -> float:
@@ -1660,6 +1673,7 @@ class AppBridge(QObject):
             "play_completion_sound": self._play_completion_sound,
             "post_download_action": "none",
             "known_recognition_mode": self._known_recognition_mode,
+            "language": self._language,
             "console_width": self._console_width
         }
         self.session_manager.save_settings(settings_dict, silent=True)

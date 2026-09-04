@@ -9,10 +9,18 @@ Rectangle {
     property var bridge: null
     property bool isOpen: false
 
+    function tr(key, fallback) {
+        if (!Lang) return fallback !== undefined ? fallback : key
+        var _ = Lang.activeLanguage
+        var res = Lang.t(key)
+        return (res && res !== key) ? res : (fallback !== undefined ? fallback : res)
+    }
+
     visible: opacity > 0
     anchors.fill: parent
     color: "#CC0B0D12" // Semi-transparent overlay backdrop
     z: 1000
+
 
     opacity: isOpen ? 1.0 : 0.0
     Behavior on opacity {
@@ -156,7 +164,7 @@ Rectangle {
                     spacing: 2
 
                     Text {
-                        text: "Download Harvested Cloud Links"
+                        text: cloudModalRoot.tr("title_cloud_download", "Download Harvested Cloud Links")
                         font.family: "Segoe UI, sans-serif"
                         font.pixelSize: 15
                         font.weight: Font.DemiBold
@@ -164,7 +172,7 @@ Rectangle {
                     }
 
                     Text {
-                        text: "Download files and folders from Mega.nz, Google Drive, Dropbox, and GoFile."
+                        text: cloudModalRoot.tr("desc_cloud_download", "Download files and folders from Mega.nz, Google Drive, Dropbox, and GoFile.")
                         font.family: "Segoe UI, sans-serif"
                         font.pixelSize: 11
                         color: "#94A3B8"
@@ -226,7 +234,7 @@ Rectangle {
                             verticalAlignment: Text.AlignVCenter
 
                             Text {
-                                text: "Search by title, URL, or platform (Mega, Drive, etc.)..."
+                                text: cloudModalRoot.tr("placeholder_search_cloud", "Search by title, URL, or platform (Mega, Drive, etc.)...")
                                 color: "#64748B"
                                 font.pixelSize: 12
                                 visible: !searchField.text && !searchField.activeFocus
@@ -240,18 +248,19 @@ Rectangle {
 
                 // Select All
                 StyledButton {
-                    text: "Select All"
+                    text: cloudModalRoot.tr("btn_select_all", "Select All")
                     height: 32
                     onClicked: cloudLinksModel.selectAll(true)
                 }
 
                 // Deselect All
                 StyledButton {
-                    text: "Deselect All"
+                    text: cloudModalRoot.tr("btn_deselect_all", "Deselect All")
                     height: 32
                     onClicked: cloudLinksModel.selectAll(false)
                 }
             }
+
 
             // Links List View
             Rectangle {
@@ -390,7 +399,7 @@ Rectangle {
                 // Empty State
                 Text {
                     anchors.centerIn: parent
-                    text: "No external cloud links found matching search."
+                    text: tr("empty_no_cloud_links", "No external cloud links found matching search.")
                     font.family: "Segoe UI, sans-serif"
                     font.pixelSize: 12
                     color: "#64748B"
@@ -404,7 +413,7 @@ Rectangle {
                 spacing: 12
 
                 Text {
-                    text: "Selected: " + cloudLinksModel.countSelected() + " / " + cloudLinksModel.count + " link(s)"
+                    text: cloudModalRoot.tr("label_selected_count", "Selected:") + " " + cloudLinksModel.countSelected() + " / " + cloudLinksModel.count + " link(s)"
                     font.family: "Segoe UI, sans-serif"
                     font.pixelSize: 12
                     color: "#94A3B8"
@@ -414,7 +423,7 @@ Rectangle {
 
                 // Cancel Button
                 StyledButton {
-                    text: "Cancel"
+                    text: cloudModalRoot.tr("btn_cancel", "Cancel")
                     height: 34
                     onClicked: cloudModalRoot.isOpen = false
                 }
@@ -442,13 +451,14 @@ Rectangle {
                         spacing: 6
                         Text { text: "⬇"; font.pixelSize: 12 }
                         Text {
-                            text: "Download (" + cloudLinksModel.countSelected() + ")"
+                            text: cloudModalRoot.tr("btn_download_selected", "Download") + " (" + cloudLinksModel.countSelected() + ")"
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
                             font.weight: Font.DemiBold
                             color: "#0F172A"
                         }
                     }
+
 
                     MouseArea {
                         id: dlMouse

@@ -407,6 +407,7 @@ class TestKemonoFullSuite(unittest.TestCase):
         self.assertTrue(opts.auto_retry_at_end)
 
         bridge = AppBridge()
+        bridge.threadsLocked = False
         bridge.adaptiveThreading = True
         self.assertTrue(bridge.adaptiveThreading)
         bridge.autoRetryAtEnd = True
@@ -611,7 +612,8 @@ class TestKemonoFullSuite(unittest.TestCase):
         app = QApplication.instance() or QApplication([])
         bridge = AppBridge()
 
-        # Enable adaptive threading first
+        # Enable adaptive threading first (ensure lock is initially cleared)
+        bridge.threadsLocked = False
         bridge.adaptiveThreading = True
         self.assertTrue(bridge.adaptiveThreading)
 

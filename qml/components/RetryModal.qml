@@ -9,10 +9,18 @@ Rectangle {
     property var bridge: null
     property bool isOpen: false
 
+    function tr(key, fallback) {
+        if (!Lang) return fallback !== undefined ? fallback : key
+        var _ = Lang.activeLanguage
+        var res = Lang.t(key)
+        return (res && res !== key) ? res : (fallback !== undefined ? fallback : res)
+    }
+
     visible: opacity > 0
     anchors.fill: parent
     color: "#CC0B0D12" // Semi-transparent overlay backdrop
     z: 1000
+
 
     opacity: isOpen ? 1.0 : 0.0
     Behavior on opacity {
@@ -115,7 +123,7 @@ Rectangle {
                 spacing: 10
 
                 Text {
-                    text: "🔁 Retry Failed Downloads"
+                    text: "🔁 " + modalRoot.tr("title_retry_modal", "Select Failed Downloads to Retry")
                     font.family: "Segoe UI, Inter, sans-serif"
                     font.pixelSize: 16
                     font.weight: Font.Bold
@@ -133,7 +141,7 @@ Rectangle {
                     Text {
                         id: failedCntBadge
                         anchors.centerIn: parent
-                        text: failedItemsModel.count.toString() + " Failed"
+                        text: failedItemsModel.count.toString() + " " + modalRoot.tr("qtab_failed", "Failed")
                         font.pixelSize: 10
                         font.bold: true
                         color: "#FCA5A5"
@@ -158,7 +166,7 @@ Rectangle {
             }
 
             Text {
-                text: "Select the specific failed files you wish to re-attempt. Files that failed will only be retried if selected below or if 'Auto retry at the end' is active."
+                text: modalRoot.tr("desc_retry_modal", "Select the specific failed files you wish to re-attempt. Files that failed will only be retried if selected below or if 'Auto retry at the end' is active.")
                 font.family: "Segoe UI, sans-serif"
                 font.pixelSize: 11
                 color: "#94A3B8"
@@ -172,7 +180,7 @@ Rectangle {
                 spacing: 8
 
                 StyledButton {
-                    text: "Select All"
+                    text: modalRoot.tr("btn_select_all", "Select All")
                     iconText: "☑"
                     variant: "outline"
                     implicitHeight: 26
@@ -180,7 +188,7 @@ Rectangle {
                 }
 
                 StyledButton {
-                    text: "Deselect All"
+                    text: modalRoot.tr("btn_deselect_all", "Deselect All")
                     iconText: "☐"
                     variant: "ghost"
                     implicitHeight: 26
@@ -190,12 +198,13 @@ Rectangle {
                 Item { Layout.fillWidth: true }
 
                 Text {
-                    text: failedItemsModel.countSelected() + " of " + failedItemsModel.count + " selected"
+                    text: failedItemsModel.countSelected() + " / " + failedItemsModel.count + " " + modalRoot.tr("label_selected_of", "selected")
                     font.family: "Segoe UI, sans-serif"
                     font.pixelSize: 11
                     color: "#38BDF8"
                 }
             }
+
 
             // Scrollable List of Failed Tasks
             Rectangle {
@@ -339,7 +348,7 @@ Rectangle {
 
                                     Text { text: "⚠️"; font.pixelSize: 10 }
                                     Text {
-                                        text: (model.retryCount > 0 ? ("[" + (model.retryCount === 1 ? "1 retry" : model.retryCount + " retries") + " failed] ") : "") + model.errorMsg
+                                        text: (model.retryCount > 0 ? ("[" + model.retryCount + " " + (model.retryCount === 1 ? modalRoot.tr("label_failed_retry", "retry failed") : modalRoot.tr("label_failed_retries", "retries failed")) + "] ") : "") + model.errorMsg
                                         font.family: "Segoe UI, sans-serif"
                                         font.pixelSize: 10
                                         color: "#FCA5A5"
@@ -354,7 +363,7 @@ Rectangle {
                     // Empty state in modal
                     Text {
                         anchors.centerIn: parent
-                        text: "No failed tasks found."
+                        text: modalRoot.tr("empty_no_failed_modal", "No failed tasks found.")
                         color: "#64748B"
                         font.family: "Segoe UI, sans-serif"
                         font.pixelSize: 13
@@ -370,7 +379,7 @@ Rectangle {
 
                 // Physical "Auto retry at the end" Toggle Button
                 StyledButton {
-                    text: modalRoot.bridge && modalRoot.bridge.autoRetryAtEnd ? "Auto-Retry at End: ON" : "Auto-Retry at End: OFF"
+                    text: modalRoot.bridge && modalRoot.bridge.autoRetryAtEnd ? modalRoot.tr("opt_auto_retry_end_on", "Auto-Retry at End: ON") : modalRoot.tr("opt_auto_retry_end_off", "Auto-Retry at End: OFF")
                     iconText: "🔄"
                     variant: modalRoot.bridge && modalRoot.bridge.autoRetryAtEnd ? "success" : "outline"
                     implicitHeight: 32
@@ -382,7 +391,7 @@ Rectangle {
                 Item { Layout.fillWidth: true }
 
                 StyledButton {
-                    text: "Cancel"
+                    text: modalRoot.tr("btn_cancel", "Cancel")
                     variant: "ghost"
                     implicitHeight: 32
                     onClicked: modalRoot.isOpen = false
@@ -390,7 +399,7 @@ Rectangle {
 
                 StyledButton {
                     id: retrySubmitBtn
-                    text: "Retry Selected (" + failedItemsModel.countSelected() + ")"
+                    text: modalRoot.tr("btn_retry", "Retry") + " (" + failedItemsModel.countSelected() + ")"
                     iconText: "🔁"
                     variant: "danger"
                     implicitHeight: 32
@@ -404,6 +413,7 @@ Rectangle {
                     }
                 }
             }
+
         }
     }
 }
