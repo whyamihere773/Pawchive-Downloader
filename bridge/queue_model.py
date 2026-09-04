@@ -28,6 +28,7 @@ class QueueModel(QAbstractListModel):
 
     countChanged = Signal()
     filterStatusChanged = Signal()
+    minFileSizeChanged = Signal()
     countsChanged = Signal()
     failedCountChanged = Signal()
     retryRequested = Signal()
@@ -38,9 +39,15 @@ class QueueModel(QAbstractListModel):
         super().__init__(parent)
         self._tasks: List[DownloadTask] = []
         self._filter_status: str = "all" # "all", "downloading", "completed", "failed", "pending"
+        self._min_file_size: int = 0
         self._visible_tasks: List[DownloadTask] = []
 
     def _matches_filter(self, task: DownloadTask) -> bool:
+        if self._min_file_size > 0:
+            effective_size = max(task.file_size, task.downloaded_bytes)
+            if effective_size < self._min_file_size:
+                return False
+
         if self._filter_status == "all":
             return True
         elif self._filter_status == "downloading":
@@ -57,6 +64,20 @@ class QueueModel(QAbstractListModel):
         self._visible_tasks = [t for t in self._tasks if self._matches_filter(t)]
 
     # ── Properties ────────────────────────────────────────────────────────────
+    @Property(int, notify=minFileSizeChanged)
+    def minFileSize(self) -> int:
+        return self._min_file_size
+
+    @minFileSize.setter
+    def minFileSize(self, val: int):
+        val = max(0, int(val))
+        if self._min_file_size != val:
+            self.beginResetModel()
+            self._min_file_size = val
+            self._rebuild_visible()
+            self.endResetModel()
+            self.minFileSizeChanged.emit()
+            self.countChanged.emit()
     @Property(str, notify=filterStatusChanged)
     def filterStatus(self) -> str:
         return self._filter_status

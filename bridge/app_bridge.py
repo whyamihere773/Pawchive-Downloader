@@ -125,6 +125,7 @@ class AppBridge(QObject):
         self._queue_model = QueueModel(self)
         self._active_queue_model = QueueModel(self)
         self._active_queue_model.filterStatus = "downloading"
+        self._active_queue_model.minFileSize = 50 * 1024 * 1024  # 50 MB threshold
         self._known_model = KnownModel(self.known_manager, self)
 
         # Settings defaults

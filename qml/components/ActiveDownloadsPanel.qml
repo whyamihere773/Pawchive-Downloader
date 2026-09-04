@@ -34,16 +34,30 @@ Rectangle {
     radius: 8
     clip: true
 
-    // Newtonian physical height expansion with mass & fluid damping
-    implicitHeight: isCollapsed ? 36 : (panelRoot.activeCount > 0 ? Math.min(panelRoot.activeCount * 54 + 44, 250) : 0)
+    readonly property bool shouldBeOpen: panelRoot.activeCount > 0
+    property real targetHeight: isCollapsed ? 36 : (shouldBeOpen ? Math.min(panelRoot.activeCount * 54 + 44, 250) : 0)
+
+    // Newtonian physical height expansion & fluid collapse for disappearance
+    implicitHeight: targetHeight
 
     Behavior on implicitHeight {
         NumberAnimation {
-            duration: 320
-            easing.type: Easing.OutBack
+            duration: panelRoot.shouldBeOpen ? 340 : 380
+            easing.type: panelRoot.shouldBeOpen ? Easing.OutBack : Easing.InOutCubic
             easing.overshoot: 1.15
         }
     }
+
+    opacity: (panelRoot.shouldBeOpen && implicitHeight > 4) ? 1.0 : 0.0
+
+    Behavior on opacity {
+        NumberAnimation {
+            duration: panelRoot.shouldBeOpen ? 240 : 300
+            easing.type: Easing.InOutCubic
+        }
+    }
+
+    visible: implicitHeight > 0.5 || shouldBeOpen
 
     Behavior on border.color {
         ColorAnimation { duration: 240 }

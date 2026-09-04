@@ -1066,31 +1066,33 @@ Mercy
         bridge.cancelDownload()
 
     def test_active_queue_model(self):
-        """Verify that activeQueueModel reflects only downloading/retrying tasks and updates."""
+        """Verify that activeQueueModel tracks only downloading tasks that are >= 50 MB."""
         from bridge.app_bridge import AppBridge
         bridge = AppBridge()
-        t1 = DownloadTask("http://example.com/1.png", "c:/tmp/1.png", "Post 1", "Creator", "kemono", "1", "f1", file_size=1000)
-        t2 = DownloadTask("http://example.com/2.png", "c:/tmp/2.png", "Post 2", "Creator", "kemono", "2", "f2", file_size=2000)
-        bridge._handle_set_tasks([t1, t2])
+
+        # t_small is 5 MB (< 50 MB threshold), t_large is 80 MB (>= 50 MB)
+        t_small = DownloadTask("http://example.com/small.png", "c:/tmp/small.png", "Small", "Creator", "kemono", "1", "f1", file_size=5 * 1024 * 1024)
+        t_large = DownloadTask("http://example.com/large.zip", "c:/tmp/large.zip", "Large", "Creator", "kemono", "2", "f2", file_size=80 * 1024 * 1024)
+        bridge._handle_set_tasks([t_small, t_large])
         self.assertEqual(bridge.activeQueueModel.count, 0)
 
-        # t1 starts downloading
-        t1.status = "downloading"
-        t1.downloaded_bytes = 500
-        t1.speed_str = "500 KB/s"
-        t1.eta_str = "1s"
-        bridge._handle_task_status(t1)
+        # t_small starts downloading -> ignored by activeQueueModel because < 50 MB
+        t_small.status = "downloading"
+        bridge._handle_task_status(t_small)
+        self.assertEqual(bridge.activeQueueModel.count, 0)
+
+        # t_large starts downloading -> admitted into activeQueueModel because >= 50 MB
+        t_large.status = "downloading"
+        t_large.downloaded_bytes = 10 * 1024 * 1024
+        t_large.speed_str = "2.5 MB/s"
+        t_large.eta_str = "28s"
+        bridge._handle_task_status(t_large)
         self.assertEqual(bridge.activeQueueModel.count, 1)
 
-        # t2 starts downloading
-        t2.status = "downloading"
-        bridge._handle_task_status(t2)
-        self.assertEqual(bridge.activeQueueModel.count, 2)
-
-        # t1 completes
-        t1.status = "completed"
-        bridge._handle_task_status(t1)
-        self.assertEqual(bridge.activeQueueModel.count, 1)
+        # t_large completes -> removed from activeQueueModel
+        t_large.status = "completed"
+        bridge._handle_task_status(t_large)
+        self.assertEqual(bridge.activeQueueModel.count, 0)
 
         # cancel clears active
         bridge.cancelDownload()

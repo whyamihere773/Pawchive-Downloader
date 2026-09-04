@@ -1237,7 +1237,7 @@ ApplicationWindow {
                             id: activeDownloadsPanel
                             Layout.fillWidth: true
                             bridge: appBridge
-                            visible: bridge && (bridge.isDownloading || (bridge.activeQueueModel && bridge.activeQueueModel.count > 0)) && (bridge.activeQueueModel && bridge.activeQueueModel.count > 0)
+                            visible: implicitHeight > 0.5 || (appBridge && appBridge.activeQueueModel && appBridge.activeQueueModel.count > 0)
                         }
 
                         ConsoleLogView {
