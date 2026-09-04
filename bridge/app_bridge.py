@@ -604,6 +604,10 @@ class AppBridge(QObject):
     def currentSpeed(self) -> str:
         return self._current_speed
 
+    @Property(str, notify=currentSpeedChanged)
+    def speedText(self) -> str:
+        return self._current_speed
+
     @Property(bool, notify=hasSavedSessionChanged)
     def hasSavedSession(self) -> bool:
         return self._has_saved_session

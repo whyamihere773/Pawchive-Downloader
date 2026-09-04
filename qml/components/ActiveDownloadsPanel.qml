@@ -167,7 +167,7 @@ Rectangle {
                 color: "#0F231D"
                 border.color: "#164E3D"
                 border.width: 1
-                visible: bridge && bridge.isDownloading && bridge.speedText && bridge.speedText !== "0 KB/s"
+                visible: bridge && bridge.isDownloading && bridge.currentSpeed && bridge.currentSpeed !== "0 KB/s"
                 Layout.alignment: Qt.AlignVCenter
                 opacity: visible ? 1.0 : 0.0
                 scale: visible ? 1.0 : 0.8
@@ -178,7 +178,7 @@ Rectangle {
                 Text {
                     id: speedTextLabel
                     anchors.centerIn: parent
-                    text: bridge ? bridge.speedText : ""
+                    text: (bridge && bridge.currentSpeed) ? bridge.currentSpeed : ""
                     font.family: "Cascadia Code, Consolas, monospace"
                     font.pixelSize: 10
                     font.weight: Font.DemiBold
