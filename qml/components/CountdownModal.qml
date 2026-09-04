@@ -41,6 +41,7 @@ Item {
         running: false
         onTriggered: {
             root.secondsLeft -= 1
+            numberBounceAnim.restart()
             if (root.secondsLeft <= 0) {
                 countdownTimer.stop()
                 root.isOpen = false
@@ -54,9 +55,11 @@ Item {
     Rectangle {
         anchors.fill: parent
         color: "#000000"
-        opacity: 0.72
+        opacity: root.isOpen ? 0.76 : 0.0
 
-        Behavior on opacity { NumberAnimation { duration: 220 } }
+        Behavior on opacity {
+            NumberAnimation { duration: 260; easing.type: Easing.OutCubic }
+        }
 
         MouseArea {
             anchors.fill: parent
@@ -64,7 +67,7 @@ Item {
         }
     }
 
-    // ── Card ──────────────────────────────────────────────────────────────────
+    // ── Card (Newtonian Weight & Gravity Entrance) ───────────────────────────
     Rectangle {
         id: card
         width: 380
@@ -75,27 +78,39 @@ Item {
         border.color: "#2D3748"
         border.width: 1.5
 
-        // Subtle glow matching the danger tone
-        layer.enabled: true
-        layer.effect: null
-
-        // Drop shadow via border glow effect rectangle
-        Rectangle {
-            anchors.fill: parent
-            anchors.margins: -2
-            radius: parent.radius + 2
-            color: "transparent"
-            border.color: "#EF444430"
-            border.width: 2
-            z: -1
-        }
-
-        // Entrance animation
-        scale: root.isOpen ? 1.0 : 0.88
+        // Physical gravity drop & spring rebound
+        y: root.isOpen ? 0 : -32
+        scale: root.isOpen ? 1.0 : 0.84
         opacity: root.isOpen ? 1.0 : 0.0
 
-        Behavior on scale   { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.3 } }
-        Behavior on opacity { NumberAnimation { duration: 220 } }
+        Behavior on y {
+            NumberAnimation {
+                duration: 360
+                easing.type: Easing.OutBack
+                easing.overshoot: 1.35
+            }
+        }
+        Behavior on scale {
+            NumberAnimation {
+                duration: 360
+                easing.type: Easing.OutBack
+                easing.overshoot: 1.35
+            }
+        }
+        Behavior on opacity {
+            NumberAnimation { duration: 240; easing.type: Easing.OutCubic }
+        }
+
+        // Layer glow
+        Rectangle {
+            anchors.fill: parent
+            anchors.margins: -3
+            radius: parent.radius + 3
+            color: "transparent"
+            border.color: "#EF444435"
+            border.width: 2.5
+            z: -1
+        }
 
         ColumnLayout {
             id: cardCol
@@ -112,19 +127,28 @@ Item {
             // ── Header ────────────────────────────────────────────────────────
             RowLayout {
                 Layout.fillWidth: true
-                spacing: 10
+                spacing: 12
 
-                // Warning icon
+                // Warning icon with continuous fluid breathing pulse
                 Rectangle {
-                    width: 36; height: 36; radius: 18
+                    id: warningBadge
+                    width: 38; height: 38; radius: 19
                     color: "#3B1818"
                     border.color: "#EF4444"
                     border.width: 1.5
 
+                    transformOrigin: Item.Center
+                    SequentialAnimation on scale {
+                        loops: Animation.Infinite
+                        running: root.isOpen
+                        NumberAnimation { from: 1.0; to: 1.10; duration: 750; easing.type: Easing.InOutQuad }
+                        NumberAnimation { from: 1.10; to: 1.0; duration: 750; easing.type: Easing.InOutQuad }
+                    }
+
                     Text {
                         anchors.centerIn: parent
-                        text: actionLabel === "Close App" ? "\uD83D\uDEAA" : "\u26A0\uFE0F"
-                        font.pixelSize: 16
+                        text: actionLabel === "Close App" ? "🚪" : "⚠️"
+                        font.pixelSize: 17
                     }
                 }
 
@@ -135,21 +159,21 @@ Item {
                     Text {
                         text: root.actionLabel + " in..."
                         font.family: "Segoe UI, Inter, sans-serif"
-                        font.pixelSize: 15
+                        font.pixelSize: 16
                         font.weight: Font.Bold
                         color: "#F8FAFC"
                     }
 
                     Text {
-                        text: "Download finished. Click Cancel to stop."
-                        font.family: "Segoe UI, sans-serif"
+                        text: "Download finished. Click Cancel to abort."
+                        font.family: "Segoe UI, Inter, sans-serif"
                         font.pixelSize: 11
                         color: "#94A3B8"
                     }
                 }
             }
 
-            // ── Countdown ring ────────────────────────────────────────────────
+            // ── Countdown Ring with Viscous Momentum ──────────────────────────
             Item {
                 Layout.alignment: Qt.AlignHCenter
                 width: 120; height: 120
@@ -194,37 +218,45 @@ Item {
                     }
 
                     Behavior on fraction {
-                        NumberAnimation { duration: 800; easing.type: Easing.InOutSine }
+                        NumberAnimation { duration: 900; easing.type: Easing.OutCubic }
                     }
                 }
 
-                // Center countdown number
+                // Center countdown number with tick recoil impulse
                 Column {
                     anchors.centerIn: parent
                     spacing: -2
 
                     Text {
+                        id: numberText
                         anchors.horizontalCenter: parent.horizontalCenter
                         text: root.secondsLeft.toString()
                         font.family: "Cascadia Code, Consolas, monospace"
                         font.pixelSize: 34
                         font.weight: Font.Bold
                         color: progressRing.fraction > 0.4 ? "#EF4444" : (progressRing.fraction > 0.2 ? "#F97316" : "#FBBF24")
+                        transformOrigin: Item.Center
 
                         Behavior on color { ColorAnimation { duration: 400 } }
+
+                        SequentialAnimation {
+                            id: numberBounceAnim
+                            NumberAnimation { target: numberText; property: "scale"; to: 1.24; duration: 90; easing.type: Easing.OutQuad }
+                            NumberAnimation { target: numberText; property: "scale"; to: 1.0; duration: 240; easing.type: Easing.OutBack; easing.overshoot: 1.6 }
+                        }
                     }
 
                     Text {
                         anchors.horizontalCenter: parent.horizontalCenter
                         text: "sec"
-                        font.family: "Segoe UI, sans-serif"
+                        font.family: "Segoe UI, Inter, sans-serif"
                         font.pixelSize: 11
                         color: "#64748B"
                     }
                 }
             }
 
-            // ── Action description ────────────────────────────────────────────
+            // ── Action description card ───────────────────────────────────────
             Rectangle {
                 Layout.fillWidth: true
                 height: actionDesc.implicitHeight + 16
@@ -248,7 +280,7 @@ Item {
                         if (root.actionLabel === "Close App")  return "Pawchive Downloader will close when the timer reaches 0."
                         return "The action will run when the timer reaches 0."
                     }
-                    font.family: "Segoe UI, sans-serif"
+                    font.family: "Segoe UI, Inter, sans-serif"
                     font.pixelSize: 12
                     color: "#FCA5A5"
                     wrapMode: Text.Wrap
@@ -256,34 +288,37 @@ Item {
                 }
             }
 
-            // ── Cancel Button ─────────────────────────────────────────────────
+            // ── Cancel Button (Newtonian Spring Reaction) ─────────────────────
             Rectangle {
                 Layout.fillWidth: true
-                height: 42
+                height: 44
                 radius: 10
                 color: cancelMouse.containsMouse ? "#374151" : "#1F2937"
-                border.color: cancelMouse.containsMouse ? "#6B7280" : "#374151"
+                border.color: cancelMouse.containsMouse ? "#38BDF8" : "#374151"
                 border.width: 1.5
+                transformOrigin: Item.Center
 
-                Behavior on color { ColorAnimation { duration: 120 } }
-                Behavior on border.color { ColorAnimation { duration: 120 } }
+                Behavior on color { ColorAnimation { duration: 160 } }
+                Behavior on border.color { ColorAnimation { duration: 160 } }
 
-                scale: cancelMouse.pressed ? 0.96 : 1.0
-                Behavior on scale { NumberAnimation { duration: 120; easing.type: Easing.OutBack } }
+                scale: cancelMouse.pressed ? 0.94 : (cancelMouse.containsMouse ? 1.025 : 1.0)
+                Behavior on scale {
+                    NumberAnimation { duration: 180; easing.type: Easing.OutBack; easing.overshoot: 1.6 }
+                }
 
                 Row {
                     anchors.centerIn: parent
                     spacing: 8
 
                     Text {
-                        text: "\u274C"
+                        text: "❌"
                         font.pixelSize: 14
                         anchors.verticalCenter: parent.verticalCenter
                     }
 
                     Text {
                         text: "Cancel — Don't " + root.actionLabel
-                        font.family: "Segoe UI, sans-serif"
+                        font.family: "Segoe UI, Inter, sans-serif"
                         font.pixelSize: 13
                         font.weight: Font.DemiBold
                         color: "#F1F5F9"

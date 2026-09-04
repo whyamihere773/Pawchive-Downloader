@@ -34,10 +34,19 @@ Rectangle {
     radius: 8
     clip: true
 
+    // Newtonian physical height expansion with mass & fluid damping
     implicitHeight: isCollapsed ? 36 : (panelRoot.activeCount > 0 ? Math.min(panelRoot.activeCount * 54 + 44, 250) : 0)
 
     Behavior on implicitHeight {
-        NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
+        NumberAnimation {
+            duration: 320
+            easing.type: Easing.OutBack
+            easing.overshoot: 1.15
+        }
+    }
+
+    Behavior on border.color {
+        ColorAnimation { duration: 240 }
     }
 
     ColumnLayout {
@@ -51,19 +60,50 @@ Rectangle {
             Layout.preferredHeight: 24
             spacing: 8
 
-            // Pulsing live indicator dot
-            Rectangle {
-                width: 8
-                height: 8
-                radius: 4
-                color: panelRoot.activeCount > 0 ? "#38BDF8" : "#64748B"
+            // Pulsing live indicator dot with physical breathing elasticity
+            Item {
+                width: 14
+                height: 14
                 Layout.alignment: Qt.AlignVCenter
 
-                SequentialAnimation on opacity {
-                    loops: Animation.Infinite
-                    running: panelRoot.activeCount > 0 && bridge && bridge.isDownloading
-                    NumberAnimation { from: 0.35; to: 1.0; duration: 800; easing.type: Easing.InOutSine }
-                    NumberAnimation { from: 1.0; to: 0.35; duration: 800; easing.type: Easing.InOutSine }
+                Rectangle {
+                    id: pulseHalo
+                    anchors.centerIn: parent
+                    width: 14
+                    height: 14
+                    radius: 7
+                    color: "#38BDF8"
+                    opacity: 0.0
+                    visible: panelRoot.activeCount > 0 && bridge && bridge.isDownloading
+
+                    SequentialAnimation on scale {
+                        loops: Animation.Infinite
+                        running: panelRoot.activeCount > 0 && bridge && bridge.isDownloading
+                        NumberAnimation { from: 0.6; to: 1.4; duration: 1200; easing.type: Easing.OutCubic }
+                        NumberAnimation { from: 1.4; to: 0.6; duration: 800; easing.type: Easing.InCubic }
+                    }
+                    SequentialAnimation on opacity {
+                        loops: Animation.Infinite
+                        running: panelRoot.activeCount > 0 && bridge && bridge.isDownloading
+                        NumberAnimation { from: 0.45; to: 0.0; duration: 1200; easing.type: Easing.OutCubic }
+                        NumberAnimation { from: 0.0; to: 0.45; duration: 800; easing.type: Easing.InCubic }
+                    }
+                }
+
+                Rectangle {
+                    id: centerDot
+                    anchors.centerIn: parent
+                    width: 8
+                    height: 8
+                    radius: 4
+                    color: panelRoot.activeCount > 0 ? "#38BDF8" : "#64748B"
+
+                    SequentialAnimation on scale {
+                        loops: Animation.Infinite
+                        running: panelRoot.activeCount > 0 && bridge && bridge.isDownloading
+                        NumberAnimation { from: 0.9; to: 1.15; duration: 900; easing.type: Easing.InOutSine }
+                        NumberAnimation { from: 1.15; to: 0.9; duration: 900; easing.type: Easing.InOutSine }
+                    }
                 }
             }
 
@@ -77,15 +117,21 @@ Rectangle {
                 Layout.alignment: Qt.AlignVCenter
             }
 
-            // Active count pill badge
+            // Active count pill badge with spring scale response
             Rectangle {
+                id: countPill
                 implicitHeight: 18
-                implicitWidth: countText.implicitWidth + 12
+                implicitWidth: countText.implicitWidth + 14
                 radius: 9
                 color: "#162032"
                 border.color: "#25344D"
                 border.width: 1
                 Layout.alignment: Qt.AlignVCenter
+
+                scale: 1.0
+                Behavior on scale {
+                    NumberAnimation { duration: 220; easing.type: Easing.OutBack; easing.overshoot: 1.5 }
+                }
 
                 Text {
                     id: countText
@@ -95,22 +141,39 @@ Rectangle {
                     font.pixelSize: 10
                     font.weight: Font.DemiBold
                     color: "#38BDF8"
+
+                    onTextChanged: {
+                        countPill.scale = 1.18
+                        pillBounceTimer.restart()
+                    }
+                }
+
+                Timer {
+                    id: pillBounceTimer
+                    interval: 120
+                    onTriggered: countPill.scale = 1.0
                 }
             }
 
             // Spacer
             Item { Layout.fillWidth: true }
 
-            // Aggregate speed pill if available
+            // Aggregate speed pill with fluid elasticity
             Rectangle {
+                id: speedPill
                 implicitHeight: 18
-                implicitWidth: speedTextLabel.implicitWidth + 12
+                implicitWidth: speedTextLabel.implicitWidth + 14
                 radius: 9
                 color: "#0F231D"
                 border.color: "#164E3D"
                 border.width: 1
                 visible: bridge && bridge.isDownloading && bridge.speedText && bridge.speedText !== "0 KB/s"
                 Layout.alignment: Qt.AlignVCenter
+                opacity: visible ? 1.0 : 0.0
+                scale: visible ? 1.0 : 0.8
+
+                Behavior on opacity { NumberAnimation { duration: 200 } }
+                Behavior on scale { NumberAnimation { duration: 240; easing.type: Easing.OutBack; easing.overshoot: 1.4 } }
 
                 Text {
                     id: speedTextLabel
@@ -123,21 +186,32 @@ Rectangle {
                 }
             }
 
-            // Collapse / Expand toggle button
+            // Collapse / Expand toggle button with rotational inertia and spring scale
             Rectangle {
-                implicitWidth: 20
-                implicitHeight: 20
-                radius: 4
+                id: collapseBtn
+                implicitWidth: 22
+                implicitHeight: 22
+                radius: 5
                 color: collapseBtnMouse.containsMouse ? "#1E2435" : "transparent"
                 border.color: collapseBtnMouse.containsMouse ? "#334155" : "transparent"
                 border.width: 1
                 Layout.alignment: Qt.AlignVCenter
 
+                scale: collapseBtnMouse.pressed ? 0.88 : (collapseBtnMouse.containsMouse ? 1.15 : 1.0)
+                Behavior on scale {
+                    NumberAnimation { duration: 180; easing.type: Easing.OutBack; easing.overshoot: 1.6 }
+                }
+
                 Text {
                     anchors.centerIn: parent
-                    text: panelRoot.isCollapsed ? "▼" : "▲"
+                    text: "▲"
                     font.pixelSize: 9
                     color: collapseBtnMouse.containsMouse ? "#38BDF8" : "#94A3B8"
+                    rotation: panelRoot.isCollapsed ? 180 : 0
+
+                    Behavior on rotation {
+                        NumberAnimation { duration: 300; easing.type: Easing.OutBack; easing.overshoot: 1.45 }
+                    }
                 }
 
                 MouseArea {
@@ -153,15 +227,17 @@ Rectangle {
             }
         }
 
-        // Divider
+        // Fluid divider
         Rectangle {
             Layout.fillWidth: true
             height: 1
             color: "#181D29"
             visible: !panelRoot.isCollapsed && panelRoot.activeCount > 0
+            opacity: visible ? 1.0 : 0.0
+            Behavior on opacity { NumberAnimation { duration: 200 } }
         }
 
-        // ── 2. Active Downloads List ─────────────────────────────────────────
+        // ── 2. Active Downloads List (Newtonian Physics & Fluid Staggering) ──
         ListView {
             id: activeListView
             Layout.fillWidth: true
@@ -173,17 +249,54 @@ Rectangle {
 
             model: (bridge && bridge.activeQueueModel) ? bridge.activeQueueModel : null
 
+            // Staggered Newtonian populate transition when panel mounts
+            populate: Transition {
+                NumberAnimation { properties: "y"; from: -14; duration: 320; easing.type: Easing.OutBack; easing.overshoot: 1.35 }
+                NumberAnimation { properties: "scale"; from: 0.90; to: 1.0; duration: 320; easing.type: Easing.OutBack; easing.overshoot: 1.35 }
+                NumberAnimation { properties: "opacity"; from: 0.0; to: 1.0; duration: 240; easing.type: Easing.OutCubic }
+            }
+
+            // Fluid spring drop-in when a new worker begins downloading
+            add: Transition {
+                NumberAnimation { properties: "y"; from: -20; duration: 360; easing.type: Easing.OutBack; easing.overshoot: 1.4 }
+                NumberAnimation { properties: "scale"; from: 0.88; to: 1.0; duration: 360; easing.type: Easing.OutBack; easing.overshoot: 1.4 }
+                NumberAnimation { properties: "opacity"; from: 0.0; to: 1.0; duration: 260 }
+            }
+
+            // Weightless fluid fade & collapse when a file completes
+            remove: Transition {
+                ParallelAnimation {
+                    NumberAnimation { property: "opacity"; to: 0.0; duration: 180; easing.type: Easing.InCubic }
+                    NumberAnimation { property: "scale"; to: 0.85; duration: 200; easing.type: Easing.InBack; easing.overshoot: 1.2 }
+                }
+            }
+
+            // Physical momentum settling when siblings shift
+            displaced: Transition {
+                NumberAnimation { properties: "y"; duration: 280; easing.type: Easing.OutBack; easing.overshoot: 1.25 }
+            }
+
             delegate: Rectangle {
                 id: rowRect
                 width: activeListView.width
                 height: 48
                 radius: 6
-                color: rowMouse.containsMouse ? "#171B26" : "#11141D"
-                border.color: rowMouse.containsMouse ? "#2A3245" : "#191E2B"
+                color: rowMouse.containsMouse ? "#181D2A" : "#11141D"
+                border.color: rowMouse.containsMouse ? "#38BDF8" : "#191E2B"
                 border.width: 1
+                transformOrigin: Item.Center
+
+                // Newtonian physical spring hover reaction with inertia
+                scale: rowMouse.pressed ? 0.98 : (rowMouse.containsMouse ? 1.012 : 1.0)
+                Behavior on scale {
+                    NumberAnimation { duration: 180; easing.type: Easing.OutBack; easing.overshoot: 1.5 }
+                }
 
                 Behavior on color {
-                    ColorAnimation { duration: 120 }
+                    ColorAnimation { duration: 160 }
+                }
+                Behavior on border.color {
+                    ColorAnimation { duration: 160 }
                 }
 
                 MouseArea {
@@ -192,7 +305,7 @@ Rectangle {
                     hoverEnabled: true
                     cursorShape: Qt.ArrowCursor
                     ToolTip.visible: containsMouse
-                    ToolTip.delay: 500
+                    ToolTip.delay: 450
                     ToolTip.text: {
                         var title = model.postTitle ? ("[" + model.postTitle + "]\n") : ""
                         var creator = model.creatorName ? ("Creator: " + model.creatorName + "\n") : ""
@@ -219,49 +332,75 @@ Rectangle {
                             font.family: "Segoe UI, Inter, sans-serif"
                             font.pixelSize: 11
                             font.weight: Font.DemiBold
-                            color: "#E2E8F0"
+                            color: rowMouse.containsMouse ? "#FFFFFF" : "#E2E8F0"
                             elide: Text.ElideMiddle
+
+                            Behavior on color { ColorAnimation { duration: 140 } }
                         }
 
                         Text {
                             text: (model.downloadedBytes || "0 B") + " / " + (model.fileSize || "-")
                             font.family: "Segoe UI, Inter, sans-serif"
                             font.pixelSize: 10
-                            color: "#94A3B8"
+                            color: rowMouse.containsMouse ? "#CBD5E1" : "#94A3B8"
                             Layout.alignment: Qt.AlignRight
+
+                            Behavior on color { ColorAnimation { duration: 140 } }
                         }
                     }
 
-                    // Line 2: Progress Bar + Percent + Speed + ETA
+                    // Line 2: Fluid Liquid Progress Bar + Percent + Speed + ETA
                     RowLayout {
                         Layout.fillWidth: true
                         spacing: 6
 
-                        // Mini progress bar track
+                        // Liquid progress track
                         Rectangle {
                             Layout.fillWidth: true
-                            height: 5
-                            radius: 2.5
-                            color: "#1E2435"
+                            height: 6
+                            radius: 3
+                            color: "#1A2030"
                             clip: true
 
-                            // Progress fill
+                            // Viscous progress fill
                             Rectangle {
+                                id: progressFill
                                 height: parent.height
-                                radius: 2.5
+                                radius: 3
                                 width: {
                                     var p = model.progress || 0.0
                                     var clamped = Math.max(0.0, Math.min(1.0, p))
-                                    return Math.max(clamped * parent.width, (model.percentage > 0 ? 4 : 0))
+                                    return Math.max(clamped * parent.width, (model.percentage > 0 ? 5 : 0))
                                 }
                                 gradient: Gradient {
                                     orientation: Gradient.Horizontal
                                     GradientStop { position: 0.0; color: "#0284C7" }
-                                    GradientStop { position: 1.0; color: "#38BDF8" }
+                                    GradientStop { position: 0.85; color: "#38BDF8" }
+                                    GradientStop { position: 1.0; color: "#7DD3FC" }
                                 }
 
+                                // Fluid viscous easing with physical momentum
                                 Behavior on width {
-                                    NumberAnimation { duration: 160; easing.type: Easing.OutCubic }
+                                    NumberAnimation {
+                                        duration: 380
+                                        easing.type: Easing.OutCubic
+                                    }
+                                }
+
+                                // Fluid leading-edge liquid glow
+                                Rectangle {
+                                    anchors.right: parent.right
+                                    anchors.top: parent.top
+                                    anchors.bottom: parent.bottom
+                                    width: 12
+                                    radius: 3
+                                    opacity: 0.65
+                                    gradient: Gradient {
+                                        orientation: Gradient.Horizontal
+                                        GradientStop { position: 0.0; color: "transparent" }
+                                        GradientStop { position: 1.0; color: "#FFFFFF" }
+                                    }
+                                    visible: progressFill.width > 12
                                 }
                             }
                         }
