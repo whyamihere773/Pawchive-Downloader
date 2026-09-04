@@ -12,6 +12,7 @@
   "separate_by_known": false,
   "download_revisions": false,
   "adaptive_threading": true,
+  "threads_locked": false,
   "auto_retry_at_end": true,
   "manga_mode": false,
   "filename_style": "post_title",

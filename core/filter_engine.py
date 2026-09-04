@@ -51,6 +51,7 @@ class FilterOptions:
         separate_by_known: bool = False,
         download_revisions: bool = False,
         adaptive_threading: bool = False,
+        threads_locked: bool = False,
         auto_retry_at_end: bool = False,
         manga_mode: bool = False,
         filename_style: str = "post_title",
@@ -78,6 +79,7 @@ class FilterOptions:
         self.separate_by_known = separate_by_known
         self.download_revisions = download_revisions
         self.adaptive_threading = adaptive_threading
+        self.threads_locked = threads_locked
         self.auto_retry_at_end = auto_retry_at_end
         self.manga_mode = manga_mode
         self.filename_style = filename_style

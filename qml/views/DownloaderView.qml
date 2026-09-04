@@ -366,10 +366,16 @@ ScrollView {
                     }
 
                     StyledCheckBox {
+                        id: adaptiveCheck
                         text: "Adaptive Threading"
-                        tooltip: "Automatically scale worker thread count based on network conditions and 429 rate limits"
+                        tooltip: (root.bridge && root.bridge.threadsLocked)
+                                 ? "Adaptive Threading is disabled because Thread Lock is active"
+                                 : "Automatically scale worker thread count based on network conditions and 429 rate limits"
+                        enabled: root.bridge ? !root.bridge.threadsLocked : true
+                        opacity: enabled ? 1.0 : 0.38
+                        Behavior on opacity { NumberAnimation { duration: 180 } }
                         checked: root.bridge ? root.bridge.adaptiveThreading : false
-                        onCheckedChanged: if (root.bridge) root.bridge.adaptiveThreading = checked
+                        onCheckedChanged: if (root.bridge && enabled) root.bridge.adaptiveThreading = checked
                     }
 
                     StyledCheckBox {
@@ -380,10 +386,10 @@ ScrollView {
                     }
                 }
 
-                // Concurrency & Threads with CPU Detection
+                // Concurrency & Threads with CPU Detection & Thread Lock
                 RowLayout {
                     spacing: 10
-                    // Dim the entire row when Adaptive Threading is on
+                    // Dim the slider when Adaptive Threading is on
                     opacity: (root.bridge && root.bridge.adaptiveThreading) ? 0.38 : 1.0
                     Behavior on opacity { NumberAnimation { duration: 180 } }
 
@@ -418,7 +424,79 @@ ScrollView {
                                   : Math.round(threadSlider.value).toString()
                             font.bold: true
                             font.pixelSize: 11
-                            color: "#38BDF8"
+                            color: (root.bridge && root.bridge.threadsLocked) ? "#F87171" : "#38BDF8"
+                        }
+                    }
+
+                    // Thread Lock Button (toggles sweetspot thread lock)
+                    Rectangle {
+                        id: lockBtn
+                        height: 24
+                        radius: 5
+                        implicitWidth: lockRow.implicitWidth + 16
+                        color: (root.bridge && root.bridge.threadsLocked)
+                               ? (lockMouse.containsMouse ? "#3A1A1C" : "#2D1517")
+                               : (lockMouse.containsMouse ? "#1E293B" : "#161E2E")
+                        border.color: (root.bridge && root.bridge.threadsLocked)
+                                      ? (lockMouse.containsMouse ? "#F87171" : "#EF4444")
+                                      : (lockMouse.containsMouse ? "#475569" : "#242A38")
+                        border.width: 1
+                        scale: lockMouse.pressed ? 0.95 : (lockMouse.containsMouse ? 1.03 : 1.0)
+
+                        Behavior on scale { NumberAnimation { duration: 120; easing.type: Easing.OutBack } }
+                        Behavior on color { ColorAnimation { duration: 140 } }
+                        Behavior on border.color { ColorAnimation { duration: 140 } }
+
+                        RowLayout {
+                            id: lockRow
+                            anchors.centerIn: parent
+                            spacing: 4
+
+                            Text {
+                                text: (root.bridge && root.bridge.threadsLocked) ? "🔒" : "🔓"
+                                font.pixelSize: 11
+                            }
+
+                            Text {
+                                text: (root.bridge && root.bridge.threadsLocked) ? "Locked" : "Lock"
+                                font.family: "Segoe UI, sans-serif"
+                                font.bold: true
+                                font.pixelSize: 11
+                                color: (root.bridge && root.bridge.threadsLocked) ? "#F87171" : "#94A3B8"
+                            }
+                        }
+
+                        MouseArea {
+                            id: lockMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                if (root.bridge) {
+                                    root.bridge.threadsLocked = !root.bridge.threadsLocked
+                                }
+                            }
+                        }
+
+                        ToolTip {
+                            visible: lockMouse.containsMouse
+                            delay: 400
+                            timeout: 5000
+                            text: (root.bridge && root.bridge.threadsLocked)
+                                  ? "Thread Lock Active: Worker concurrency is locked at " + (root.bridge ? root.bridge.threadsCount : 4) + ". Adaptive scaling is disabled and HTTP 429 cooldown is 30s."
+                                  : "Lock Thread Sweetspot: Lock current concurrency. Disables adaptive scaling and prevents rate limits from altering your thread count."
+                            contentItem: Text {
+                                text: parent.text
+                                font.family: "Segoe UI, Inter, sans-serif"
+                                font.pixelSize: 11
+                                color: "#F1F5F9"
+                            }
+                            background: Rectangle {
+                                color: "#181B24"
+                                border.color: (root.bridge && root.bridge.threadsLocked) ? "#EF4444" : "#38BDF8"
+                                border.width: 1
+                                radius: 6
+                            }
                         }
                     }
 
@@ -433,12 +511,16 @@ ScrollView {
                         Text {
                             id: cpuBadgeText
                             anchors.centerIn: parent
-                            text: root.bridge && root.bridge.adaptiveThreading
-                                  ? "⚡ Adaptive"
-                                  : (root.bridge ? ("⚡ CPU Cores: " + root.bridge.maxCpuThreads) : "⚡ CPU Auto")
+                            text: (root.bridge && root.bridge.threadsLocked)
+                                  ? ("🔒 Locked: " + root.bridge.threadsCount + "T")
+                                  : (root.bridge && root.bridge.adaptiveThreading
+                                     ? "⚡ Adaptive"
+                                     : (root.bridge ? ("⚡ CPU Cores: " + root.bridge.maxCpuThreads) : "⚡ CPU Auto"))
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 10
-                            color: root.bridge && root.bridge.adaptiveThreading ? "#FBBF24" : "#38BDF8"
+                            color: (root.bridge && root.bridge.threadsLocked)
+                                   ? "#F87171"
+                                   : (root.bridge && root.bridge.adaptiveThreading ? "#FBBF24" : "#38BDF8")
                         }
                     }
                 }

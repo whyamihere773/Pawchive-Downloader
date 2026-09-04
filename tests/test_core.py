@@ -1,5 +1,6 @@
 import unittest
 import os
+import time
 import tempfile
 import shutil
 from unittest.mock import patch, MagicMock
@@ -551,6 +552,7 @@ class TestKemonoFullSuite(unittest.TestCase):
             separate_by_known=True,
             download_revisions=True,
             adaptive_threading=True,
+            threads_locked=True,
             auto_retry_at_end=True,
         )
         self.assertTrue(opts.skip_archives)
@@ -564,6 +566,7 @@ class TestKemonoFullSuite(unittest.TestCase):
         self.assertTrue(opts.separate_by_known)
         self.assertTrue(opts.download_revisions)
         self.assertTrue(opts.adaptive_threading)
+        self.assertTrue(opts.threads_locked)
         self.assertTrue(opts.auto_retry_at_end)
 
     def test_adaptive_threading_learned_ceiling(self):
@@ -582,6 +585,50 @@ class TestKemonoFullSuite(unittest.TestCase):
         dl._trigger_rate_limit_backoff()
         self.assertEqual(dl._learned_stable_ceiling, 3)
         self.assertLessEqual(dl.max_workers, 2)
+
+    def test_threads_locked_rate_limit_backoff(self):
+        """Verify thread lock prevents changes to workers/ceiling on 429 and applies 30s cooldown."""
+        dl = KemonoDownloader(KnownManager(), SessionManager(), max_workers=8)
+        self.assertIsNone(dl._learned_stable_ceiling)
+        self.assertEqual(dl.max_workers, 8)
+
+        before = time.time()
+        dl._trigger_rate_limit_backoff(threads_locked=True)
+        after = time.time()
+
+        # Concurrency must remain untouched
+        self.assertEqual(dl.max_workers, 8)
+        self.assertIsNone(dl._learned_stable_ceiling)
+        # Cooldown timer must be set to approximately 30 seconds ahead
+        self.assertGreaterEqual(dl._rate_limit_cooldown_until, before + 29.0)
+        self.assertLessEqual(dl._rate_limit_cooldown_until, after + 31.0)
+
+    def test_threads_locked_bridge_mutual_exclusion(self):
+        """Verify thread lock disables adaptive threading and prevents it from being enabled."""
+        from bridge.app_bridge import AppBridge
+        from PySide6.QtWidgets import QApplication
+
+        app = QApplication.instance() or QApplication([])
+        bridge = AppBridge()
+
+        # Enable adaptive threading first
+        bridge.adaptiveThreading = True
+        self.assertTrue(bridge.adaptiveThreading)
+
+        # Applying thread lock must immediately disable adaptive threading
+        bridge.threadsLocked = True
+        self.assertTrue(bridge.threadsLocked)
+        self.assertFalse(bridge.adaptiveThreading)
+
+        # Attempting to turn adaptive threading back on while locked must be blocked
+        bridge.adaptiveThreading = True
+        self.assertFalse(bridge.adaptiveThreading)
+
+        # Unlocking threads must allow adaptive threading to be re-enabled
+        bridge.threadsLocked = False
+        self.assertFalse(bridge.threadsLocked)
+        bridge.adaptiveThreading = True
+        self.assertTrue(bridge.adaptiveThreading)
 
     def test_queue_model_filter_and_single_retry(self):
         """Verify QueueModel live filter transitions and singleRetryRequested signal."""

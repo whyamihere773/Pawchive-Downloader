@@ -71,6 +71,7 @@ class AppBridge(QObject):
     filenameStyleChanged = Signal()
     proxyUrlChanged = Signal()
     threadsCountChanged = Signal()
+    threadsLockedChanged = Signal()
     maxCpuThreadsChanged = Signal()
     cookieStringChanged = Signal()
     userAgentChanged = Signal()
@@ -151,6 +152,9 @@ class AppBridge(QObject):
         self._separate_folders_by_known = saved_settings.get("separate_by_known", False)
         self._download_revisions = saved_settings.get("download_revisions", False)
         self._adaptive_threading = saved_settings.get("adaptive_threading", False)
+        self._threads_locked = bool(saved_settings.get("threads_locked", False))
+        if self._threads_locked:
+            self._adaptive_threading = False
         self._auto_retry_at_end = saved_settings.get("auto_retry_at_end", False)
         self._manga_mode = saved_settings.get("manga_mode", False)
         self._filename_style = saved_settings.get("filename_style", "post_title")
@@ -458,9 +462,29 @@ class AppBridge(QObject):
 
     @adaptiveThreading.setter
     def adaptiveThreading(self, val: bool):
+        # Cannot enable adaptive threading if threads are locked
+        if self._threads_locked and val:
+            return
         if self._adaptive_threading != val:
             self._adaptive_threading = val
             self.adaptiveThreadingChanged.emit()
+            self.saveSettings()
+
+    @Property(bool, notify=threadsLockedChanged)
+    def threadsLocked(self) -> bool:
+        return self._threads_locked
+
+    @threadsLocked.setter
+    def threadsLocked(self, val: bool):
+        val = bool(val)
+        if self._threads_locked != val:
+            self._threads_locked = val
+            self.threadsLockedChanged.emit()
+            if val:
+                # Lock applied -> disable adaptive threading
+                self.adaptiveThreading = False
+            if hasattr(self.downloader, "current_options") and self.downloader.current_options:
+                self.downloader.current_options.threads_locked = val
             self.saveSettings()
 
     @Property(bool, notify=autoRetryAtEndChanged)
@@ -782,6 +806,7 @@ class AppBridge(QObject):
             separate_by_known=self._separate_folders_by_known,
             download_revisions=self._download_revisions,
             adaptive_threading=self._adaptive_threading,
+            threads_locked=self._threads_locked,
             auto_retry_at_end=self._auto_retry_at_end,
             manga_mode=self._manga_mode,
             filename_style=self._filename_style,
@@ -1620,6 +1645,7 @@ class AppBridge(QObject):
             "separate_by_known": self._separate_folders_by_known,
             "download_revisions": self._download_revisions,
             "adaptive_threading": self._adaptive_threading,
+            "threads_locked": self._threads_locked,
             "auto_retry_at_end": self._auto_retry_at_end,
             "manga_mode": self._manga_mode,
             "filename_style": self._filename_style,

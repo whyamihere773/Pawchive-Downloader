@@ -605,6 +605,7 @@ class KemonoDownloader:
             return
 
         self.tasks = tasks
+        self.current_options = options
         self._cancel_event.clear()
         self._pause_event.clear()
         self._is_running = True
@@ -615,10 +616,18 @@ class KemonoDownloader:
             daemon=True
         ).start()
 
-    def _trigger_rate_limit_backoff(self):
+    def _trigger_rate_limit_backoff(self, threads_locked: bool = False):
         with self._rate_limit_lock:
             now = time.time()
             if now >= self._rate_limit_cooldown_until:
+                if threads_locked:
+                    self._rate_limit_cooldown_until = now + 30.0
+                    logger.warning(
+                        f"⚡ [Rate Limit Cooldown] HTTP 429 encountered! Threads locked at {self.max_workers} (cooldown 30s)...",
+                        category="downloader"
+                    )
+                    return
+
                 self._rate_limit_cooldown_until = now + 14.0
                 old_workers = self.max_workers
                 
@@ -702,19 +711,22 @@ class KemonoDownloader:
         self._last_eta_calc_time = 0.0
         self._last_progress_emit_time = 0.0
         cpu_cores = max(4, os.cpu_count() or 16)
-        target_max_workers = cpu_cores if options.adaptive_threading else max(1, self.max_workers)
+        self.current_options = options
+        is_locked = getattr(self.current_options or options, "threads_locked", False)
+        target_max_workers = cpu_cores if (options.adaptive_threading and not is_locked) else max(1, self.max_workers)
         last_scale_time = time.time()
         consecutive_successes = 0
         scale_step_interval = 5.0 # Check scaling up every 5 seconds of healthy throughput
 
-        # If Adaptive Threading is enabled, start with 2 worker threads and scale up to CPU core count
-        if options.adaptive_threading:
+        # If Adaptive Threading is enabled and threads are not locked, start with 2 worker threads and scale up to CPU core count
+        if options.adaptive_threading and not is_locked:
             self.max_workers = min(2, target_max_workers)
             logger.info(f"⚡ [Adaptive Threading] Active: Starting with {self.max_workers} worker threads (Max CPU limit: {target_max_workers} threads)...", category="adaptive")
             if self.on_concurrency_throttled:
                 self.on_concurrency_throttled(self.max_workers)
         else:
-            logger.info(f"Starting download pool with {self.max_workers} worker threads...", category="downloader")
+            lock_label = " (Locked)" if is_locked else ""
+            logger.info(f"Starting download pool with {self.max_workers} worker threads{lock_label}...", category="downloader")
 
         # Auto-normalize cookie if user pasted raw JWT token
         clean_cookie = cookie_str.strip() if cookie_str else ""
@@ -743,12 +755,13 @@ class KemonoDownloader:
         with ThreadPoolExecutor(max_workers=max(32, target_max_workers)) as executor:
             while not self._cancel_event.is_set():
                 now = time.time()
+                is_locked = getattr(self.current_options or options, "threads_locked", False)
 
                 # Effective ceiling: learned ceiling if we encountered 429, else user target
                 effective_ceiling = self._learned_stable_ceiling if self._learned_stable_ceiling is not None else target_max_workers
 
-                # 1. Check Adaptive Scaling timer (every 6 seconds)
-                if options.adaptive_threading and (now - last_scale_time >= scale_step_interval):
+                # 1. Check Adaptive Scaling timer (every 5 seconds)
+                if options.adaptive_threading and not is_locked and (now - last_scale_time >= scale_step_interval):
                     last_scale_time = now
                     # Only scale up if not currently in rate-limit cooldown
                     if now >= self._rate_limit_cooldown_until:
@@ -801,7 +814,7 @@ class KemonoDownloader:
                                 self.on_task_status_changed(task)
 
                             # Fast Adaptive Scaling: Scale up after 4 consecutive successful files if below ceiling
-                            if options.adaptive_threading and consecutive_successes >= 4 and (now - last_scale_time >= 3.0):
+                            if options.adaptive_threading and not is_locked and consecutive_successes >= 4 and (now - last_scale_time >= 3.0):
                                 effective_ceiling = self._learned_stable_ceiling if self._learned_stable_ceiling is not None else target_max_workers
                                 if now >= self._rate_limit_cooldown_until and self.max_workers < effective_ceiling:
                                     self.max_workers += 1
@@ -817,13 +830,14 @@ class KemonoDownloader:
                             consecutive_successes = 0
                             self._stable_clean_count = 0
                             if msg.startswith("429_RATE_LIMIT"):
-                                # 429 Rate Limit encountered -> auto-retry after cooldown
+                                # 429 Rate Limit encountered -> auto-retry after cooldown (30s if locked, 15s if adaptive)
+                                wait_secs = 30 if is_locked else 15
                                 task.status = "pending"
-                                task.error_msg = "Rate limited (429) — cooling down for 15s before auto-retry"
+                                task.error_msg = f"Rate limited (429) — cooling down for {wait_secs}s before auto-retry"
                                 if self.on_task_status_changed:
                                     self.on_task_status_changed(task)
-                                self._trigger_rate_limit_backoff()
-                                last_scale_time = time.time() + 15.0
+                                self._trigger_rate_limit_backoff(threads_locked=is_locked)
+                                last_scale_time = time.time() + float(wait_secs)
                             else:
                                 task.status = "failed"
                                 task.error_msg = msg
@@ -904,7 +918,15 @@ class KemonoDownloader:
                             break
 
                 # Feature 5: Track Adaptive Health State
-                if options.adaptive_threading:
+                if is_locked:
+                    if now < self._rate_limit_cooldown_until:
+                        self.adaptive_state = "cooldown"
+                        rem = max(1, int(self._rate_limit_cooldown_until - now))
+                        self.adaptive_status_text = f"Cooldown: {rem}s (Locked {self.max_workers} threads)"
+                    else:
+                        self.adaptive_state = "locked"
+                        self.adaptive_status_text = f"Locked ({self.max_workers} threads)"
+                elif options.adaptive_threading:
                     if now < self._rate_limit_cooldown_until:
                         self.adaptive_state = "cooldown"
                         rem = max(1, int(self._rate_limit_cooldown_until - now))
