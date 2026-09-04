@@ -1691,7 +1691,9 @@ class AppBridge(QObject):
         self._current_speed      = info.get("speed_str", "0 KB/s")
         self._eta_text           = info.get("eta_str", "--")
         self._saved_bytes_text   = info.get("saved_str", "0 MB")
-        self._status_text        = info.get("status_text", f"Downloading… {completed}/{total}")
+        # Don't overwrite Paused state — progress ticks would immediately clear it
+        if not self.downloader._pause_event.is_set():
+            self._status_text = info.get("status_text", f"Downloading\u2026 {completed}/{total}")
         self._files_count_text   = info.get("files_count_text") if info.get("files_count_text") else (f"{completed}/{total}" if total > 0 else "")
         self._adaptive_state     = info.get("adaptive_state", "optimal")
         self._adaptive_status_text = info.get("adaptive_status_text", "")

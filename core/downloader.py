@@ -1303,9 +1303,11 @@ class KemonoDownloader:
                             disk_bytes = sum(
                                 os.path.getsize(p) for p in _part_paths if os.path.exists(p)
                             )
-                            # Also count the target file itself if it already started assembling
-                            if os.path.exists(task.target_path):
-                                disk_bytes = max(disk_bytes, os.path.getsize(task.target_path))
+                            # NOTE: We deliberately do NOT include task.target_path here.
+                            # After multipart stitching, part files are deleted and the final
+                            # assembled file appears. If we counted target_path, those bytes
+                            # would be counted again (they were already counted via part deltas),
+                            # causing the saved-bytes counter to show ~2x the actual download size.
 
                             if disk_bytes < _prev_disk_bytes[0]:
                                 # Files on disk dropped (cleanup or error) — reset baseline
