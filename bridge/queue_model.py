@@ -91,6 +91,10 @@ class QueueModel(QAbstractListModel):
     def pendingCount(self) -> int:
         return sum(1 for t in self._tasks if t.status == "pending")
 
+    @Property(int, notify=countChanged)
+    def count(self) -> int:
+        return len(self._visible_tasks)
+
     # ── QAbstractListModel methods ────────────────────────────────────────────
     def rowCount(self, parent=QModelIndex()):
         return len(self._visible_tasks)
@@ -113,7 +117,7 @@ class QueueModel(QAbstractListModel):
             return task.status
         elif role == self.ProgressRole:
             if task.file_size > 0:
-                return min(1.0, task.downloaded_bytes / task.file_size)
+                return min(1.0, max(0.0, task.downloaded_bytes / task.file_size))
             return 1.0 if task.status == "completed" else 0.0
         elif role == self.FileSizeRole:
             return self._format_size(task.file_size)

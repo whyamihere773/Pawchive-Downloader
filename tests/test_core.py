@@ -775,18 +775,27 @@ class TestPostDownloadActions(unittest.TestCase):
             with patch("subprocess.run") as mock_run:
                 bridge.postDownloadAction = "shutdown"
                 bridge._execute_post_action()
+                self.assertEqual(bridge.postDownloadAction, "none")
+                bridge.confirmPostAction()
                 self.assertTrue(mock_run.called)
                 cmd_args = mock_run.call_args[0][0]
                 self.assertTrue(any(f in cmd_args for f in ("/f", "-f")), f"Force flag missing from shutdown cmd: {cmd_args}")
-                self.assertEqual(bridge.postDownloadAction, "none")
 
             with patch("subprocess.run") as mock_run:
                 bridge.postDownloadAction = "restart"
                 bridge._execute_post_action()
+                self.assertEqual(bridge.postDownloadAction, "none")
+                bridge.confirmPostAction()
                 self.assertTrue(mock_run.called)
                 cmd_args = mock_run.call_args[0][0]
                 self.assertTrue(any(f in cmd_args for f in ("/f", "-f")), f"Force flag missing from restart cmd: {cmd_args}")
-                self.assertEqual(bridge.postDownloadAction, "none")
+
+            # Also test cancellation prevents action execution
+            with patch("subprocess.run") as mock_run:
+                bridge.postDownloadAction = "shutdown"
+                bridge._execute_post_action()
+                bridge.cancelPostAction()
+                self.assertFalse(mock_run.called)
 
             # Test that saveSettings always persists 'none' so it won't linger across sessions
             bridge.postDownloadAction = "shutdown"
@@ -1055,6 +1064,37 @@ Mercy
         self.assertEqual(t1.status, "pending")
         self.assertEqual(t1.retry_count, 1)
         bridge.cancelDownload()
+
+    def test_active_queue_model(self):
+        """Verify that activeQueueModel reflects only downloading/retrying tasks and updates."""
+        from bridge.app_bridge import AppBridge
+        bridge = AppBridge()
+        t1 = DownloadTask("http://example.com/1.png", "c:/tmp/1.png", "Post 1", "Creator", "kemono", "1", "f1", file_size=1000)
+        t2 = DownloadTask("http://example.com/2.png", "c:/tmp/2.png", "Post 2", "Creator", "kemono", "2", "f2", file_size=2000)
+        bridge._handle_set_tasks([t1, t2])
+        self.assertEqual(bridge.activeQueueModel.count, 0)
+
+        # t1 starts downloading
+        t1.status = "downloading"
+        t1.downloaded_bytes = 500
+        t1.speed_str = "500 KB/s"
+        t1.eta_str = "1s"
+        bridge._handle_task_status(t1)
+        self.assertEqual(bridge.activeQueueModel.count, 1)
+
+        # t2 starts downloading
+        t2.status = "downloading"
+        bridge._handle_task_status(t2)
+        self.assertEqual(bridge.activeQueueModel.count, 2)
+
+        # t1 completes
+        t1.status = "completed"
+        bridge._handle_task_status(t1)
+        self.assertEqual(bridge.activeQueueModel.count, 1)
+
+        # cancel clears active
+        bridge.cancelDownload()
+        self.assertEqual(bridge.activeQueueModel.count, 0)
 
 if __name__ == "__main__":
     unittest.main()

@@ -98,6 +98,7 @@ class AppBridge(QObject):
     consoleWidthChanged = Signal()
     postDownloadActionChanged = Signal()
     knownRecognitionModeChanged = Signal()
+    postActionCountdownStarted = Signal(str)  # carries human label e.g. "Shutdown"
 
     _progressSignal  = Signal(dict)    # carries progress info dict
     _taskSignal      = Signal(object)  # carries a DownloadTask object
@@ -122,6 +123,8 @@ class AppBridge(QObject):
         # Models
         self._log_model = LogModel(self)
         self._queue_model = QueueModel(self)
+        self._active_queue_model = QueueModel(self)
+        self._active_queue_model.filterStatus = "downloading"
         self._known_model = KnownModel(self.known_manager, self)
 
         # Settings defaults
@@ -172,6 +175,9 @@ class AppBridge(QObject):
         self._cloud_cancel_event = threading.Event()
         self._cloud_pause_event = threading.Event()
         self._is_cloud_downloading = False
+
+        # Post-action countdown state
+        self._pending_post_action: str = "none"  # action queued for countdown confirmation
 
         # Trigger background auto-check / update for standalone dependencies/yt-dlp.exe
         self.downloader.ytdlp_manager.check_for_updates_async()
@@ -720,6 +726,10 @@ class AppBridge(QObject):
         return self._queue_model
 
     @Property(QObject, constant=True)
+    def activeQueueModel(self) -> QueueModel:
+        return self._active_queue_model
+
+    @Property(QObject, constant=True)
     def knownModel(self) -> KnownModel:
         return self._known_model
 
@@ -1048,6 +1058,7 @@ class AppBridge(QObject):
         if self._is_downloading:
             self.cancelDownload()
         self._queue_model.clear()
+        self._active_queue_model.clear()
         self.session_manager.discard_session()
         self._has_saved_session = False
         self.hasSavedSessionChanged.emit()
@@ -1130,8 +1141,10 @@ class AppBridge(QObject):
 
     @Slot()
     def cancelDownload(self):
+        self._scan_cancel_event.set()
         self.downloader.cancel()
         self.cancelCloudDownloads()
+        self._active_queue_model.clear()
         self._is_downloading = False
         self.isDownloadingChanged.emit()
         self._status_text = "Progress: Cancelled"
@@ -1400,6 +1413,7 @@ class AppBridge(QObject):
         self._scan_cancel_event.set()
         self.downloader.cancel()
         self.cancelCloudDownloads()
+        self._active_queue_model.clear()
         self._is_downloading = False
         self.isDownloadingChanged.emit()
         self._status_text = "Progress: Cancelled"
@@ -1651,6 +1665,7 @@ class AppBridge(QObject):
     @Slot(object)
     def _handle_task_status(self, task: DownloadTask):
         self._queue_model.updateTask(task)
+        self._active_queue_model.updateTask(task)
 
     @Slot(int)
     def _handle_throttled(self, new_count: int):
@@ -1661,17 +1676,45 @@ class AppBridge(QObject):
     @Slot(list)
     def _handle_set_tasks(self, tasks: list):
         self._queue_model.setTasks(tasks)
+        self._active_queue_model.setTasks(tasks)
 
     def _execute_post_action(self):
-        """Executes the chosen post-download system/app action (close app, sleep, shutdown, restart, hibernate)."""
+        """Shows 15-second countdown modal — actual action runs only if user doesn't cancel."""
         action = getattr(self, "_post_download_action", "none")
-        # Reset immediately so it resets every time it's used and never remains on shutdown/sleep
+        # Reset the setting immediately so it doesn't persist
         self.postDownloadAction = "none"
         if not action or action == "none":
             return
 
+        # Human-readable labels for the modal
+        _labels = {
+            "close_app": "Close App",
+            "shutdown":  "Shutdown",
+            "restart":   "Restart",
+            "sleep":     "Sleep",
+            "hibernate": "Hibernate",
+        }
+        label = _labels.get(action, action.capitalize())
+        self._pending_post_action = action
+        logger.info(f"Post-download action '{label}' queued — showing 15s countdown modal.", category="system")
+        # Emit to QML — the modal handles the countdown and calls confirmPostAction() or cancelPostAction()
+        self.postActionCountdownStarted.emit(label)
+
+    @Slot()
+    def cancelPostAction(self):
+        """Called by QML when user clicks Cancel in the countdown modal. Clears the pending action."""
+        logger.info(f"Post-download action '{self._pending_post_action}' cancelled by user.", category="system")
+        self._pending_post_action = "none"
+
+    @Slot()
+    def confirmPostAction(self):
+        """Called by QML when the countdown reaches 0. Runs the actual system action."""
+        action = self._pending_post_action
+        self._pending_post_action = "none"
+        if not action or action == "none":
+            return
+
         logger.info(f"Executing post-download action: {action}", category="system")
-        
         try:
             if action == "close_app":
                 logger.info("Closing application as requested after download.", category="system")
@@ -1682,14 +1725,14 @@ class AppBridge(QObject):
                     sys.exit(0)
             elif action == "shutdown":
                 if sys.platform == "win32":
-                    subprocess.run(["shutdown", "/s", "/f", "/t", "10", "/c", "Pawchive Downloader completed. Force shutting down system in 10s..."], check=False)
+                    subprocess.run(["shutdown", "/s", "/f", "/t", "5", "/c", "Pawchive Downloader: shutting down..."], check=False)
                 elif sys.platform == "darwin":
                     subprocess.run(["osascript", "-e", 'tell app "System Events" to shut down'], check=False)
                 else:
                     subprocess.run(["shutdown", "-h", "-f", "now"], check=False)
             elif action == "restart":
                 if sys.platform == "win32":
-                    subprocess.run(["shutdown", "/r", "/f", "/t", "10", "/c", "Pawchive Downloader completed. Force restarting system in 10s..."], check=False)
+                    subprocess.run(["shutdown", "/r", "/f", "/t", "5", "/c", "Pawchive Downloader: restarting..."], check=False)
                 elif sys.platform == "darwin":
                     subprocess.run(["osascript", "-e", 'tell app "System Events" to restart'], check=False)
                 else:
@@ -1714,6 +1757,7 @@ class AppBridge(QObject):
     @Slot(bool, str)
     def _handle_finished(self, success: bool, message: str):
         self._is_downloading = False
+        self._active_queue_model.clear()
         
         # Calculate actual completed percentage
         tasks = self._queue_model.getTasks()

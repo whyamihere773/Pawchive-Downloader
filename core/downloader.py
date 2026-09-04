@@ -1233,6 +1233,7 @@ class KemonoDownloader:
                 _poll_stop = threading.Event()
                 _part_paths = [f"{task.target_path}.part{i}" for i in range(4)]
                 _prev_disk_bytes = [0]
+                _last_poll_emit = [time.time()]
 
                 def _disk_poll():
                     while not _poll_stop.is_set():
@@ -1254,9 +1255,29 @@ class KemonoDownloader:
                                     task.progress_pct = min(99, int(disk_bytes / task.file_size * 100))
                                 if self.on_task_status_changed:
                                     self.on_task_status_changed(task)
+
+                                # Push live speed + overall progress to the global bar once per second
+                                now_poll = time.time()
+                                if now_poll - _last_poll_emit[0] >= 1.0:
+                                    _last_poll_emit[0] = now_poll
+                                    completed_c = sum(1 for t in self.tasks if t.status == "completed")
+                                    failed_c = sum(1 for t in self.tasks if t.status == "failed")
+                                    self._emit_progress(completed_c, failed_c, len(self.tasks), force=True)
+
+                                    # Compute live speed + ETA for task progress tracking
+                                    if task.file_size > 0:
+                                        spd_bps = delta  # bytes in last ~1s poll window
+                                        task.speed_str = KemonoDownloader.format_speed(int(spd_bps))
+                                        if spd_bps > 0:
+                                            rem = max(0, task.file_size - disk_bytes)
+                                            s = int(rem / spd_bps)
+                                            task.eta_str = f"{s//60}m {s%60}s" if s > 60 else f"{s}s"
+                                        else:
+                                            task.eta_str = "--"
                         except Exception:
                             pass
                         _poll_stop.wait(0.5)
+
 
                 _poll_thread = threading.Thread(target=_disk_poll, daemon=True)
                 _poll_thread.start()
@@ -1379,19 +1400,6 @@ class KemonoDownloader:
                         if self.on_task_status_changed:
                             self.on_task_status_changed(task)
 
-                    # Per-file progress log every ~1.5 s
-                    delta_log = now - last_log_time
-                    if delta_log >= 1.5 and task.file_size > 0:
-                        pct    = task.progress_pct
-                        dl_mb  = task.downloaded_bytes / (1024 * 1024)
-                        tot_mb = task.file_size / (1024 * 1024)
-                        spd    = task.speed_str
-                        logger.debug(
-                            f"  ↳ {task.filename[:45]:<45}  {pct:3d}%  "
-                            f"{dl_mb:5.1f}/{tot_mb:.1f}MB  @ {spd} (ETA: {task.eta_str})",
-                            category="file"
-                        )
-                        last_log_time = now
 
             # ── Post-download processing ───────────────────────────────────────
             if options.compress_to_webp:

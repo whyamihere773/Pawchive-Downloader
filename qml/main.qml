@@ -1220,7 +1220,7 @@ ApplicationWindow {
                     }
                 }
 
-                // Right Panel: Live Console Log View
+                // Right Panel: Live Console Log View & Active Downloads Panel
                 Rectangle {
                     id: consoleContainer
                     SplitView.preferredWidth: appBridge ? appBridge.consoleWidth : 680
@@ -1228,14 +1228,27 @@ ApplicationWindow {
                     visible: appWindow.showConsole
                     color: "#0B0D12"
 
-                    ConsoleLogView {
+                    ColumnLayout {
                         anchors.fill: parent
                         anchors.margins: 8
-                        logModel: appBridge ? appBridge.logModel : null
-                        onExportLogsRequested: if (appBridge) appBridge.exportLogs()
-                        onClearLogsRequested: if (appBridge) appBridge.clearLogs()
-                        onExportLinksRequested: if (appBridge) appBridge.exportAllLinks()
-                        onDownloadLinksRequested: mainCloudModal.isOpen = true
+                        spacing: 8
+
+                        ActiveDownloadsPanel {
+                            id: activeDownloadsPanel
+                            Layout.fillWidth: true
+                            bridge: appBridge
+                            visible: bridge && (bridge.isDownloading || (bridge.activeQueueModel && bridge.activeQueueModel.count > 0)) && (bridge.activeQueueModel && bridge.activeQueueModel.count > 0)
+                        }
+
+                        ConsoleLogView {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            logModel: appBridge ? appBridge.logModel : null
+                            onExportLogsRequested: if (appBridge) appBridge.exportLogs()
+                            onClearLogsRequested: if (appBridge) appBridge.clearLogs()
+                            onExportLinksRequested: if (appBridge) appBridge.exportAllLinks()
+                            onDownloadLinksRequested: mainCloudModal.isOpen = true
+                        }
                     }
                 }
             }
@@ -1375,5 +1388,20 @@ ApplicationWindow {
     CloudDownloadModal {
         id: mainCloudModal
         bridge: appBridge
+    }
+
+    // Post-download action countdown modal — 15s to cancel shutdown/restart/hibernate/etc.
+    CountdownModal {
+        id: countdownModal
+        bridge: appBridge
+    }
+
+    // Wire: when bridge emits postActionCountdownStarted, open the modal with the action label
+    Connections {
+        target: appBridge
+        function onPostActionCountdownStarted(actionLabel) {
+            countdownModal.actionLabel = actionLabel
+            countdownModal.isOpen = true
+        }
     }
 }
