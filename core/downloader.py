@@ -84,6 +84,7 @@ class DownloadTask:
             "downloaded_bytes": self.downloaded_bytes,
             "status": self.status,
             "error_msg": self.error_msg,
+            "retry_count": self.retry_count,
             "is_ytdlp": self.is_ytdlp
         }
 
@@ -111,6 +112,7 @@ class KemonoDownloader:
         self._cancel_event = threading.Event()
         self._pause_event = threading.Event()
         self._is_running = False
+        self.current_options: Optional[FilterOptions] = None
 
         self.total_bytes = 0
         self.downloaded_bytes = 0
@@ -214,18 +216,7 @@ class KemonoDownloader:
 
             # ── Link extraction in "Only Links" mode ───────────────────────────
             if options.file_type == MediaTypes.LINKS:
-                # Build the fullest possible text corpus from this post
-                content_html = (
-                    post.get("content") or
-                    post.get("captionHtml") or
-                    post.get("caption") or ""
-                )
-                # Strip HTML tags for cleaner URL regex matching
-                content_plain = re.sub(r'<[^>]+>', ' ', content_html)
-                comments_text = post.get("comments_text") or ""
-                full_text = f"{post_title}\n{content_plain}\n{comments_text}"
-
-                found_links = LinkExtractor.extract_links_from_text(full_text)
+                found_links = LinkExtractor.extract_links_from_post(post)
                 if found_links:
                     total_found = sum(len(v) for v in found_links.values())
                     logger.info(
@@ -656,6 +647,7 @@ class KemonoDownloader:
             return 0
 
         for t in failed_tasks:
+            t.retry_count = getattr(t, "retry_count", 0) + 1
             t.status = "pending"
             t.error_msg = ""
             t.progress_pct = 0
@@ -685,6 +677,7 @@ class KemonoDownloader:
             return 0
 
         for t in target_tasks:
+            t.retry_count = getattr(t, "retry_count", 0) + 1
             t.status = "pending"
             t.error_msg = ""
             t.progress_pct = 0
@@ -699,6 +692,7 @@ class KemonoDownloader:
         return len(target_tasks)
 
     def _run_download_loop(self, options: FilterOptions, cookie_str: str):
+        self.current_options = options
         self.start_time = time.time()
         self.downloaded_bytes = 0
         self._speed_samples.clear()
@@ -859,17 +853,30 @@ class KemonoDownloader:
                 if slots_available > 0:
                     pending_tasks = [t for t in self.tasks if t.status == "pending"]
                     if not pending_tasks and current_active == 0:
-                        # Check if "auto retry at the end" is enabled
-                        if options.auto_retry_at_end and not auto_retried_once:
-                            failed_tasks = [t for t in self.tasks if t.status == "failed"]
+                        # Check if "auto retry at the end" is enabled dynamically
+                        auto_retry_active = (
+                            getattr(self.current_options, "auto_retry_at_end", False)
+                            if self.current_options
+                            else options.auto_retry_at_end
+                        )
+                        if auto_retry_active and not self._cancel_event.is_set():
+                            failed_tasks = [
+                                t for t in self.tasks
+                                if t.status == "failed" and getattr(t, "retry_count", 0) < 3
+                            ]
                             if failed_tasks:
-                                auto_retried_once = True
-                                logger.info(f"🔄 Auto-retry at the end triggered for {len(failed_tasks)} failed files...", category="downloader")
+                                logger.info(
+                                    f"🔄 Auto-retry triggered for {len(failed_tasks)} failed files...",
+                                    category="downloader"
+                                )
                                 for t in failed_tasks:
+                                    t.retry_count = getattr(t, "retry_count", 0) + 1
                                     t.status = "pending"
                                     t.error_msg = ""
+                                    t.progress_pct = 0
                                     if self.on_task_status_changed:
                                         self.on_task_status_changed(t)
+                                time.sleep(0.5)
                                 continue
 
                         # All tasks completed or finished
@@ -1034,6 +1041,15 @@ class KemonoDownloader:
 
         urls_to_try = [task.url] + list(task.fallback_urls)
         resp = None
+        browser_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Upgrade-Insecure-Requests": "1",
+        }
 
         try:
             for pass_idx in range(2): # Up to 2 passes across available CDN mirrors
@@ -1249,7 +1265,7 @@ class KemonoDownloader:
                     mp_ok, mp_err = download_multipart_file(
                         url=task.url,
                         target_path=task.target_path,
-                        headers=dict(session.headers),
+                        headers=req_headers,
                         num_chunks=4,
                         progress_callback=None,  # disk poller handles progress
                         cancel_event=self._cancel_event,
@@ -1261,16 +1277,56 @@ class KemonoDownloader:
                     _poll_stop.set()
 
                 if mp_ok:
-                    task.status = "completed"
-                    task.downloaded_bytes = task.file_size
-                    task.progress_pct = 100
-                    if self.on_task_status_changed:
-                        self.on_task_status_changed(task)
-                    return True, "Completed"
-                else:
+                    final_mp_size = os.path.getsize(task.target_path) if os.path.exists(task.target_path) else 0
+                    if task.file_size > 0 and final_mp_size == 0:
+                        if os.path.exists(task.target_path):
+                            try:
+                                os.remove(task.target_path)
+                            except OSError:
+                                pass
+                        mp_ok = False
+                        mp_err = "Multipart download resulted in empty 0-byte file"
+                    else:
+                        task.status = "completed"
+                        task.downloaded_bytes = task.file_size
+                        task.progress_pct = 100
+                        if self.on_task_status_changed:
+                            self.on_task_status_changed(task)
+                        return True, "Completed"
+
+                if not mp_ok:
                     if self._cancel_event.is_set():
                         return False, "Cancelled"
-                    logger.debug(f"  ↪ Multipart fallback: {mp_err}", category="file")
+                    logger.info(f"  ↪ Multipart fallback: {mp_err} — switching to standard single stream download...", category="file")
+
+                    # Clean up any partial parts or tmp files from multipart attempt
+                    for p in _part_paths:
+                        if os.path.exists(p):
+                            try:
+                                os.remove(p)
+                            except OSError:
+                                pass
+                    if os.path.exists(f"{task.target_path}.tmp"):
+                        try:
+                            os.remove(f"{task.target_path}.tmp")
+                        except OSError:
+                            pass
+
+                    # Re-acquire single stream response stream since resp was closed for multipart
+                    try:
+                        resp = session.get(task.url, stream=True, timeout=30, headers=req_headers)
+                        if resp.status_code not in (200, 206):
+                            clean_resp = requests.get(task.url, stream=True, timeout=30, headers=browser_headers)
+                            if clean_resp.status_code in (200, 206):
+                                resp = clean_resp
+                        if resp.status_code not in (200, 206):
+                            msg = f"HTTP {resp.status_code} on single-stream fallback"
+                            logger.warning(f"  ✖ {task.filename}: {msg}", category="file")
+                            return False, msg
+                    except Exception as ex:
+                        msg = f"Single-stream fallback connection error: {ex}"
+                        logger.error(f"  ✖ {task.filename}: {msg}", category="file")
+                        return False, msg
 
             # ── Standard single stream download loop ──────────────────────────
             chunk_size = 64 * 1024  # 64 KB
@@ -1341,7 +1397,27 @@ class KemonoDownloader:
             if options.compress_to_webp:
                 self._convert_to_webp(task.target_path)
 
-            final_size = os.path.getsize(task.target_path)
+            final_size = os.path.getsize(task.target_path) if os.path.exists(task.target_path) else 0
+            if task.file_size > 0 and final_size == 0:
+                if os.path.exists(task.target_path):
+                    try:
+                        os.remove(task.target_path)
+                    except OSError:
+                        pass
+                msg = "Downloaded file is empty (0.00 MB saved)"
+                logger.error(f"  ✖ {task.filename}: {msg}", category="file")
+                return False, msg
+
+            if task.file_size > 0 and final_size < task.file_size and not self._cancel_event.is_set():
+                if os.path.exists(task.target_path):
+                    try:
+                        os.remove(task.target_path)
+                    except OSError:
+                        pass
+                msg = f"Incomplete download ({final_size / (1024*1024):.2f} MB / {task.file_size / (1024*1024):.2f} MB)"
+                logger.error(f"  ✖ {task.filename}: {msg}", category="file")
+                return False, msg
+
             task.progress_pct = 100
             task.eta_str = "Done"
 

@@ -161,7 +161,7 @@ class AppBridge(QObject):
         self._download_embeds = bool(saved_settings.get("download_embeds", True))
         self._open_folder_on_complete = bool(saved_settings.get("open_folder_on_complete", False))
         self._play_completion_sound = bool(saved_settings.get("play_completion_sound", False))
-        self._post_download_action = str(saved_settings.get("post_download_action", "none"))
+        self._post_download_action = "none" # Always default to 'none' (Do Nothing) on startup
         self._known_recognition_mode = str(saved_settings.get("known_recognition_mode", "hybrid"))
         self.known_manager.set_mode(self._known_recognition_mode)
         self._console_width = int(saved_settings.get("console_width", 620))
@@ -465,6 +465,24 @@ class AppBridge(QObject):
         if self._auto_retry_at_end != val:
             self._auto_retry_at_end = val
             self.autoRetryAtEndChanged.emit()
+            self.saveSettings()
+            if hasattr(self.downloader, "current_options") and self.downloader.current_options:
+                self.downloader.current_options.auto_retry_at_end = val
+            if val and not self._is_downloading and self._queue_model.failedCount > 0:
+                logger.info("Auto-Retry enabled with failed tasks present — starting retry queue...", category="downloader")
+                self.retryFailed()
+
+    @Slot()
+    def toggleAutoRetry(self):
+        """Toggles auto-retry; if turning on (or if already on with failed tasks idle), immediately retries failed tasks."""
+        if not self._auto_retry_at_end:
+            self.autoRetryAtEnd = True
+        else:
+            if not self._is_downloading and self._queue_model.failedCount > 0:
+                logger.info("Auto-Retry activated for failed tasks...", category="downloader")
+                self.retryFailed()
+            else:
+                self.autoRetryAtEnd = False
 
     @Property(bool, notify=mangaModeChanged)
     def mangaMode(self) -> bool:
@@ -676,7 +694,6 @@ class AppBridge(QObject):
         if self._post_download_action != val:
             self._post_download_action = val
             self.postDownloadActionChanged.emit()
-            self.saveSettings()
 
     @Property(str, notify=knownRecognitionModeChanged)
     def knownRecognitionMode(self) -> str:
@@ -1059,6 +1076,9 @@ class AppBridge(QObject):
         self._is_downloading = True
         self.isDownloadingChanged.emit()
 
+        if not self.downloader.tasks and self._queue_model.tasks:
+            self.downloader.tasks = self._queue_model.getTasks()
+
         count = self.downloader.retry_failed_tasks(options, self._cookie_string)
         if count == 0 and not self.downloader.is_running:
             self._is_downloading = False
@@ -1074,6 +1094,9 @@ class AppBridge(QObject):
         options = self._get_filter_options()
         self._is_downloading = True
         self.isDownloadingChanged.emit()
+
+        if not self.downloader.tasks and self._queue_model.tasks:
+            self.downloader.tasks = self._queue_model.getTasks()
 
         count = self.downloader.retry_selected_tasks(selected_ids, options, self._cookie_string)
         if count == 0 and not self.downloader.is_running:
@@ -1092,6 +1115,9 @@ class AppBridge(QObject):
         options = self._get_filter_options()
         self._is_downloading = True
         self.isDownloadingChanged.emit()
+
+        if not self.downloader.tasks and self._queue_model.tasks:
+            self.downloader.tasks = self._queue_model.getTasks()
 
         count = self.downloader.retry_selected_tasks([file_id], options, self._cookie_string)
         if count == 0 and not self.downloader.is_running:
@@ -1233,7 +1259,7 @@ class AppBridge(QObject):
                 title = item.get("title", "File") if isinstance(item, dict) else "Cloud File"
                 platform = item.get("platform", "other").lower() if isinstance(item, dict) else "other"
 
-                if "mega.nz" in url or "mega.co.nz" in url:
+                if "mega.nz" in url or "mega.co.nz" in url or "mega.io" in url:
                     platform = "mega"
                 elif "drive.google.com" in url or "docs.google.com" in url:
                     platform = "gdrive"
@@ -1587,7 +1613,7 @@ class AppBridge(QObject):
             "download_embeds": self._download_embeds,
             "open_folder_on_complete": self._open_folder_on_complete,
             "play_completion_sound": self._play_completion_sound,
-            "post_download_action": self._post_download_action,
+            "post_download_action": "none",
             "known_recognition_mode": self._known_recognition_mode,
             "console_width": self._console_width
         }
@@ -1639,6 +1665,8 @@ class AppBridge(QObject):
     def _execute_post_action(self):
         """Executes the chosen post-download system/app action (close app, sleep, shutdown, restart, hibernate)."""
         action = getattr(self, "_post_download_action", "none")
+        # Reset immediately so it resets every time it's used and never remains on shutdown/sleep
+        self.postDownloadAction = "none"
         if not action or action == "none":
             return
 
@@ -1654,18 +1682,18 @@ class AppBridge(QObject):
                     sys.exit(0)
             elif action == "shutdown":
                 if sys.platform == "win32":
-                    subprocess.run(["shutdown", "/s", "/t", "10", "/c", "Pawchive Downloader completed. Shutting down system in 10s..."], check=False)
+                    subprocess.run(["shutdown", "/s", "/f", "/t", "10", "/c", "Pawchive Downloader completed. Force shutting down system in 10s..."], check=False)
                 elif sys.platform == "darwin":
                     subprocess.run(["osascript", "-e", 'tell app "System Events" to shut down'], check=False)
                 else:
-                    subprocess.run(["shutdown", "-h", "now"], check=False)
+                    subprocess.run(["shutdown", "-h", "-f", "now"], check=False)
             elif action == "restart":
                 if sys.platform == "win32":
-                    subprocess.run(["shutdown", "/r", "/t", "10", "/c", "Pawchive Downloader completed. Restarting system in 10s..."], check=False)
+                    subprocess.run(["shutdown", "/r", "/f", "/t", "10", "/c", "Pawchive Downloader completed. Force restarting system in 10s..."], check=False)
                 elif sys.platform == "darwin":
                     subprocess.run(["osascript", "-e", 'tell app "System Events" to restart'], check=False)
                 else:
-                    subprocess.run(["shutdown", "-r", "now"], check=False)
+                    subprocess.run(["shutdown", "-r", "-f", "now"], check=False)
             elif action == "sleep":
                 if sys.platform == "win32":
                     subprocess.run(["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"], check=False)
@@ -1675,7 +1703,7 @@ class AppBridge(QObject):
                     subprocess.run(["systemctl", "suspend"], check=False)
             elif action == "hibernate":
                 if sys.platform == "win32":
-                    subprocess.run(["shutdown", "/h"], check=False)
+                    subprocess.run(["shutdown", "/h", "/f"], check=False)
                 elif sys.platform == "darwin":
                     subprocess.run(["pmset", "sleepnow"], check=False)
                 else:

@@ -44,6 +44,7 @@ Rectangle {
                     url: item.url || "",
                     errorMsg: item.errorMsg || "",
                     fileSize: item.fileSize || "-",
+                    retryCount: item.retryCount || 0,
                     isSelected: true // default selected
                 })
             }
@@ -272,6 +273,25 @@ Rectangle {
                                     }
                                 }
 
+                                // Retry Counter Badge
+                                Rectangle {
+                                    visible: model.retryCount > 0
+                                    width: Math.max(56, retryBadgeText.implicitWidth + 10)
+                                    height: 18
+                                    radius: 3
+                                    color: "#3B181E"
+                                    border.color: "#EF4444"
+                                    border.width: 1
+                                    Text {
+                                        id: retryBadgeText
+                                        anchors.centerIn: parent
+                                        text: model.retryCount === 1 ? "🔁 Tried 1x" : ("🔁 Tried " + model.retryCount + "x")
+                                        font.pixelSize: 9
+                                        font.bold: true
+                                        color: "#FCA5A5"
+                                    }
+                                }
+
                                 // Filename
                                 Text {
                                     text: model.filename
@@ -319,7 +339,7 @@ Rectangle {
 
                                     Text { text: "⚠️"; font.pixelSize: 10 }
                                     Text {
-                                        text: model.errorMsg
+                                        text: (model.retryCount > 0 ? ("[" + (model.retryCount === 1 ? "1 retry" : model.retryCount + " retries") + " failed] ") : "") + model.errorMsg
                                         font.family: "Segoe UI, sans-serif"
                                         font.pixelSize: 10
                                         color: "#FCA5A5"

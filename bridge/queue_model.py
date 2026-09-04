@@ -24,6 +24,7 @@ class QueueModel(QAbstractListModel):
     PercentageRole = Qt.UserRole + 13
     OriginalIndexRole = Qt.UserRole + 14
     FileIdRole = Qt.UserRole + 15
+    RetryCountRole = Qt.UserRole + 16
 
     countChanged = Signal()
     filterStatusChanged = Signal()
@@ -135,6 +136,8 @@ class QueueModel(QAbstractListModel):
                 return index.row()
         elif role == self.FileIdRole:
             return task.file_id
+        elif role == self.RetryCountRole:
+            return getattr(task, "retry_count", 0)
 
         return None
 
@@ -154,7 +157,8 @@ class QueueModel(QAbstractListModel):
             self.EtaRole: b"eta",
             self.PercentageRole: b"percentage",
             self.OriginalIndexRole: b"originalIndex",
-            self.FileIdRole: b"fileId"
+            self.FileIdRole: b"fileId",
+            self.RetryCountRole: b"retryCount"
         }
 
     def _format_size(self, b: int) -> str:
@@ -234,6 +238,7 @@ class QueueModel(QAbstractListModel):
         """Flags all failed tasks as pending and emits retryRequested."""
         failed = [t for t in self._tasks if t.status == "failed"]
         for t in failed:
+            t.retry_count = getattr(t, "retry_count", 0) + 1
             t.status = "pending"
             t.error_msg = ""
             t.progress_pct = 0
@@ -246,6 +251,7 @@ class QueueModel(QAbstractListModel):
         """Flags a single task at visible_index as pending and triggers single retry."""
         if 0 <= visible_index < len(self._visible_tasks):
             t = self._visible_tasks[visible_index]
+            t.retry_count = getattr(t, "retry_count", 0) + 1
             t.status = "pending"
             t.error_msg = ""
             t.progress_pct = 0
@@ -265,8 +271,9 @@ class QueueModel(QAbstractListModel):
                     "creatorName": t.creator_name,
                     "service": t.service,
                     "url": t.url,
-                    "errorMsg": t.error_msg,
-                    "fileSize": self._format_size(t.file_size)
+                    "errorMsg": t.error_msg or "Download failed",
+                    "fileSize": self._format_size(t.file_size),
+                    "retryCount": getattr(t, "retry_count", 0)
                 })
         return failed
 
@@ -276,6 +283,7 @@ class QueueModel(QAbstractListModel):
         selected_set = set(selected_file_ids)
         for t in self._tasks:
             if t.status == "failed" and (t.file_id in selected_set or t.url in selected_set or t.filename in selected_set):
+                t.retry_count = getattr(t, "retry_count", 0) + 1
                 t.status = "pending"
                 t.error_msg = ""
                 t.progress_pct = 0

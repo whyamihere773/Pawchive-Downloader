@@ -179,38 +179,61 @@ def _fallback_single_download(
     os.makedirs(os.path.dirname(os.path.abspath(target_path)), exist_ok=True)
 
     try:
-        with session.get(url, headers=headers, timeout=timeout, stream=True) as resp:
-            resp.raise_for_status()
-            total_size = int(resp.headers.get("Content-Length", 0))
-            downloaded = 0
+        resp = session.get(url, headers=headers, timeout=timeout, stream=True)
+        if resp.status_code == 403:
+            # Fallback to browser navigation headers to bypass bot protection / CDN block
+            browser_headers = {
+                "User-Agent": headers.get("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"),
+                "Referer": headers.get("Referer", "https://pawchive.pw/"),
+                "Accept": "*/*",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "none",
+                "Sec-Fetch-User": "?1",
+                "Upgrade-Insecure-Requests": "1",
+            }
+            try:
+                resp.close()
+            except Exception:
+                pass
+            resp = session.get(url, headers=browser_headers, timeout=timeout, stream=True)
 
-            with open(temp_target, "wb") as f:
-                for chunk in resp.iter_content(chunk_size=CHUNK_BUFFER_SIZE):
+        resp.raise_for_status()
+        total_size = int(resp.headers.get("Content-Length", 0))
+        downloaded = 0
+
+        with open(temp_target, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=CHUNK_BUFFER_SIZE):
+                if cancel_event and cancel_event.is_set():
+                    if os.path.exists(temp_target):
+                        os.remove(temp_target)
+                    return False, "Download cancelled"
+
+                while pause_event and pause_event.is_set():
                     if cancel_event and cancel_event.is_set():
                         if os.path.exists(temp_target):
                             os.remove(temp_target)
                         return False, "Download cancelled"
+                    time.sleep(0.5)
 
-                    while pause_event and pause_event.is_set():
-                        if cancel_event and cancel_event.is_set():
-                            if os.path.exists(temp_target):
-                                os.remove(temp_target)
-                            return False, "Download cancelled"
-                        time.sleep(0.5)
+                if chunk:
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if progress_callback:
+                        progress_callback(downloaded, total_size)
 
-                    if chunk:
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        if progress_callback:
-                            progress_callback(downloaded, total_size)
+        if total_size > 0 and downloaded == 0:
+            if os.path.exists(temp_target):
+                os.remove(temp_target)
+            return False, "Downloaded file is empty (0 bytes received)"
 
-            if os.path.exists(target_path):
-                try:
-                    os.remove(target_path)
-                except OSError:
-                    pass
-            os.replace(temp_target, target_path)
-            return True, ""
+        if os.path.exists(target_path):
+            try:
+                os.remove(target_path)
+            except OSError:
+                pass
+        os.replace(temp_target, target_path)
+        return True, ""
     except Exception as e:
         if os.path.exists(temp_target):
             try:

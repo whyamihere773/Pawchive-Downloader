@@ -317,7 +317,7 @@ Rectangle {
                                         anchors.centerIn: parent
                                         text: {
                                             if (model.status === "completed") return "100%"
-                                            if (model.status === "failed") return "Failed"
+                                            if (model.status === "failed") return (model.retryCount > 0 ? ("Failed (" + model.retryCount + "x)") : "Failed")
                                             if (model.status === "downloading") return model.percentage + "%"
                                             return "0%"
                                         }
@@ -436,7 +436,7 @@ Rectangle {
                                 }
 
                                 Text {
-                                    text: model.errorMsg
+                                    text: (model.retryCount > 0 ? ("[" + (model.retryCount === 1 ? "1 retry" : model.retryCount + " retries") + " failed] ") : "") + model.errorMsg
                                     font.family: "Segoe UI, sans-serif"
                                     font.pixelSize: 11
                                     color: "#FCA5A5"

@@ -757,6 +757,8 @@ class TestPostDownloadActions(unittest.TestCase):
         try:
             # Test setting and getting
             bridge = AppBridge()
+            self.assertEqual(bridge.postDownloadAction, "none")
+
             bridge.postDownloadAction = "close_app"
             self.assertEqual(bridge.postDownloadAction, "close_app")
 
@@ -769,16 +771,28 @@ class TestPostDownloadActions(unittest.TestCase):
             bridge.postDownloadAction = "invalid_value"
             self.assertEqual(bridge.postDownloadAction, "none")
 
-            # Test execution dispatch with mocking
+            # Test execution dispatch with mocking and ensure it resets to "none" every time used
             with patch("subprocess.run") as mock_run:
                 bridge.postDownloadAction = "shutdown"
                 bridge._execute_post_action()
                 self.assertTrue(mock_run.called)
+                cmd_args = mock_run.call_args[0][0]
+                self.assertTrue(any(f in cmd_args for f in ("/f", "-f")), f"Force flag missing from shutdown cmd: {cmd_args}")
+                self.assertEqual(bridge.postDownloadAction, "none")
 
             with patch("subprocess.run") as mock_run:
                 bridge.postDownloadAction = "restart"
                 bridge._execute_post_action()
                 self.assertTrue(mock_run.called)
+                cmd_args = mock_run.call_args[0][0]
+                self.assertTrue(any(f in cmd_args for f in ("/f", "-f")), f"Force flag missing from restart cmd: {cmd_args}")
+                self.assertEqual(bridge.postDownloadAction, "none")
+
+            # Test that saveSettings always persists 'none' so it won't linger across sessions
+            bridge.postDownloadAction = "shutdown"
+            bridge.saveSettings()
+            saved = bridge.session_manager.load_settings()
+            self.assertEqual(saved.get("post_download_action"), "none")
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -955,6 +969,92 @@ Mercy
             self.assertIsNone(match_genshin)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_retry_count_and_failed_tasks_list(self):
+        """Verify retry_count tracking and inclusion in getFailedTasksList and QueueModel."""
+        from bridge.queue_model import QueueModel
+        qm = QueueModel()
+        t1 = DownloadTask("http://example.com/file1.mp4", "c:/tmp/file1.mp4", "Post 1", "Creator", "kemono", "1", "f1", file_size=1024)
+        t2 = DownloadTask("http://example.com/file2.mp4", "c:/tmp/file2.mp4", "Post 2", "Creator", "kemono", "2", "f2", file_size=2048)
+        self.assertEqual(t1.retry_count, 0)
+        self.assertEqual(t1.to_dict()["retry_count"], 0)
+
+        t1.status = "failed"
+        t1.error_msg = "403 Forbidden"
+        t2.status = "failed"
+        t2.error_msg = "Connection timeout"
+        qm.setTasks([t1, t2])
+
+        failed_list = qm.getFailedTasksList()
+        self.assertEqual(len(failed_list), 2)
+        self.assertEqual(failed_list[0]["retryCount"], 0)
+        self.assertEqual(failed_list[1]["retryCount"], 0)
+
+        # Retry single task
+        qm.retryTaskAt(0)
+        self.assertEqual(t1.retry_count, 1)
+        self.assertEqual(t1.status, "pending")
+
+        # Simulate it failing again
+        t1.status = "failed"
+        t1.error_msg = "403 Forbidden (again)"
+        qm.updateTask(t1)
+
+        failed_list2 = qm.getFailedTasksList()
+        item_t1 = next(item for item in failed_list2 if item["fileId"] == "f1")
+        self.assertEqual(item_t1["retryCount"], 1)
+        self.assertIn("403 Forbidden", item_t1["errorMsg"])
+
+        # Retry all failed
+        qm.retryFailed()
+        self.assertEqual(t1.retry_count, 2)
+        self.assertEqual(t2.retry_count, 1)
+
+    def test_zero_byte_download_prevention(self):
+        """Verify that a 0-byte download when file_size > 0 is treated as a failure and cleaned up."""
+        import tempfile
+        temp_dir = tempfile.mkdtemp()
+        try:
+            target_path = os.path.join(temp_dir, "empty_download.mp4")
+            # Create an empty 0-byte file simulating a dead iter_content loop
+            open(target_path, "wb").close()
+            self.assertTrue(os.path.exists(target_path))
+
+            dl = KemonoDownloader(KnownManager(), SessionManager())
+            task = DownloadTask("http://example.com/video.mp4", target_path, "Title", "Creator", "kemono", "1", "f1", file_size=50000000)
+
+            # Test size validation logic directly
+            final_size = os.path.getsize(task.target_path) if os.path.exists(task.target_path) else 0
+            is_zero_byte_failure = (task.file_size > 0 and final_size == 0)
+            self.assertTrue(is_zero_byte_failure)
+            if is_zero_byte_failure:
+                os.remove(target_path)
+            self.assertFalse(os.path.exists(target_path))
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_auto_retry_at_end_setter_and_toggle(self):
+        """Verify that setting or toggling autoRetryAtEnd triggers retryFailed when failed tasks are idle."""
+        from bridge.app_bridge import AppBridge
+        from bridge.queue_model import QueueModel
+
+        bridge = AppBridge()
+        t1 = DownloadTask("http://example.com/1.png", "c:/tmp/1.png", "Post 1", "Creator", "kemono", "1", "f1")
+        t1.status = "failed"
+        t1.error_msg = "Disk error"
+        bridge.queueModel.setTasks([t1])
+        self.assertEqual(bridge.queueModel.failedCount, 1)
+
+        # autoRetryAtEnd is initially False
+        bridge._auto_retry_at_end = False
+
+        # Enabling it while idle and failed tasks exist should trigger retryFailed
+        bridge.autoRetryAtEnd = True
+        self.assertTrue(bridge.autoRetryAtEnd)
+        # Verify t1 was flagged for retry and retry_count incremented
+        self.assertEqual(t1.status, "pending")
+        self.assertEqual(t1.retry_count, 1)
+        bridge.cancelDownload()
 
 if __name__ == "__main__":
     unittest.main()

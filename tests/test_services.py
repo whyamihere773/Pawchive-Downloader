@@ -51,6 +51,46 @@ class TestServicesAndExpansion(unittest.TestCase):
         self.assertIn("=== Test Post (Creator: Artist) ===", formatted)
         self.assertIn("[MEGA", formatted)
 
+    def test_embedded_hyperlinks_and_multiple_mega_links(self):
+        # Test HTML with multiple blue clickable hyperlinks (<a href="...">...</a>)
+        html_content = """
+        <div>
+            <h2>April Rewards</h2>
+            <p>Hey everyone! Here are the links for this set:</p>
+            <p><a href="https://mega.nz/folder/FolderPart1#keyABC123">MEGA Full Pack (Part 1)</a></p>
+            <p><a target="_blank" href='https://mega.nz/file/FilePart2#keyXYZ789'>MEGA Animations (Part 2)</a></p>
+            <p><a href="https://mega.io/folder/FolderPart3#keyIO456">MEGA 4K Renders (Part 3)</a></p>
+            <p>Backup: [Google Drive Mirror](https://drive.google.com/drive/folders/gdrive_folder_id?usp=sharing)</p>
+            <p>Raw link: mega.nz/folder/RawDomainPart4#keyRAW999</p>
+            <p>Another host: <a href="https://gofile.io/d/gofile123">GoFile Mirror</a></p>
+        </div>
+        """
+        extracted = LinkExtractor.extract_links_from_text(html_content)
+        self.assertIn("mega", extracted)
+        mega_links = extracted["mega"]
+        # Must find all 4 Mega links (including hrefs, mega.io, bare domain)
+        self.assertEqual(len(mega_links), 4)
+        self.assertTrue(any("FolderPart1#keyABC123" in u for u in mega_links))
+        self.assertTrue(any("FilePart2#keyXYZ789" in u for u in mega_links))
+        self.assertTrue(any("FolderPart3#keyIO456" in u for u in mega_links))
+        self.assertTrue(any("RawDomainPart4#keyRAW999" in u for u in mega_links))
+
+        # Test full post object extraction across content, embed, and comments
+        post_obj = {
+            "title": "Cosplay Set April",
+            "content": '<p>Full set: <a href="https://mega.nz/folder/PostContent1#k1">Download Here</a></p>',
+            "captionHtml": '<a href="https://www.dropbox.com/s/drop123/set.zip">Dropbox Link</a>',
+            "embed": {
+                "url": "https://mega.nz/file/EmbedFile#k2"
+            },
+            "comments_text": "Password is 123. Mirror: https://pixeldrain.com/u/pix123"
+        }
+        post_extracted = LinkExtractor.extract_links_from_post(post_obj)
+        self.assertIn("mega", post_extracted)
+        self.assertEqual(len(post_extracted["mega"]), 2)
+        self.assertIn("dropbox", post_extracted)
+        self.assertIn("pixeldrain", post_extracted)
+
     # ── 2. Batch Loader Tests ─────────────────────────────────────────────────
     def test_batch_loader_text_and_file(self):
         raw_text = """

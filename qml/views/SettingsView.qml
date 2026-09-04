@@ -212,12 +212,22 @@ ScrollView {
                     Layout.fillWidth: true
                     spacing: 6
 
-                    Text {
-                        text: "What to do after download finishes:"
-                        font.family: "Segoe UI, sans-serif"
-                        font.pixelSize: 11
-                        font.weight: Font.DemiBold
-                        color: "#94A3B8"
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Text {
+                            text: "What to do after download finishes (one-time action):"
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 11
+                            font.weight: Font.DemiBold
+                            color: "#94A3B8"
+                        }
+                        Text {
+                            text: "• Resets to 'Do Nothing' after each task. Can also be set directly in the bottom action bar."
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 10
+                            color: "#64748B"
+                            Layout.fillWidth: true
+                        }
                     }
 
                     Flow {
@@ -251,28 +261,28 @@ ScrollView {
                         }
 
                         FilterCheckbox {
-                            label: "Hibernate"
+                            label: "Hibernate (-F Force)"
                             iconText: "💤"
                             activeColor: "#818CF8"
-                            tooltip: "Save memory to disk and turn off power (Hibernate)"
+                            tooltip: "Force save memory to disk and turn off power (Hibernate -F)"
                             checked: root.bridge ? root.bridge.postDownloadAction === "hibernate" : false
                             onClicked: if (root.bridge) root.bridge.postDownloadAction = "hibernate"
                         }
 
                         FilterCheckbox {
-                            label: "Shut Down"
+                            label: "Shut Down (-F Force)"
                             iconText: "🔌"
                             activeColor: "#F43F5E"
-                            tooltip: "Safely shut down the computer when all downloads finish (includes 10s cancel buffer)"
+                            tooltip: "Force close running applications and safely shut down the computer (includes 10s cancel buffer)"
                             checked: root.bridge ? root.bridge.postDownloadAction === "shutdown" : false
                             onClicked: if (root.bridge) root.bridge.postDownloadAction = "shutdown"
                         }
 
                         FilterCheckbox {
-                            label: "Restart"
+                            label: "Restart (-F Force)"
                             iconText: "🔄"
                             activeColor: "#F59E0B"
-                            tooltip: "Restart the operating system when all downloads finish"
+                            tooltip: "Force close running applications and restart the operating system"
                             checked: root.bridge ? root.bridge.postDownloadAction === "restart" : false
                             onClicked: if (root.bridge) root.bridge.postDownloadAction = "restart"
                         }
@@ -304,7 +314,7 @@ ScrollView {
                     Text {
                         id: sVerText
                         anchors.centerIn: parent
-                        text: "v1.0.3"
+                        text: "v1.0.4"
                         font.family: "Segoe UI, sans-serif"
                         font.pixelSize: 10
                         font.weight: Font.Bold

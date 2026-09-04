@@ -140,7 +140,7 @@ def main():
     exe_path = os.path.join(out_folder, "Pawchive Downloader.exe")
 
     # Create release zip archive
-    zip_base = os.path.join(project_root, "dist", "Pawchive-Downloader-v1.0.3-Windows")
+    zip_base = os.path.join(project_root, "dist", "Pawchive-Downloader-v1.0.4-Windows")
     print("\n📦 Compressing release into ZIP archive...")
     zip_path = shutil.make_archive(zip_base, "zip", root_dir=os.path.join(project_root, "dist"), base_dir="Pawchive Downloader")
     print(f"   Created {zip_path}")
