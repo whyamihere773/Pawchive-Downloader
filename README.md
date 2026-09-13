@@ -32,24 +32,22 @@
 ## 📸 Interface Preview
 
 <p align="center">
-  <img src="assets/screenshots/01_downloader.png" alt="Pawchive Downloader Main Screen" width="95%" />
+  <img src="assets/screenshots/01.png" alt="Pawchive Downloader Main Screen" width="95%" />
 </p>
 
 <details>
 <summary><strong>🖼️ Click to expand more interface screenshots</strong></summary>
 <br>
 
-### Task Queue & Batch Actions
-<img src="assets/screenshots/02_task_queue.png" alt="Task Queue" width="90%" />
-
-### Download History & Archive Records
-<img src="assets/screenshots/03_download_history.png" alt="Download History" width="90%" />
-
-### Settings: Multi-Language & Network Authentication
-<img src="assets/screenshots/04_settings_language.png" alt="Settings - Multi-Language & Network" width="90%" />
-
-### Settings: Franchise & Known Character Engine
-<img src="assets/screenshots/05_settings_engine.png" alt="Settings - Franchise & Known Engine" width="90%" />
+<img src="assets/screenshots/02.png" width="90%" />
+<img src="assets/screenshots/03.png" width="90%" />
+<img src="assets/screenshots/04.png" width="90%" />
+<img src="assets/screenshots/05.png" width="90%" />
+<img src="assets/screenshots/06.png" width="90%" />
+<img src="assets/screenshots/07.png" width="90%" />
+<img src="assets/screenshots/08.png" width="90%" />
+<img src="assets/screenshots/09.png" width="90%" />
+<img src="assets/screenshots/10.png" width="90%" />
 
 </details>
 
