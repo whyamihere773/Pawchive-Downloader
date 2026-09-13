@@ -459,25 +459,81 @@ SmoothFlickable {
                         to: root.bridge ? root.bridge.maxCpuThreads : 24
                         stepSize: 1
                         value: root.bridge ? root.bridge.threadsCount : 4
-                        implicitWidth: 140
+                        implicitWidth: 180
+                        implicitHeight: 32
                         // Disable interaction when Adaptive Threading is managing concurrency
                         enabled: root.bridge ? !root.bridge.adaptiveThreading : true
                         onMoved: if (root.bridge) root.bridge.threadsCount = Math.round(value)
+
+                        background: Item {
+                            x: threadSlider.leftPadding
+                            y: threadSlider.topPadding + threadSlider.availableHeight / 2 - height / 2
+                            width:  threadSlider.availableWidth
+                            implicitHeight: 6
+                            height: 6
+
+                            // Empty track
+                            Rectangle {
+                                width: parent.width; height: parent.height
+                                radius: 3
+                                color: "#101827"
+                                border.color: "#1E2D42"
+                                border.width: 1
+                            }
+                            // Filled portion
+                            Rectangle {
+                                width: Math.max(6, threadSlider.visualPosition * parent.width)
+                                height: parent.height
+                                radius: 3
+                                color: "#38BDF8"
+                                opacity: threadSlider.enabled ? 1.0 : 0.35
+                            }
+                        }
+
+                        handle: Item {
+                            x: threadSlider.leftPadding + threadSlider.visualPosition * (threadSlider.availableWidth - width)
+                            y: threadSlider.topPadding + threadSlider.availableHeight / 2 - height / 2
+                            width: 28; height: 28
+
+                            // Outer glow ring — appears on hover / press
+                            Rectangle {
+                                anchors.centerIn: parent
+                                width: 28; height: 28; radius: 14
+                                color: "transparent"
+                                border.color: "#38BDF8"
+                                border.width: 1
+                                opacity: (threadSlider.pressed || threadSlider.hovered) ? 0.5 : 0.0
+                                Behavior on opacity { NumberAnimation { duration: 160 } }
+                            }
+                            // Core circle
+                            Rectangle {
+                                anchors.centerIn: parent
+                                width: 16; height: 16; radius: 8
+                                color: "#38BDF8"
+                                opacity: threadSlider.enabled ? 1.0 : 0.3
+                                scale: threadSlider.pressed ? 0.78 : 1.0
+                                Behavior on scale { NumberAnimation { duration: 110; easing.type: Easing.OutBack } }
+                            }
+                        }
                     }
 
+                    // Value chip
                     Rectangle {
-                        width: 32
-                        height: 24
-                        radius: 4
-                        color: "#242A38"
+                        implicitWidth: workerVal.implicitWidth + 18
+                        height: 24; radius: 12
+                        color: "#0C1828"
+                        border.color: (root.bridge && root.bridge.threadsLocked) ? "#7F1D1D" : "#164E63"
+                        border.width: 1
                         Text {
+                            id: workerVal
                             anchors.centerIn: parent
                             text: root.bridge && root.bridge.adaptiveThreading
                                   ? root.bridge.threadsCount.toString()
                                   : Math.round(threadSlider.value).toString()
+                            font.family: "Segoe UI, sans-serif"
                             font.bold: true
                             font.pixelSize: 11
-                            color: (root.bridge && root.bridge.threadsLocked) ? "#F87171" : "#38BDF8"
+                            color: (root.bridge && root.bridge.threadsLocked) ? "#FCA5A5" : "#7DD3FA"
                         }
                     }
 
@@ -598,21 +654,75 @@ SmoothFlickable {
                         to: 10.0
                         stepSize: 0.5
                         value: root.bridge ? root.bridge.downloadDelay : 2.0
-                        implicitWidth: 140
+                        implicitWidth: 180
+                        implicitHeight: 32
                         onMoved: if (root.bridge) root.bridge.downloadDelay = value
+
+                        background: Item {
+                            x: delaySlider.leftPadding
+                            y: delaySlider.topPadding + delaySlider.availableHeight / 2 - height / 2
+                            width: delaySlider.availableWidth
+                            implicitHeight: 6
+                            height: 6
+
+                            // Empty track
+                            Rectangle {
+                                width: parent.width; height: parent.height
+                                radius: 3
+                                color: "#100D1E"
+                                border.color: "#231A40"
+                                border.width: 1
+                            }
+                            // Filled portion
+                            Rectangle {
+                                width: Math.max(6, delaySlider.visualPosition * parent.width)
+                                height: parent.height
+                                radius: 3
+                                color: "#A78BFA"
+                            }
+                        }
+
+                        handle: Item {
+                            x: delaySlider.leftPadding + delaySlider.visualPosition * (delaySlider.availableWidth - width)
+                            y: delaySlider.topPadding + delaySlider.availableHeight / 2 - height / 2
+                            width: 28; height: 28
+
+                            // Outer glow ring
+                            Rectangle {
+                                anchors.centerIn: parent
+                                width: 28; height: 28; radius: 14
+                                color: "transparent"
+                                border.color: "#A78BFA"
+                                border.width: 1
+                                opacity: (delaySlider.pressed || delaySlider.hovered) ? 0.5 : 0.0
+                                Behavior on opacity { NumberAnimation { duration: 160 } }
+                            }
+                            // Core circle
+                            Rectangle {
+                                anchors.centerIn: parent
+                                width: 16; height: 16; radius: 8
+                                color: "#A78BFA"
+                                scale: delaySlider.pressed ? 0.78 : 1.0
+                                Behavior on scale { NumberAnimation { duration: 110; easing.type: Easing.OutBack } }
+                            }
+                        }
                     }
 
+                    // Value chip
                     Rectangle {
-                        width: 44
-                        height: 24
-                        radius: 4
-                        color: "#242A38"
+                        implicitWidth: delayVal.implicitWidth + 18
+                        height: 24; radius: 12
+                        color: "#0D0A1E"
+                        border.color: "#3B2A6B"
+                        border.width: 1
                         Text {
+                            id: delayVal
                             anchors.centerIn: parent
                             text: (root.bridge ? root.bridge.downloadDelay.toFixed(1) : "2.0") + "s"
+                            font.family: "Segoe UI, sans-serif"
                             font.bold: true
                             font.pixelSize: 11
-                            color: "#A78BFA"
+                            color: "#C4B5FD"
                         }
                     }
 
