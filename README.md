@@ -6,7 +6,8 @@
 
 <p align="center">
   <strong>A modern, high-speed desktop media archiver and downloader for Pawchive, Kemono, Coomer, and external cloud hosts.</strong><br>
-  Built with Python, PySide6, and modern reactive QML.
+  Built with Python, PySide6, and modern reactive QML.<br>
+  <em>Engineered for maximum automation: hands-off scheduled syncing, permanent link vaulting, multi-drive overflow, and self-healing session recovery.</em>
 </p>
 
 <p align="center">
@@ -52,28 +53,46 @@
 
 </details>
 
----
+## ✨ Flagship Highlights (Engineered for Maximum Automation)
 
-## ✨ Key Features
+> 💡 **Philosophy: Zero Manual Friction**  
+> Pawchive Downloader is built from the ground up for hands-off, set-it-and-forget-it operation. From automated recurring schedules and background link harvesting to multi-drive storage overflow protection and self-healing session recovery, the app manages your complete archival workflow autonomously.
 
+- ⏰ **Task Scheduler & Automation Hub:** Create recurring automation schedules to poll your Watchlist for new creator posts, schedule off-peak **Night Owl** download windows, prevent Windows sleep during active jobs, and automatically sweep-retry any rate-limited or dropped files.
+- 🗄️ **Permanent Link Vault & Harvester:** Harvests external cloud links (Mega, Google Drive, Pixeldrain, etc.) and archive passwords from posts into a permanent offline vault. Run link health checks, prune dead links, sync passwords to the Decompressor with one click, or harvest entire creator histories without downloading files.
+- 💾 **Multi-Drive Storage Pools (Auto-Spanning Overflow):** Never suffer "Disk Full" crashes again. Automatically spills downloads to secondary drives or folders when your primary drive reaches its safety margin, preserving creator and post folder hierarchies seamlessly.
+- 📦 **Universal Bulk Decompressor:** Automated scan across downloaded artists, multi-threaded parallel extraction for `.zip`, `.rar`, `.7z`, multi-part archives, and auto-populated passwords with disk safety checks.
+- 🛡️ **Zero-Loss Session Recovery:** If the app is closed, crashed, or cancelled mid-download, atomic checkpoints allow instant one-click resumption right where you left off.
+- 🔓 **Client-Side Cloud Decryptor & Modern Host Support:** Native AES client-side decryption for Mega folders, Google Drive full trees with live progress, 1-click browser cookie importer, and rebuilt Bunkr 2026 parallel resolution.
+
+<details>
+<summary><strong>🔍 Click to explore all features & tools (25+ capabilities)</strong></summary>
+<br>
+
+### 📥 Core Downloading & Performance
 - ⚡ **Adaptive Multi-Threaded Engine:** Parallel chunked downloads with dynamic concurrency scaling and manual thread-locking.
-- 📦 **Universal Bulk Decompressor:** Automatically syncs with downloaded artists from your Watchlist so you just select Bulk Decompress tab and hit "Scan", afterwards you can select multiple artists at once or selectively unpack individual archives. Features high-speed multi-threaded extraction for `.zip`, `.rar`, `.7z`, `.tar`, `.gz`, `.bz2`, `.xz`, `.zst`, and multi-part volumes (`.part01.rar`, `.7z.001`) via a bundled `7za` engine with pre-flight disk safety checks, optional archive cleanup, and password extraction.
-- 🔄 **Smart In-App Updater & Standalone Companion (`updater.exe`):** Automatic update alerts on launch with release notes preview and a dedicated standalone companion updater for zero-lock binary updates, seamless extraction, and instant restart.
-- 🌐 **Full 14-Language Localization (i18n):** Instant in-app language switching and real-time dynamically translated console activity logs (English, Chinese, Japanese, Korean, Spanish, French, German, Russian, Portuguese, and more).
-- 🔓 **Built-in Cloud Decryptor:** Downloads and decrypts entire **Mega** folders directly with client-side AES decryption, plus direct streaming for **Google Drive** (files and full folder trees with live progress), **Dropbox**, and **GoFile**.
-- 📊 **Desktop Completion Reports:** Automatically generates rich HTML visual summaries and plaintext audit reports directly to your Desktop upon download completion.
 - 📊 **Active Large File Monitor (≥ 50 MB):** Dedicated real-time monitoring panel displaying individual progress bars, speed, and ETA for large media downloads.
+- 🎬 **Embedded Player Downloads:** Auto-updating `yt-dlp` integration grabs videos from Vimeo, YouTube, Streamable, RedGifs, Twitter/X, and more.
 - 🛡️ **SSD Stall & Disk Saturation Protection:** Hardened speed estimation engine prevents freeze glitches and auto-pauses gracefully upon out-of-disk space (`WinError 112` / `Errno 28`) without crashing worker threads.
-- 🎯 **Advanced Smart Filtering:** Filter by character names, series, keywords, file categories (images, videos, audio, archives), or minimum file size thresholds.
-- 🗂️ **Automated Organization & Franchise Recognition:** Automatically structures downloaded files into clean creator/franchise folders using an integrated franchise database and custom `Known.txt` rules.
+- ✨ **Fluid Newtonian Smooth Scrolling:** Physics-based kinetic momentum scrolling and velocity accumulation deployed across every view, list, panel, and modal in the UI.
+
+### 🗂️ Smart Organization & Filtering
+- 🗂️ **Post-Aware Folder Isolation:** When posts share identical titles or dates, each post is isolated into its own folder (`[post_id]`) so generic filenames (`1.png`, `4.png`) never overwrite or collide.
 - 📌 **Artist Watchlist:** Track followed creators and automatically check for new posts. Features one-click "Download All Updates", interactive post review drawer with per-post and bulk ignoring, custom download paths per artist, saved per-artist filter settings, and an editable last-downloaded cutoff date with smart auto-normalization.
 - 🏷️ **Tag-Based Folder Sorting:** Organise downloads by their primary tag into sub-folders (`Artist / Tag / ...`) so related content stays cleanly grouped.
-- 🔢 **Sequential File Indexing:** When tag folder mode is active, files are numbered (`001_`, `002_`, ...) within each tag folder to preserve chronological order.
-- 📋 **Failed Download Export:** The retry modal now lets you export a full report of failed files — including direct download links and source post URLs — so you can audit or manually recover any missed content.
+- 🔢 **Sequential File Indexing:** Files are numbered (`001_`, `002_`, ...) to preserve chronological viewing order without relying on filesystem time sorting.
+- 🎯 **Advanced Smart Filtering:** Filter by character names, series, keywords, file categories (images, videos, audio, archives), or minimum file size thresholds.
 - 📖 **Manga & Comic Order:** Chronologically sequences files and folders (`001 - Title`) so chapters stay in proper sequential order in image viewers.
-- 🔗 **Link Harvesting & Export:** Extracts external cloud drive links and embedded player URLs from post bodies and comments; download them immediately or export to text files.
-- 🎬 **Embedded Player Downloads:** Auto-updating `yt-dlp` integration grabs videos from Vimeo, YouTube, Streamable, RedGifs, Twitter/X, and more.
-- 💾 **Session Recovery & Queue Persistence:** Pause and resume transfers anytime. Safely restores interrupted queues after an unexpected shutdown or crash.
+- 🧩 **Franchise Recognition Engine:** Automatically structures downloaded files into clean creator/franchise folders using an integrated franchise database and custom `Known.txt` rules.
+
+### 📊 Auditing, Recovery & Settings
+- 📊 **Desktop Completion Reports:** Generates rich visual HTML summaries and plaintext audit reports directly to your Desktop upon download completion (opt-in).
+- 📋 **Failed Download Export:** Export a full report of failed files — including direct download links and source post URLs — to a text file for manual auditing.
+- 🍪 **1-Click Browser Session Importer:** Extracts authenticated Kemono/Patreon cookies directly from installed browsers without locking open sessions or manual DevTools copying.
+- 🌐 **Full 14-Language Localization (i18n):** Instant in-app language switching and real-time dynamically translated console activity logs (English, Chinese, Japanese, Korean, Spanish, French, German, Russian, Portuguese, and more).
+- 🔄 **Smart In-App Updater & Standalone Companion (`updater.exe`):** Automatic update alerts on launch with release notes preview and a dedicated standalone companion updater for zero-lock binary updates, seamless extraction, and instant restart.
+
+</details>
 
 ---
 
