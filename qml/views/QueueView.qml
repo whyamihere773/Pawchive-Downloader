@@ -402,7 +402,7 @@ Rectangle {
                 }
 
                 // Grouped Batches ListView
-                ListView {
+                SmoothListView {
                     id: groupsList
                     Layout.fillWidth: true
                     Layout.fillHeight: true
@@ -410,7 +410,6 @@ Rectangle {
                     clip: true
                     visible: root.bridge && root.bridge.queueModel && root.bridge.queueModel.viewMode === "grouped" && root.bridge.queueModel.selectedBatchId === ""
                     model: root.bridge && root.bridge.queueModel ? root.bridge.queueModel.groups : []
-                    ScrollBar.vertical: ScrollBar { active: true; policy: ScrollBar.AsNeeded }
 
                     delegate: Rectangle {
                         id: groupCard
@@ -790,7 +789,7 @@ Rectangle {
                 }
 
                 // 3. Individual Files ListView
-                ListView {
+                SmoothListView {
                     id: queueList
                     Layout.fillWidth: true
                     Layout.fillHeight: true
@@ -798,8 +797,6 @@ Rectangle {
                     clip: true
                     visible: root.bridge && root.bridge.queueModel && (root.bridge.queueModel.viewMode === "flat" || root.bridge.queueModel.selectedBatchId !== "")
                     model: root.bridge ? root.bridge.queueModel : null
-
-                ScrollBar.vertical: ScrollBar { active: true; policy: ScrollBar.AsNeeded }
 
                 delegate: Rectangle {
                     id: delegateRoot

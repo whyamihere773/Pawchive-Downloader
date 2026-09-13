@@ -3,7 +3,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import "../components"
 
-ScrollView {
+SmoothFlickable {
     id: root
 
     property var bridge: null
@@ -15,16 +15,12 @@ ScrollView {
         return (res && res !== key) ? res : (fallback !== undefined ? fallback : res)
     }
 
-    contentWidth: availableWidth
+    contentWidth: width
     contentHeight: contentCol.implicitHeight + 16
-    clip: true
-
-    ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
-    ScrollBar.vertical.policy: ScrollBar.AsNeeded
 
     ColumnLayout {
         id: contentCol
-        width: root.availableWidth
+        width: root.width - (root.verticalScrollBar && root.verticalScrollBar.visible ? 10 : 0)
         spacing: 12
 
         // Section 1: Download Location
@@ -795,6 +791,85 @@ ScrollView {
                         }
                     }
 
+                    // ── Desktop report toggle ───────────────────────────────
+                    Rectangle {
+                        id: desktopReportToggle
+                        property bool active: root.bridge ? root.bridge.saveDesktopReport : false
+                        implicitWidth: 210
+                        implicitHeight: 36
+                        radius: 10
+                        color: active ? "#0C202F" : "#141922"
+                        border.color: active ? "#0284C7" : "#1E2433"
+                        border.width: 1
+
+                        Behavior on color { ColorAnimation { duration: 180 } }
+                        Behavior on border.color { ColorAnimation { duration: 180 } }
+
+                        Rectangle {
+                            width: 3
+                            height: parent.height - 10
+                            radius: 2
+                            anchors { left: parent.left; leftMargin: 0; verticalCenter: parent.verticalCenter }
+                            color: desktopReportToggle.active ? "#38BDF8" : "#2D3748"
+                            Behavior on color { ColorAnimation { duration: 180 } }
+                        }
+
+                        RowLayout {
+                            anchors { fill: parent; leftMargin: 12; rightMargin: 10 }
+                            spacing: 8
+
+                            Rectangle {
+                                id: reportTrack
+                                width: 32; height: 18; radius: 9
+                                color: desktopReportToggle.active ? "#0284C7" : "#2D3748"
+                                Behavior on color { ColorAnimation { duration: 180 } }
+
+                                Rectangle {
+                                    width: 12; height: 12; radius: 6
+                                    color: "white"
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    x: desktopReportToggle.active ? parent.width - width - 3 : 3
+                                    Behavior on x { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+                                }
+                            }
+
+                            ColumnLayout {
+                                spacing: 1
+                                Layout.fillWidth: true
+                                Text {
+                                    text: root.tr("toggle_desktop_report", "Desktop report")
+                                    color: desktopReportToggle.active ? "#E2E8F0" : "#64748B"
+                                    font.pixelSize: 12
+                                    font.family: "Segoe UI, sans-serif"
+                                    font.weight: Font.Medium
+                                    Behavior on color { ColorAnimation { duration: 180 } }
+                                }
+                                Text {
+                                    text: root.tr("toggle_desktop_report_sub", "summary log on desktop")
+                                    color: desktopReportToggle.active ? "#38BDF8" : "#374151"
+                                    font.pixelSize: 9
+                                    font.family: "Segoe UI, sans-serif"
+                                    Behavior on color { ColorAnimation { duration: 180 } }
+                                }
+                            }
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                if (root.bridge) root.bridge.saveDesktopReport = !desktopReportToggle.active
+                            }
+                        }
+
+                        Connections {
+                            target: root.bridge
+                            function onSaveDesktopReportChanged() {
+                                desktopReportToggle.active = root.bridge.saveDesktopReport
+                            }
+                        }
+                    }
+
                     Item { Layout.fillWidth: true }
                 }
             }
@@ -826,7 +901,7 @@ ScrollView {
 
                     TextArea {
                         id: batchInput
-                        placeholderText: "https://kemono.su/patreon/user/12345\nhttps://coomer.su/onlyfans/user/67890\nhttps://cum.st/creators/onlyfans/32696630\nhttps://bunkr.is/a/example"
+                        placeholderText: "https://kemono.su/patreon/user/12345\nhttps://coomer.su/onlyfans/user/67890\nhttps://cum.st/creators/onlyfans/32696630\nhttps://bunkr.cr/a/example"
                         background: Rectangle {
                             color: "#141922"
                             border.color: batchInput.activeFocus ? "#7C3AED" : "#1E2433"

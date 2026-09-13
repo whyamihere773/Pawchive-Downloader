@@ -174,30 +174,57 @@ class KemonoDownloader:
         self.on_task_status_changed: Optional[Callable[[DownloadTask], None]] = None
         self.on_download_finished: Optional[Callable[[bool, str], None]] = None
         self.on_concurrency_throttled: Optional[Callable[[int], None]] = None
+        self.on_pause_changed: Optional[Callable[[bool], None]] = None
 
     @property
     def is_running(self) -> bool:
         return self._is_running
 
+    @property
+    def is_paused(self) -> bool:
+        return self._pause_event.is_set()
+
     def cancel(self):
         self._cancel_event.set()
         self._pause_event.clear()  # Ensure paused workers wake up to handle cancel
         logger.warning("Download cancellation requested.", category="downloader")
+        self._save_recovery_checkpoint()
+        if self.on_pause_changed:
+            try:
+                self.on_pause_changed(False)
+            except Exception as e:
+                logger.error(f"Error in on_pause_changed callback: {e}", category="downloader")
 
     def pause(self):
         self._pause_event.set()
         logger.info("Download paused.", category="downloader")
+        self._save_recovery_checkpoint()
+        if self.on_pause_changed:
+            try:
+                self.on_pause_changed(True)
+            except Exception as e:
+                logger.error(f"Error in on_pause_changed callback: {e}", category="downloader")
 
     def resume(self):
         self._pause_event.clear()
         self._speed_samples.clear()
         self._smoothed_speed = 0.0
         logger.info("Download resumed.", category="downloader")
+        if self.on_pause_changed:
+            try:
+                self.on_pause_changed(False)
+            except Exception as e:
+                logger.error(f"Error in on_pause_changed callback: {e}", category="downloader")
 
     def reset_state(self):
         """Fully resets download state so a new session starts cleanly."""
         self._cancel_event.clear()
         self._pause_event.clear()
+        if self.on_pause_changed:
+            try:
+                self.on_pause_changed(False)
+            except Exception:
+                pass
         self.tasks = []
         self.downloaded_bytes = 0
         self.total_bytes = 0
@@ -211,6 +238,21 @@ class KemonoDownloader:
         self._last_progress_emit_time = 0.0
         self.adaptive_state = "optimal"
         self.adaptive_status_text = ""
+
+    def _save_recovery_checkpoint(self, options: Optional[FilterOptions] = None):
+        """Persists current download tasks to the crash-proof recovery journal."""
+        try:
+            if not self.tasks:
+                return
+            rec = getattr(self.session_manager, "recovery_manager", None)
+            if not rec:
+                return
+            eff_opts = options or self.current_options
+            opts_dict = vars(eff_opts) if eff_opts else {}
+            status = "paused" if self.is_paused else ("cancelled" if self._cancel_event.is_set() else "in_progress")
+            rec.save_checkpoint(tasks=self.tasks, settings=opts_dict, status=status)
+        except Exception as e:
+            logger.debug(f"Could not persist recovery checkpoint: {e}", category="session")
         logger.info("Downloader state fully reset.", category="downloader")
 
     @staticmethod
@@ -290,9 +332,10 @@ class KemonoDownloader:
         extracted_links_all: Dict[str, List[str]] = {}
         extracted_records_all: List[Dict[str, Any]] = []
         folder_file_counts: Dict[str, int] = defaultdict(int)
-        # Track target paths already assigned in this build to detect same-display-name collisions
-        # (e.g. two attachments with identical ?f= names but different content hashes)
-        _batch_paths: set = set()
+        post_folder_registry: Dict[str, str] = {}
+        # Track target paths already assigned in this build mapping to metadata: {post_id, post_title, rel_path}
+        _batch_paths: Dict[str, Dict[str, Any]] = {}
+        _post_dup_counts: Dict[Tuple[str, str], int] = defaultdict(int)
 
         for post_idx, post in enumerate(posts_to_process, 1):
             post_id = str(post.get("id", ""))
@@ -397,6 +440,18 @@ class KemonoDownloader:
                     folder_name = f"[{date_str}] {clean_title}"
                 else:
                     folder_name = clean_title
+
+                candidate_folder = os.path.join(*folder_parts, folder_name)
+                # If another DIFFERENT post previously claimed this exact folder path (e.g. identical titles or blank titles),
+                # append the post ID to ensure each post retains its own dedicated directory.
+                if candidate_folder in post_folder_registry and post_folder_registry[candidate_folder] != post_id:
+                    folder_name = f"{folder_name} [{post_id}]"
+                    candidate_folder = os.path.join(*folder_parts, folder_name)
+                    logger.debug(
+                        f"Post folder collision: Different post with matching title detected. Separated into '{folder_name}'",
+                        category="downloader"
+                    )
+                post_folder_registry[candidate_folder] = post_id
                 folder_parts.append(folder_name)
 
             post_folder = os.path.join(*folder_parts)
@@ -643,51 +698,71 @@ class KemonoDownloader:
                     elif "kemono" in orig_host:
                         effective_domain = "kemono.su"
 
+                is_preview_only = bool(fobj.get("preview_only"))
                 candidate_urls = []
-                # Always try the original source URL first if we have one
-                if original_url:
-                    candidate_urls.append(f"{original_url}?f={sanitized_name}")
 
-                if "cum.st" in effective_domain:
-                    if options.download_thumbnails_only:
-                        if not original_url:
-                            candidate_urls.append(f"https://img.cum.st/thumbnail/data{clean_rel}")
+                if is_preview_only:
+                    # When an attachment is flagged preview_only, only the thumbnail server has it
+                    if "pawchive" in effective_domain:
+                        candidate_urls.append(f"https://img.pawchive.pw/thumbnail/data{clean_rel}")
+                    elif "cum.st" in effective_domain:
+                        candidate_urls.append(f"https://img.cum.st/thumbnail/data{clean_rel}")
+                    elif "coomer" in effective_domain:
+                        candidate_urls.append(f"https://img.coomer.su/thumbnail/data{clean_rel}")
                     else:
-                        # Append any secondary variants (e.g. 720p.mp4, 240p.mp4) from the API as immediate fallbacks
-                        if is_storage_key:
-                            for ev in extra_cum_variants:
-                                u_ev = f"https://e1.cum.st/media/{rel_path}/{ev}"
-                                if u_ev not in candidate_urls:
-                                    candidate_urls.append(u_ev)
-                        elif not original_url:
-                            candidate_urls.append(f"https://cum.st/data{clean_rel}?f={sanitized_name}")
-                        # Fallbacks
-                        candidate_urls.append(f"https://cum.st/data{clean_rel}")
-                        candidate_urls.append(f"https://img.cum.st/data{clean_rel}")
-                elif "pawchive" in effective_domain:
-                    if options.download_thumbnails_only:
-                        if not original_url:
+                        candidate_urls.append(f"https://img.kemono.su/thumbnail/data{clean_rel}")
+                else:
+                    # Always try the original source URL first if we have one
+                    if original_url:
+                        candidate_urls.append(f"{original_url}?f={sanitized_name}")
+
+                    if "cum.st" in effective_domain:
+                        if options.download_thumbnails_only:
+                            if not original_url:
+                                candidate_urls.append(f"https://img.cum.st/thumbnail/data{clean_rel}")
+                        else:
+                            # Append any secondary variants (e.g. 720p.mp4, 240p.mp4) from the API as immediate fallbacks
+                            if is_storage_key:
+                                for ev in extra_cum_variants:
+                                    u_ev = f"https://e1.cum.st/media/{rel_path}/{ev}"
+                                    if u_ev not in candidate_urls:
+                                        candidate_urls.append(u_ev)
+                            elif not original_url:
+                                candidate_urls.append(f"https://cum.st/data{clean_rel}?f={sanitized_name}")
+                            # Fallbacks
+                            candidate_urls.append(f"https://cum.st/data{clean_rel}")
+                            candidate_urls.append(f"https://img.cum.st/data{clean_rel}")
+                    elif "pawchive" in effective_domain:
+                        if options.download_thumbnails_only:
+                            if not original_url:
+                                candidate_urls.append(f"https://img.pawchive.pw/thumbnail/data{clean_rel}")
+                        else:
+                            # Only use confirmed live Pawchive mirrors
+                            if "file.pawchive.pw" not in (original_url or ""):
+                                candidate_urls.append(f"https://file.pawchive.pw/data{clean_rel}?f={sanitized_name}")
+                            # Fallback mirror for missing / preview files
                             candidate_urls.append(f"https://img.pawchive.pw/thumbnail/data{clean_rel}")
-                    else:
-                        # Only use confirmed live Pawchive mirrors
-                        if "file.pawchive.pw" not in (original_url or ""):
-                            candidate_urls.append(f"https://file.pawchive.pw/data{clean_rel}?f={sanitized_name}")
-                elif "coomer" in effective_domain:
-                    if options.download_thumbnails_only:
-                        if not original_url:
+                    elif "coomer" in effective_domain:
+                        if options.download_thumbnails_only:
+                            if not original_url:
+                                candidate_urls.append(f"https://img.coomer.su/thumbnail/data{clean_rel}")
+                        else:
+                            for sub in ["c1", "c2", "c3", "n1", "n2", "n3", "n4"]:
+                                u = f"https://{sub}.coomer.su/data{clean_rel}?f={sanitized_name}"
+                                if u not in candidate_urls:
+                                    candidate_urls.append(u)
                             candidate_urls.append(f"https://img.coomer.su/thumbnail/data{clean_rel}")
-                    else:
-                        for sub in ["c1", "c2", "c3", "n1", "n2", "n3", "n4"]:
-                            u = f"https://{sub}.coomer.su/data{clean_rel}?f={sanitized_name}"
-                            if u not in candidate_urls:
-                                candidate_urls.append(u)
-                else:  # kemono.su / default
-                    if options.download_thumbnails_only:
-                        if not original_url:
+                    else:  # kemono.su / default
+                        if options.download_thumbnails_only:
+                            if not original_url:
+                                candidate_urls.append(f"https://img.kemono.su/thumbnail/data{clean_rel}")
+                        else:
+                            for sub in ["c1", "c2", "c3", "n1", "n2", "n3", "n4"]:
+                                u = f"https://{sub}.kemono.su/data{clean_rel}?f={sanitized_name}"
+                                if u not in candidate_urls:
+                                    candidate_urls.append(u)
+                            candidate_urls.append(f"https://file.pawchive.pw/data{clean_rel}?f={sanitized_name}")
                             candidate_urls.append(f"https://img.kemono.su/thumbnail/data{clean_rel}")
-                    else:
-                        for sub in ["c1", "c2", "c3", "n1", "n2", "n3", "n4"]:
-                            u = f"https://{sub}.kemono.su/data{clean_rel}?f={sanitized_name}"
                             if u not in candidate_urls:
                                 candidate_urls.append(u)
                         candidate_urls.append(f"https://file.pawchive.pw/data{clean_rel}?f={sanitized_name}")
@@ -696,29 +771,67 @@ class KemonoDownloader:
                 target_path = os.path.join(post_folder, sanitized_name)
                 file_id = f"{post_id}_{clean_rel}"
 
-                # Resolve same-display-name collisions within the same batch.
-                # Two attachments can share an identical ?f= display name while having
-                # different content hashes (different images, same artist-given filename).
-                # When that happens, append a 6-char prefix of the content hash to distinguish them.
+                # Resolve filename collisions: distinguish between duplicate attachments in the SAME post
+                # versus collisions from a DIFFERENT post (e.g. when subfolders are disabled).
                 if target_path in _batch_paths:
+                    prev_entry = _batch_paths[target_path]
+                    prev_post_id = prev_entry.get("post_id", "")
+                    prev_post_title = prev_entry.get("post_title", "")
+                    prev_rel = prev_entry.get("rel_path", "")
+
+                    # Check if identical file attached twice in the same post
+                    if prev_post_id == post_id and prev_rel == clean_rel and not options.keep_duplicates:
+                        logger.debug(
+                            f"Skipping identical duplicate attachment: '{sanitized_name}' in post '{post_title}'",
+                            category="file"
+                        )
+                        continue
+
                     stem, ext = os.path.splitext(sanitized_name)
-                    # Use the content hash embedded in clean_rel (last path component before extension)
-                    hash_hint = os.path.splitext(os.path.basename(clean_rel))[0][-6:] or \
-                                hashlib.md5(clean_rel.encode()).hexdigest()[:6]
-                    disambig_name = f"{stem}_{hash_hint}{ext}"
-                    target_path = os.path.join(post_folder, disambig_name)
-                    logger.debug(
-                        f"Filename collision detected: '{sanitized_name}' already queued — "
-                        f"renamed to '{disambig_name}' for this file",
-                        category="file"
-                    )
+
+                    if prev_post_id != post_id:
+                        # Collision across DIFFERENT posts (e.g. subfolder_per_post is disabled)
+                        disambig_name = f"{stem} [{post_id}]{ext}"
+                        target_path = os.path.join(post_folder, disambig_name)
+                        counter = 2
+                        while target_path in _batch_paths:
+                            disambig_name = f"{stem} [{post_id}] ({counter}){ext}"
+                            target_path = os.path.join(post_folder, disambig_name)
+                            counter += 1
+                        logger.debug(
+                            f"Different-post filename collision: '{sanitized_name}' belongs to post '{post_title}' ({post_id}), "
+                            f"already used by previous post '{prev_post_title}' ({prev_post_id}) — saved as '{disambig_name}'",
+                            category="file"
+                        )
+                    else:
+                        # Duplicate attachment within the SAME post (e.g. raw and captioned versions, or multiple variants)
+                        hash_hint = os.path.splitext(os.path.basename(clean_rel))[0][-6:] or \
+                                    hashlib.md5(clean_rel.encode()).hexdigest()[:6]
+                        disambig_name = f"{stem}_{hash_hint}{ext}"
+                        target_path = os.path.join(post_folder, disambig_name)
+                        counter = 2
+                        while target_path in _batch_paths:
+                            disambig_name = f"{stem}_{hash_hint}_{counter}{ext}"
+                            target_path = os.path.join(post_folder, disambig_name)
+                            counter += 1
+                        logger.debug(
+                            f"Same-post duplicate attachment: '{sanitized_name}' already queued in post '{post_title}' — "
+                            f"saving variant as '{disambig_name}'",
+                            category="file"
+                        )
+
                     # Also update the candidate URLs to use the disambiguated display name
                     candidate_urls = [
                         u.replace(f"?f={sanitized_name}", f"?f={disambig_name}") if f"?f={sanitized_name}" in u else u
                         for u in candidate_urls
                     ]
                     file_url = candidate_urls[0] if candidate_urls else file_url
-                _batch_paths.add(target_path)
+
+                _batch_paths[target_path] = {
+                    "post_id": post_id,
+                    "post_title": post_title,
+                    "rel_path": clean_rel
+                }
 
                 webp_path = os.path.splitext(target_path)[0] + ".webp"
                 raw_path = os.path.join(post_folder, raw_name)
@@ -828,7 +941,13 @@ class KemonoDownloader:
         self.current_options = options
         self._cancel_event.clear()
         self._pause_event.clear()
+        if self.on_pause_changed:
+            try:
+                self.on_pause_changed(False)
+            except Exception:
+                pass
         self._is_running = True
+        self._save_recovery_checkpoint(options)
 
         threading.Thread(
             target=self._run_download_loop,
@@ -1032,6 +1151,7 @@ class KemonoDownloader:
         is_locked = getattr(self.current_options or options, "threads_locked", False)
         target_max_workers = cpu_cores if (options.adaptive_threading and not is_locked) else max(1, self.max_workers)
         last_scale_time = time.time()
+        last_checkpoint_time = time.time()
         consecutive_successes = 0
         scale_step_interval = 5.0 # Check scaling up every 5 seconds of healthy throughput
 
@@ -1287,6 +1407,11 @@ class KemonoDownloader:
                     self.adaptive_state = "manual"
                     self.adaptive_status_text = f"Manual ({self.max_workers} threads)"
 
+                # Periodic crash-proof checkpoint (every 30 seconds)
+                if now - last_checkpoint_time >= 30.0:
+                    last_checkpoint_time = now
+                    self._save_recovery_checkpoint(options)
+
                 time.sleep(0.05)
 
             # Wait for remaining active futures if cancelling
@@ -1302,10 +1427,17 @@ class KemonoDownloader:
         failed_count = sum(1 for t in self.tasks if t.status == "failed")
 
         if self._cancel_event.is_set():
+            self._save_recovery_checkpoint(options)
             logger.warning(f"Download cancelled. Completed: {completed_count}, Failed/Cancelled: {failed_count}", category="downloader")
             if self.on_download_finished:
                 self.on_download_finished(False, "Download cancelled by user.")
         else:
+            if completed_count == len(self.tasks):
+                rec = getattr(self.session_manager, "recovery_manager", None)
+                if rec:
+                    rec.discard_recovery()
+            else:
+                self._save_recovery_checkpoint(options)
             logger.success(
                 f"Download completed in {duration:.1f}s! ({completed_count} successful, {failed_count} errors)",
                 category="downloader"
@@ -1427,9 +1559,10 @@ class KemonoDownloader:
                     # Provider-specific headers per host
                     req_headers = dict(range_headers)
                     u_low = attempt_url.lower()
-                    if "bunkr" in u_low:
+                    if "bunkr" in u_low or "cdn.cr" in u_low or "scdn.st" in u_low or (hasattr(task, "service") and task.service == "bunkr"):
                         req_headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-                        req_headers["Referer"] = "https://bunkr.is/"
+                        req_headers["Referer"] = "https://bunkr.cr/"
+                        req_headers["Origin"] = "https://bunkr.cr"
                         req_headers["Accept"] = "*/*"
                     elif "erome" in u_low:
                         req_headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -1584,9 +1717,25 @@ class KemonoDownloader:
                 category="file"
             )
 
-            # ── Pre-flight disk space verification ─────────────────────────────
+            # ── Storage Pool Auto-Spanning & Pre-flight disk space verification ──
             try:
+                from core.storage_pool_manager import storage_pool_manager
+                if storage_pool_manager.enabled and storage_pool_manager.overflow_dirs:
+                    p_dir = storage_pool_manager.primary_dir
+                    if p_dir and os.path.abspath(task.target_path).startswith(os.path.abspath(p_dir)):
+                        rel_file = os.path.relpath(task.target_path, p_dir)
+                        rel_folder = os.path.dirname(rel_file)
+                        fn = os.path.basename(rel_file)
+                        new_target, was_overflowed = storage_pool_manager.get_destination_target(
+                            subfolder=rel_folder,
+                            filename=fn,
+                            estimated_bytes=task.file_size
+                        )
+                        if was_overflowed:
+                            task.target_path = new_target
+
                 target_dir = os.path.dirname(os.path.abspath(task.target_path))
+                os.makedirs(target_dir, exist_ok=True)
                 usage = shutil.disk_usage(target_dir)
                 needed = max(10 * 1024 * 1024, task.file_size)
                 if usage.free < needed and usage.free < 25 * 1024 * 1024:
@@ -2109,8 +2258,10 @@ class KemonoDownloader:
             saved_str = f"{dl_mb:.1f} MB"
 
         status_text = (
-            f"Downloading… ({completed}/{total} files)"
-            if self._is_running else "Idle"
+            "Progress: Paused" if self._pause_event.is_set() else (
+                f"Downloading… ({completed}/{total} files)"
+                if self._is_running else "Idle"
+            )
         )
 
         info = {

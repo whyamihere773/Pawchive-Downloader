@@ -12,7 +12,7 @@ ApplicationWindow {
     minimumWidth: 900
     minimumHeight: 600
     visible: true
-    title: "Pawchive Downloader " + ((typeof updaterBridge !== "undefined" && updaterBridge && updaterBridge.currentVersion) ? ("v" + updaterBridge.currentVersion) : "v1.1.1")
+    title: "Pawchive Downloader " + ((typeof updaterBridge !== "undefined" && updaterBridge && updaterBridge.currentVersion) ? ("v" + updaterBridge.currentVersion) : "v1.1.2")
     color: "#0F1117"
 
     // Stop active downloads and persist session gracefully when user closes the app
@@ -22,8 +22,14 @@ ApplicationWindow {
         }
     }
 
+    Component.onCompleted: {
+        if (appBridge) {
+            appBridge.checkRecoverySession()
+        }
+    }
+
     property bool showConsole: true
-    property int currentTab: 0 // 0: Downloader, 1: Queue, 2: Watchlist, 3: Decompressor, 4: Known, 5: History, 6: Settings
+    property int currentTab: 0 // 0: Downloader, 1: Queue, 2: Watchlist, 3: Decompressor, 4: Link Vault, 5: Scheduler, 6: Known, 7: History, 8: Settings
 
     function tr(key, fallback) {
         if (!Lang) return fallback !== undefined ? fallback : key
@@ -53,15 +59,38 @@ ApplicationWindow {
             border.color: "#1E2330"
             border.width: 1
 
-            RowLayout {
-                anchors.fill: parent
+            // Left tabs scrollable strip
+            Flickable {
+                id: tabsFlickable
+                anchors.left: parent.left
                 anchors.leftMargin: 8
+                anchors.right: rightActionRow.left
                 anchors.rightMargin: 8
-                spacing: 4
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+                contentWidth: tabsRow.implicitWidth
+                contentHeight: height
+                flickableDirection: Flickable.HorizontalFlick
+                boundsBehavior: Flickable.DragAndOvershootBounds
+                clip: true
 
-                // Tab: Downloader
+                WheelHandler {
+                    id: tabsWheel
+                    acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                    onWheel: function(event) {
+                        var delta = event.angleDelta.y || event.angleDelta.x
+                        tabsFlickable.flick(delta * 10, 0)
+                    }
+                }
+
+                Row {
+                    id: tabsRow
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 4
+
+                    // Tab: Downloader
                 Rectangle {
-                    width: Math.max(110, tab0Row.implicitWidth + 24)
+                    width: tab0Row.implicitWidth + 18
                     height: 30
                     radius: 6
                     color: appWindow.currentTab === 0 ? "#181B22" : (tab0Mouse.containsMouse ? "#141720" : "transparent")
@@ -105,7 +134,7 @@ ApplicationWindow {
 
                 // Tab: Queue
                 Rectangle {
-                    width: Math.max(90, tab1Row.implicitWidth + 24)
+                    width: tab1Row.implicitWidth + 18
                     height: 30
                     radius: 6
                     color: appWindow.currentTab === 1 ? "#181B22" : (tab1Mouse.containsMouse ? "#141720" : "transparent")
@@ -150,7 +179,7 @@ ApplicationWindow {
                 // Tab: Watchlist (3rd — tracks followed artists)
                 Rectangle {
                     id: watchlistTabCard
-                    width: Math.max(110, tab2Row.implicitWidth + 24)
+                    width: tab2Row.implicitWidth + 18
                     height: 30
                     radius: 6
                     color: appWindow.currentTab === 2 ? "#181B22" : (tab2Mouse.containsMouse ? "#141720" : "transparent")
@@ -222,7 +251,7 @@ ApplicationWindow {
 
                 // Tab: Bulk Decompressor (3rd — after Watchlist)
                 Rectangle {
-                    width: Math.max(120, tab3Row.implicitWidth + 24)
+                    width: tab3Row.implicitWidth + 18
                     height: 30
                     radius: 6
                     color: appWindow.currentTab === 3 ? "#181B22" : (tab3Mouse.containsMouse ? "#141720" : "transparent")
@@ -264,13 +293,13 @@ ApplicationWindow {
                     }
                 }
 
-                // Tab: Known Characters
+                // Tab: Link Vault (4th — permanent link archive & password resolver)
                 Rectangle {
-                    width: Math.max(120, tab4Row.implicitWidth + 24)
+                    width: tab4Row.implicitWidth + 18
                     height: 30
                     radius: 6
                     color: appWindow.currentTab === 4 ? "#181B22" : (tab4Mouse.containsMouse ? "#141720" : "transparent")
-                    border.color: appWindow.currentTab === 4 ? "#38BDF8" : "transparent"
+                    border.color: appWindow.currentTab === 4 ? "#F59E0B" : "transparent"
                     border.width: 1
 
                     scale: tab4Mouse.pressed ? 0.94 : (tab4Mouse.containsMouse ? 1.035 : 1.0)
@@ -286,9 +315,9 @@ ApplicationWindow {
                         id: tab4Row
                         anchors.centerIn: parent
                         spacing: 6
-                        Text { text: "🏷️"; font.pixelSize: 12 }
+                        Text { text: "🗝️"; font.pixelSize: 12 }
                         Text {
-                            text: appWindow.tr("tab_known", "Known Series")
+                            text: appWindow.tr("tab_link_vault", "Link Vault")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
                             font.weight: appWindow.currentTab === 4 ? 600 : Font.Normal
@@ -303,18 +332,18 @@ ApplicationWindow {
                         cursorShape: Qt.PointingHandCursor
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
-                        ToolTip.text: appWindow.tr("tab_known_tip", "Known character and series directory rules (Known.txt)")
+                        ToolTip.text: appWindow.tr("tab_link_vault_tip", "Permanent archive of harvested cloud links, smart passwords, and dead link cleanup")
                         onClicked: appWindow.currentTab = 4
                     }
                 }
 
-                // Tab: History
+                // Tab: Task Scheduler (5th — automation hub & night owl)
                 Rectangle {
-                    width: Math.max(90, tab5Row.implicitWidth + 24)
+                    width: tab5Row.implicitWidth + 18
                     height: 30
                     radius: 6
                     color: appWindow.currentTab === 5 ? "#181B22" : (tab5Mouse.containsMouse ? "#141720" : "transparent")
-                    border.color: appWindow.currentTab === 5 ? "#38BDF8" : "transparent"
+                    border.color: appWindow.currentTab === 5 ? "#818CF8" : "transparent"
                     border.width: 1
 
                     scale: tab5Mouse.pressed ? 0.94 : (tab5Mouse.containsMouse ? 1.035 : 1.0)
@@ -330,9 +359,9 @@ ApplicationWindow {
                         id: tab5Row
                         anchors.centerIn: parent
                         spacing: 6
-                        Text { text: "📜"; font.pixelSize: 12 }
+                        Text { text: "⏰"; font.pixelSize: 12 }
                         Text {
-                            text: appWindow.tr("tab_history", "History")
+                            text: appWindow.tr("tab_scheduler", "Scheduler")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
                             font.weight: appWindow.currentTab === 5 ? 600 : Font.Normal
@@ -347,14 +376,14 @@ ApplicationWindow {
                         cursorShape: Qt.PointingHandCursor
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
-                        ToolTip.text: appWindow.tr("tab_history_tip", "Completed downloads and past batch sessions")
+                        ToolTip.text: appWindow.tr("tab_scheduler_tip", "Automated Watchlist delta sync, scheduled creator backups, and Night Owl windows")
                         onClicked: appWindow.currentTab = 5
                     }
                 }
 
-                // Tab: Settings
+                // Tab: Known Characters (6th)
                 Rectangle {
-                    width: Math.max(90, tab6Row.implicitWidth + 24)
+                    width: tab6Row.implicitWidth + 18
                     height: 30
                     radius: 6
                     color: appWindow.currentTab === 6 ? "#181B22" : (tab6Mouse.containsMouse ? "#141720" : "transparent")
@@ -374,9 +403,9 @@ ApplicationWindow {
                         id: tab6Row
                         anchors.centerIn: parent
                         spacing: 6
-                        Text { text: "⚙️"; font.pixelSize: 12 }
+                        Text { text: "🏷️"; font.pixelSize: 12 }
                         Text {
-                            text: appWindow.tr("tab_settings", "Settings")
+                            text: appWindow.tr("tab_known", "Known Series")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
                             font.weight: appWindow.currentTab === 6 ? 600 : Font.Normal
@@ -391,12 +420,109 @@ ApplicationWindow {
                         cursorShape: Qt.PointingHandCursor
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
-                        ToolTip.text: appWindow.tr("tab_settings_tip", "Global application and network configuration")
+                        ToolTip.text: appWindow.tr("tab_known_tip", "Known character and series directory rules (Known.txt)")
                         onClicked: appWindow.currentTab = 6
                     }
                 }
 
-                Item { Layout.fillWidth: true }
+                // Tab: History (7th)
+                Rectangle {
+                    width: tab7Row.implicitWidth + 18
+                    height: 30
+                    radius: 6
+                    color: appWindow.currentTab === 7 ? "#181B22" : (tab7Mouse.containsMouse ? "#141720" : "transparent")
+                    border.color: appWindow.currentTab === 7 ? "#38BDF8" : "transparent"
+                    border.width: 1
+
+                    scale: tab7Mouse.pressed ? 0.94 : (tab7Mouse.containsMouse ? 1.035 : 1.0)
+                    transformOrigin: Item.Center
+
+                    Behavior on scale {
+                        NumberAnimation { duration: 180; easing.type: Easing.OutBack; easing.overshoot: 1.5 }
+                    }
+                    Behavior on color { ColorAnimation { duration: 150; easing.type: Easing.OutCubic } }
+                    Behavior on border.color { ColorAnimation { duration: 150; easing.type: Easing.OutCubic } }
+
+                    Row {
+                        id: tab7Row
+                        anchors.centerIn: parent
+                        spacing: 6
+                        Text { text: "📜"; font.pixelSize: 12 }
+                        Text {
+                            text: appWindow.tr("tab_history", "History")
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 12
+                            font.weight: appWindow.currentTab === 7 ? 600 : Font.Normal
+                            color: appWindow.currentTab === 7 ? "#F8FAFC" : "#94A3B8"
+                        }
+                    }
+
+                    MouseArea {
+                        id: tab7Mouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 400
+                        ToolTip.text: appWindow.tr("tab_history_tip", "Completed downloads and past batch sessions")
+                        onClicked: appWindow.currentTab = 7
+                    }
+                }
+
+                // Tab: Settings (8th — terminal tab)
+                Rectangle {
+                    width: tab8Row.implicitWidth + 18
+                    height: 30
+                    radius: 6
+                    color: appWindow.currentTab === 8 ? "#181B22" : (tab8Mouse.containsMouse ? "#141720" : "transparent")
+                    border.color: appWindow.currentTab === 8 ? "#38BDF8" : "transparent"
+                    border.width: 1
+
+                    scale: tab8Mouse.pressed ? 0.94 : (tab8Mouse.containsMouse ? 1.035 : 1.0)
+                    transformOrigin: Item.Center
+
+                    Behavior on scale {
+                        NumberAnimation { duration: 180; easing.type: Easing.OutBack; easing.overshoot: 1.5 }
+                    }
+                    Behavior on color { ColorAnimation { duration: 150; easing.type: Easing.OutCubic } }
+                    Behavior on border.color { ColorAnimation { duration: 150; easing.type: Easing.OutCubic } }
+
+                    Row {
+                        id: tab8Row
+                        anchors.centerIn: parent
+                        spacing: 6
+                        Text { text: "⚙️"; font.pixelSize: 12 }
+                        Text {
+                            text: appWindow.tr("tab_settings", "Settings")
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 12
+                            font.weight: appWindow.currentTab === 8 ? 600 : Font.Normal
+                            color: appWindow.currentTab === 8 ? "#F8FAFC" : "#94A3B8"
+                        }
+                    }
+
+                    MouseArea {
+                        id: tab8Mouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 400
+                        ToolTip.text: appWindow.tr("tab_settings_tip", "Global application and network configuration")
+                        onClicked: appWindow.currentTab = 8
+                    }
+                }
+            } // tabsRow
+        } // tabsFlickable
+
+            // Right utility buttons: ALWAYS anchored to right edge, NEVER cut off
+            RowLayout {
+                id: rightActionRow
+                anchors.right: parent.right
+                anchors.rightMargin: 8
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 6
+                z: 5
 
                 // Update Available Notification Pill (Visible when updateAvailable is true)
                 Rectangle {
@@ -504,7 +630,7 @@ ApplicationWindow {
                         }
 
                         Text {
-                            text: (typeof updaterBridge !== "undefined" && updaterBridge && updaterBridge.currentVersion) ? updaterBridge.currentVersion : "1.1.1"
+                            text: (typeof updaterBridge !== "undefined" && updaterBridge && updaterBridge.currentVersion) ? updaterBridge.currentVersion : "1.1.2"
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 11
                             font.weight: 700
@@ -561,7 +687,7 @@ ApplicationWindow {
                 if (appBridge) appBridge.addToQueue()
             }
             onSettingsRequested: {
-                appWindow.currentTab = 6
+                appWindow.currentTab = 8
             }
         }
 
@@ -813,12 +939,12 @@ ApplicationWindow {
                         anchors.centerIn: parent
                         spacing: 6
                         Text {
-                            text: (appBridge && appBridge.statusText.indexOf("Paused") >= 0) ? "▶" : "⏸"
+                            text: (appBridge && (appBridge.isPaused || appBridge.statusText.indexOf("Paused") >= 0)) ? "▶" : "⏸"
                             font.pixelSize: 12
                             anchors.verticalCenter: parent.verticalCenter
                         }
                         Text {
-                            text: (appBridge && appBridge.statusText.indexOf("Paused") >= 0) ? appWindow.tr("action_resume", "Resume") : appWindow.tr("action_pause", "Pause")
+                            text: (appBridge && (appBridge.isPaused || appBridge.statusText.indexOf("Paused") >= 0)) ? appWindow.tr("action_resume", "Resume") : appWindow.tr("action_pause", "Pause")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
                             color: "#FBBF24"
@@ -833,11 +959,11 @@ ApplicationWindow {
                         cursorShape: Qt.PointingHandCursor
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
-                        ToolTip.text: (appBridge && appBridge.statusText.indexOf("Paused") >= 0)
+                        ToolTip.text: (appBridge && (appBridge.isPaused || appBridge.statusText.indexOf("Paused") >= 0))
                                       ? appWindow.tr("tip_resume_download", "Resume paused download") : appWindow.tr("tip_pause_download", "Pause the active download (can be resumed)")
                         onClicked: {
                             if (!appBridge) return
-                            if (appBridge.statusText.indexOf("Paused") >= 0)
+                            if (appBridge.isPaused || appBridge.statusText.indexOf("Paused") >= 0)
                                 appBridge.resumeDownload()
                             else
                                 appBridge.pauseDownload()
@@ -1311,7 +1437,14 @@ ApplicationWindow {
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
                         ToolTip.text: appWindow.tr("tip_restore_session", "Resume the previously saved incomplete download session")
-                        onClicked: if (appBridge) appBridge.restoreDownload()
+                        onClicked: {
+                            if (appBridge && appBridge.hasRecoverySession) {
+                                sessionRecoveryModal.sessionSummary = appBridge.recoverySummary
+                                sessionRecoveryModal.isOpen = true
+                            } else if (appBridge) {
+                                appBridge.restoreDownload()
+                            }
+                        }
                     }
                 }
 
@@ -1409,7 +1542,7 @@ ApplicationWindow {
                 // Left Panel: Active Tab View
                 Rectangle {
                     SplitView.fillWidth: true
-                    SplitView.minimumWidth: 340
+                    SplitView.minimumWidth: 380
                     color: "#0F1117"
 
                     StackLayout {
@@ -1469,7 +1602,7 @@ ApplicationWindow {
                             DecompressorView { anchors.fill: parent; bridge: appBridge }
                         }
 
-                        // Tab 4: Known Manager View with Newtonian slide & fade transition
+                        // Tab 4: Link Vault View with Newtonian slide & fade transition
                         Item {
                             opacity: appWindow.currentTab === 4 ? 1.0 : 0.0
                             y: appWindow.currentTab === 4 ? 0 : 10
@@ -1479,10 +1612,10 @@ ApplicationWindow {
                             Behavior on y { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
                             Behavior on scale { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
 
-                            KnownManagerView { anchors.fill: parent; bridge: appBridge }
+                            LinkVaultView { anchors.fill: parent; bridge: appBridge }
                         }
 
-                        // Tab 5: History View with Newtonian slide & fade transition
+                        // Tab 5: Scheduler View with Newtonian slide & fade transition
                         Item {
                             opacity: appWindow.currentTab === 5 ? 1.0 : 0.0
                             y: appWindow.currentTab === 5 ? 0 : 10
@@ -1492,14 +1625,40 @@ ApplicationWindow {
                             Behavior on y { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
                             Behavior on scale { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
 
-                            HistoryView { anchors.fill: parent; bridge: appBridge }
+                            SchedulerView { anchors.fill: parent; bridge: appBridge }
                         }
 
-                        // Tab 6: Settings View with Newtonian slide & fade transition
+                        // Tab 6: Known Manager View with Newtonian slide & fade transition
                         Item {
                             opacity: appWindow.currentTab === 6 ? 1.0 : 0.0
                             y: appWindow.currentTab === 6 ? 0 : 10
                             scale: appWindow.currentTab === 6 ? 1.0 : 0.985
+                            transformOrigin: Item.Center
+                            Behavior on opacity { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+                            Behavior on y { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
+                            Behavior on scale { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
+
+                            KnownManagerView { anchors.fill: parent; bridge: appBridge }
+                        }
+
+                        // Tab 7: History View with Newtonian slide & fade transition
+                        Item {
+                            opacity: appWindow.currentTab === 7 ? 1.0 : 0.0
+                            y: appWindow.currentTab === 7 ? 0 : 10
+                            scale: appWindow.currentTab === 7 ? 1.0 : 0.985
+                            transformOrigin: Item.Center
+                            Behavior on opacity { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+                            Behavior on y { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
+                            Behavior on scale { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
+
+                            HistoryView { anchors.fill: parent; bridge: appBridge }
+                        }
+
+                        // Tab 8: Settings View with Newtonian slide & fade transition
+                        Item {
+                            opacity: appWindow.currentTab === 8 ? 1.0 : 0.0
+                            y: appWindow.currentTab === 8 ? 0 : 10
+                            scale: appWindow.currentTab === 8 ? 1.0 : 0.985
                             transformOrigin: Item.Center
                             Behavior on opacity { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
                             Behavior on y { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
@@ -1530,6 +1689,7 @@ ApplicationWindow {
 
                     SplitView.preferredWidth: mainSplitView.isHandleDragging ? width : animConsoleWidth
                     SplitView.minimumWidth: (appWindow.showConsole && !isOpeningOrClosing) ? 320 : 0
+                    SplitView.maximumWidth: Math.max(320, mainSplitView.width - 380)
                     visible: animConsoleWidth > 2
                     clip: true
                     color: "#0B0D12"
@@ -1745,6 +1905,13 @@ ApplicationWindow {
         id: tutorialModal
     }
 
+    // Unfinished Crash Recovery Modal
+    SessionRecoveryModal {
+        id: sessionRecoveryModal
+        bridge: appBridge
+        isOpen: false
+    }
+
     // Wire: when bridge emits postActionCountdownStarted, open the modal with the action label
     Connections {
         target: appBridge
@@ -1756,6 +1923,10 @@ ApplicationWindow {
             exportConfirmModal.exportedFilePath = filePath
             exportConfirmModal.wasDownloading = wasDownloading
             exportConfirmModal.isOpen = true
+        }
+        function onRecoverySessionDetected(summary) {
+            sessionRecoveryModal.sessionSummary = summary
+            sessionRecoveryModal.isOpen = true
         }
     }
 }

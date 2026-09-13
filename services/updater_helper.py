@@ -29,7 +29,11 @@ PROTECTED_FILES = {
     "watchlist.json",
     "settings.json",
     "Known.txt",
-    "cookies.txt"
+    "cookies.txt",
+    "link_vault.json",
+    "link_vault.json.bak",
+    "storage_pools.json",
+    "schedules.json"
 }
 
 

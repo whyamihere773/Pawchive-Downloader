@@ -219,13 +219,12 @@ Rectangle {
                 radius: 6
                 clip: true
 
-                ListView {
+                SmoothListView {
                     id: failedList
                     anchors.fill: parent
                     anchors.margins: 6
                     spacing: 6
                     model: failedItemsModel
-                    ScrollBar.vertical: ScrollBar { active: true; policy: ScrollBar.AsNeeded }
 
                     delegate: Rectangle {
                         width: failedList.width - 12

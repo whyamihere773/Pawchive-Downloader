@@ -9,6 +9,7 @@ import sys
 import time
 import subprocess
 import threading
+import json
 from typing import Optional, Dict, Any, List
 from PySide6.QtCore import QObject, Signal, Property, Slot, Qt, QUrl, QCoreApplication
 from PySide6.QtGui import QDesktopServices, QGuiApplication
@@ -44,6 +45,7 @@ from services.cloud_downloader import (
     download_dropbox_link,
     download_gofile_link
 )
+from core.text_utils import clean_text, sanitize_filesystem_name
 
 
 class AppBridge(QObject):
@@ -80,6 +82,7 @@ class AppBridge(QObject):
     cookieStringChanged = Signal()
     userAgentChanged = Signal()
     isDownloadingChanged = Signal()
+    isPausedChanged = Signal()
     statusTextChanged = Signal()
     overallProgressChanged = Signal()
     currentSpeedChanged = Signal()
@@ -98,6 +101,8 @@ class AppBridge(QObject):
     downloadEmbedsChanged = Signal()
     openFolderOnCompleteChanged = Signal()
     playCompletionSoundChanged = Signal()
+    generateDesktopReportChanged = Signal()
+    saveDesktopReportChanged = Signal()
     filesCountTextChanged = Signal()
     harvestedLinksChanged = Signal()
     consoleWidthChanged = Signal()
@@ -109,6 +114,8 @@ class AppBridge(QObject):
     importCompleted = Signal(int, int)        # (taskCount, creatorCount)
     exportFailed = Signal(str)
     importFailed = Signal(str)
+    hasRecoverySessionChanged = Signal()
+    recoverySessionDetected   = Signal('QVariant')
 
     tagFolderModeChanged      = Signal()
     watchlistChanged          = Signal()
@@ -117,10 +124,30 @@ class AppBridge(QObject):
     watchlistArtistChecking   = Signal(str, str, bool) # (userId, service, isChecking)
     watchlistArtistChecked    = Signal(str, str, int)  # (userId, service, newPostCount)
 
+    # Link Vault signals
+    linkVaultChanged          = Signal()
+    linkVaultProbingStarted   = Signal()
+    linkVaultProbingFinished  = Signal()
+    vaultHarvestStarted       = Signal(str)             # (creatorName)
+    vaultHarvestProgress      = Signal(str, int, int)   # (statusMsg, currentPage, currentLinks)
+    vaultHarvestFinished      = Signal(bool, str, int, int)  # (success, creatorName, newLinks, totalPosts)
+
+
+    # Storage Pool signals
+    storagePoolChanged        = Signal()
+
+    # Cookie Watchdog signals
+    cookieWatchdogChanged     = Signal()
+    cookieImportCompleted     = Signal(bool, str)
+
+    # Task Scheduler signals
+    schedulerChanged          = Signal()
+
     _progressSignal    = Signal(dict)    # carries progress info dict
     _taskSignal        = Signal(object)  # carries a DownloadTask object
     _finishedSignal    = Signal(bool, str)
     _throttledSignal   = Signal(int)     # carries new worker concurrency count
+    _pauseSignal       = Signal(bool)    # carries pause state (True=paused, False=resumed)
     _creatorSignal     = Signal(str)     # carries resolved creator name
     _setTasksSignal    = Signal(list)    # safely sends new task list to GUI thread
     _appendTasksSignal = Signal(list)    # safely appends new tasks to GUI thread queue
@@ -189,6 +216,7 @@ class AppBridge(QObject):
         self._download_embeds = bool(saved_settings.get("download_embeds", True))
         self._open_folder_on_complete = bool(saved_settings.get("open_folder_on_complete", False))
         self._play_completion_sound = bool(saved_settings.get("play_completion_sound", False))
+        self._generate_desktop_report = bool(saved_settings.get("generate_desktop_report", saved_settings.get("save_desktop_report", False)))
         self._post_download_action = "none" # Always default to 'none' (Do Nothing) on startup
         self._known_recognition_mode = str(saved_settings.get("known_recognition_mode", "hybrid"))
         self.known_manager.set_mode(self._known_recognition_mode)
@@ -233,21 +261,49 @@ class AppBridge(QObject):
         self._has_error = False
         self._last_error_message = ""
 
-        # Check saved session
+        # Link Vault state
+        self._vault_search = ""
+        self._vault_platform = "all"
+        self._vault_harvesting = False
+        self._vault_harvest_status = ""
+        self._vault_harvest_cancel = threading.Event()
+
+        try:
+            from core.storage_pool_manager import storage_pool_manager
+            storage_pool_manager.set_primary_dir(self._download_dir)
+            from core.task_scheduler import task_scheduler
+            task_scheduler.on_trigger_watchlist_sync = self._run_scheduled_watchlist_sync
+            task_scheduler.on_trigger_creator_sync = self._run_scheduled_creator_sync
+            task_scheduler.start()
+        except Exception as e:
+            logger.debug(f"Scheduler/StoragePool init note: {e}", category="system")
+
+        # Check saved session & recovery journal
+        self.recovery_manager = getattr(self.session_manager, "recovery_manager", None)
+        if not self.recovery_manager:
+            from core.recovery_manager import RecoveryManager
+            self.recovery_manager = RecoveryManager(self.session_manager.config_dir)
+        self._has_recovery_session = self.recovery_manager.has_unfinished_session()
+        self._recovery_summary = self.recovery_manager.get_recovery_summary() if self._has_recovery_session else {}
+
         saved_sess = self.session_manager.get_saved_session()
-        self._has_saved_session = bool(saved_sess)
+        self._has_saved_session = bool(saved_sess) or self._has_recovery_session
+        if self._has_recovery_session:
+            logger.warning("Unfinished download session detected from previous crash. Ready for recovery.", category="session")
 
         # Hook downloader callbacks — they emit our private signals (thread-safe)
         self.downloader.on_progress_update        = lambda info: self._progressSignal.emit(info)
         self.downloader.on_task_status_changed    = lambda task: self._taskSignal.emit(task)
         self.downloader.on_download_finished      = lambda ok, msg: self._finishedSignal.emit(ok, msg)
         self.downloader.on_concurrency_throttled  = lambda count: self._throttledSignal.emit(count)
+        self.downloader.on_pause_changed          = lambda paused: self._pauseSignal.emit(paused)
 
         # Connect private signals to main-thread handlers with QueuedConnection
         self._progressSignal.connect(self._handle_progress,    Qt.QueuedConnection)
         self._taskSignal.connect(self._handle_task_status,     Qt.QueuedConnection)
         self._finishedSignal.connect(self._handle_finished,    Qt.QueuedConnection)
         self._throttledSignal.connect(self._handle_throttled,  Qt.QueuedConnection)
+        self._pauseSignal.connect(self._handle_pause_changed,  Qt.QueuedConnection)
         self._creatorSignal.connect(self._handle_creator_resolved, Qt.QueuedConnection)
         self._setTasksSignal.connect(self._handle_set_tasks,       Qt.QueuedConnection)
         self._appendTasksSignal.connect(self._handle_append_tasks, Qt.QueuedConnection)
@@ -339,6 +395,12 @@ class AppBridge(QObject):
         if self._download_dir != val:
             self._download_dir = val
             self.downloadDirChanged.emit()
+            try:
+                from core.storage_pool_manager import storage_pool_manager
+                storage_pool_manager.set_primary_dir(val)
+                self.storagePoolChanged.emit()
+            except Exception:
+                pass
 
     @Property(str, notify=filterCharactersChanged)
     def filterCharacters(self) -> str:
@@ -673,6 +735,10 @@ class AppBridge(QObject):
     def isDownloading(self) -> bool:
         return self._is_downloading
 
+    @Property(bool, notify=isPausedChanged)
+    def isPaused(self) -> bool:
+        return self.downloader.is_paused or self._cloud_pause_event.is_set() or ("Paused" in self._status_text)
+
     @Property(str, notify=statusTextChanged)
     def statusText(self) -> str:
         return self._status_text
@@ -692,6 +758,14 @@ class AppBridge(QObject):
     @Property(bool, notify=hasSavedSessionChanged)
     def hasSavedSession(self) -> bool:
         return self._has_saved_session
+
+    @Property(bool, notify=hasRecoverySessionChanged)
+    def hasRecoverySession(self) -> bool:
+        return self._has_recovery_session
+
+    @Property('QVariant', notify=hasRecoverySessionChanged)
+    def recoverySummary(self) -> dict:
+        return self._recovery_summary or {}
 
     @Property(bool, notify=hasErrorChanged)
     def hasError(self) -> bool:
@@ -771,6 +845,26 @@ class AppBridge(QObject):
             self._play_completion_sound = val
             self.playCompletionSoundChanged.emit()
             self.saveSettings()
+
+    @Property(bool, notify=generateDesktopReportChanged)
+    def generateDesktopReport(self) -> bool:
+        return self._generate_desktop_report
+
+    @generateDesktopReport.setter
+    def generateDesktopReport(self, val: bool):
+        if self._generate_desktop_report != val:
+            self._generate_desktop_report = val
+            self.generateDesktopReportChanged.emit()
+            self.saveDesktopReportChanged.emit()
+            self.saveSettings()
+
+    @Property(bool, notify=saveDesktopReportChanged)
+    def saveDesktopReport(self) -> bool:
+        return self._generate_desktop_report
+
+    @saveDesktopReport.setter
+    def saveDesktopReport(self, val: bool):
+        self.generateDesktopReport = val
 
     @Property(int, notify=consoleWidthChanged)
     def consoleWidth(self) -> int:
@@ -863,6 +957,116 @@ class AppBridge(QObject):
     @Property(bool, notify=isDownloadingChanged)
     def isCloudDownloading(self) -> bool:
         return self._is_cloud_downloading
+
+    # ── Link Vault Properties ────────────────────────────────────────────────
+    @Property(str, notify=linkVaultChanged)
+    def linkVaultTreeJson(self) -> str:
+        from core.link_vault_manager import link_vault_manager
+        return json.dumps(link_vault_manager.get_tree_model(self._vault_search, self._vault_platform), ensure_ascii=False)
+
+    @Property(int, notify=linkVaultChanged)
+    def linkVaultTotalLinks(self) -> int:
+        from core.link_vault_manager import link_vault_manager
+        return len(link_vault_manager.data.get("links", []))
+
+    @Property(int, notify=linkVaultChanged)
+    def linkVaultTotalCreators(self) -> int:
+        from core.link_vault_manager import link_vault_manager
+        return len(link_vault_manager.data.get("creators", {}))
+
+    @Property(bool, notify=linkVaultChanged)
+    def linkVaultProbingActive(self) -> bool:
+        from core.link_vault_manager import link_vault_manager
+        return link_vault_manager._probing_active
+
+    @Property(bool, notify=linkVaultChanged)
+    def linkVaultHarvestingActive(self) -> bool:
+        return self._vault_harvesting
+
+    @Property(str, notify=linkVaultChanged)
+    def linkVaultHarvestingStatus(self) -> str:
+        return self._vault_harvest_status
+
+    # ── Storage Pool Properties ──────────────────────────────────────────────
+    @Property(bool, notify=storagePoolChanged)
+    def storagePoolEnabled(self) -> bool:
+        from core.storage_pool_manager import storage_pool_manager
+        return storage_pool_manager.enabled
+
+    @Property(float, notify=storagePoolChanged)
+    def storagePoolMarginGB(self) -> float:
+        from core.storage_pool_manager import storage_pool_manager
+        return storage_pool_manager.safety_margin_gb
+
+    @Property(str, notify=storagePoolChanged)
+    def storagePoolStatusJson(self) -> str:
+        from core.storage_pool_manager import storage_pool_manager
+        return json.dumps(storage_pool_manager.get_pool_status(), ensure_ascii=False)
+
+    # ── Cookie Watchdog Properties ───────────────────────────────────────────
+    @Property(str, notify=cookieWatchdogChanged)
+    def cookieWatchdogStatus(self) -> str:
+        from services.cookie_importer import browser_cookie_importer
+        info = browser_cookie_importer.calculate_expiration_info(self._cookie_string)
+        return info.get("status", "missing")
+
+    @Property(str, notify=cookieWatchdogChanged)
+    def cookieWatchdogText(self) -> str:
+        from services.cookie_importer import browser_cookie_importer
+        info = browser_cookie_importer.calculate_expiration_info(self._cookie_string)
+        return info.get("status_text", "")
+
+    @Property(str, notify=cookieWatchdogChanged)
+    def cookieWatchdogColor(self) -> str:
+        from services.cookie_importer import browser_cookie_importer
+        info = browser_cookie_importer.calculate_expiration_info(self._cookie_string)
+        return info.get("color", "#94A3B8")
+
+    @Property('QVariant', notify=cookieWatchdogChanged)
+    def detectedBrowsersList(self):
+        from services.cookie_importer import browser_cookie_importer
+        return browser_cookie_importer.get_supported_browsers()
+
+    # ── Task Scheduler Properties ────────────────────────────────────────────
+    @Property(bool, notify=schedulerChanged)
+    def schedulerEnabled(self) -> bool:
+        from core.task_scheduler import task_scheduler
+        return task_scheduler.enabled
+
+    @Property(bool, notify=schedulerChanged)
+    def schedulerLockThreadsDelay(self) -> bool:
+        from core.task_scheduler import task_scheduler
+        return task_scheduler.lock_threads_delay
+
+    @Property(bool, notify=schedulerChanged)
+    def schedulerNightOwlEnabled(self) -> bool:
+        from core.task_scheduler import task_scheduler
+        return task_scheduler.night_owl_enabled
+
+    @Property(str, notify=schedulerChanged)
+    def schedulerNightOwlStart(self) -> str:
+        from core.task_scheduler import task_scheduler
+        return task_scheduler.night_owl_start
+
+    @Property(str, notify=schedulerChanged)
+    def schedulerNightOwlEnd(self) -> str:
+        from core.task_scheduler import task_scheduler
+        return task_scheduler.night_owl_end
+
+    @Property(bool, notify=schedulerChanged)
+    def schedulerPreventSleep(self) -> bool:
+        from core.task_scheduler import task_scheduler
+        return task_scheduler.prevent_sleep
+
+    @Property(bool, notify=schedulerChanged)
+    def schedulerSweepRetry(self) -> bool:
+        from core.task_scheduler import task_scheduler
+        return task_scheduler.sweep_retry
+
+    @Property(str, notify=schedulerChanged)
+    def schedulerSchedulesJson(self) -> str:
+        from core.task_scheduler import task_scheduler
+        return json.dumps(task_scheduler.schedules, ensure_ascii=False)
 
     @Slot(result="QVariantList")
     def getHarvestedLinks(self):
@@ -969,6 +1173,7 @@ class AppBridge(QObject):
             self.hasErrorChanged.emit()
             self._is_downloading = True
             self.isDownloadingChanged.emit()
+            self.isPausedChanged.emit()
             self._status_text = "Starting download queue..."
             self.statusTextChanged.emit()
             logger.info(f"Starting download for {len(self.downloader.tasks)} queued task(s)...", category="downloader")
@@ -997,6 +1202,7 @@ class AppBridge(QObject):
                 self.hasErrorChanged.emit()
                 self._is_downloading = True
                 self.isDownloadingChanged.emit()
+                self.isPausedChanged.emit()
                 self._status_text = "Starting download queue..."
                 self.statusTextChanged.emit()
                 self.downloader.start_download_queue(
@@ -1022,6 +1228,7 @@ class AppBridge(QObject):
         self.hasErrorChanged.emit()
         self._is_downloading = True
         self.isDownloadingChanged.emit()
+        self.isPausedChanged.emit()
         self._status_text = "Fetching metadata..."
         self.statusTextChanged.emit()
 
@@ -1074,6 +1281,51 @@ class AppBridge(QObject):
             daemon=True
         ).start()
 
+    def _auto_harvest_posts_to_vault(self, posts: List[Dict[str, Any]], creator_name: str, domain: str, service: str, user_id: str):
+        """
+        Background worker to harvest cloud links, smart passwords, and post metadata
+        from posts into the permanent Link Vault during downloads or queue additions.
+        """
+        if not posts or not service or not user_id:
+            return
+
+        posts_copy = list(posts)
+
+        def _worker():
+            try:
+                from services.link_extractor import LinkExtractor
+                from core.link_vault_manager import link_vault_manager
+
+                harvested_posts = []
+                for p in posts_copy:
+                    rec = LinkExtractor.extract_post_vault_record(
+                        post=p,
+                        api_client=None,
+                        domain=domain,
+                        service=service,
+                        user_id=user_id
+                    )
+                    if rec and rec.get("links"):
+                        harvested_posts.append(rec)
+
+                if harvested_posts:
+                    new_links_count = link_vault_manager.add_harvested_data(
+                        creator_name=creator_name or user_id,
+                        service=service,
+                        user_id=user_id,
+                        harvested_posts=harvested_posts
+                    )
+                    if new_links_count > 0:
+                        logger.success(
+                            f"Link Vault: Auto-harvested and permanently saved {new_links_count} new link(s) for '{creator_name or user_id}'.",
+                            category="vault"
+                        )
+                        self.linkVaultChanged.emit()
+            except Exception as e:
+                logger.debug(f"Link Vault auto-harvest error: {e}", category="vault")
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     def _async_fetch_and_start(self, parsed: URLParseResult, auto_start: bool):
         try:
             if self._scan_cancel_event.is_set():
@@ -1091,53 +1343,57 @@ class AppBridge(QObject):
                 tasks = []
 
                 if parsed.provider == "bunkr":
-                    album_title, files = fetch_bunkr_album(parsed.raw_url)
-                    creator_name = album_title or "Bunkr Album"
-                    folder = os.path.join(self._download_dir, f"Bunkr - {creator_name}")
+                    album_title, files = fetch_bunkr_album(parsed.raw_url, resolve_files=True)
+                    creator_name = clean_text(album_title) or "Bunkr Album"
+                    folder_name = sanitize_filesystem_name(creator_name, fallback="Bunkr Album")
+                    folder = os.path.join(self._download_dir, f"Bunkr - {folder_name}")
                     for f in files:
                         t = DownloadTask(
                             url=f["url"],
                             target_path=os.path.join(folder, f["filename"]),
                             post_title=creator_name,
-                            creator_name="Bunkr",
+                            creator_name=creator_name,
                             service="bunkr",
                             post_id=parsed.post_id or "bunkr",
                             file_id=f["url"],
-                            batch_id=f"bunkr_{parsed.post_id or 'bunkr'}"
+                            file_size=f.get("size", 0),
+                            batch_id=f"bunkr_{parsed.post_id or creator_name or 'bunkr'}"
                         )
                         tasks.append(t)
 
                 elif parsed.provider == "erome":
                     album_title, files = fetch_erome_album(parsed.raw_url)
-                    creator_name = album_title or "Erome Album"
-                    folder = os.path.join(self._download_dir, creator_name)
+                    creator_name = clean_text(album_title) or "Erome Album"
+                    folder_name = sanitize_filesystem_name(creator_name, fallback="Erome Album")
+                    folder = os.path.join(self._download_dir, f"Erome - {folder_name}")
                     for f in files:
                         t = DownloadTask(
                             url=f["url"],
                             target_path=os.path.join(folder, f["filename"]),
                             post_title=creator_name,
-                            creator_name="Erome",
+                            creator_name=creator_name,
                             service="erome",
                             post_id=parsed.post_id or "erome",
                             file_id=f["url"],
-                            batch_id=f"erome_{parsed.post_id or 'erome'}"
+                            batch_id=f"erome_{parsed.post_id or creator_name or 'erome'}"
                         )
                         tasks.append(t)
 
                 elif parsed.provider == "nhentai":
                     gallery_title, files = fetch_nhentai_gallery(parsed.post_id or parsed.raw_url)
-                    creator_name = gallery_title or f"Gallery {parsed.post_id}"
-                    folder = os.path.join(self._download_dir, f"nHentai - {creator_name}")
+                    creator_name = clean_text(gallery_title) or f"Gallery {parsed.post_id}"
+                    folder_name = sanitize_filesystem_name(creator_name, fallback=f"Gallery {parsed.post_id}")
+                    folder = os.path.join(self._download_dir, f"nHentai - {folder_name}")
                     for f in files:
                         t = DownloadTask(
                             url=f["url"],
                             target_path=os.path.join(folder, f["filename"]),
                             post_title=creator_name,
-                            creator_name="nHentai",
+                            creator_name=creator_name,
                             service="nhentai",
                             post_id=parsed.post_id or "nhentai",
                             file_id=f["url"],
-                            batch_id=f"nhentai_{parsed.post_id or 'nhentai'}"
+                            batch_id=f"nhentai_{parsed.post_id or creator_name or 'nhentai'}"
                         )
                         tasks.append(t)
 
@@ -1148,7 +1404,7 @@ class AppBridge(QObject):
                 # ── Standard Kemono / Coomer / Pawchive Provider ───────────────
                 # 1. Fetch profile
                 profile = self.api_client.fetch_creator_profile(parsed)
-                creator_name = profile.get("name", parsed.user_id) or parsed.user_id
+                creator_name = clean_text(profile.get("name", parsed.user_id) or parsed.user_id)
                 self._creator_name = creator_name
                 self.creatorNameChanged.emit()
 
@@ -1222,6 +1478,15 @@ class AppBridge(QObject):
                     batch_id=batch_id,
                     artist_dir=artist_dir,
                     user_id=parsed.user_id if not parsed.is_external_provider else ""
+                )
+
+                # Auto-harvest cloud storage links into permanent Link Vault
+                self._auto_harvest_posts_to_vault(
+                    posts=posts,
+                    creator_name=creator_name,
+                    domain=parsed.domain,
+                    service=parsed.service,
+                    user_id=parsed.user_id
                 )
 
             if self._scan_cancel_event.is_set():
@@ -1351,7 +1616,94 @@ class AppBridge(QObject):
             self.lastErrorMessageChanged.emit()
 
     @Slot()
+    def checkRecoverySession(self):
+        """Called by QML on completion to prompt for unfinished crash recovery if detected."""
+        if self._has_recovery_session and self._recovery_summary:
+            self.recoverySessionDetected.emit(self._recovery_summary)
+
+    @Slot()
+    def resumeRecoverySession(self):
+        """
+        Restores the interrupted download session from the crash-proof journal.
+        Verifies already downloaded files on disk, updates the queue model,
+        and seamlessly resumes downloading the remaining files.
+        """
+        checkpoint = self.recovery_manager.load_checkpoint()
+        if not checkpoint:
+            logger.warning("No recovery checkpoint found to resume.", category="session")
+            return
+
+        raw_tasks = checkpoint.get("tasks", [])
+        if not raw_tasks:
+            logger.warning("Recovery checkpoint contains no tasks.", category="session")
+            return
+
+        loaded_tasks: List[DownloadTask] = []
+        for t_dict in raw_tasks:
+            task = DownloadTask.from_dict(t_dict)
+            # Disk verification to skip already downloaded files
+            if os.path.exists(task.target_path):
+                actual_sz = os.path.getsize(task.target_path)
+                if task.file_size > 0 and actual_sz >= task.file_size:
+                    task.status = "completed"
+                    task.downloaded_bytes = task.file_size
+                    task.progress_pct = 100
+                elif actual_sz > 0:
+                    task.downloaded_bytes = actual_sz
+                    task.status = "pending"
+            elif task.status in ("downloading", "retrying"):
+                task.status = "pending"
+            loaded_tasks.append(task)
+
+        # Populate models
+        self._queue_model.setTasks(loaded_tasks)
+        self._active_queue_model.setTasks(loaded_tasks)
+        self.downloader.tasks = list(loaded_tasks)
+
+        batches = checkpoint.get("batches", [])
+        if batches:
+            self._queue_model.groups = batches
+
+        options = self._get_filter_options()
+
+        self._has_recovery_session = False
+        self._has_saved_session = False
+        self.hasRecoverySessionChanged.emit()
+        self.hasSavedSessionChanged.emit()
+
+        self._scan_cancel_event.clear()
+        self._has_error = False
+        self.hasErrorChanged.emit()
+        self._is_downloading = True
+        self.isDownloadingChanged.emit()
+        self.isPausedChanged.emit()
+        self._status_text = "Resuming recovered download session..."
+        self.statusTextChanged.emit()
+
+        self.downloader.start_download_queue(
+            tasks=self.downloader.tasks,
+            options=options,
+            cookie_str=self._cookie_string
+        )
+        logger.success(
+            f"Resumed {len(loaded_tasks)} tasks from recovery session.",
+            category="session"
+        )
+
+    @Slot()
+    def discardRecoverySession(self):
+        """Discards the saved recovery journal."""
+        self.recovery_manager.discard_recovery()
+        self._has_recovery_session = False
+        self._recovery_summary = {}
+        self.hasRecoverySessionChanged.emit()
+        logger.info("Recovery session discarded.", category="session")
+
+    @Slot()
     def restoreDownload(self):
+        if self._has_recovery_session:
+            self.resumeRecoverySession()
+            return
         saved = self.session_manager.get_saved_session()
         if not saved:
             logger.warning("No saved download session found.", category="session")
@@ -1370,8 +1722,12 @@ class AppBridge(QObject):
         self._queue_model.clear()
         self._active_queue_model.clear()
         self.session_manager.discard_session()
+        self.recovery_manager.discard_recovery()
         self._has_saved_session = False
+        self._has_recovery_session = False
+        self._recovery_summary = {}
         self.hasSavedSessionChanged.emit()
+        self.hasRecoverySessionChanged.emit()
         logger.info("Active download stopped and session discarded.", category="session")
 
     @Slot()
@@ -1379,15 +1735,13 @@ class AppBridge(QObject):
         """Called when user closes the window — preserves active session and stops threads cleanly."""
         if self._is_downloading:
             logger.info("Application closing: saving active session and stopping threads...", category="system")
-            # Save session for restore upon next launch
-            if self._queue_model.rowCount() > 0:
-                self.session_manager.save_session({
-                    "url": self._current_url,
-                    "creator": self._creator_name,
-                    "service": "fanbox",
-                    "total_tasks": self._queue_model.rowCount(),
-                    "options": vars(self._get_filter_options())
-                })
+            if self._queue_model.tasks:
+                self.recovery_manager.save_checkpoint(
+                    tasks=self._queue_model.tasks,
+                    batches=self._queue_model.groups,
+                    settings=vars(self._get_filter_options()),
+                    status="paused"
+                )
             self.downloader.cancel()
 
     @Slot()
@@ -1478,6 +1832,7 @@ class AppBridge(QObject):
 
         self._is_downloading = False
         self.isDownloadingChanged.emit()
+        self.isPausedChanged.emit()
         self._status_text = "Progress: Cancelled"
         self.statusTextChanged.emit()
 
@@ -1486,7 +1841,12 @@ class AppBridge(QObject):
         self.downloader.pause()
         self._cloud_pause_event.set()
         self._status_text = "Progress: Paused"
+        self._current_speed = "0 KB/s"
+        self._eta_text = "--"
+        self.currentSpeedChanged.emit()
+        self.etaTextChanged.emit()
         self.statusTextChanged.emit()
+        self.isPausedChanged.emit()
 
     @Slot()
     def resumeDownload(self):
@@ -1494,6 +1854,7 @@ class AppBridge(QObject):
         self._cloud_pause_event.clear()
         self._status_text = "Progress: Resumed"
         self.statusTextChanged.emit()
+        self.isPausedChanged.emit()
 
     @Slot()
     def selectDownloadDirectory(self):
@@ -2010,6 +2371,7 @@ class AppBridge(QObject):
             "download_embeds": self._download_embeds,
             "open_folder_on_complete": self._open_folder_on_complete,
             "play_completion_sound": self._play_completion_sound,
+            "generate_desktop_report": self._generate_desktop_report,
             "post_download_action": "none",
             "known_recognition_mode": self._known_recognition_mode,
             "language": self._language,
@@ -2028,12 +2390,15 @@ class AppBridge(QObject):
         total     = info.get("total", 0)
         failed    = info.get("failed", 0)
         self._overall_progress   = info.get("percent", info.get("progress", 0))
-        self._current_speed      = info.get("speed_str", "0 KB/s")
-        self._eta_text           = info.get("eta_str", "--")
         self._saved_bytes_text   = info.get("saved_str", "0 MB")
-        # Don't overwrite Paused state — progress ticks would immediately clear it
-        if not self.downloader._pause_event.is_set():
-            self._status_text = info.get("status_text", f"Downloading\u2026 {completed}/{total}")
+        if self.downloader._pause_event.is_set():
+            self._status_text = "Progress: Paused"
+            self._current_speed = "0 KB/s"
+            self._eta_text = "--"
+        else:
+            self._current_speed = info.get("speed_str", "0 KB/s")
+            self._eta_text      = info.get("eta_str", "--")
+            self._status_text   = info.get("status_text", f"Downloading\u2026 {completed}/{total}")
         self._files_count_text   = info.get("files_count_text") if info.get("files_count_text") else (f"{completed}/{total}" if total > 0 else "")
         self._adaptive_state     = info.get("adaptive_state", "optimal")
         self._adaptive_status_text = info.get("adaptive_status_text", "")
@@ -2059,6 +2424,24 @@ class AppBridge(QObject):
         self._threads_count = new_count
         self.threadsCountChanged.emit()
         logger.info(f"UI concurrency slider auto-throttled to {new_count} threads due to rate limiting.", category="system")
+
+    @Slot(bool)
+    def _handle_pause_changed(self, paused: bool):
+        if paused:
+            self._cloud_pause_event.set()
+            self._status_text = "Progress: Paused"
+            self._current_speed = "0 KB/s"
+            self._eta_text = "--"
+            self.currentSpeedChanged.emit()
+            self.etaTextChanged.emit()
+            self.statusTextChanged.emit()
+            self.isPausedChanged.emit()
+        else:
+            self._cloud_pause_event.clear()
+            if "Paused" in self._status_text:
+                self._status_text = "Progress: Resumed"
+                self.statusTextChanged.emit()
+            self.isPausedChanged.emit()
 
     @Slot(list)
     def _handle_set_tasks(self, tasks: list):
@@ -2190,6 +2573,7 @@ class AppBridge(QObject):
         self.downloader.resume()
         self._status_text = "Downloading resumed."
         self.statusTextChanged.emit()
+        self.isPausedChanged.emit()
 
     @Slot()
     def stopAfterExport(self):
@@ -2197,6 +2581,7 @@ class AppBridge(QObject):
         self.downloader.pause()
         self._status_text = "Downloads paused (Safe to exit or shut down)."
         self.statusTextChanged.emit()
+        self.isPausedChanged.emit()
 
     @Slot(str)
     def importQueueState(self, merge_mode: str = "merge"):
@@ -2280,19 +2665,20 @@ class AppBridge(QObject):
         label = _labels.get(action, action.capitalize())
         self._pending_post_action = action
 
-        # Generate comprehensive Desktop report before action executes
-        try:
-            from services.report_generator import generate_completion_report
-            tasks = self._queue_model.getTasks() if self._queue_model else (self.downloader.tasks if self.downloader else [])
-            report_paths = generate_completion_report(
-                tasks=tasks,
-                action_name=label,
-                elapsed_seconds=getattr(self.downloader, "_elapsed_seconds", 0.0) if self.downloader else 0.0
-            )
-            if report_paths.get("html"):
-                logger.info(f"📊 Download completion report saved to Desktop: {report_paths['html']}", category="system")
-        except Exception as e:
-            logger.warning(f"Could not generate desktop report: {e}", category="system")
+        # Generate comprehensive Desktop report before action executes (if enabled)
+        if self._generate_desktop_report:
+            try:
+                from services.report_generator import generate_completion_report
+                tasks = self._queue_model.getTasks() if self._queue_model else (self.downloader.tasks if self.downloader else [])
+                report_paths = generate_completion_report(
+                    tasks=tasks,
+                    action_name=label,
+                    elapsed_seconds=getattr(self.downloader, "_elapsed_seconds", 0.0) if self.downloader else 0.0
+                )
+                if report_paths.get("html"):
+                    logger.info(f"📊 Download completion report saved to Desktop: {report_paths['html']}", category="system")
+            except Exception as e:
+                logger.warning(f"Could not generate desktop report: {e}", category="system")
 
         logger.info(f"Post-download action '{label}' queued — showing 15s countdown modal.", category="system")
         # Emit to QML — the modal handles the countdown and calls confirmPostAction() or cancelPostAction()
@@ -2373,6 +2759,7 @@ class AppBridge(QObject):
             self._status_text = f"Progress: {message}"
 
         self.isDownloadingChanged.emit()
+        self.isPausedChanged.emit()
         self.overallProgressChanged.emit()
         self.statusTextChanged.emit()
         if not success:
@@ -2404,6 +2791,19 @@ class AppBridge(QObject):
             # 3. Post-download action (close app, shutdown, sleep, etc.)
             if self._post_download_action and self._post_download_action != "none":
                 self._execute_post_action()
+            elif self._generate_desktop_report:
+                try:
+                    from services.report_generator import generate_completion_report
+                    tasks = self._queue_model.getTasks() if self._queue_model else (self.downloader.tasks if self.downloader else [])
+                    report_paths = generate_completion_report(
+                        tasks=tasks,
+                        action_name="Completion",
+                        elapsed_seconds=getattr(self.downloader, "_elapsed_seconds", 0.0) if self.downloader else 0.0
+                    )
+                    if report_paths.get("html"):
+                        logger.info(f"📊 Download completion report saved to Desktop: {report_paths['html']}", category="system")
+                except Exception as e:
+                    logger.warning(f"Could not generate desktop report: {e}", category="system")
 
             # 4. Auto-add / update completed artist in watchlist
             try:
@@ -2487,31 +2887,32 @@ class AppBridge(QObject):
         try:
             if parsed.is_external_provider:
                 if parsed.provider == "bunkr":
-                    album_title, _ = fetch_bunkr_album(parsed.raw_url)
+                    album_title, _ = fetch_bunkr_album(parsed.raw_url, resolve_files=False)
                     if album_title:
-                        self._creatorSignal.emit(f"Bunkr: {album_title}")
+                        self._creatorSignal.emit(clean_text(album_title))
                 elif parsed.provider == "erome":
                     album_title, _ = fetch_erome_album(parsed.raw_url)
                     if album_title:
-                        self._creatorSignal.emit(f"Erome: {album_title}")
+                        self._creatorSignal.emit(clean_text(album_title))
                 elif parsed.provider == "nhentai":
                     gallery_title, _ = fetch_nhentai_gallery(parsed.post_id or parsed.raw_url)
                     if gallery_title:
-                        self._creatorSignal.emit(f"nHentai: {gallery_title}")
+                        self._creatorSignal.emit(clean_text(gallery_title))
                 elif parsed.provider == "saint2":
-                    self._creatorSignal.emit(f"Saint2: {parsed.user_id}")
+                    self._creatorSignal.emit(clean_text(parsed.user_id))
             else:
                 profile = self.api_client.fetch_creator_profile(parsed)
                 name = profile.get("displayName") or profile.get("name") or profile.get("user") or profile.get("username") or parsed.user_id
                 if name:
-                    self._creatorSignal.emit(str(name))
+                    self._creatorSignal.emit(clean_text(str(name)))
         except Exception:
             pass
 
     @Slot(str)
     def _handle_creator_resolved(self, name: str):
-        if name and self._creator_name != name:
-            self._creator_name = name
+        cleaned = clean_text(name)
+        if cleaned and self._creator_name != cleaned:
+            self._creator_name = cleaned
             self.creatorNameChanged.emit()
 
     # ── Watchlist Slots ────────────────────────────────────────────────────────
@@ -2663,6 +3064,15 @@ class AppBridge(QObject):
                 options=options,
                 batch_id=f"watchlist_{entry.service}_{entry.user_id}",
                 artist_dir=artist_folder,
+                user_id=entry.user_id
+            )
+
+            # Auto-harvest new posts' cloud links into permanent Link Vault
+            self._auto_harvest_posts_to_vault(
+                posts=new_posts,
+                creator_name=entry.creator_name,
+                domain=entry.domain,
+                service=entry.service,
                 user_id=entry.user_id
             )
             if tasks:
@@ -2955,4 +3365,329 @@ class AppBridge(QObject):
                 f"Watchlist check complete — {name!r} is up to date (no new posts).",
                 category="watchlist"
             )
+
+    # ── Link Vault Slots ─────────────────────────────────────────────────────
+    @Slot(str, str)
+    def refreshLinkVault(self, search: str = "", platform: str = ""):
+        self._vault_search = search
+        self._vault_platform = platform
+        self.linkVaultChanged.emit()
+
+    @Slot(str, result=bool)
+    def deleteVaultLink(self, linkId: str) -> bool:
+        from core.link_vault_manager import link_vault_manager
+        res = link_vault_manager.delete_link(linkId)
+        if res:
+            self.linkVaultChanged.emit()
+        return res
+
+    @Slot(str, result=bool)
+    def deleteVaultPost(self, postId: str) -> bool:
+        from core.link_vault_manager import link_vault_manager
+        res = link_vault_manager.delete_post(postId)
+        if res:
+            self.linkVaultChanged.emit()
+        return res
+
+    @Slot(str, result=bool)
+    def deleteVaultCreator(self, creatorKey: str) -> bool:
+        from core.link_vault_manager import link_vault_manager
+        res = link_vault_manager.delete_creator(creatorKey)
+        if res:
+            self.linkVaultChanged.emit()
+        return res
+
+    @Slot(result=int)
+    def cleanDeadVaultLinks(self) -> int:
+        from core.link_vault_manager import link_vault_manager
+        count = link_vault_manager.clean_dead_links()
+        self.linkVaultChanged.emit()
+        return count
+
+    @Slot()
+    def probeVaultHealth(self):
+        from core.link_vault_manager import link_vault_manager
+        self.linkVaultProbingStarted.emit()
+        def _on_done(done, total, url):
+            self.linkVaultChanged.emit()
+        def _on_complete():
+            self.linkVaultChanged.emit()
+            self.linkVaultProbingFinished.emit()
+        link_vault_manager.probe_all_links_async(
+            progress_callback=_on_done,
+            completion_callback=_on_complete
+        )
+
+    @Slot(str, bool, int, int)
+    def harvestArtistToVault(self, url: str, probeHealth: bool = True, pageStart: int = 1, pageEnd: int = 999999):
+        clean_url = (url or "").strip()
+        if not clean_url:
+            self.vaultHarvestFinished.emit(False, "", 0, 0)
+            return
+        if self._vault_harvesting:
+            logger.warning("Artist harvesting to Link Vault is already running.", category="vault")
+            return
+
+        def _worker():
+            self._vault_harvesting = True
+            self._vault_harvest_cancel.clear()
+            self._vault_harvest_status = "Connecting..."
+            self.linkVaultChanged.emit()
+
+            try:
+                parsed = KemonoURLParser.parse(clean_url)
+                if not parsed.is_valid:
+                    logger.error(f"Link Vault Harvest: Invalid artist URL '{clean_url}'", category="vault")
+                    self.vaultHarvestFinished.emit(False, "Invalid URL", 0, 0)
+                    return
+
+                # Fetch artist profile
+                profile = self.api_client.fetch_creator_profile(parsed)
+                creator_name = clean_text(profile.get("name", parsed.user_id) or parsed.user_id)
+                creator_key = f"{parsed.service}:{parsed.user_id}".lower()
+
+                self._vault_harvest_status = f"Scanning posts for {creator_name}..."
+                self.linkVaultChanged.emit()
+                self.vaultHarvestStarted.emit(creator_name)
+
+                # Fetch all posts in range
+                if parsed.is_single_post:
+                    single = self.api_client.fetch_single_post(parsed)
+                    posts = [single] if single else []
+                else:
+                    posts = self.api_client.fetch_user_posts(
+                        parsed=parsed,
+                        page_start=pageStart,
+                        page_end=pageEnd,
+                        cancel_event=self._vault_harvest_cancel
+                    )
+
+                if self._vault_harvest_cancel.is_set():
+                    logger.warning(f"Link Vault Harvest: Cancelled during post fetch for {creator_name}.", category="vault")
+                    self.vaultHarvestFinished.emit(False, creator_name, 0, len(posts))
+                    return
+
+                if not posts:
+                    logger.info(f"Link Vault Harvest: No posts found for {creator_name}.", category="vault")
+                    self.vaultHarvestFinished.emit(True, creator_name, 0, 0)
+                    return
+
+                # Process posts into vault records
+                harvested_posts = []
+                total_links_found = 0
+                for idx, p in enumerate(posts):
+                    if self._vault_harvest_cancel.is_set():
+                        break
+
+                    rec = LinkExtractor.extract_post_vault_record(
+                        post=p,
+                        api_client=self.api_client,
+                        domain=parsed.domain,
+                        service=parsed.service,
+                        user_id=parsed.user_id
+                    )
+                    if rec and rec.get("links"):
+                        harvested_posts.append(rec)
+                        total_links_found += len(rec["links"])
+
+                    if (idx + 1) % 10 == 0 or idx == len(posts) - 1:
+                        status_msg = f"Processed {idx + 1}/{len(posts)} posts ({total_links_found} links found)"
+                        self._vault_harvest_status = status_msg
+                        self.linkVaultChanged.emit()
+                        self.vaultHarvestProgress.emit(status_msg, idx + 1, total_links_found)
+
+                if self._vault_harvest_cancel.is_set():
+                    logger.warning(f"Link Vault Harvest: Cancelled during link extraction for {creator_name}.", category="vault")
+                    self.vaultHarvestFinished.emit(False, creator_name, 0, len(posts))
+                    return
+
+                # Store harvested posts into Link Vault
+                from core.link_vault_manager import link_vault_manager
+                new_links_count = link_vault_manager.add_harvested_data(
+                    creator_name=creator_name,
+                    service=parsed.service,
+                    user_id=parsed.user_id,
+                    harvested_posts=harvested_posts
+                )
+                self.linkVaultChanged.emit()
+
+                # Optionally probe links health
+                if probeHealth and new_links_count > 0 and not self._vault_harvest_cancel.is_set():
+                    self._vault_harvest_status = f"Probing links for {creator_name}..."
+                    self.linkVaultChanged.emit()
+                    self.linkVaultProbingStarted.emit()
+                    def _on_probe_progress(done, tot, u):
+                        self.linkVaultChanged.emit()
+                    def _on_probe_complete():
+                        self.linkVaultChanged.emit()
+                        self.linkVaultProbingFinished.emit()
+                    link_vault_manager.probe_all_links_async(
+                        progress_callback=_on_probe_progress,
+                        cancel_event=self._vault_harvest_cancel,
+                        creator_key=creator_key,
+                        completion_callback=_on_probe_complete
+                    )
+
+                logger.success(
+                    f"Link Vault: Finished harvesting {creator_name} ({new_links_count} new links saved from {len(posts)} posts).",
+                    category="vault"
+                )
+                self.vaultHarvestFinished.emit(True, creator_name, new_links_count, len(posts))
+
+            except Exception as e:
+                logger.error(f"Link Vault Harvest failed: {e}", category="vault")
+                self.vaultHarvestFinished.emit(False, str(e), 0, 0)
+            finally:
+                self._vault_harvesting = False
+                self._vault_harvest_status = ""
+                self.linkVaultChanged.emit()
+
+        t = threading.Thread(target=_worker, daemon=True, name="VaultArtistHarvester")
+        t.start()
+
+    @Slot()
+    def cancelVaultHarvest(self):
+        self._vault_harvest_cancel.set()
+        self._vault_harvesting = False
+        self._vault_harvest_status = "Cancelled"
+        self.linkVaultChanged.emit()
+
+    @Slot(result=int)
+    def copyPasswordsToDecompressor(self) -> int:
+        from core.link_vault_manager import link_vault_manager
+        pws = link_vault_manager.get_all_passwords()
+        count = len(pws)
+        if hasattr(self, "_decompressor_bridge") and self._decompressor_bridge:
+            for pw in pws:
+                if pw and hasattr(self._decompressor_bridge, "addPassword"):
+                    self._decompressor_bridge.addPassword(pw)
+        logger.success(f"Copied {count} password(s) from Link Vault to Bulk Decompressor.", category="vault")
+        return count
+
+    # ── Storage Pool Slots ───────────────────────────────────────────────────
+    @Slot(bool)
+    def setStoragePoolEnabled(self, enabled: bool):
+        from core.storage_pool_manager import storage_pool_manager
+        storage_pool_manager.set_enabled(enabled)
+        self.storagePoolChanged.emit()
+
+    @Slot(float)
+    def setStoragePoolMargin(self, marginGB: float):
+        from core.storage_pool_manager import storage_pool_manager
+        storage_pool_manager.set_safety_margin(marginGB)
+        self.storagePoolChanged.emit()
+
+    @Slot(str, result=bool)
+    def addStoragePoolDrive(self, path: str) -> bool:
+        from core.storage_pool_manager import storage_pool_manager
+        res = storage_pool_manager.add_overflow_dir(path)
+        if res:
+            self.storagePoolChanged.emit()
+        return res
+
+    @Slot(str, result=bool)
+    def removeStoragePoolDrive(self, path: str) -> bool:
+        from core.storage_pool_manager import storage_pool_manager
+        res = storage_pool_manager.remove_overflow_dir(path)
+        if res:
+            self.storagePoolChanged.emit()
+        return res
+
+    @Slot(result=str)
+    def selectStoragePoolDirectory(self) -> str:
+        folder = QFileDialog.getExistingDirectory(
+            None,
+            "Select Storage Overflow Directory",
+            ""
+        )
+        if folder:
+            self.addStoragePoolDrive(folder)
+            return folder
+        return ""
+
+    @Slot()
+    def refreshStoragePools(self):
+        self.storagePoolChanged.emit()
+
+    # ── Cookie Importer Slots ────────────────────────────────────────────────
+    @Slot(str, result=bool)
+    def importBrowserCookies(self, browserId: str = "") -> bool:
+        from services.cookie_importer import browser_cookie_importer
+        try:
+            res = browser_cookie_importer.import_auto_detect(preferred_browser=browserId or None)
+            c_str = res.get("cookie_string", "")
+            if c_str:
+                self.cookieString = c_str
+                self.saveSettings()
+                self.cookieWatchdogChanged.emit()
+                self.cookieImportCompleted.emit(True, res.get("browser_name", "Browser"))
+                return True
+        except Exception as e:
+            logger.error(f"Browser cookie import failed: {e}", category="cookie")
+            self.cookieImportCompleted.emit(False, str(e))
+        return False
+
+    @Slot()
+    def refreshCookieWatchdog(self):
+        self.cookieWatchdogChanged.emit()
+
+    # ── Task Scheduler Slots ─────────────────────────────────────────────────
+    @Slot(str, str, str, str, int, str, result=str)
+    def addSchedulerTask(self, name: str, targetType: str, targetUrl: str, triggerType: str, intervalHours: int, timeOfDay: str) -> str:
+        from core.task_scheduler import task_scheduler
+        sid = task_scheduler.add_schedule(name, targetType, targetUrl, triggerType, intervalHours, timeOfDay)
+        self.schedulerChanged.emit()
+        return sid
+
+    @Slot(str, result=bool)
+    def deleteSchedulerTask(self, schedId: str) -> bool:
+        from core.task_scheduler import task_scheduler
+        res = task_scheduler.delete_schedule(schedId)
+        if res:
+            self.schedulerChanged.emit()
+        return res
+
+    @Slot(str, bool, result=bool)
+    def toggleSchedulerTask(self, schedId: str, enabled: bool) -> bool:
+        from core.task_scheduler import task_scheduler
+        res = task_scheduler.toggle_schedule(schedId, enabled)
+        if res:
+            self.schedulerChanged.emit()
+        return res
+
+    @Slot(str, str, str, str, str, int, str, result=bool)
+    def updateSchedulerTask(self, schedId: str, name: str, targetType: str, targetUrl: str, triggerType: str, intervalHours: int, timeOfDay: str) -> bool:
+        from core.task_scheduler import task_scheduler
+        res = task_scheduler.update_schedule(schedId, name, targetType, targetUrl, triggerType, intervalHours, timeOfDay)
+        if res:
+            self.schedulerChanged.emit()
+        return res
+
+
+    @Slot(bool, bool, bool, str, str, bool, bool)
+    def setSchedulerSettings(self, enabled: bool, lockThreads: bool, nightOwl: bool, start: str, end: str, preventSleep: bool, sweepRetry: bool):
+        from core.task_scheduler import task_scheduler
+        task_scheduler.enabled = enabled
+        task_scheduler.lock_threads_delay = lockThreads
+        self.threadsLocked = lockThreads
+        task_scheduler.night_owl_enabled = nightOwl
+        task_scheduler.night_owl_start = start
+        task_scheduler.night_owl_end = end
+        task_scheduler.prevent_sleep = preventSleep
+        task_scheduler.sweep_retry = sweepRetry
+        task_scheduler.save()
+        self.schedulerChanged.emit()
+
+    def _run_scheduled_watchlist_sync(self):
+        """Called by background TaskScheduler when a Watchlist Sync schedule triggers."""
+        logger.info("Scheduler: Initiating automated Watchlist Sync check...", category="scheduler")
+        self.checkWatchlist()
+
+    def _run_scheduled_creator_sync(self, url: str):
+        """Called by background TaskScheduler when a Custom Creator schedule triggers."""
+        if url:
+            logger.info(f"Scheduler: Initiating automated Creator Sync for '{url}'...", category="scheduler")
+            self.currentUrl = url
+            self.startDownload()
+
 

@@ -40,10 +40,11 @@ Item {
     transformOrigin: Item.Center
 
     Behavior on scale {
-        NumberAnimation {
-            duration: mouseArea.pressed ? 100 : 200
-            easing.type: mouseArea.pressed ? Easing.OutCubic : Easing.OutBack
-            easing.overshoot: 1.5
+        SpringAnimation {
+            spring: 4.5
+            damping: 0.35
+            mass: 0.8
+            epsilon: 0.01
         }
     }
 
@@ -72,7 +73,7 @@ Item {
 
                 scale: root.checked ? 1.15 : (mouseArea.containsMouse ? 1.08 : 1.0)
                 Behavior on scale {
-                    NumberAnimation { duration: 180; easing.type: Easing.OutBack; easing.overshoot: 1.6 }
+                    SpringAnimation { spring: 4.5; damping: 0.35; mass: 0.8; epsilon: 0.01 }
                 }
             }
 

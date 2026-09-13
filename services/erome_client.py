@@ -5,6 +5,21 @@ from typing import Tuple, List, Dict, Any, Optional
 import time
 import requests
 
+from core.text_utils import clean_text, sanitize_filesystem_name
+
+def _get_response_text(resp) -> str:
+    if resp is None:
+        return ""
+    try:
+        raw = getattr(resp, "content", None)
+        if isinstance(raw, (bytes, bytearray)):
+            return raw.decode("utf-8", errors="replace")
+    except Exception:
+        pass
+    text = getattr(resp, "text", "")
+    return str(text) if text is not None else ""
+
+
 def fetch_erome_album(url: str, headers: Optional[dict] = None, timeout: int = 25) -> Tuple[Optional[str], List[Dict[str, Any]]]:
     """
     Parses an Erome album URL (e.g. https://www.erome.com/a/albumId) and extracts direct media links.
@@ -31,7 +46,7 @@ def fetch_erome_album(url: str, headers: Optional[dict] = None, timeout: int = 2
                 time.sleep(2.0 * (attempt + 1))
                 continue
             resp.raise_for_status()
-            content = resp.text
+            content = _get_response_text(resp)
             break
         except Exception:
             if attempt == 2:
@@ -43,8 +58,8 @@ def fetch_erome_album(url: str, headers: Optional[dict] = None, timeout: int = 2
 
     try:
         title_match = re.search(r'property="og:title"\s+content="([^"]+)"', content)
-        title = html.unescape(title_match.group(1)) if title_match else f"Album_{album_id}"
-        sanitized_title = re.sub(r'[\\/*?:"<>|]', '_', title).strip()
+        title = clean_text(title_match.group(1)) if title_match else f"Album_{album_id}"
+        sanitized_title = sanitize_filesystem_name(title, fallback=f"Album_{album_id}")
 
         urls = []
         # Find video sources

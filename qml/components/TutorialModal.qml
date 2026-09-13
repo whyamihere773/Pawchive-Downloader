@@ -278,6 +278,119 @@ Rectangle {
             ]
         },
         {
+            title: "Permanent Link Vault & Passwords",
+            icon: "🗝️",
+            summary: "Uncapped cloud link archiving, multilingual passwords, cross-post rescue, and Decompressor sync.",
+            content: [
+                {
+                    heading: "Persistent Plain-Text Archive",
+                    body: "The Link Vault permanently stores every cloud link (Mega, Google Drive, Dropbox, Pixeldrain, Bunkr, etc.) extracted across your download sessions in config/link_vault.json with automatic atomic backups. Links are grouped into an intuitive Creator > Posts > Links tree view.",
+                    type: "intro"
+                },
+                {
+                    heading: "Multilingual Password Resolver",
+                    body: "Automatically identifies archive passwords across English, Japanese (パスワード), Chinese (密码), Russian (пароль), Korean (암호), French, and German using proximity-weighted distance scoring. Shows passwords right alongside each link with 1-click copy.",
+                    type: "tip"
+                },
+                {
+                    heading: "1-Hop Cross-Post & Comments Scraper",
+                    body: "When artists post update announcements linking to other posts or hide passwords inside comments, the Link Vault follows cross-post links (1-hop) and parses creator comments to unearth all hidden download destinations and passwords.",
+                    type: "info"
+                },
+                {
+                    heading: "Auto-Feed to Bulk Decompressor",
+                    body: "Click 'Sync Passwords to Decompressor' to automatically export all harvested passwords into the Decompressor's password list, enabling seamless zero-prompt archive extraction.",
+                    type: "tip"
+                },
+                {
+                    heading: "Live Health Prober & Dead Link Cleanup",
+                    body: "Click 'Check Link Health' to non-blockingly probe links in parallel. Dead or taken-down links are flagged in red, and 'Clean Dead Links' lets you prune non-functional links with one click.",
+                    type: "info"
+                }
+            ]
+        },
+        {
+            title: "Multi-Drive Storage Pools",
+            icon: "💽",
+            summary: "Auto-spanning across backup hard drives to prevent 'No space left on device' crashes.",
+            content: [
+                {
+                    heading: "Eliminating Disk-Full Failures",
+                    body: "Large artist archives can easily overwhelm a single hard drive. Storage Pools monitor disk capacity before writing each file stream. When the primary drive drops below your safety margin (e.g. 10 GB), subsequent files automatically route to secondary drives.",
+                    type: "intro"
+                },
+                {
+                    heading: "Folder Hierarchy Preservation",
+                    body: "When overflowing to a secondary drive, Pawchive replicates the identical folder hierarchy (e.g. 'E:/Kemono/Patreon/Artist/Post/file.mp4'). Your file organization remains completely consistent across all physical drives.",
+                    type: "info"
+                },
+                {
+                    heading: "Adding Secondary Storage Pools",
+                    body: "Navigate to Settings -> Storage & File Processing -> Multi-Drive Overflow, enable the feature, and click 'Add Overflow Drive / Folder' to select additional hard drives or network shares.",
+                    type: "tip"
+                }
+            ]
+        },
+        {
+            title: "1-Click Browser Cookie Importer",
+            icon: "🍪",
+            summary: "Direct session extraction from Chrome, Edge, Brave, Opera, Firefox and real-time expiration monitoring.",
+            content: [
+                {
+                    heading: "Zero DevTools Required (Firefox, Edge, Brave)",
+                    body: "No need to open F12 Developer Tools or manually copy session cookies. Pawchive safely reads your installed browser's cookie database via Windows DPAPI and AES-256-GCM without locking open browser tabs.\n\nSimply go to Settings → Network & Authentication, select your browser (or leave on Auto-Detect), and click ⚡ Import from Browser. Firefox, Edge, and Opera GX are recommended for automatic import.",
+                    type: "intro"
+                },
+                {
+                    heading: "Real-Time Expiration Watchdog",
+                    body: "The expiration badge tracks remaining session validity:\n🟢 Active · Session Verified — healthy, no action needed\n🟡 Expiring Soon (Xh left) — re-import soon\n🔴 Session Expired — re-import immediately\n\nThe badge updates every 60 seconds so you always know before a download fails mid-session.",
+                    type: "info"
+                },
+                {
+                    heading: "⚠️ Google Chrome 127+: Manual Cookie Extraction Required",
+                    body: "Google Chrome 127 introduced App-Bound Encryption which prevents any external tool from reading Chrome's cookie database. If you use Chrome as your primary browser, you have two options:\n\n• Recommended: Log into kemono.su / coomer.su in Mozilla Firefox or Microsoft Edge and use the 1-Click importer from there.\n\n• Manual (any browser): Copy your session cookie string manually using DevTools (see next card for step-by-step instructions).",
+                    type: "warning"
+                },
+                {
+                    heading: "Manual Extraction — Chrome / Any Browser (Step by Step)",
+                    body: "1. Open your browser and log into kemono.su or coomer.su.\n\n2. Press F12 to open Developer Tools (or right-click the page → Inspect).\n\n3. Click the Application tab at the top of DevTools (you may need to click ≫ to see it).\n\n4. In the left sidebar, expand Storage → Cookies → https://kemono.su (or coomer.su).\n\n5. Look for a cookie named 'session' — click it and copy the full Value from the bottom panel.\n\n6. In Pawchive, go to Settings → Network & Authentication → Session Cookie field.\n\n7. Type:  session=  and paste your value right after it. Example:\n   session=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...\n\n8. Optionally add cf_clearance the same way, separated by a semicolon:\n   session=ABC123; cf_clearance=XYZ789\n\n9. Click Save Settings. Your cookie is now active.",
+                    type: "tip"
+                },
+                {
+                    heading: "Where to Find Each Cookie",
+                    body: "• kemono.su / coomer.su → Cookie name: 'session'\n• Patreon.com → Cookie name: 'session_id' (found at www.patreon.com)\n• Fanbox (fanbox.cc) → Cookie name: 'FANBOXSESSID'\n• Cloudflare bypass → Cookie name: 'cf_clearance' (same domain as the site you're accessing)\n\nYou only need the one cookie for whichever site you're downloading from. You do not need all of them.",
+                    type: "info"
+                }
+            ]
+        },
+        {
+            title: "Task Scheduler & Automation Hub",
+            icon: "⏰",
+            summary: "Automated Watchlist delta sync, scheduled creator backups, Night Owl windows, and locked thread limits.",
+            content: [
+                {
+                    heading: "Hands-Free Archive Automation",
+                    body: "Create recurring background tasks to poll your Watchlist for new posts every few hours or schedule regular creator backups at fixed daily times (e.g. 03:00 AM).",
+                    type: "intro"
+                },
+                {
+                    heading: "User-Locked Threads & Delay Mode",
+                    body: "If you have carefully tuned your worker thread count and download delay for your connection, enable 'Lock Custom Threads & Delay'. This strictly prevents adaptive algorithms or background sweep tasks from altering your custom settings.",
+                    type: "tip"
+                },
+                {
+                    heading: "Night Owl Off-Peak Window",
+                    body: "Configure an off-peak download window (e.g. 01:00 to 07:00). Scheduled tasks will queue and pause until the off-peak window opens, maximizing download speeds when ISP bandwidth is cheapest.",
+                    type: "info"
+                },
+                {
+                    heading: "Windows Sleep Prevention (Stay Awake)",
+                    body: "Engages Windows kernel execution state flags (ES_SYSTEM_REQUIRED) while automated tasks are actively downloading, keeping your PC awake through overnight batches without changing Windows power settings.",
+                    type: "tip"
+                }
+            ]
+        },
+        {
             title: "Complete Tooltip Reference",
             icon: "💡",
             summary: "Quick cheatsheet explaining every button, icon, and badge across the interface.",
@@ -291,6 +404,11 @@ Rectangle {
                     heading: "Queue & Filter Buttons",
                     body: "• Auto-Retry: Automatically restarts failed downloads at end of queue.\n• Manga Mode: Normalizes image filenames for clean sequential reading order.\n• Adaptive Concurrency: Automatically adjusts threads when server rate limits hit.\n• 📂 Folder Icon: Opens target download folder in Windows File Explorer.",
                     type: "tip"
+                },
+                {
+                    heading: "Link Vault & Scheduler Controls",
+                    body: "• 🗝️ Link Vault: Permanent archive of all harvested cloud links and extracted passwords.\n• ⏰ Scheduler: Automation hub for recurring Watchlist syncs and Night Owl tasks.\n• 🔒 Lock Threads: Protects custom thread count and network delays from auto-throttling.\n• 💽 Storage Pools: Replicates folder trees across secondary drives when disk space is low.\n• 🍪 Cookie Importer: 1-click browser session extractor with real-time expiration watchdog.",
+                    type: "info"
                 },
                 {
                     heading: "Retry Modal Actions",
@@ -389,7 +507,7 @@ Rectangle {
                     border.color: "#1E2638"
                     border.width: 1
 
-                    ListView {
+                    SmoothListView {
                         id: navListView
                         anchors.fill: parent
                         anchors.margins: 6
@@ -460,17 +578,13 @@ Rectangle {
                     Layout.fillHeight: true
                     color: "#111622"
 
-                    Flickable {
+                    SmoothFlickable {
                         id: contentFlick
                         anchors.fill: parent
                         anchors.margins: 20
                         contentWidth: width
                         contentHeight: contentCol.implicitHeight + 40
                         clip: true
-
-                        ScrollBar.vertical: ScrollBar {
-                            policy: ScrollBar.AsNeeded
-                        }
 
                         ColumnLayout {
                             id: contentCol

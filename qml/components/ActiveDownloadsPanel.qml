@@ -262,12 +262,11 @@ Rectangle {
         }
 
         // ── 2. Active Downloads List (Newtonian Physics & Fluid Staggering) ──
-        ListView {
+        SmoothListView {
             id: activeListView
             Layout.fillWidth: true
             Layout.fillHeight: true
             clip: true
-            boundsBehavior: Flickable.StopAtBounds
             spacing: 4
             visible: !panelRoot.isCollapsed && panelRoot.activeCount > 0
 

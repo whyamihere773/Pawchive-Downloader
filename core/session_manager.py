@@ -9,6 +9,7 @@ import os
 import datetime
 from typing import Dict, Any, List, Optional
 from core.logger import logger
+from core.recovery_manager import RecoveryManager
 
 
 class SessionManager:
@@ -23,6 +24,7 @@ class SessionManager:
             self.config_dir = config_dir
 
         os.makedirs(self.config_dir, exist_ok=True)
+        self.recovery_manager = RecoveryManager(self.config_dir)
         self.session_file = os.path.join(self.config_dir, "session.json")
         self.history_file = os.path.join(self.config_dir, "history.json")
         self.settings_file = os.path.join(self.config_dir, "settings.json")
@@ -83,8 +85,15 @@ class SessionManager:
     def save_session(self, session_data: Dict[str, Any]):
         try:
             session_data["saved_at"] = datetime.datetime.now().isoformat()
-            with open(self.session_file, "w", encoding="utf-8") as f:
+            tmp_path = f"{self.session_file}.tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(session_data, f, indent=2, ensure_ascii=False)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except Exception:
+                    pass
+            os.replace(tmp_path, self.session_file)
             logger.info("Current download session state saved.", category="session")
         except Exception as e:
             logger.error(f"Failed to save session state: {e}", category="session")
@@ -137,7 +146,18 @@ class SessionManager:
             "post_download_action": "none",
             "known_recognition_mode": "hybrid",
             "language": "auto",
-            "tag_folder_mode": False
+            "tag_folder_mode": False,
+            "storage_pool_enabled": False,
+            "storage_pool_margin_gb": 10.0,
+            "storage_pool_drives": [],
+            "scheduler_enabled": False,
+            "scheduler_lock_threads_delay": True,
+            "scheduler_night_owl_enabled": False,
+            "scheduler_night_owl_start": "01:00",
+            "scheduler_night_owl_end": "07:00",
+            "scheduler_prevent_sleep": True,
+            "scheduler_sweep_retry": True,
+            "cookie_watchdog_enabled": True
         }
 
         if os.path.exists(self.settings_file):

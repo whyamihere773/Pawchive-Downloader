@@ -22,7 +22,10 @@ from tkinter import ttk
 
 # Files and folders that must NEVER be touched during an update
 PROTECTED_DIRS = {"config", "downloads", "temp", "logs", "venv", ".venv", "__pycache__", ".git"}
-PROTECTED_FILES = {"settings.json", "watchlist.json", "known.txt", "cookies.txt"}
+PROTECTED_FILES = {
+    "settings.json", "watchlist.json", "known.txt", "cookies.txt",
+    "link_vault.json", "link_vault.json.bak", "storage_pools.json", "schedules.json"
+}
 
 # Extra wait time after PID exits before touching exe files (Windows handle-release delay)
 _EXE_RELEASE_WAIT = 1.5

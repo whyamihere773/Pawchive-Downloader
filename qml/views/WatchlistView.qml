@@ -681,7 +681,7 @@ Item {
             }
 
             // ── Entry list ────────────────────────────────────────────────────
-            ListView {
+            SmoothListView {
                 id: watchListView
                 anchors.fill: parent
                 anchors.margins: 10
@@ -689,15 +689,6 @@ Item {
                 clip: true
                 visible: bridge && bridge.watchlistModel && bridge.watchlistModel.count > 0
                 model: bridge ? bridge.watchlistModel : null
-
-                ScrollBar.vertical: ScrollBar {
-                    policy: ScrollBar.AsNeeded
-                    contentItem: Rectangle {
-                        radius: 3
-                        color: "#2D3A52"
-                        opacity: 0.8
-                    }
-                }
 
                 delegate: Rectangle {
                     id: entryCard
@@ -2005,18 +1996,13 @@ Item {
             }
 
             // Scrollable contents to ensure it shrinks and scrolls on any window height
-            Flickable {
+            SmoothFlickable {
                 id: modalFlickable
                 anchors.fill: parent
                 anchors.margins: 18
                 contentWidth: width
                 contentHeight: modalContentCol.implicitHeight
                 clip: true
-                boundsBehavior: Flickable.StopAtBounds
-
-                ScrollBar.vertical: ScrollBar {
-                    policy: ScrollBar.AsNeeded
-                }
 
                 ColumnLayout {
                     id: modalContentCol

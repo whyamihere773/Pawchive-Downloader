@@ -33,11 +33,11 @@ Item {
             spacing: 8
 
             Text {
-                text: root.active ? root.tr("status_downloading_colon", "Downloading:") : root.statusText
+                text: (root.statusText && root.statusText.indexOf("Paused") >= 0) ? root.tr("status_paused_colon", "Paused:") : (root.active ? root.tr("status_downloading_colon", "Downloading:") : root.statusText)
                 font.family: "Segoe UI, Inter, sans-serif"
                 font.pixelSize: 11
                 font.weight: 600
-                color: root.active ? "#38BDF8" : "#94A3B8"
+                color: (root.statusText && root.statusText.indexOf("Paused") >= 0) ? "#FBBF24" : (root.active ? "#38BDF8" : "#94A3B8")
             }
 
             // Inline Telemetry Badges (Embedded directly in progress header with Spring Entrance)

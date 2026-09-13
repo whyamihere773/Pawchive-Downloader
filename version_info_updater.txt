@@ -2,8 +2,8 @@
 
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 1, 1, 0),
-    prodvers=(1, 1, 1, 0),
+    filevers=(1, 1, 2, 0),
+    prodvers=(1, 1, 2, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -18,12 +18,12 @@ VSVersionInfo(
         [
           StringStruct('CompanyName',      'whyamihere773'),
           StringStruct('FileDescription',  'Pawchive Downloader Updater'),
-          StringStruct('FileVersion', '1.1.1.0'),
+          StringStruct('FileVersion', '1.1.2.0'),
           StringStruct('InternalName',     'PawchiveUpdater'),
           StringStruct('LegalCopyright',   'Copyright 2026 whyamihere773'),
           StringStruct('OriginalFilename', 'updater.exe'),
           StringStruct('ProductName',      'Pawchive Downloader'),
-          StringStruct('ProductVersion', '1.1.1'),
+          StringStruct('ProductVersion', '1.1.2'),
         ]
       )
     ]),

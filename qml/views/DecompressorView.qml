@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import "../components"
 
 Item {
     id: root
@@ -1007,7 +1008,7 @@ Item {
                 }
             }
 
-            ListView {
+            SmoothListView {
                 id: archiveListView
                 anchors.fill: parent
                 anchors.margins: 8
@@ -1015,15 +1016,6 @@ Item {
                 clip: true
                 visible: root.groupedItems.length > 0
                 model: root.groupedItems
-
-                ScrollBar.vertical: ScrollBar {
-                    policy: ScrollBar.AsNeeded
-                    contentItem: Rectangle {
-                        radius: 3
-                        color: "#2D3A52"
-                        opacity: 0.8
-                    }
-                }
 
                 delegate: Rectangle {
                     id: creatorGroupCard

@@ -96,14 +96,12 @@ Rectangle {
             radius: 8
             clip: true
 
-            ListView {
+            SmoothListView {
                 id: knownList
                 anchors.fill: parent
                 anchors.margins: 8
                 spacing: 6
                 model: root.bridge ? root.bridge.knownModel : null
-
-                ScrollBar.vertical: ScrollBar { active: true; policy: ScrollBar.AsNeeded }
 
                 delegate: Rectangle {
                     width: knownList.width - 12

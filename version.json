@@ -1,8 +1,8 @@
 {
-    "version": "1.1.1",
+    "version": "1.1.2",
     "commit": "",
     "short_commit": "",
-    "date": "2026-09-12",
+    "date": "2026-09-13",
     "channel": "release",
     "history": [
         {
@@ -64,6 +64,11 @@
             "version": "1.1.1",
             "date": "2026-09-12",
             "notes": "Watchlist overhaul: fixed global download directory overriding artist folders, saved per-artist filter settings for updates, fixed Windows cross-drive path crashes & double-folder nesting. Added Download All Updates, Add Artist by URL modal, interactive post review with per-post/bulk ignoring, editable last-downloaded cutoff date with smart auto-normalization, live search & service filter, click-to-open folder, Newtonian spring physics animations, and QML responsive layout fixes."
+        },
+        {
+            "version": "1.1.2",
+            "date": "2026-09-13",
+            "notes": "Bunkr 2026 infrastructure overhaul: support for modern domains (bunkr.cr, bunkr.si, bunkr.pk, balbums.st, etc.), dynamic signed token minting via /sign, ?advanced=1 structured album catalog parser, and multi-threaded media resolution. Unicode & Mojibake repair engine: automatic Latin-1/CP1252 recovery, hidden zero-width spaces (\\ufeff BOM, \\u200b) stripping, and Windows-safe filename sanitization. Added Desktop completion report toggle in Settings under Storage & File Processing."
         }
     ]
 }

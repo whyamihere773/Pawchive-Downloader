@@ -105,7 +105,7 @@
 ### Option A: Pre-compiled Windows Binary (Recommended for most users)
 
 1. Head over to the **[Latest Release](https://github.com/whyamihere773/Pawchive-Downloader/releases/latest)** page.
-2. Download `Pawchive-Downloader-v1.1.1-Windows.zip`.
+2. Download `Pawchive-Downloader-v1.1.2-Windows.zip`.
 3. Extract the ZIP archive anywhere on your computer.
 4. Run `Pawchive Downloader.exe` — that's it!
 

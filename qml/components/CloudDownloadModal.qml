@@ -272,18 +272,12 @@ Rectangle {
                 border.width: 1
                 clip: true
 
-                ListView {
+                SmoothListView {
                     id: linksList
                     anchors.fill: parent
                     anchors.margins: 4
                     model: cloudLinksModel
                     spacing: 4
-                    boundsBehavior: Flickable.StopAtBounds
-
-                    ScrollBar.vertical: ScrollBar {
-                        width: 8
-                        policy: ScrollBar.AsNeeded
-                    }
 
                     delegate: Rectangle {
                         width: linksList.width - 8

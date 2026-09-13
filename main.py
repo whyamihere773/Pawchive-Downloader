@@ -3,7 +3,7 @@ import os
 import signal
 
 os.environ["QT_QUICK_CONTROLS_STYLE"] = "Basic"
-os.environ["QSG_RENDER_LOOP"] = "basic"
+# Use default hardware-accelerated threaded render loop (Direct3D 11 on Windows) for silky smooth 60-144+ FPS
 
 from PySide6.QtWidgets import QApplication
 from PySide6.QtQml import QQmlApplicationEngine

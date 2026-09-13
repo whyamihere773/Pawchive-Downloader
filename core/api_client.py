@@ -21,6 +21,7 @@ if __name__ == "__main__" or "core" not in sys.modules:
 
 from core.logger import logger
 from core.parser import URLParseResult
+from core.text_utils import clean_text
 
 HTTP_STATUS_HINTS = {
     400: "Bad Request — malformed URL or invalid query parameters",
@@ -208,14 +209,17 @@ class KemonoApiClient:
                 try:
                     data = resp.json()
                     if isinstance(data, dict):
-                        name = data.get("displayName") or data.get("name") or data.get("user") or data.get("username")
+                        raw_name = data.get("displayName") or data.get("name") or data.get("user") or data.get("username")
+                        name = clean_text(raw_name) if raw_name else None
                         if name and name != parsed.user_id:
+                            data["name"] = name
                             logger.success(f"Creator: {name!r}  service={parsed.service}  id={parsed.user_id}", category="api")
                             return data
                     elif isinstance(data, list) and data:
                         first_item = data[0]
                         if isinstance(first_item, dict):
-                            name = first_item.get("user") or first_item.get("username") or first_item.get("name")
+                            raw_name = first_item.get("user") or first_item.get("username") or first_item.get("name")
+                            name = clean_text(raw_name) if raw_name else None
                             if name:
                                 logger.success(f"Creator: {name!r}  service={parsed.service}  id={parsed.user_id}", category="api")
                                 return {"id": parsed.user_id, "name": name, "service": parsed.service}
@@ -230,7 +234,8 @@ class KemonoApiClient:
                 posts_data = resp.json()
                 items = posts_data.get("posts", []) if isinstance(posts_data, dict) else (posts_data if isinstance(posts_data, list) else [])
                 if items and isinstance(items[0], dict):
-                    name = items[0].get("user") or items[0].get("username")
+                    raw_name = items[0].get("user") or items[0].get("username")
+                    name = clean_text(raw_name) if raw_name else None
                     if name:
                         logger.success(f"Creator: {name!r} (from post metadata)  service={parsed.service}", category="api")
                         return {"id": parsed.user_id, "name": name, "service": parsed.service}

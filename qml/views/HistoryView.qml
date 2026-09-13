@@ -109,13 +109,12 @@ Rectangle {
             radius: 8
             clip: true
 
-            ListView {
+            SmoothListView {
                 id: historyList
                 anchors.fill: parent
                 anchors.margins: 6
                 spacing: 6
                 model: historyListModel
-                ScrollBar.vertical: ScrollBar { active: true; policy: ScrollBar.AsNeeded }
 
                 delegate: Rectangle {
                     width: historyList.width - 12

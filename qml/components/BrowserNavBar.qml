@@ -162,7 +162,7 @@ Rectangle {
                             if (u.indexOf("pawchive") >= 0) return "pawchive.pw"
                             if (u.indexOf("kemono") >= 0) return "kemono.su"
                             if (u.indexOf("coomer") >= 0) return "coomer.su"
-                            if (u.indexOf("bunkr") >= 0) return "bunkr.is"
+                            if (u.indexOf("bunkr") >= 0 || u.indexOf("balbums") >= 0) return "bunkr.cr"
                             if (u.indexOf("erome") >= 0) return "erome.com"
                             if (u.indexOf("nhentai") >= 0) return "nhentai.net"
                             if (u.indexOf("saint2") >= 0) return "saint2.su"

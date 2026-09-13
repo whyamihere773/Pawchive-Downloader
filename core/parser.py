@@ -85,7 +85,17 @@ class KemonoURLParser:
     )
 
     BUNKR_PATTERN = re.compile(
-        r"https?://(?:www\.)?(?:bunkr|bunkrr)\.(?:is|si|cr|ru|black|media|site|ac|su|la)/(?:a|v|d)/([a-zA-Z0-9_-]+)",
+        r"https?://(?:[a-zA-Z0-9_-]+\.)?(?:bunkr|bunkrr|bunk)\.[a-z0-9]+/(?:a|v|d|f|i|file)/([a-zA-Z0-9_-]+)",
+        re.IGNORECASE
+    )
+
+    BALBUMS_PATTERN = re.compile(
+        r"https?://(?:[a-zA-Z0-9_-]+\.)?balbums\.st(?:/a/([a-zA-Z0-9_-]+))?",
+        re.IGNORECASE
+    )
+
+    BUNKR_CDN_PATTERN = re.compile(
+        r"https?://(?:[a-zA-Z0-9_-]+\.)?(?:cdn\.cr|scdn\.st)/storage/media/([a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9]+)?)",
         re.IGNORECASE
     )
 
@@ -101,6 +111,32 @@ class KemonoURLParser:
 
     SAINT2_PATTERN = re.compile(
         r"https?://(?:www\.)?saint2\.su/([^\s]+)",
+        re.IGNORECASE
+    )
+
+    # Native platform patterns for cross-post resolution
+    PATREON_NATIVE_PATTERN = re.compile(
+        r"https?://(?:www\.)?patreon\.com/posts/(?:[a-zA-Z0-9_-]+-)?(\d+)",
+        re.IGNORECASE
+    )
+    FANBOX_NATIVE_PATTERN = re.compile(
+        r"https?://(?:(?:www\.)?fanbox\.cc/@([a-zA-Z0-9_-]+)/posts/(\d+)|([a-zA-Z0-9_-]+)\.fanbox\.cc/posts/(\d+))",
+        re.IGNORECASE
+    )
+    FANTIA_NATIVE_PATTERN = re.compile(
+        r"https?://(?:www\.)?fantia\.jp/posts/(\d+)",
+        re.IGNORECASE
+    )
+    BOOSTY_NATIVE_PATTERN = re.compile(
+        r"https?://(?:www\.)?boosty\.to/([a-zA-Z0-9_-]+)/posts/([a-zA-Z0-9_-]+)",
+        re.IGNORECASE
+    )
+    SUBSCRIBESTAR_NATIVE_PATTERN = re.compile(
+        r"https?://(?:www\.)?subscribestar\.(?:adult|com)/posts/(\d+)",
+        re.IGNORECASE
+    )
+    DLSITE_NATIVE_PATTERN = re.compile(
+        r"https?://(?:www\.)?dlsite\.com/[^/]+/work/=/product_id/([A-Z0-9]+)",
         re.IGNORECASE
     )
 
@@ -128,12 +164,40 @@ class KemonoURLParser:
 
         m_bunkr = cls.BUNKR_PATTERN.search(url)
         if m_bunkr:
-            album_id = m_bunkr.group(1)
+            item_id = m_bunkr.group(1)
+            netloc = urlparse(url).netloc.lower() or "bunkr.cr"
             return URLParseResult(
-                domain="bunkr.is",
+                domain=netloc,
                 service="bunkr",
                 user_id="bunkr_user",
-                post_id=album_id,
+                post_id=item_id,
+                raw_url=url,
+                is_valid=True,
+                provider="bunkr"
+            )
+
+        m_balbums = cls.BALBUMS_PATTERN.search(url)
+        if m_balbums:
+            item_id = m_balbums.group(1) or "album"
+            return URLParseResult(
+                domain="balbums.st",
+                service="bunkr",
+                user_id="bunkr_user",
+                post_id=item_id,
+                raw_url=url,
+                is_valid=True,
+                provider="bunkr"
+            )
+
+        m_cdn = cls.BUNKR_CDN_PATTERN.search(url)
+        if m_cdn:
+            item_id = m_cdn.group(1)
+            netloc = urlparse(url).netloc.lower() or "cdn.cr"
+            return URLParseResult(
+                domain=netloc,
+                service="bunkr",
+                user_id="bunkr_user",
+                post_id=item_id,
                 raw_url=url,
                 is_valid=True,
                 provider="bunkr"
@@ -205,9 +269,84 @@ class KemonoURLParser:
                 provider="kemono"
             )
 
+        # Check native platforms (Patreon, Fanbox, Fantia, Boosty, Subscribestar, DLsite)
+        m_pat = cls.PATREON_NATIVE_PATTERN.search(url)
+        if m_pat:
+            return URLParseResult(
+                domain="pawchive.pw",
+                service="patreon",
+                user_id="",
+                post_id=m_pat.group(1),
+                raw_url=url,
+                is_valid=True,
+                provider="native"
+            )
+
+        m_fb = cls.FANBOX_NATIVE_PATTERN.search(url)
+        if m_fb:
+            slug = m_fb.group(1) or m_fb.group(3) or ""
+            pid = m_fb.group(2) or m_fb.group(4) or ""
+            return URLParseResult(
+                domain="pawchive.pw",
+                service="fanbox",
+                user_id=slug,
+                post_id=pid,
+                raw_url=url,
+                is_valid=True,
+                provider="native"
+            )
+
+        m_fan = cls.FANTIA_NATIVE_PATTERN.search(url)
+        if m_fan:
+            return URLParseResult(
+                domain="pawchive.pw",
+                service="fantia",
+                user_id="",
+                post_id=m_fan.group(1),
+                raw_url=url,
+                is_valid=True,
+                provider="native"
+            )
+
+        m_bst = cls.BOOSTY_NATIVE_PATTERN.search(url)
+        if m_bst:
+            return URLParseResult(
+                domain="pawchive.pw",
+                service="boosty",
+                user_id=m_bst.group(1),
+                post_id=m_bst.group(2),
+                raw_url=url,
+                is_valid=True,
+                provider="native"
+            )
+
+        m_sub = cls.SUBSCRIBESTAR_NATIVE_PATTERN.search(url)
+        if m_sub:
+            return URLParseResult(
+                domain="pawchive.pw",
+                service="subscribestar",
+                user_id="",
+                post_id=m_sub.group(1),
+                raw_url=url,
+                is_valid=True,
+                provider="native"
+            )
+
+        m_dl = cls.DLSITE_NATIVE_PATTERN.search(url)
+        if m_dl:
+            return URLParseResult(
+                domain="pawchive.pw",
+                service="dlsite",
+                user_id="",
+                post_id=m_dl.group(1),
+                raw_url=url,
+                is_valid=True,
+                provider="native"
+            )
+
         return URLParseResult(
             "", "", "",
             raw_url=url,
             is_valid=False,
-            error_msg="URL does not match supported formats (Kemono, Pawchive, Coomer, Cum.st, Bunkr, Erome, nHentai)."
+            error_msg="URL does not match supported formats (Kemono, Pawchive, Coomer, Cum.st, Bunkr, Erome, nHentai, Patreon, Fanbox)."
         )
