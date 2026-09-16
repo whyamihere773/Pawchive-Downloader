@@ -1279,7 +1279,41 @@ Item {
                                                                             clipHelper.copy()
                                                                             linkVaultRoot.showToast(linkVaultRoot.tr("toast_pw_copied", "Password copied: ") + modelData)
                                                                         }
+                                                                        onDoubleClicked: {
+                                                                            editPwModal.openForLink(linkItem.id, linkItem.url, (linkItem.passwords || []).join(", "))
+                                                                        }
                                                                     }
+                                                                }
+                                                            }
+                                                        }
+
+                                                        // Edit / Add Password Button
+                                                        Rectangle {
+                                                            height: 22
+                                                            width: 22
+                                                            radius: 4
+                                                            color: editPwMouse.containsMouse ? "#334155" : "#141720"
+                                                            border.color: editPwMouse.containsMouse ? "#38BDF8" : "#283042"
+                                                            border.width: 1
+                                                            scale: editPwMouse.pressed ? 0.88 : (editPwMouse.containsMouse ? 1.10 : 1.0)
+                                                            Behavior on scale { SpringAnimation { spring: 5.0; damping: 0.35; mass: 0.7 } }
+
+                                                            Text {
+                                                                anchors.centerIn: parent
+                                                                text: "✏️"
+                                                                font.pixelSize: 10
+                                                            }
+
+                                                            MouseArea {
+                                                                id: editPwMouse
+                                                                anchors.fill: parent
+                                                                hoverEnabled: true
+                                                                cursorShape: Qt.PointingHandCursor
+                                                                ToolTip.visible: containsMouse
+                                                                ToolTip.delay: 200
+                                                                ToolTip.text: (linkItem.passwords && linkItem.passwords.length > 0) ? linkVaultRoot.tr("tip_edit_pw", "Edit passwords for this link") : linkVaultRoot.tr("tip_add_pw", "Add password for this link")
+                                                                onClicked: {
+                                                                    editPwModal.openForLink(linkItem.id, linkItem.url, (linkItem.passwords || []).join(", "))
                                                                 }
                                                             }
                                                         }
@@ -1779,6 +1813,191 @@ Item {
                                 }
                             }
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Edit Password Modal ───────────────────────────────────────────────────
+    Popup {
+        id: editPwModal
+        x: Math.round((linkVaultRoot.width - width) / 2)
+        y: Math.round((linkVaultRoot.height - height) / 2)
+        width: Math.min(480, linkVaultRoot.width - 32)
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        dim: true
+
+        property string currentLinkId: ""
+        property string currentLinkUrl: ""
+
+        function openForLink(linkId, linkUrl, initialPasswords) {
+            currentLinkId = linkId
+            currentLinkUrl = linkUrl
+            pwInputField.text = initialPasswords || ""
+            open()
+            pwInputField.forceActiveFocus()
+        }
+
+        background: Rectangle {
+            color: "#0F1219"
+            border.color: "#38BDF8"
+            border.width: 1
+            radius: 12
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 12
+            anchors.margins: 6
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+                Text { text: "🔑"; font.pixelSize: 15 }
+                Text {
+                    text: linkVaultRoot.tr("modal_edit_pw_title", "Edit Link Password")
+                    font.family: "Segoe UI, sans-serif"
+                    font.pixelSize: 14
+                    font.weight: Font.Bold
+                    color: "#F1F5F9"
+                    Layout.fillWidth: true
+                }
+            }
+
+            Text {
+                text: editPwModal.currentLinkUrl
+                font.family: "Segoe UI, sans-serif"
+                font.pixelSize: 11
+                color: "#64748B"
+                elide: Text.ElideMiddle
+                Layout.fillWidth: true
+            }
+
+            Text {
+                text: linkVaultRoot.tr("modal_edit_pw_desc", "Enter the archive password(s) for this link. If multiple passwords apply, separate them with commas:")
+                font.family: "Segoe UI, sans-serif"
+                font.pixelSize: 11
+                color: "#94A3B8"
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
+            }
+
+            Rectangle {
+                Layout.fillWidth: true
+                height: 36
+                radius: 6
+                color: "#181B24"
+                border.color: pwInputField.activeFocus ? "#38BDF8" : "#283042"
+                border.width: 1
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 10
+                    anchors.rightMargin: 10
+                    spacing: 8
+
+                    TextInput {
+                        id: pwInputField
+                        Layout.fillWidth: true
+                        font.family: "Segoe UI, sans-serif"
+                        font.pixelSize: 12
+                        color: "#F8FAFC"
+                        selectByMouse: true
+                        clip: true
+                        onAccepted: savePwBtn.clicked()
+
+                        Text {
+                            text: linkVaultRoot.tr("placeholder_edit_pw", "e.g., lamb2024, pass123")
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 12
+                            color: "#475569"
+                            visible: !pwInputField.text && !pwInputField.activeFocus
+                        }
+                    }
+
+                    Text {
+                        text: "✕"
+                        font.pixelSize: 12
+                        color: "#64748B"
+                        visible: pwInputField.text.length > 0
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: pwInputField.text = ""
+                        }
+                    }
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.topMargin: 6
+                spacing: 8
+
+                Item { Layout.fillWidth: true }
+
+                Rectangle {
+                    implicitWidth: 80
+                    height: 32
+                    radius: 6
+                    color: cancelPwMouse.containsMouse ? "#334155" : "#1E293B"
+                    border.color: "#475569"
+                    border.width: 1
+
+                    Text {
+                        anchors.centerIn: parent
+                        text: linkVaultRoot.tr("btn_cancel", "Cancel")
+                        font.family: "Segoe UI, sans-serif"
+                        font.pixelSize: 11
+                        font.weight: 600
+                        color: "#CBD5E1"
+                    }
+
+                    MouseArea {
+                        id: cancelPwMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: editPwModal.close()
+                    }
+                }
+
+                Rectangle {
+                    id: savePwBtn
+                    implicitWidth: 90
+                    height: 32
+                    radius: 6
+                    color: savePwMouse.containsMouse ? "#0284C7" : "#0EA5E9"
+                    border.color: "#38BDF8"
+                    border.width: 1
+
+                    signal clicked()
+                    onClicked: {
+                        if (linkVaultRoot.bridge && editPwModal.currentLinkId) {
+                            var rawInput = pwInputField.text.trim()
+                            linkVaultRoot.bridge.updateVaultLinkPasswords(editPwModal.currentLinkId, rawInput)
+                            editPwModal.close()
+                            linkVaultRoot.showToast(linkVaultRoot.tr("toast_pw_saved", "Password updated for link."))
+                        }
+                    }
+
+                    Text {
+                        anchors.centerIn: parent
+                        text: linkVaultRoot.tr("btn_save_pw", "Save")
+                        font.family: "Segoe UI, sans-serif"
+                        font.pixelSize: 11
+                        font.weight: Font.Bold
+                        color: "#FFFFFF"
+                    }
+
+                    MouseArea {
+                        id: savePwMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: savePwBtn.clicked()
                     }
                 }
             }

@@ -28,6 +28,7 @@ from core.logger import logger
 from core.filter_engine import FilterEngine, FilterOptions, MediaTypes
 from core.known_manager import KnownManager
 from core.session_manager import SessionManager
+from core.archive_manager import ArchiveManager
 from services.multipart_downloader import download_multipart_file
 from services.link_extractor import LinkExtractor
 from services.ytdlp_manager import YtDlpManager
@@ -133,11 +134,13 @@ class KemonoDownloader:
         self,
         known_manager: KnownManager,
         session_manager: SessionManager,
-        max_workers: int = 4
+        max_workers: int = 4,
+        archive_manager: Optional[ArchiveManager] = None
     ):
         self.known_manager = known_manager
         self.session_manager = session_manager
         self.max_workers = max_workers
+        self.archive_manager = archive_manager
         self.ytdlp_manager = YtDlpManager()
 
         self.tasks: List[DownloadTask] = []
@@ -188,7 +191,9 @@ class KemonoDownloader:
         self._cancel_event.set()
         self._pause_event.clear()  # Ensure paused workers wake up to handle cancel
         logger.warning("Download cancellation requested.", category="downloader")
-        self._save_recovery_checkpoint()
+        rec = getattr(self.session_manager, "recovery_manager", None)
+        if rec:
+            rec.discard_recovery()
         if self.on_pause_changed:
             try:
                 self.on_pause_changed(False)
@@ -258,29 +263,12 @@ class KemonoDownloader:
     @staticmethod
     def extract_passwords(text: str) -> list:
         """
-        Smartly extracts password candidates from post text.
-        Recognises common English and CJK password labels:
-        password / pass / pw / pwd / psswd / pswd / pd
-        and the Japanese/Chinese equivalents: パスワード, 解压密码, 密码
-        Returns a deduplicated list of candidate password strings.
+        Smartly extracts password candidates from post text using CJK-aware boundary heuristics.
+        Delegates to LinkExtractor.extract_passwords for unified multilingual password extraction.
         """
         if not text:
             return []
-        patterns = [
-            # English labels: password: VALUE  /  pw: VALUE  etc.
-            r'(?:password|passwords|psswd|pswd|passwd|pass|pw|pwd|pd)\s*[:=\-–—]\s*([^\s<>"\n,;|]{3,64})',
-            # CJK labels
-            r'(?:パスワード|解压密码|密码)\s*[:：=]?\s*([^\s<>"\n,;|]{3,64})',
-        ]
-        found = []
-        seen = set()
-        for pat in patterns:
-            for m in re.findall(pat, text, re.IGNORECASE):
-                val = m.strip().strip('"\'')
-                if val and val not in seen:
-                    seen.add(val)
-                    found.append(val)
-        return found
+        return LinkExtractor.extract_passwords(text)
 
     @staticmethod
     def extract_norm_rel_key(f_dict: Dict[str, Any]) -> str:
@@ -482,15 +470,21 @@ class KemonoDownloader:
 
             post_folder = os.path.join(*folder_parts)
 
+            # Smart password extraction (search full caption + comments)
+            caption_text = post.get("content") or post.get("captionHtml") or post.get("caption") or ""
+            caption_clean = re.sub(r'<br\s*/?>', '\n', caption_text, flags=re.IGNORECASE)
+            caption_clean = re.sub(r'<[^>]+>', '', caption_clean).strip()
+            _pw_search_text = caption_clean
+            if post.get("comments_text"):
+                _pw_search_text += "\n" + post.get("comments_text")
+            passwords = self.extract_passwords(_pw_search_text)
+
             # Save post info / description archiver
             if options.save_post_metadata:
                 try:
                     os.makedirs(post_folder, exist_ok=True)
                     info_path = os.path.join(post_folder, "post_info.txt")
                     if not os.path.exists(info_path):
-                        caption_text = post.get("content") or post.get("captionHtml") or post.get("caption") or ""
-                        caption_clean = re.sub(r'<br\s*/?>', '\n', caption_text, flags=re.IGNORECASE)
-                        caption_clean = re.sub(r'<[^>]+>', '', caption_clean).strip()
                         tags_list = FilterEngine.normalize_tags(post.get("tags"))
                         tags_str = ", ".join(tags_list)
 
@@ -535,11 +529,7 @@ class KemonoDownloader:
                         # Extract embedded media (yt-dlp targets)
                         embed_urls = LinkExtractor.extract_embed_urls(post)
 
-                        # Smart password extraction (search full caption + comments)
-                        _pw_search_text = caption_clean
-                        if post.get("comments_text"):
-                            _pw_search_text += "\n" + post.get("comments_text")
-                        passwords = self.extract_passwords(_pw_search_text)
+
 
                         info_content = f"Title: {post_title}\n"
                         info_content += f"Post ID: {post_id}\n"
@@ -929,6 +919,14 @@ class KemonoDownloader:
                 prefixed_raw = os.path.join(post_folder, f"{seq_idx:03d}_{raw_name}")
                 prefixed_webp = os.path.splitext(prefixed_raw)[0] + ".webp"
 
+                expected_sha = str(fobj.get("sha256") or fobj.get("hash") or "")
+
+                # Skip if already recorded in download archive database (gallery-dl style)
+                if self.archive_manager and self.archive_manager.is_enabled:
+                    if self.archive_manager.is_archived(service=service, post_id=post_id, file_id=file_id, file_hash=expected_sha):
+                        logger.info(f"📦 Skipping archived file: '{os.path.basename(target_path)}' (present in download archive)", category="file")
+                        continue
+
                 # Skip if already exists on disk at target_path, webp path, or raw name path
                 if not options.keep_duplicates:
                     if (os.path.exists(target_path) and os.path.getsize(target_path) > 0) or \
@@ -939,9 +937,6 @@ class KemonoDownloader:
                        (os.path.exists(prefixed_webp) and os.path.getsize(prefixed_webp) > 0):
                         logger.info(f"⏳ Skipping existing file: '{os.path.basename(target_path)}' (already present on disk)", category="file")
                         continue
-
-
-                expected_sha = str(fobj.get("sha256") or fobj.get("hash") or "")
 
                 task = DownloadTask(
                     url=file_url,
@@ -959,6 +954,16 @@ class KemonoDownloader:
                     user_id=user_id or post_user
                 )
                 task.fallback_urls = candidate_urls[1:]
+                if passwords:
+                    try:
+                        from core.archive_password_manager import archive_password_manager
+                        archive_password_manager.add_passwords(passwords)
+                        _, _ext = os.path.splitext(target_path.lower())
+                        from services.bulk_decompressor import ARCHIVE_EXTENSIONS
+                        if _ext in ARCHIVE_EXTENSIONS:
+                            archive_password_manager.record_archive_password(target_path, passwords[0])
+                    except Exception as _pwe:
+                        logger.debug(f"Could not pair archive password for {target_path}: {_pwe}", category="downloader")
                 new_tasks.append(task)
 
             # ── 3. Scan Embedded Media Players (yt-dlp: Vimeo, YouTube, Streamable, RedGifs, etc.)
@@ -1342,6 +1347,15 @@ class KemonoDownloader:
                             consecutive_successes += 1
                             self._stable_clean_count += 1
                             self.session_manager.record_downloaded_file(task.file_id)
+                            if self.archive_manager and self.archive_manager.is_enabled:
+                                self.archive_manager.record_file(
+                                    service=task.service,
+                                    creator_id=task.user_id,
+                                    post_id=task.post_id,
+                                    file_id=task.file_id,
+                                    file_hash=task.expected_sha256,
+                                    filename=task.filename
+                                )
                             if self.on_task_status_changed:
                                 self.on_task_status_changed(task)
 
@@ -1522,7 +1536,9 @@ class KemonoDownloader:
         failed_count = sum(1 for t in self.tasks if t.status == "failed")
 
         if self._cancel_event.is_set():
-            self._save_recovery_checkpoint(options)
+            rec = getattr(self.session_manager, "recovery_manager", None)
+            if rec:
+                rec.discard_recovery()
             logger.warning(f"Download cancelled. Completed: {completed_count}, Failed/Cancelled: {failed_count}", category="downloader")
             if self.on_download_finished:
                 self.on_download_finished(False, "Download cancelled by user.")
@@ -1554,6 +1570,17 @@ class KemonoDownloader:
         if self.on_task_status_changed:
             self.on_task_status_changed(task)
 
+        # Check if file is already recorded in download archive database
+        if self.archive_manager and self.archive_manager.is_enabled:
+            if self.archive_manager.is_archived(service=task.service, post_id=task.post_id, file_id=task.file_id, file_hash=task.expected_sha256):
+                task.status = "completed"
+                task.progress_pct = 100
+                task.eta_str = "Done"
+                if self.on_task_status_changed:
+                    self.on_task_status_changed(task)
+                logger.info(f"📦 Skipping archived file: '{task.filename}' (present in download archive)", category="file")
+                return True, "Already archived"
+
         # Check if file already exists completely on disk (including webp converted version)
         webp_path = os.path.splitext(task.target_path)[0] + ".webp"
         found_existing_path = None
@@ -1569,6 +1596,15 @@ class KemonoDownloader:
             task.file_size = task.downloaded_bytes
             task.progress_pct = 100
             task.eta_str = "Done"
+            if self.archive_manager and self.archive_manager.is_enabled:
+                self.archive_manager.record_file(
+                    service=task.service,
+                    creator_id=task.user_id,
+                    post_id=task.post_id,
+                    file_id=task.file_id,
+                    file_hash=task.expected_sha256,
+                    filename=task.filename
+                )
             if self.on_task_status_changed:
                 self.on_task_status_changed(task)
             logger.info(f"⏳ Skipping existing file: '{task.filename}' (already present on disk)", category="file")

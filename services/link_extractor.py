@@ -383,11 +383,104 @@ class LinkExtractor:
 
         return rescued
 
+    @staticmethod
+    def _clean_password_candidate(raw_val: str, lang: str = "") -> str:
+        """
+        Smartly refines a raw password string with CJK-aware boundary heuristics:
+        1. Isolates quote/bracket pairs: 「...」, 『...』, 【...】, （...）, (...), [...]
+        2. Splits at CJK full-width punctuation delimiters: ，、。：；！？※・★☆◆◇▲△▼▽■□●○～~—―
+        3. ASCII-to-CJK Transition: If password starts with ASCII (letters, digits, symbols),
+           cuts off as soon as text transitions back to CJK characters (Hiragana, Katakana, Kanji, Hangul).
+        4. Trims leading transition particles (は, 为, 是, :) and trailing conversational suffixes
+           (です, になります, となります, を入力, 请勿, 祝大家, 解压后, etc.).
+        5. Trims trailing English and CJK punctuation.
+        """
+        if not raw_val:
+            return ""
+
+        val = raw_val.strip()
+
+        # 1. Strip leading CJK conversational prefixes / colons / separators
+        # e.g., "为：20240901", "：lamb2024", "はfanbox_lamb", "为 lamb2024"
+        val = re.sub(r'^(?:は|为|是|：|:|:=|–|—|=|\-|\s)+', '', val).strip()
+
+        # 2. Quote / Bracket isolation if enclosed
+        bracket_pairs = [
+            ("「", "」"), ("『", "』"), ("【", "】"), ("（", "）"),
+            ("(", ")"), ("[", "]"), ("{", "}"), ("<", ">"),
+            ("“", "”"), ("‘", "’"), ('"', '"'), ("'", "'")
+        ]
+        for open_b, close_b in bracket_pairs:
+            if val.startswith(open_b):
+                close_pos = val.find(close_b, len(open_b))
+                if close_pos != -1:
+                    val = val[len(open_b):close_pos].strip()
+                    break
+
+        # 3. Split on CJK full-width & sentence delimiters
+        cjk_delimiters = r'[，、。：；！？※・★☆◆◇▲△▼▽■□●○～~—―\t\r\n]'
+        split_match = re.search(cjk_delimiters, val)
+        if split_match:
+            val = val[:split_match.start()].strip()
+
+        # 4. The ASCII-to-CJK Transition Cutoff (crucial for Japanese/Chinese posts)
+        # If the password begins with ASCII/alphanumeric characters, cut off immediately
+        # when transitioning back into CJK script (Hiragana, Katakana, Kanji, CJK symbols, Hangul).
+        ascii_lead_match = re.match(r'^([A-Za-z0-9_!@#$%^&*+=.\-]+)', val)
+        if ascii_lead_match:
+            ascii_part = ascii_lead_match.group(1)
+            rest = val[len(ascii_part):]
+            if rest:
+                first_char = rest[0]
+                if (
+                    '\u3040' <= first_char <= '\u309f' or  # Hiragana
+                    '\u30a0' <= first_char <= '\u30ff' or  # Katakana
+                    '\u4e00' <= first_char <= '\u9fff' or  # CJK Unified Ideographs (Kanji/Hanzi)
+                    '\uac00' <= first_char <= '\ud7af' or  # Hangul
+                    '\uff00' <= first_char <= '\uffef' or  # Fullwidth forms
+                    first_char in ' ([\'"-–—:：'
+                ):
+                    val = ascii_part
+
+        # 5. Trailing CJK sentence suffixes/copulas
+        trailing_cjk_suffixes = [
+            r'(?:です|になります|となります|をご入力ください|を入力|です。?)$',
+            r'(?:请勿|祝大家|解压后|提取码|注意).*$',
+        ]
+        for s_pat in trailing_cjk_suffixes:
+            val = re.sub(s_pat, '', val).strip()
+
+        # 6. Clean trailing punctuation and closing brackets
+        while val and val[-1] in '.,;:!?)>]}\'"“”‘’、。，；：！？※】」』）〕》〉':
+            val = val[:-1].strip()
+
+        # 7. Discard if invalid / generic noise
+        if len(val) < 2 or len(val) > 64:
+            return ""
+        if val.lower().startswith("http") or val.lower() in {"null", "none", "password", "undefined", "n/a"}:
+            return ""
+
+        return val
+
+    @classmethod
+    def extract_passwords(cls, text: str) -> List[str]:
+        """Convenience method returning a deduplicated list of clean password strings."""
+        candidates = cls.extract_passwords_with_positions(text)
+        res = []
+        seen = set()
+        for c in candidates:
+            pw = c.get("password")
+            if pw and pw not in seen:
+                seen.add(pw)
+                res.append(pw)
+        return res
+
     @classmethod
     def extract_passwords_with_positions(cls, text: str) -> List[Dict[str, Any]]:
         """
         Finds passwords in text along with character start/end positions and matching labels.
         Supports multilingual labels: English, Japanese, Chinese, Russian, Korean, French, German.
+        Features smart CJK boundary heuristics to avoid capturing entire sentences.
         """
         if not text:
             return []
@@ -403,12 +496,12 @@ class LinkExtractor:
             (r'(?i)(?:password|pwd|pw)\s+is\s+([^\s<>"\n,;|]{2,64})', "english_phrase"),
             # English brackets: [PW: VALUE] or (password=VALUE)
             (r'(?i)[\[(](?:password|pass|pw|pwd|pd)\s*[:=]?\s*([^\])\s]+)[\])]', "bracketed"),
-            # Japanese: パスワード / パス / 解凍パス / 解凍PW
-            (r'(?:パスワード|パス|解凍パス|解凍PW|解凍pass)\s*[:：=–—]?\s*([^\s<>"\n,;|]{2,64})', "japanese"),
-            # Japanese brackets: 【パス: VALUE】
-            (r'【(?:パスワード|パス|解凍パス|PW|解压密码|密码)\s*[:：=]?\s*([^】\s]+)】', "cjk_bracket"),
-            # Simplified / Traditional Chinese: 解压密码 / 密码 / 解壓密碼 / 提取码
-            (r'(?:解压密码|解壓密碼|密码|密碼|提取码|提取碼)\s*[:：=–—]?\s*([^\s<>"\n,;|]{2,64})', "chinese"),
+            # Japanese: パスワード / パス / 解凍パス / 解凍PW (including は/です conversational forms)
+            (r'(?:パスワード|パス|解凍パス|解凍PW|解凍pass)\s*(?:は|：|:|:=|–|—|=|\-)*\s*([^\s<>"\n,;|]{2,64})', "japanese"),
+            # Japanese brackets: 【パス: VALUE】 / 「パス: VALUE」
+            (r'[【「『](?:パスワード|パス|解凍パス|PW|解压密码|密码)\s*[:：=]?\s*([^】」』\s]+)[】」』]', "cjk_bracket"),
+            # Simplified / Traditional Chinese: 解压密码 / 解压码 / 密码 / 密碼
+            (r'(?:解压密码|解壓密碼|解压码|解壓碼|密码|密碼)\s*(?:为|是|：|:|:=|–|—|=|\-)*\s*([^\s<>"\n,;|]{2,64})', "chinese"),
             # Russian: пароль / пасс
             (r'(?i)(?:пароль|пасс)\s*[:=\-–—]?\s*([^\s<>"\n,;|]{2,64})', "russian"),
             # Korean: 비밀번호 / 비번
@@ -422,11 +515,9 @@ class LinkExtractor:
         seen_values = set()
         for pat, lang in patterns:
             for m in re.finditer(pat, unescaped):
-                val = m.group(1).strip().strip('"\'“”‘’')
-                # Clean trailing punctuation
-                while val and val[-1] in ".,;:!?)>]}":
-                    val = val[:-1]
-                if len(val) >= 2 and val not in seen_values and not val.lower().startswith("http"):
+                raw = m.group(1)
+                val = cls._clean_password_candidate(raw, lang=lang)
+                if val and val not in seen_values:
                     seen_values.add(val)
                     candidates.append({
                         "password": val,

@@ -186,61 +186,115 @@ class KemonoApiClient:
 
     # ── API Methods ───────────────────────────────────────────────────────────
 
+    def _extract_creator_from_html(self, html_text: str, user_id: str) -> Optional[str]:
+        """Extract creator display name from Kemono/Pawchive/Coomer HTML page metadata."""
+        if not html_text:
+            return None
+        import re
+        uid_str = str(user_id).strip()
+
+        # 1. itemprop="name"
+        m = re.search(r'itemprop=["\']name["\'][^>]*>(.*?)<', html_text, re.I)
+        if m:
+            name = clean_text(m.group(1))
+            if name and name != uid_str:
+                return name
+
+        # 2. user-header__name
+        m = re.search(r'class=["\'][^"\']*user-header__name[^"\']*["\'][^>]*>(.*?)<', html_text, re.I)
+        if m:
+            name = clean_text(m.group(1))
+            if name and name != uid_str:
+                return name
+
+        # 3. title regex: Posts of (.*?) from ...
+        m = re.search(r'<title>\s*Posts of (.*?) from', html_text, re.I)
+        if m:
+            name = clean_text(m.group(1))
+            if name and name != uid_str:
+                return name
+
+        # 4. title regex: (.*?)'s posts | ...
+        m = re.search(r'<title>\s*(.*?)\'s posts', html_text, re.I)
+        if m:
+            name = clean_text(m.group(1))
+            if name and name != uid_str:
+                return name
+
+        # 5. og:title
+        m = re.search(r'<meta\s+property=["\']og:title["\']\s+content=["\'](.*?)["\']', html_text, re.I)
+        if m:
+            name = clean_text(m.group(1))
+            if name and name != uid_str and not name.lower().startswith("posts of"):
+                return name
+
+        return None
+
+    def resolve_creator_name(self, parsed: URLParseResult) -> Optional[str]:
+        """Convenience helper to resolve and return just the clean creator display name."""
+        if not parsed or not parsed.is_valid:
+            return None
+        profile = self.fetch_creator_profile(parsed)
+        if profile and isinstance(profile, dict):
+            name = profile.get("displayName") or profile.get("name") or profile.get("username")
+            if name and str(name).strip() != str(parsed.user_id).strip():
+                return clean_text(str(name))
+        return None
+
     def fetch_creator_profile(self, parsed: URLParseResult) -> Dict[str, Any]:
-        """Fetch creator profile, trying profile endpoints, cross-domain mirrors, and first post fallback."""
+        """Fetch creator profile, trying profile endpoints, cross-domain mirrors, HTML page scraping, and post fallback."""
         logger.info(f"Fetching creator profile: {parsed.service}/{parsed.user_id}", category="api")
+        uid_str = str(parsed.user_id).strip()
 
-        candidate_urls = [
-            f"https://{parsed.domain}/api/v1/{parsed.service}/user/{parsed.user_id}/profile",
-            f"https://{parsed.domain}/api/v1/{parsed.service}/user/{parsed.user_id}",
-        ]
-
-        # Cross-mirror fallbacks for Kemono / Pawchive / Coomer network
+        # Phase 1: Try dedicated JSON profile endpoints on parsed domain + mirrors
+        profile_domains = [parsed.domain]
         for alt_domain in ("pawchive.pw", "kemono.su", "coomer.su", "cum.st"):
-            if alt_domain != parsed.domain:
-                candidate_urls.append(f"https://{alt_domain}/api/v1/{parsed.service}/user/{parsed.user_id}/profile")
-                candidate_urls.append(f"https://{alt_domain}/api/v1/{parsed.service}/user/{parsed.user_id}")
+            if alt_domain not in profile_domains:
+                profile_domains.append(alt_domain)
 
-        for url in candidate_urls:
+        for domain in profile_domains:
+            url = f"https://{domain}/api/v1/{parsed.service}/user/{parsed.user_id}/profile"
             resp = self._get_with_log(url, timeout=10)
-            if resp is None:
-                continue
-            if resp.status_code == 200:
+            if resp and resp.status_code == 200:
                 try:
                     data = resp.json()
                     if isinstance(data, dict):
-                        raw_name = data.get("displayName") or data.get("name") or data.get("user") or data.get("username")
+                        raw_name = data.get("displayName") or data.get("name") or data.get("username")
                         name = clean_text(raw_name) if raw_name else None
-                        if name and name != parsed.user_id:
+                        if name and name != uid_str:
                             data["name"] = name
                             logger.success(f"Creator: {name!r}  service={parsed.service}  id={parsed.user_id}", category="api")
                             return data
-                    elif isinstance(data, list) and data:
-                        first_item = data[0]
-                        if isinstance(first_item, dict):
-                            raw_name = first_item.get("user") or first_item.get("username") or first_item.get("name")
-                            name = clean_text(raw_name) if raw_name else None
-                            if name:
-                                logger.success(f"Creator: {name!r}  service={parsed.service}  id={parsed.user_id}", category="api")
-                                return {"id": parsed.user_id, "name": name, "service": parsed.service}
                 except Exception as e:
-                    logger.debug(f"Failed to parse profile JSON: {e}", category="api")
+                    logger.debug(f"Failed to parse profile JSON from {url}: {e}", category="api")
 
-        # Fallback: Query first post to extract creator name from post author metadata
-        try:
-            posts_url = f"https://{parsed.domain}/api/v1/{parsed.service}/user/{parsed.user_id}?o=0"
+        # Phase 2: HTML Page metadata scraping (extremely resilient against API rate limits & 429/403)
+        for domain in profile_domains:
+            html_url = f"https://{domain}/{parsed.service}/user/{parsed.user_id}"
+            resp = self._get_with_log(html_url, timeout=10)
+            if resp and resp.status_code == 200:
+                name = self._extract_creator_from_html(resp.text, uid_str)
+                if name:
+                    logger.success(f"Creator: {name!r} (from HTML page {domain})  service={parsed.service}  id={parsed.user_id}", category="api")
+                    return {"id": parsed.user_id, "name": name, "service": parsed.service}
+
+        # Phase 3: Try posts endpoints ONLY if they contain a distinct creator name (NEVER accept raw_name == user_id)
+        for domain in profile_domains:
+            posts_url = f"https://{domain}/api/v1/{parsed.service}/user/{parsed.user_id}?o=0"
             resp = self._get_with_log(posts_url, timeout=10)
             if resp and resp.status_code == 200:
-                posts_data = resp.json()
-                items = posts_data.get("posts", []) if isinstance(posts_data, dict) else (posts_data if isinstance(posts_data, list) else [])
-                if items and isinstance(items[0], dict):
-                    raw_name = items[0].get("user") or items[0].get("username")
-                    name = clean_text(raw_name) if raw_name else None
-                    if name:
-                        logger.success(f"Creator: {name!r} (from post metadata)  service={parsed.service}", category="api")
-                        return {"id": parsed.user_id, "name": name, "service": parsed.service}
-        except Exception:
-            pass
+                try:
+                    posts_data = resp.json()
+                    items = posts_data.get("posts", []) if isinstance(posts_data, dict) else (posts_data if isinstance(posts_data, list) else [])
+                    if items and isinstance(items[0], dict):
+                        # ONLY check username or name — NEVER accept user field which is always the user_id
+                        raw_name = items[0].get("username") or items[0].get("name")
+                        name = clean_text(raw_name) if raw_name else None
+                        if name and name != uid_str:
+                            logger.success(f"Creator: {name!r} (from post metadata)  service={parsed.service}", category="api")
+                            return {"id": parsed.user_id, "name": name, "service": parsed.service}
+                except Exception:
+                    pass
 
         logger.warning(f"Could not retrieve profile for {parsed.user_id}; using ID as name.", category="api")
         return {"id": parsed.user_id, "name": parsed.user_id, "service": parsed.service}

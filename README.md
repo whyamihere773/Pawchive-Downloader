@@ -57,11 +57,11 @@
 > Pawchive Downloader is designed to take the heavy lifting off your hands. You point it at what you want — and it handles the rest: automated schedules, background link harvesting, multi-drive overflow, self-healing recovery, and intelligent file organisation. You stay in control; the app does the work.
 
 - ⏰ **Task Scheduler & Automation Hub:** Create recurring automation schedules to poll your Watchlist for new creator posts, schedule off-peak **Night Owl** download windows, prevent Windows sleep during active jobs, and automatically sweep-retry any rate-limited or dropped files.
-- 🗄️ **Permanent Link Vault & Harvester:** Harvests external cloud links (Mega, Google Drive, Pixeldrain, etc.) and archive passwords from posts into a permanent offline vault. Run link health checks, prune dead links, sync passwords to the Decompressor with one click, or harvest entire creator histories without downloading files.
+- 🗄️ **Permanent Link Vault & Harvester:** Harvests external cloud links (Mega, Google Drive, Pixeldrain, etc.) and archive passwords from posts *(WIP)* into a permanent offline vault. Run link health checks, prune dead links, sync passwords to the Decompressor with one click, or harvest entire creator histories without downloading files.
 - 💾 **Multi-Drive Storage Pools (Auto-Spanning Overflow):** Never suffer "Disk Full" crashes again. Automatically spills downloads to secondary drives or folders when your primary drive reaches its safety margin, preserving creator and post folder hierarchies seamlessly.
 - 📌 **Artist Watchlist:** Track followed creators and automatically check for new posts. Features one-click "Download All Updates", an interactive post review drawer with per-post and bulk ignoring, custom download paths per artist, saved per-artist filter settings, and an editable last-downloaded cutoff date with smart auto-normalization.
 - 🧩 **Franchise Recognition Engine:** Automatically structures downloaded files into clean creator/franchise folders using an integrated franchise database and fully customisable `Known.txt` rules — no manual sorting needed.
-- 📦 **Universal Bulk Decompressor:** Automated scan across downloaded artists, multi-threaded parallel extraction for `.zip`, `.rar`, `.7z`, multi-part archives, and auto-populated passwords with disk safety checks.
+- 📦 **Universal Bulk Decompressor:** Automated scan across downloaded artists, multi-threaded parallel extraction for `.zip`, `.rar`, `.7z`, multi-part archives, disk safety pre-flight checks, creator-organized Password Bank with collapsible sections and emerald active-target highlights, alphabetical artist selector with keyboard jumping, automatic password prompting with wrong-password feedback, password bank auto-sync, and a re-extract confirmation flow for already-extracted archives with amber colour-coding.
 - 🛡️ **Zero-Loss Session Recovery:** If the app is closed, crashed, or cancelled mid-download, atomic checkpoints allow instant one-click resumption right where you left off.
 - 🔓 **Client-Side Cloud Decryptor & Modern Host Support:** Native AES client-side decryption for Mega folders, Google Drive full trees with live progress, 1-click browser cookie importer, and rebuilt Bunkr 2026 parallel resolution.
 
@@ -122,7 +122,7 @@
 ### Option A: Pre-compiled Windows Binary (Recommended for most users)
 
 1. Head over to the **[Latest Release](https://github.com/whyamihere773/Pawchive-Downloader/releases/latest)** page.
-2. Download `Pawchive-Downloader-v1.1.3-Windows.zip`.
+2. Download `Pawchive-Downloader-v1.1.4-Windows.zip`.
 3. Extract the ZIP archive anywhere on your computer.
 4. Run `Pawchive Downloader.exe` — that's it!
 

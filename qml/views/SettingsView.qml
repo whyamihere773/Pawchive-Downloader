@@ -535,6 +535,164 @@ SmoothFlickable {
                     checked: root.bridge ? root.bridge.generateDesktopReport : false
                     onCheckedChanged: if (root.bridge) root.bridge.generateDesktopReport = checked
                 }
+
+                // Download Archive Database Sub-Card (gallery-dl style)
+                Rectangle {
+                    Layout.fillWidth: true
+                    implicitHeight: archiveCol.implicitHeight + 22
+                    radius: 8
+                    color: "#141A26"
+                    border.color: archiveBoxHover.hovered ? "#38BDF8" : "#233147"
+                    border.width: 1
+
+                    HoverHandler { id: archiveBoxHover }
+
+                    transform: Translate {
+                        y: archiveBoxHover.hovered ? -1.5 : 0
+                        Behavior on y {
+                            SpringAnimation { spring: 4.2; damping: 0.38; mass: 0.9; epsilon: 0.25 }
+                        }
+                    }
+
+                    Behavior on border.color { ColorAnimation { duration: 160 } }
+
+                    ColumnLayout {
+                        id: archiveCol
+                        anchors.fill: parent
+                        anchors.margins: 12
+                        spacing: 8
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            Text {
+                                text: "🗃️"
+                                font.pixelSize: 14
+                                Layout.alignment: Qt.AlignVCenter
+                            }
+
+                            Text {
+                                text: tr("opt_download_archive", "Download Archive Database")
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 12
+                                font.weight: 600
+                                color: "#F1F5F9"
+                                Layout.fillWidth: true
+                            }
+
+                            Rectangle {
+                                implicitHeight: 18
+                                implicitWidth: galleryDlBadgeText.implicitWidth + 10
+                                radius: 9
+                                color: "#0F2942"
+                                border.color: "#0284C7"
+                                border.width: 1
+
+                                Text {
+                                    id: galleryDlBadgeText
+                                    anchors.centerIn: parent
+                                    text: "gallery-dl style"
+                                    font.pixelSize: 9
+                                    font.weight: 600
+                                    color: "#38BDF8"
+                                }
+                            }
+
+                            StyledSwitch {
+                                checked: root.bridge ? root.bridge.enableDownloadArchive : false
+                                accentColor: "#38BDF8"
+                                onToggled: function(isChecked) {
+                                    if (root.bridge) root.bridge.enableDownloadArchive = isChecked
+                                }
+                            }
+                        }
+
+                        Text {
+                            text: tr("desc_download_archive", "Records downloaded files in an isolated local database. Subsequent downloads will skip files even if they have been unzipped, moved to another drive, or deleted locally.")
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 11
+                            color: "#94A3B8"
+                            wrapMode: Text.WordWrap
+                            Layout.fillWidth: true
+                        }
+
+                        // Dynamic drawer revealed when enabled
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+                            visible: root.bridge ? root.bridge.enableDownloadArchive : false
+
+                            Rectangle {
+                                Layout.fillWidth: true
+                                implicitHeight: warningRow.implicitHeight + 12
+                                radius: 6
+                                color: "#2A1F0D"
+                                border.color: "#B45309"
+                                border.width: 1
+
+                                RowLayout {
+                                    id: warningRow
+                                    anchors.fill: parent
+                                    anchors.margins: 6
+                                    spacing: 6
+
+                                    Text {
+                                        text: "⚠️"
+                                        font.pixelSize: 11
+                                    }
+
+                                    Text {
+                                        text: tr("tip_download_archive_warning", "Note: Files deleted from disk will not re-download while this is active unless you click Clear Archive.")
+                                        font.family: "Segoe UI, sans-serif"
+                                        font.pixelSize: 11
+                                        color: "#FDE68A"
+                                        wrapMode: Text.WordWrap
+                                        Layout.fillWidth: true
+                                    }
+                                }
+                            }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 10
+
+                                Rectangle {
+                                    implicitHeight: 28
+                                    implicitWidth: recordCountText.implicitWidth + 16
+                                    radius: 14
+                                    color: "#1E293B"
+                                    border.color: "#334155"
+                                    border.width: 1
+
+                                    Text {
+                                        id: recordCountText
+                                        anchors.centerIn: parent
+                                        text: tr("badge_archive_records", "Archived files: ") + (root.bridge ? root.bridge.archiveRecordCount : 0)
+                                        font.family: "Segoe UI, sans-serif"
+                                        font.pixelSize: 11
+                                        font.weight: 600
+                                        color: "#CBD5E1"
+                                    }
+                                }
+
+                                Item { Layout.fillWidth: true }
+
+                                StyledButton {
+                                    text: tr("btn_clear_archive", "Clear Archive")
+                                    iconText: "🗑️"
+                                    variant: "danger"
+                                    implicitHeight: 28
+                                    onClicked: {
+                                        if (root.bridge) {
+                                            root.bridge.clearDownloadArchive()
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 

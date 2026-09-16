@@ -144,12 +144,31 @@ class WatchlistManager:
                 existing.last_post_id = last_post_id
             # Update name in case it resolved better
             if creator_name and creator_name != user_id:
+                old_was_numeric = (existing.creator_name == user_id or not existing.creator_name)
                 existing.creator_name = creator_name
+                # If existing download_dir was tied to numeric user_id, auto-repair folder name
+                if existing.download_dir and old_was_numeric:
+                    clean_target = os.path.normpath(existing.download_dir)
+                    base = os.path.basename(clean_target)
+                    expected_numeric = f"{user_id} [{service}]"
+                    if base.lower() == expected_numeric.lower() or base == user_id:
+                        parent_dir = os.path.dirname(clean_target)
+                        from core.filter_engine import FilterEngine
+                        clean_c = FilterEngine.clean_filesystem_text(creator_name, max_len=80, fallback="creator")
+                        new_dir = os.path.join(parent_dir, f"{clean_c} [{service}]")
+                        if os.path.exists(existing.download_dir) and not os.path.exists(new_dir):
+                            try:
+                                os.rename(existing.download_dir, new_dir)
+                                logger.info(f"Auto-migrated folder '{base}' -> '{os.path.basename(new_dir)}'", category="watchlist")
+                            except Exception as e:
+                                logger.debug(f"Could not rename folder on disk: {e}", category="watchlist")
+                        existing.download_dir = new_dir
+                elif download_dir and not existing.download_dir:
+                    existing.download_dir = download_dir
+            elif download_dir and not existing.download_dir:
+                existing.download_dir = download_dir
             if url:
                 existing.url = url
-            # Only set download_dir if existing does not already have one set
-            if download_dir and not existing.download_dir:
-                existing.download_dir = download_dir
             if options:
                 existing.options = options
             self.save()
@@ -365,10 +384,25 @@ class WatchlistManager:
             cutoff = cutoff[:10]
         cutoff_id = str(entry.last_post_id or "")
 
+        # Auto-heal numeric name if needed
+        if (entry.creator_name == entry.user_id or not entry.creator_name) and hasattr(api_client, "resolve_creator_name"):
+            try:
+                resolved = api_client.resolve_creator_name(parsed)
+                if resolved and resolved != entry.user_id:
+                    self.add_entry(
+                        url=entry.url,
+                        creator_name=resolved,
+                        user_id=entry.user_id,
+                        service=entry.service,
+                        domain=entry.domain
+                    )
+            except Exception:
+                pass
+
         new_posts: List[Dict[str, Any]] = []
         current_page = 1
         page_size = 50
-        max_pages = 25  # Up to 1,250 posts to support deep updates while preventing infinite loops
+        max_pages = 100  # Up to 5,000 posts to support deep updates while preventing infinite loops
 
         while current_page <= max_pages:
             try:

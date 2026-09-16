@@ -46,6 +46,7 @@ from services.cloud_downloader import (
     download_gofile_link
 )
 from core.text_utils import clean_text, sanitize_filesystem_name
+from core.archive_manager import ArchiveManager
 
 
 class AppBridge(QObject):
@@ -122,6 +123,10 @@ class AppBridge(QObject):
     importFailed = Signal(str)
     hasRecoverySessionChanged = Signal()
     recoverySessionDetected   = Signal('QVariant')
+    sessionDiscardedWarning   = Signal(str)       # carries old artist description when auto-discarding
+
+    enableDownloadArchiveChanged = Signal()
+    archiveRecordCountChanged    = Signal()
 
     tagFolderModeChanged      = Signal()
     watchlistChanged          = Signal()
@@ -166,10 +171,17 @@ class AppBridge(QObject):
         # Core systems
         self.known_manager = KnownManager()
         self.session_manager = SessionManager()
+        saved_settings = self.session_manager.load_settings()
+        self._enable_download_archive = bool(saved_settings.get("enable_download_archive", False))
+        self.archive_manager = ArchiveManager(
+            config_dir=self.session_manager.config_dir,
+            enabled=self._enable_download_archive
+        )
         self.downloader = KemonoDownloader(
             known_manager=self.known_manager,
             session_manager=self.session_manager,
-            max_workers=4
+            max_workers=4,
+            archive_manager=self.archive_manager
         )
         self.api_client = KemonoApiClient()
 
@@ -182,7 +194,6 @@ class AppBridge(QObject):
         self._known_model = KnownModel(self.known_manager, self)
 
         # Settings defaults
-        saved_settings = self.session_manager.load_settings()
         self._current_url = ""
         self._page_start = int(saved_settings.get("page_start", 1))
         self._page_end = int(saved_settings.get("page_end", 999))
@@ -941,6 +952,31 @@ class AppBridge(QObject):
     def saveDesktopReport(self, val: bool):
         self.generateDesktopReport = val
 
+    # ── Download Archive Database (gallery-dl style) ─────────────────────────
+    @Property(bool, notify=enableDownloadArchiveChanged)
+    def enableDownloadArchive(self) -> bool:
+        return self._enable_download_archive
+
+    @enableDownloadArchive.setter
+    def enableDownloadArchive(self, val: bool):
+        val = bool(val)
+        if self._enable_download_archive != val:
+            self._enable_download_archive = val
+            self.archive_manager.set_enabled(val)
+            self.enableDownloadArchiveChanged.emit()
+            self.archiveRecordCountChanged.emit()
+            self.saveSettings()
+
+    @Property(int, notify=archiveRecordCountChanged)
+    def archiveRecordCount(self) -> int:
+        return self.archive_manager.get_total_count()
+
+    @Slot(result=bool)
+    def clearDownloadArchive(self) -> bool:
+        success = self.archive_manager.clear_archive()
+        self.archiveRecordCountChanged.emit()
+        return success
+
     @Property(int, notify=consoleWidthChanged)
     def consoleWidth(self) -> int:
         return self._console_width
@@ -1298,6 +1334,32 @@ class AppBridge(QObject):
                 return
 
         # Case 4: Valid new URL -> mark queued, fetch and start
+        has_leftover = (len(self.downloader.tasks) > 0) or (self._queue_model.rowCount() > 0) or self._has_recovery_session
+        if has_leftover:
+            old_creators = set()
+            for t in self.downloader.tasks or self._queue_model.tasks:
+                c = getattr(t, "creator_name", "")
+                if c:
+                    old_creators.add(c)
+            old_desc = ", ".join(list(old_creators)[:2]) if old_creators else "previous"
+            logger.warning(
+                f"⚠️ Discarding previous interrupted session ({old_desc}) to start fresh download for new link: {url_input}",
+                category="downloader"
+            )
+            self.sessionDiscardedWarning.emit(old_desc)
+            self._queue_model.clear()
+            self._active_queue_model.clear()
+            self._queued_links.clear()
+            self.downloader.reset_state()
+            self.recovery_manager.discard_recovery()
+            self.session_manager.discard_session()
+            self._has_recovery_session = False
+            self._has_saved_session = False
+            self._recovery_summary = {}
+            self.hasRecoverySessionChanged.emit()
+            self.hasSavedSessionChanged.emit()
+
+
         _, identity_key, _, _ = self._get_link_identity(parsed_current)
         self._queued_links.add(identity_key)
 
@@ -1552,7 +1614,22 @@ class AppBridge(QObject):
                 else:
                     batch_id = f"artist_{parsed.service}_{parsed.user_id}"
                     existing_entry = self._watchlist_manager._find(parsed.user_id, parsed.service) if (not parsed.is_external_provider and parsed.user_id) else None
-                    artist_dir = self.resolve_artist_download_dir(existing_entry) if (existing_entry and existing_entry.download_dir) else None
+                    artist_dir = None
+                    if existing_entry and existing_entry.download_dir:
+                        from core.filter_engine import FilterEngine
+                        clean_c = FilterEngine.clean_filesystem_text(creator_name or parsed.user_id, max_len=80, fallback="creator")
+                        norm_existing = os.path.normpath(existing_entry.download_dir)
+                        norm_base = os.path.normpath(self._download_dir) if self._download_dir else ""
+                        # If old folder does not exist on disk, or if user changed self._download_dir:
+                        # re-anchor to active self._download_dir so user changes are 100% respected!
+                        if not os.path.exists(norm_existing) or (norm_base and not norm_existing.startswith(norm_base)):
+                            new_artist_dir = os.path.join(norm_base, f"{clean_c} [{parsed.service}]") if norm_base else norm_existing
+                            existing_entry.download_dir = new_artist_dir
+                            self._watchlist_manager.save()
+                            artist_dir = new_artist_dir
+                            logger.info(f"Download location updated to active download folder: '{new_artist_dir}'", category="downloader")
+                        else:
+                            artist_dir = norm_existing
 
                 tasks = self.downloader.build_tasks_from_posts(
                     posts=posts,
@@ -1669,23 +1746,12 @@ class AppBridge(QObject):
                     self._appendTasksSignal.emit(tasks)
                     self.downloader.append_tasks(tasks, options=options, cookie_str=self._cookie_string)
                 else:
-                    if len(self.downloader.tasks) > 0 or self._queue_model.rowCount() > 0:
-                        if not self.downloader.tasks and self._queue_model.tasks:
-                            self.downloader.tasks = list(self._queue_model.tasks)
-                        self._appendTasksSignal.emit(tasks)
-                        self.downloader.append_tasks(tasks)
-                        self.downloader.start_download_queue(
-                            tasks=self.downloader.tasks,
-                            options=options,
-                            cookie_str=self._cookie_string
-                        )
-                    else:
-                        self._setTasksSignal.emit(tasks)
-                        self.downloader.start_download_queue(
-                            tasks=tasks,
-                            options=options,
-                            cookie_str=self._cookie_string
-                        )
+                    self._setTasksSignal.emit(tasks)
+                    self.downloader.start_download_queue(
+                        tasks=tasks,
+                        options=options,
+                        cookie_str=self._cookie_string
+                    )
             else:
                 self._appendTasksSignal.emit(tasks)
                 self.downloader.append_tasks(tasks)
@@ -1901,6 +1967,21 @@ class AppBridge(QObject):
         self._queue_model.setTasks([])
         self._active_queue_model.clear()
         self.downloader.reset_state()
+
+        # Discard recovery journal and saved session so restart doesn't prompt for cancelled download
+        self.recovery_manager.discard_recovery()
+        self.session_manager.discard_session()
+        self._has_recovery_session = False
+        self._has_saved_session = False
+        self._recovery_summary = {}
+        self.hasRecoverySessionChanged.emit()
+        self.hasSavedSessionChanged.emit()
+
+        # Reset errors
+        self._has_error = False
+        self._last_error_message = ""
+        self.hasErrorChanged.emit()
+        self.lastErrorMessageChanged.emit()
 
         # Reset telemetry back to Idle / zero
         self._overall_progress = 0
@@ -2467,7 +2548,8 @@ class AppBridge(QObject):
             "download_thumbnails_only": self._download_thumbnails_only,
             "date_after": self._date_after,
             "date_before": self._date_before,
-            "date_auto_scan_pages": self._date_auto_scan_pages
+            "date_auto_scan_pages": self._date_auto_scan_pages,
+            "enable_download_archive": self._enable_download_archive
         }
         self.session_manager.save_settings(settings_dict, silent=True)
 
@@ -2854,8 +2936,13 @@ class AppBridge(QObject):
         self.overallProgressChanged.emit()
         self.statusTextChanged.emit()
         if not success:
-            self._has_error = True
-            self._last_error_message = message
+            if message == "Download cancelled by user." or self._scan_cancel_event.is_set():
+                self._has_error = False
+                self._last_error_message = ""
+                self._status_text = "Progress: Cancelled"
+            else:
+                self._has_error = True
+                self._last_error_message = message
             self.hasErrorChanged.emit()
             self.lastErrorMessageChanged.emit()
         else:
@@ -3468,6 +3555,19 @@ class AppBridge(QObject):
     def deleteVaultLink(self, linkId: str) -> bool:
         from core.link_vault_manager import link_vault_manager
         res = link_vault_manager.delete_link(linkId)
+        if res:
+            self.linkVaultChanged.emit()
+        return res
+
+    @Slot(str, 'QVariant', result=bool)
+    def updateVaultLinkPasswords(self, linkId: str, passwords) -> bool:
+        from core.link_vault_manager import link_vault_manager
+        pw_list = []
+        if isinstance(passwords, str):
+            pw_list = [p.strip() for p in passwords.split(",") if p.strip()]
+        elif isinstance(passwords, (list, tuple)):
+            pw_list = [str(p).strip() for p in passwords if str(p).strip()]
+        res = link_vault_manager.update_link_passwords(linkId, pw_list)
         if res:
             self.linkVaultChanged.emit()
         return res

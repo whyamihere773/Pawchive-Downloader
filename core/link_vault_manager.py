@@ -385,6 +385,32 @@ class LinkVaultManager:
                 return True
         return False
 
+    def update_link_passwords(self, link_id: str, passwords: List[str]) -> bool:
+        """
+        Updates the password list for a specific link.
+        Deduplicates, strips whitespace, and saves atomically.
+        """
+        clean_pws = []
+        seen = set()
+        for p in passwords:
+            val = str(p).strip()
+            if val and val not in seen:
+                seen.add(val)
+                clean_pws.append(val)
+
+        with self._lock:
+            found = False
+            for lnk in self.data["links"]:
+                if lnk.get("id") == link_id:
+                    lnk["passwords"] = clean_pws
+                    found = True
+                    break
+            if found:
+                self._save_unlocked()
+                logger.info(f"Updated passwords for link {link_id}: {clean_pws}", category="vault")
+                return True
+        return False
+
     def delete_post(self, post_id: str) -> bool:
         """Deletes a post and all its associated links."""
         with self._lock:

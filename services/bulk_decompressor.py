@@ -90,10 +90,13 @@ class ArchiveItem:
     creator: str
     scan_root: str = ""         # The top-level scanned folder (stable group key)
     selected: bool = True
-    status: str = "pending"       # pending | extracting | done | error | skipped
+    status: str = "pending"       # pending | extracting | done | error | skipped | password_required
     progress: float = 0.0         # 0.0 - 100.0
     error_message: str = ""
     target_dir: str = ""
+    password: str = ""            # Known or verified archive password
+    extracted_present: bool = False  # True if archive's extracted folder exists and has files
+    extracted_dir: str = ""          # Absolute path to the extracted folder
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -109,6 +112,9 @@ class ArchiveItem:
             "progress": round(self.progress, 1),
             "errorMessage": self.error_message,
             "targetDir": self.target_dir,
+            "password": self.password,
+            "extractedPresent": self.extracted_present,
+            "extractedDir": self.extracted_dir,
         }
 
 
@@ -210,6 +216,16 @@ class BulkDecompressorEngine:
                             except OSError:
                                 sz = 0
 
+                            stem = clean_archive_stem(f)
+                            target_extracted_dir = os.path.join(root, stem)
+                            is_extracted_present = False
+                            if os.path.isdir(target_extracted_dir):
+                                try:
+                                    if any(os.scandir(target_extracted_dir)):
+                                        is_extracted_present = True
+                                except OSError:
+                                    pass
+
                             item_counter += 1
                             item = ArchiveItem(
                                 item_id=f"arc_{item_counter}",
@@ -219,9 +235,11 @@ class BulkDecompressorEngine:
                                 size=sz,
                                 creator=creator or os.path.basename(folder),
                                 scan_root=os.path.normpath(folder),
-                                selected=True,
-                                status="pending",
-                                progress=0.0
+                                selected=not is_extracted_present,
+                                status="done" if is_extracted_present else "pending",
+                                progress=100.0 if is_extracted_present else 0.0,
+                                extracted_present=is_extracted_present,
+                                extracted_dir=target_extracted_dir if is_extracted_present else ""
                             )
                             items.append(item)
             except Exception as e:
@@ -279,13 +297,112 @@ class BulkDecompressorEngine:
 
         return results
 
+    @staticmethod
+    def is_password_error(error_message: str) -> bool:
+        """Determines if 7za error output indicates an encrypted archive or incorrect password."""
+        if not error_message:
+            return False
+        err_lower = error_message.lower()
+        return any(phrase in err_lower for phrase in [
+            "wrong password", "can not open encrypted archive",
+            "data error in encrypted file", "enter password",
+            "encrypted", "password"
+        ])
+
+    def test_password(
+        self,
+        archive_path: str,
+        password: str,
+        cancel_event: Optional[threading.Event] = None
+    ) -> bool:
+        """
+        Fast non-extracting integrity test using '7za t' to verify if a password
+        can decrypt the archive. Returns True if password is valid, False otherwise.
+        """
+        if not self.has_7za or not os.path.exists(archive_path):
+            return False
+
+        cmd = [
+            self._7za_path,
+            "t",
+            "-y",
+            f"-p{password}",
+            archive_path
+        ]
+
+        startupinfo = None
+        creationflags = 0
+        if sys.platform == "win32":
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = 0
+            creationflags = 0x08000000
+
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                startupinfo=startupinfo,
+                creationflags=creationflags
+            )
+            while proc.poll() is None:
+                if cancel_event and cancel_event.is_set():
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    return False
+                import time
+                time.sleep(0.05)
+
+            return proc.returncode == 0
+        except Exception as e:
+            logger.debug(f"test_password error on {archive_path}: {e}", category="decompressor")
+            return False
+
+    def probe_if_encrypted(self, archive_path: str) -> Tuple[bool, str]:
+        """Fast in-memory test using '7za t' to check if an archive requires a password without touching the disk."""
+        if not self.has_7za or not os.path.exists(archive_path):
+            return False, ""
+        cmd = [self._7za_path, "t", "-y", "-p-", archive_path]
+        startupinfo = None
+        creationflags = 0
+        if sys.platform == "win32":
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = 0
+            creationflags = 0x08000000
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                universal_newlines=True,
+                startupinfo=startupinfo,
+                creationflags=creationflags,
+                bufsize=1,
+                encoding="utf-8",
+                errors="replace"
+            )
+            out, _ = proc.communicate()
+            if proc.returncode != 0 and self.is_password_error(out):
+                return True, out.strip().splitlines()[-1] if out.strip() else "Encrypted"
+            return False, ""
+        except Exception:
+            return False, ""
+
     def extract_single_archive(
         self,
         item: ArchiveItem,
+        password: Optional[str] = None,
         threads_per_archive: int = 2,
         delete_after: bool = False,
         progress_callback: Optional[Callable[[float], None]] = None,
-        cancel_event: Optional[threading.Event] = None
+        cancel_event: Optional[threading.Event] = None,
+        overwrite: bool = True
     ) -> Tuple[bool, str]:
         """
         Extract a single archive using 7za.exe into a folder named after the archive.
@@ -297,10 +414,27 @@ class BulkDecompressorEngine:
         if not os.path.exists(item.path):
             return False, f"Archive file not found: {item.path}"
 
+        effective_pw = password or item.password or ""
+
+        # Pre-check: if no password was provided, probe in-memory first.
+        # This prevents 7-Zip from creating a target folder and 0-byte ghost files on disk.
+        if not effective_pw:
+            is_enc, enc_err = self.probe_if_encrypted(item.path)
+            if is_enc:
+                return False, f"ERROR: Can not open encrypted archive. Wrong password? ({enc_err})"
+
         # Determine target output folder
         base_name = clean_archive_stem(item.filename)
-        target_dir = get_unique_target_folder(item.directory, base_name)
+        default_dir = os.path.join(item.directory, base_name)
+        if overwrite and item.extracted_dir and os.path.exists(item.extracted_dir):
+            target_dir = item.extracted_dir
+        elif overwrite and os.path.exists(default_dir):
+            target_dir = default_dir
+        else:
+            target_dir = get_unique_target_folder(item.directory, base_name)
+
         item.target_dir = target_dir
+        dir_created_by_us = not os.path.exists(target_dir)
 
         try:
             os.makedirs(target_dir, exist_ok=True)
@@ -311,11 +445,17 @@ class BulkDecompressorEngine:
             self._7za_path,
             "x",
             "-y",
+            "-aoa",   # Overwrite existing files without prompting
             "-bsp1",  # Output progress to stdout
             f"-mmt={max(1, threads_per_archive)}",
-            f"-o{target_dir}",
-            item.path
+            f"-o{target_dir}"
         ]
+        if effective_pw:
+            cmd.append(f"-p{effective_pw}")
+        else:
+            cmd.append("-p-")  # Prevent 7za from waiting for a password on stdin
+
+        cmd.append(item.path)
 
         # Hide subprocess window on Windows
         startupinfo = None
@@ -329,6 +469,7 @@ class BulkDecompressorEngine:
         try:
             proc = subprocess.Popen(
                 cmd,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 universal_newlines=True,
@@ -339,6 +480,8 @@ class BulkDecompressorEngine:
                 errors="replace"
             )
         except Exception as e:
+            if dir_created_by_us and os.path.exists(target_dir):
+                shutil.rmtree(target_dir, ignore_errors=True)
             return False, f"Failed to launch 7za: {e}"
 
         with self._lock:
@@ -351,6 +494,8 @@ class BulkDecompressorEngine:
             for line in proc.stdout:
                 if cancel_event and cancel_event.is_set():
                     proc.kill()
+                    if dir_created_by_us and os.path.exists(target_dir):
+                        shutil.rmtree(target_dir, ignore_errors=True)
                     return False, "Cancelled by user"
 
                 stdout_lines.append(line)
@@ -373,12 +518,16 @@ class BulkDecompressorEngine:
                 proc.kill()
             except Exception:
                 pass
+            if dir_created_by_us and os.path.exists(target_dir):
+                shutil.rmtree(target_dir, ignore_errors=True)
             return False, f"Extraction process crashed: {e}"
         finally:
             with self._lock:
                 self.active_processes.pop(item.item_id, None)
 
         if cancel_event and cancel_event.is_set():
+            if dir_created_by_us and os.path.exists(target_dir):
+                shutil.rmtree(target_dir, ignore_errors=True)
             return False, "Cancelled by user"
 
         # 7-Zip Return Codes:
@@ -392,6 +541,12 @@ class BulkDecompressorEngine:
             if progress_callback:
                 progress_callback(100.0)
 
+            if effective_pw:
+                item.password = effective_pw
+
+            item.extracted_present = True
+            item.extracted_dir = target_dir
+
             # Safely delete archive if requested
             if delete_after:
                 try:
@@ -402,6 +557,13 @@ class BulkDecompressorEngine:
 
             return True, ""
         else:
+            # Clean up failed / partial / 0-byte folder on extraction error
+            if dir_created_by_us and os.path.exists(target_dir):
+                try:
+                    shutil.rmtree(target_dir, ignore_errors=True)
+                except Exception:
+                    pass
+
             tail_err = "".join(stdout_lines[-10:]).strip()
             err_msg = f"7-Zip exited with code {ret_code}: {tail_err or 'Decompression failed'}"
             return False, err_msg
