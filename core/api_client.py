@@ -9,7 +9,8 @@ import sys
 import time
 import threading
 import requests
-from urllib.parse import urljoin
+import re
+from urllib.parse import urljoin, unquote
 from typing import Dict, Any, List, Optional, Callable
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -299,6 +300,81 @@ class KemonoApiClient:
         logger.warning(f"Could not retrieve profile for {parsed.user_id}; using ID as name.", category="api")
         return {"id": parsed.user_id, "name": parsed.user_id, "service": parsed.service}
 
+    @staticmethod
+    def extract_pawchive_temporary_attachments(html_text: str) -> Dict[str, str]:
+        """
+        Parses Pawchive post HTML and returns a mapping of:
+        clean_filename -> signed temporary download URL (https://t1.pawchive.pw/f/...).
+        """
+        if not html_text:
+            return {}
+        matches = re.findall(r'(?:href|src)=["\'](https://t1\.pawchive\.pw/f/[^"\']+)["\']', html_text)
+        mapping: Dict[str, str] = {}
+        for raw_u in matches:
+            u = raw_u.replace("&amp;", "&")
+            path_part = u.split("?")[0].split("/")[-1]
+            name = unquote(path_part)
+            if name and name not in mapping:
+                mapping[name] = u
+        return mapping
+
+    def resolve_pawchive_deferred_attachments(self, post: Dict[str, Any], domain: str = "pawchive.pw") -> int:
+        """
+        Detects any attachments marked with 'deferred: True' (oversized temporary storage on Pawchive).
+        Fetches the post HTML page, extracts signed t1.pawchive.pw temporary download URLs,
+        and assigns them to the attachments' 'path' and 'is_temporary'.
+        Returns the number of resolved attachments.
+        """
+        if not isinstance(post, dict):
+            return 0
+
+        attachments = post.get("attachments", [])
+        if not isinstance(attachments, list):
+            return 0
+
+        deferred_items = [
+            a for a in attachments
+            if isinstance(a, dict) and a.get("deferred") and not a.get("path")
+        ]
+        if not deferred_items:
+            return 0
+
+        post_id = str(post.get("id") or "")
+        service = post.get("service") or ""
+        user_id = str(post.get("user") or "")
+
+        if not post_id or not service or not user_id:
+            return 0
+
+        eff_domain = domain if "pawchive" in (domain or "") else "pawchive.pw"
+        page_url = f"https://{eff_domain}/{service}/user/{user_id}/post/{post_id}"
+        logger.debug(f"Fetching post HTML to resolve {len(deferred_items)} temporary file(s): {page_url}", category="api")
+
+        resp = self._get_with_log(page_url, timeout=20)
+        if not resp or resp.status_code != 200 or not resp.text:
+            logger.warning(f"Could not fetch HTML for post {post_id} to resolve temporary files", category="api")
+            return 0
+
+        temp_map = self.extract_pawchive_temporary_attachments(resp.text)
+        if not temp_map:
+            logger.info(f"Post {post_id} has {len(deferred_items)} deferred attachment(s), but temporary links are expired or unavailable", category="api")
+            return 0
+
+        resolved_count = 0
+        lower_map = {k.lower(): v for k, v in temp_map.items()}
+        for att in deferred_items:
+            att_name = att.get("name") or ""
+            matched_url = temp_map.get(att_name) or lower_map.get(att_name.lower())
+            if matched_url:
+                att["path"] = matched_url
+                att["is_temporary"] = True
+                resolved_count += 1
+
+        if resolved_count > 0:
+            logger.info(f"✨ Resolved {resolved_count}/{len(deferred_items)} temporary oversized file(s) from t1.pawchive.pw for post {post_id}", category="api")
+
+        return resolved_count
+
     def fetch_single_post(self, parsed: URLParseResult) -> Optional[Dict[str, Any]]:
         """Fetch a single post (or DM) by ID."""
         if not parsed.post_id:
@@ -315,14 +391,21 @@ class KemonoApiClient:
 
         try:
             data = resp.json()
+            post_obj = None
             if isinstance(data, list) and data:
-                return data[0]
-            if isinstance(data, dict):
+                post_obj = data[0]
+            elif isinstance(data, dict):
                 if "post" in data and isinstance(data["post"], dict):
-                    return data["post"]
-                if "dm" in data and isinstance(data["dm"], dict):
-                    return data["dm"]
-                return data
+                    post_obj = data["post"]
+                elif "dm" in data and isinstance(data["dm"], dict):
+                    post_obj = data["dm"]
+                else:
+                    post_obj = data
+
+            if post_obj and isinstance(post_obj, dict) and ("pawchive" in (parsed.domain or "") or "pawchive" in str(post_obj.get("origin", ""))):
+                self.resolve_pawchive_deferred_attachments(post_obj, domain=parsed.domain)
+
+            return post_obj
         except Exception as e:
             logger.error(f"Failed to parse post/dm JSON: {e}", category="api")
         return None

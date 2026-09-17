@@ -365,6 +365,92 @@
     ]
   },
   {
+    "title": "Lựa chọn và kiểm tra bài đăng tương tác",
+    "icon": "🖼️",
+    "summary": "Xem trước các bài đăng trong danh mục, chế độ Lưới và Danh sách, Trình kiểm tra bài đăng, lựa chọn tệp đính kèm chi tiết và Hộp đèn toàn màn hình.",
+    "content": [
+      {
+        "heading": "Lựa chọn bài mở đầu",
+        "body": "Nhấp vào 'Chọn bài đăng...' bên cạnh nút Tải xuống trên bất kỳ thẻ người sáng tạo nào. Bộ chọn tương tác tải các bài đăng của người sáng tạo, cho phép bạn chọn chính xác những gì bạn muốn tải xuống thay vì tìm kiếm mọi thứ một cách mù quáng.",
+        "type": "intro"
+      },
+      {
+        "heading": "Chế độ xem lưới và danh sách",
+        "body": "• Chế độ lưới: Hiển thị thẻ xem trước trực quan với hình thu nhỏ phương tiện, ngày xuất bản và số lượng tệp đính kèm.\n• Chế độ danh sách: Bố cục dạng bảng nhỏ gọn hiển thị tiêu đề bài đăng, ngày xuất bản, số liệu đính kèm và các nút kiểm tra trực tiếp để quét nhanh các danh mục lớn.",
+        "type": "tip"
+      },
+      {
+        "heading": "Thanh tra bài chi tiết",
+        "body": "Bấm vào bất kỳ thẻ bài hoặc hàng nào để mở ngăn kéo Thanh tra bài viết. Bạn có thể đọc toàn bộ nội dung của bài đăng, tiết lộ mật khẩu lưu trữ được nhúng bằng bản sao chỉ bằng một cú nhấp chuột và sử dụng các hộp kiểm để chọn hoặc bỏ chọn từng tệp đính kèm riêng lẻ.",
+        "type": "info"
+      },
+      {
+        "heading": "Hộp đèn phương tiện toàn màn hình",
+        "body": "Nhấp vào bất kỳ hình thu nhỏ tệp đính kèm nào bên trong trình kiểm tra để mở trình hiển thị Hộp đèn toàn màn hình. Duyệt qua phương tiện có độ phân giải cao bằng các phím mũi tên, nhấn Phím cách để chuyển đổi lựa chọn tệp hoặc nhấn Escape để đóng.",
+        "type": "tip"
+      },
+      {
+        "heading": "Bộ đếm lựa chọn động & phân mẻ nhanh",
+        "body": "Bộ đếm trực tiếp ở chân trang hiển thị chính xác số lượng bài đăng và tệp đã chọn trên toàn bộ danh mục người sáng tạo. Sử dụng 'Chọn tất cả' hoặc 'Bỏ chọn tất cả' để chuyển đổi tất cả các mục hiển thị chỉ bằng một cú nhấp chuột.",
+        "type": "info"
+      }
+    ]
+  },
+  {
+    "title": "Tải xuống Trình xác minh tệp và lưu trữ",
+    "icon": "🗄️",
+    "summary": "Lập danh mục bài đăng ngoại tuyến, xác minh đĩa chỉ bằng một cú nhấp chuột, chỉ báo tệp bị thiếu và cắt xén cơ sở dữ liệu.",
+    "content": [
+      {
+        "heading": "Cơ sở dữ liệu lưu trữ chuyên dụng",
+        "body": "Tab Lưu trữ cung cấp một thư viện ngoại tuyến hoàn chỉnh gồm mọi người sáng tạo, bài đăng và tệp từng được ứng dụng tải xuống. Tìm kiếm tên người sáng tạo hoặc tiêu đề bài đăng ngay lập tức mà không cần kết nối internet đang hoạt động.",
+        "type": "intro"
+      },
+      {
+        "heading": "Công cụ xác minh đĩa",
+        "body": "Nhấp vào nút 🔍 Xác minh bên cạnh bất kỳ người sáng tạo nào trong Kho lưu trữ. Pawchive quét ổ lưu trữ của bạn để xác minh rằng tất cả các tệp được phân loại vẫn còn nguyên vẹn và có thể truy cập được trên đĩa.",
+        "type": "tip"
+      },
+      {
+        "heading": "Chỉ báo tệp bị thiếu (Huy hiệu màu đỏ/hổ phách)",
+        "body": "Nếu tệp đã được di chuyển, đổi tên hoặc xóa khỏi đĩa, thẻ bài sẽ nổi bật bằng màu hổ phách/đỏ với bộ đếm tệp bị thiếu chính xác (⚠️ Thiếu X). Trong danh sách tệp được mở rộng, các tệp bị thiếu sẽ được đánh dấu màu đỏ để bạn có thể dễ dàng phát hiện các tệp tải xuống chưa hoàn tất.",
+        "type": "warning"
+      },
+      {
+        "heading": "Xóa bản ghi bị thiếu",
+        "body": "Khi xác minh xác định các tệp bị thiếu, nút biểu ngữ 'Xóa thiếu' màu hổ phách sẽ xuất hiện. Nhấp vào nó cho phép bạn cắt bớt các bản ghi cơ sở dữ liệu để tìm các tệp bị thiếu chỉ bằng một cú nhấp chuột, giữ cho kho lưu trữ của bạn luôn sạch sẽ.",
+        "type": "info"
+      },
+      {
+        "heading": "Tiêu đề tổng quan có thể thu gọn",
+        "body": "Nhấp vào chữ V thu gọn (▾/▸) ở phía trên bên phải của thẻ tổng quan về cơ sở dữ liệu Lưu trữ để thu nhỏ bảng thống kê và hành động, tối đa hóa khu vực xem dọc của bạn để duyệt qua người sáng tạo và bài đăng.",
+        "type": "tip"
+      }
+    ]
+  },
+  {
+    "title": "Trình tạo mẫu tên tệp tùy chỉnh",
+    "icon": "🏷️",
+    "summary": "Chip thẻ tương tác, định dạng đặt tên tệp có thể tùy chỉnh, xem trước trực tiếp và dọn dẹp hệ thống tệp.",
+    "content": [
+      {
+        "heading": "Xây dựng các mẫu đặt tên tùy chỉnh",
+        "body": "Điều hướng đến Cài đặt → Lưu trữ & Xử lý tệp → Định dạng tên tệp và chọn 'Mẫu tùy chỉnh (Nhấp vào chip bên dưới)'. Xây dựng các mẫu đặt tên tùy chỉnh bằng cách chỉ cần nhấp vào các khối thẻ tương tác.",
+        "type": "intro"
+      },
+      {
+        "heading": "Chip thẻ có sẵn",
+        "body": "• {artist}: Tên hiển thị của người sáng tạo hoặc nghệ sĩ\n• {title}: Tiêu đề bài viết\n• {post_id}: Mã định danh bài đăng duy nhất\n• {date}: Ngày xuất bản (YYYY-MM-DD)\n• {year}, {month}, {day}: Thành phần ngày riêng lẻ\n• {orig_name}: Tên tệp gốc có phần mở rộng\n• {name}: Tên tệp không có phần mở rộng\n• {ext}: Đuôi tệp (ví dụ: .png, .mp4)\n• {file_index}: Số file tuần tự trong bài (01, 02)\n• {post_index}: Bộ đếm bài tuần tự (001, 002)",
+        "type": "info"
+      },
+      {
+        "heading": "Xem trước và vệ sinh trực tiếp theo thời gian thực",
+        "body": "Bản xem trước mẫu trực tiếp sẽ cập nhật ngay lập tức khi bạn chỉnh sửa mẫu hoặc nhấp vào khối thẻ. Các ký tự Windows không hợp lệ (\\, /, :, *, ?, \", <, >, |) và dấu chấm/dấu cách ở cuối sẽ tự động được khử trùng để ngăn ngừa lỗi hệ thống tệp.",
+        "type": "tip"
+      }
+    ]
+  },
+  {
     "title": "Tham khảo chú giải công cụ hoàn chỉnh",
     "icon": "💡",
     "summary": "Bảng tóm tắt nhanh giải thích mọi nút, biểu tượng và huy hiệu trên giao diện.",
@@ -388,6 +474,11 @@
         "heading": "Thử lại các hành động theo phương thức",
         "body": "• 🔗 Mở bài: Mở bài nguồn trên Kemono/Coomer trong trình duyệt web của bạn.\n• 📥 Kiểm tra liên kết: Kiểm tra hoặc tải xuống tệp trực tiếp trong trình duyệt của bạn.\n• 🔁 Đã thử Nx: Hiển thị số lần file đã được thử lại.\n• 🛑 5/5 Số lần thử lại tối đa: Cho biết tính năng tự động thử lại đã ngừng thử tệp này.",
         "type": "info"
+      },
+      {
+        "heading": "Kiểm soát bộ chọn bài đăng và người xác minh lưu trữ",
+        "body": "• 🖼️ Chọn Bài viết: Mở trình duyệt danh mục tương tác để chọn kỹ các bài đăng và tệp đính kèm trước khi tải xuống.\n• 🔍 Xác minh Lưu trữ: Quét bộ nhớ cục bộ để kiểm tra xem các tệp đã lưu trữ có còn tồn tại trên đĩa hay không.\n• ⚠️ Huy hiệu bị thiếu: Các chỉ báo màu đỏ và màu hổ phách làm nổi bật các tệp bị thiếu và các bản tải xuống chưa hoàn tất.\n• 🏷️ Mẫu tên tệp: Trình thiết kế chip thẻ tương tác với bản xem trước trực tiếp và định dạng tùy chỉnh.",
+        "type": "tip"
       }
     ]
   }

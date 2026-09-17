@@ -13,6 +13,7 @@ import datetime
 import hashlib
 import threading
 import requests
+import urllib.parse
 from collections import deque, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any, Optional, Callable
@@ -295,6 +296,74 @@ class KemonoDownloader:
             rp = f"/{rp}"
         return rp.lower()
 
+    def _resolve_pawchive_deferred_attachments(self, post: Dict[str, Any], domain: str = "pawchive.pw") -> int:
+        """
+        Fetches the post HTML page and resolves signed t1.pawchive.pw temporary download URLs
+        for attachments flagged with 'deferred: True' (oversized files in Pawchive's 30-day temporary storage).
+        """
+        if not isinstance(post, dict):
+            return 0
+        attachments = post.get("attachments", [])
+        if not isinstance(attachments, list):
+            return 0
+        deferred_items = [
+            a for a in attachments
+            if isinstance(a, dict) and a.get("deferred") and not a.get("path")
+        ]
+        if not deferred_items:
+            return 0
+
+        post_id = str(post.get("id") or "")
+        service = post.get("service") or ""
+        user_id = str(post.get("user") or "")
+        if not post_id or not service or not user_id:
+            return 0
+
+        eff_domain = domain if "pawchive" in (domain or "") else "pawchive.pw"
+        page_url = f"https://{eff_domain}/{service}/user/{user_id}/post/{post_id}"
+        logger.debug(f"Fetching post HTML to resolve {len(deferred_items)} temporary oversized file(s): {page_url}", category="downloader")
+
+        session = requests.Session()
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Referer": f"https://{eff_domain}/"
+        })
+        try:
+            resp = session.get(page_url, timeout=20)
+            if resp.status_code != 200 or not resp.text:
+                logger.warning(f"Could not fetch HTML for post {post_id} (HTTP {resp.status_code}) to resolve temporary files", category="downloader")
+                return 0
+
+            matches = re.findall(r'(?:href|src)=["\'](https://t1\.pawchive\.pw/f/[^"\']+)["\']', resp.text)
+            temp_map: Dict[str, str] = {}
+            for raw_u in matches:
+                u = raw_u.replace("&amp;", "&")
+                path_part = u.split("?")[0].split("/")[-1]
+                name = urllib.parse.unquote(path_part)
+                if name and name not in temp_map:
+                    temp_map[name] = u
+
+            if not temp_map:
+                logger.info(f"Post {post_id} has {len(deferred_items)} deferred attachment(s), but temporary links are expired or unavailable", category="downloader")
+                return 0
+
+            resolved_count = 0
+            lower_map = {k.lower(): v for k, v in temp_map.items()}
+            for att in deferred_items:
+                att_name = att.get("name") or ""
+                matched_url = temp_map.get(att_name) or lower_map.get(att_name.lower())
+                if matched_url:
+                    att["path"] = matched_url
+                    att["is_temporary"] = True
+                    resolved_count += 1
+
+            if resolved_count > 0:
+                logger.info(f"✨ Resolved {resolved_count}/{len(deferred_items)} temporary oversized file(s) from t1.pawchive.pw for post {post_id}", category="downloader")
+            return resolved_count
+        except Exception as e:
+            logger.warning(f"Failed resolving temporary attachments for post {post_id}: {e}", category="downloader")
+            return 0
+
     def build_tasks_from_posts(
         self,
         posts: List[Dict[str, Any]],
@@ -572,12 +641,51 @@ class KemonoDownloader:
                 except Exception as ex:
                     logger.debug(f"Could not save post_info.txt for {post_id}: {ex}", category="file")
 
+            # Automatically record external cloud links & embeds in download archive database
+            if self.archive_manager and self.archive_manager.is_enabled:
+                try:
+                    ext_links = LinkExtractor.extract_links_from_post(post)
+                    for _plat, _urls in ext_links.items():
+                        for _u in _urls:
+                            self.archive_manager.record_link(
+                                service=service,
+                                creator_id=user_id or post_user,
+                                post_id=post_id,
+                                url=_u,
+                                creator_name=creator_name,
+                                post_title=post_title,
+                                link_title=f"[{_plat.upper()}] {_u}"
+                            )
+                    embed_links = LinkExtractor.extract_embed_urls(post)
+                    for _eu in embed_links:
+                        self.archive_manager.record_link(
+                            service=service,
+                            creator_id=user_id or post_user,
+                            post_id=post_id,
+                            url=_eu,
+                            creator_name=creator_name,
+                            post_title=post_title,
+                            link_title=_eu
+                        )
+                except Exception as _ar_l_err:
+                    logger.debug(f"Could not archive links for post {post_id}: {_ar_l_err}", category="archive")
+
             # Collect files: post.file and post.attachments with deduplication
             files_to_process = []
             seen_post_file_keys: Dict[str, int] = {}
 
             main_file = post.get("file")
             attachments = post.get("attachments", []) or []
+
+            # If Pawchive post has deferred temporary attachments, resolve signed download URLs from post HTML
+            if getattr(options, "download_pawchive_temporary_files", True):
+                has_deferred = any(
+                    isinstance(a, dict) and a.get("deferred") and not a.get("path")
+                    for a in attachments
+                )
+                if has_deferred and ("pawchive" in (domain or "") or "pawchive" in str(post.get("origin", "")) or "pawchive" in str(post.get("domain", ""))):
+                    self._resolve_pawchive_deferred_attachments(post, domain=domain or "pawchive.pw")
+                    attachments = post.get("attachments", []) or []
 
             # Check if post contains attachments or inline content images
             has_valid_attachments = any(
@@ -720,22 +828,32 @@ class KemonoDownloader:
                     original_url = f"https://e1.cum.st/media/{norm_path}/{primary_variant}"
                     norm_path = f"/{norm_path[:2]}/{norm_path[2:4]}/{norm_path}.{ext}"  # legacy fallback path
                 elif norm_path.startswith("http://") or norm_path.startswith("https://"):
-                    # Preserve the original CDN URL as the first candidate
-                    original_url = norm_path.split("?")[0]  # strip existing query params
-                    # Check for e1.cum.st/media/ pattern — keep as-is, extract a norm_path for fallbacks
-                    m_cumst = re.match(r'https?://[^/]*cum\.st/media/([0-9a-f]{64})/([^?#]+)', norm_path)
-                    if m_cumst:
-                        storage_key = m_cumst.group(1)
-                        variant = m_cumst.group(2)  # e.g. "original.jpg"
-                        ext = os.path.splitext(variant)[1].lstrip(".") or "jpg"
-                        norm_path = f"/{storage_key[:2]}/{storage_key[2:4]}/{storage_key}.{ext}"
+                    is_pawchive_temp = "t1.pawchive.pw" in norm_path or bool(fobj.get("is_temporary"))
+                    if is_pawchive_temp:
+                        # Pawchive temporary oversized storage on t1.pawchive.pw uses signed URLs (?e=...&s=...)
+                        # Preserve full signed URL with query parameters intact
+                        original_url = norm_path
+                        # Clean relative path for deduplication and file_id: /f/<hash>/<filename>
+                        path_without_query = norm_path.split("?")[0]
+                        clean_part = path_without_query.split("://")[-1].partition("/")[-1]
+                        norm_path = f"/{clean_part}" if not clean_part.startswith("/") else clean_part
                     else:
-                        match_data = re.search(r'/(?:data|thumbnail/data)?(/[0-9a-f]{2}/[0-9a-f]{2}/[^\s?#]+)', norm_path, re.IGNORECASE)
-                        if match_data:
-                            norm_path = match_data.group(1)
+                        # Preserve the original CDN URL as the first candidate
+                        original_url = norm_path.split("?")[0]  # strip existing query params
+                        # Check for e1.cum.st/media/ pattern — keep as-is, extract a norm_path for fallbacks
+                        m_cumst = re.match(r'https?://[^/]*cum\.st/media/([0-9a-f]{64})/([^?#]+)', norm_path)
+                        if m_cumst:
+                            storage_key = m_cumst.group(1)
+                            variant = m_cumst.group(2)  # e.g. "original.jpg"
+                            ext = os.path.splitext(variant)[1].lstrip(".") or "jpg"
+                            norm_path = f"/{storage_key[:2]}/{storage_key[2:4]}/{storage_key}.{ext}"
                         else:
-                            norm_path = norm_path.split("://")[-1].partition("/")[-1]
-                            norm_path = f"/{norm_path}" if not norm_path.startswith("/") else norm_path
+                            match_data = re.search(r'/(?:data|thumbnail/data)?(/[0-9a-f]{2}/[0-9a-f]{2}/[^\s?#]+)', norm_path, re.IGNORECASE)
+                            if match_data:
+                                norm_path = match_data.group(1)
+                            else:
+                                norm_path = norm_path.split("://")[-1].partition("/")[-1]
+                                norm_path = f"/{norm_path}" if not norm_path.startswith("/") else norm_path
 
                 # Ensure path starts with / and doesn't duplicate /data
                 clean_rel = norm_path if norm_path.startswith("/") else f"/{norm_path}"
@@ -766,7 +884,11 @@ class KemonoDownloader:
                     post_index=post_idx,
                     file_index=file_idx,
                     options=options,
-                    folder_index=seq_idx
+                    folder_index=seq_idx,
+                    post_id=post_id,
+                    artist=creator_name,
+                    service=service,
+                    user_id=str(post.get("user") or "")
                 )
                 # Strip trailing punctuation/commas that would corrupt the ?f= CDN query parameter
                 # and trigger ERR_RESPONSE_HEADERS_MULTIPLE_CONTENT_DISPOSITION in browsers.
@@ -805,42 +927,48 @@ class KemonoDownloader:
                     if orig_ext in MediaTypes.VIDEO_EXTS:
                         sanitized_name = f"{os.path.splitext(sanitized_name)[0]}.jpg"
                 else:
-                    # Always try the original source URL first if we have one
-                    if original_url:
-                        candidate_urls.append(f"{original_url}?f={sanitized_name}")
+                    is_pawchive_temp = bool(original_url and "t1.pawchive.pw" in original_url) or bool(fobj.get("is_temporary"))
+                    if is_pawchive_temp and original_url:
+                        # Temporary oversized files on t1.pawchive.pw are signed URLs.
+                        # Append the signed URL directly as the primary candidate (do not fallback to file.pawchive.pw)
+                        candidate_urls.append(original_url)
+                    else:
+                        # Always try the original source URL first if we have one
+                        if original_url:
+                            candidate_urls.append(f"{original_url}?f={sanitized_name}")
 
-                    if "cum.st" in effective_domain:
-                        # Append any secondary variants (e.g. 720p.mp4, 240p.mp4) from the API as immediate fallbacks
-                        if is_storage_key:
-                            for ev in extra_cum_variants:
-                                u_ev = f"https://e1.cum.st/media/{rel_path}/{ev}"
-                                if u_ev not in candidate_urls:
-                                    candidate_urls.append(u_ev)
-                        elif not original_url:
-                            candidate_urls.append(f"https://cum.st/data{clean_rel}?f={sanitized_name}")
-                        # Fallbacks
-                        candidate_urls.append(f"https://cum.st/data{clean_rel}")
-                        candidate_urls.append(f"https://img.cum.st/data{clean_rel}")
-                    elif "pawchive" in effective_domain:
-                        # Only use confirmed live Pawchive mirrors
-                        if "file.pawchive.pw" not in (original_url or ""):
+                        if "cum.st" in effective_domain:
+                            # Append any secondary variants (e.g. 720p.mp4, 240p.mp4) from the API as immediate fallbacks
+                            if is_storage_key:
+                                for ev in extra_cum_variants:
+                                    u_ev = f"https://e1.cum.st/media/{rel_path}/{ev}"
+                                    if u_ev not in candidate_urls:
+                                        candidate_urls.append(u_ev)
+                            elif not original_url:
+                                candidate_urls.append(f"https://cum.st/data{clean_rel}?f={sanitized_name}")
+                            # Fallbacks
+                            candidate_urls.append(f"https://cum.st/data{clean_rel}")
+                            candidate_urls.append(f"https://img.cum.st/data{clean_rel}")
+                        elif "pawchive" in effective_domain:
+                            # Only use confirmed live Pawchive mirrors
+                            if "file.pawchive.pw" not in (original_url or ""):
+                                candidate_urls.append(f"https://file.pawchive.pw/data{clean_rel}?f={sanitized_name}")
+                            # Fallback mirror for missing / preview files
+                            candidate_urls.append(f"https://img.pawchive.pw/thumbnail/data{clean_rel}")
+                        elif "coomer" in effective_domain:
+                            for sub in ["c1", "c2", "c3", "n1", "n2", "n3", "n4"]:
+                                u = f"https://{sub}.coomer.su/data{clean_rel}?f={sanitized_name}"
+                                if u not in candidate_urls:
+                                    candidate_urls.append(u)
+                            candidate_urls.append(f"https://img.coomer.su/thumbnail/data{clean_rel}")
+                        else:  # kemono.su / default
+                            for sub in ["c1", "c2", "c3", "n1", "n2", "n3", "n4"]:
+                                u = f"https://{sub}.kemono.su/data{clean_rel}?f={sanitized_name}"
+                                if u not in candidate_urls:
+                                    candidate_urls.append(u)
                             candidate_urls.append(f"https://file.pawchive.pw/data{clean_rel}?f={sanitized_name}")
-                        # Fallback mirror for missing / preview files
-                        candidate_urls.append(f"https://img.pawchive.pw/thumbnail/data{clean_rel}")
-                    elif "coomer" in effective_domain:
-                        for sub in ["c1", "c2", "c3", "n1", "n2", "n3", "n4"]:
-                            u = f"https://{sub}.coomer.su/data{clean_rel}?f={sanitized_name}"
-                            if u not in candidate_urls:
-                                candidate_urls.append(u)
-                        candidate_urls.append(f"https://img.coomer.su/thumbnail/data{clean_rel}")
-                    else:  # kemono.su / default
-                        for sub in ["c1", "c2", "c3", "n1", "n2", "n3", "n4"]:
-                            u = f"https://{sub}.kemono.su/data{clean_rel}?f={sanitized_name}"
-                            if u not in candidate_urls:
-                                candidate_urls.append(u)
-                        candidate_urls.append(f"https://file.pawchive.pw/data{clean_rel}?f={sanitized_name}")
-                        candidate_urls.append(f"https://img.kemono.su/thumbnail/data{clean_rel}")
-                        candidate_urls.append(f"https://file.pawchive.pw/data{clean_rel}?f={sanitized_name}")
+                            candidate_urls.append(f"https://img.kemono.su/thumbnail/data{clean_rel}")
+                            candidate_urls.append(f"https://file.pawchive.pw/data{clean_rel}?f={sanitized_name}")
 
                 file_url = candidate_urls[0] if candidate_urls else f"https://file.pawchive.pw/data{clean_rel}?f={sanitized_name}"
                 target_path = os.path.join(post_folder, sanitized_name)
@@ -897,7 +1025,7 @@ class KemonoDownloader:
 
                     # Also update the candidate URLs to use the disambiguated display name
                     candidate_urls = [
-                        u.replace(f"?f={sanitized_name}", f"?f={disambig_name}") if f"?f={sanitized_name}" in u else u
+                        u.replace(f"?f={sanitized_name}", f"?f={disambig_name}").replace(f"&f={sanitized_name}", f"&f={disambig_name}")
                         for u in candidate_urls
                     ]
                     file_url = candidate_urls[0] if candidate_urls else file_url
@@ -975,6 +1103,11 @@ class KemonoDownloader:
                     e_target_path = os.path.join(post_folder, e_name)
                     e_file_id = f"embed_{post_id}_{embed_idx}"
 
+                    if self.archive_manager and self.archive_manager.is_enabled:
+                        if self.archive_manager.is_archived(service=service, post_id=post_id, file_id=e_file_id):
+                            logger.info(f"📦 Skipping archived embedded media: '{e_name}' (present in download archive)", category="file")
+                            continue
+
                     if not options.keep_duplicates and os.path.exists(e_target_path) and os.path.getsize(e_target_path) > 0:
                         continue
 
@@ -1009,6 +1142,21 @@ class KemonoDownloader:
                     seen_urls.add(r["url"])
                     deduped_records.append(r)
             self.harvested_links_records = deduped_records
+
+            if self.archive_manager and self.archive_manager.is_enabled:
+                for r in deduped_records:
+                    try:
+                        self.archive_manager.record_link(
+                            service=r.get("service", ""),
+                            creator_id=r.get("creator_id", ""),
+                            post_id=r.get("post_id", ""),
+                            url=r.get("url", ""),
+                            creator_name=r.get("creator_name", ""),
+                            post_title=r.get("post_title", ""),
+                            link_title=r.get("title", "")
+                        )
+                    except Exception as _ar_rec_err:
+                        pass
 
             total = sum(len(v) for v in self.harvested_links.values())
             if total:
@@ -1354,7 +1502,11 @@ class KemonoDownloader:
                                     post_id=task.post_id,
                                     file_id=task.file_id,
                                     file_hash=task.expected_sha256,
-                                    filename=task.filename
+                                    filename=task.filename,
+                                    creator_name=task.creator_name,
+                                    post_title=task.post_title,
+                                    file_size=task.file_size,
+                                    file_path=task.target_path
                                 )
                             if self.on_task_status_changed:
                                 self.on_task_status_changed(task)
@@ -1603,7 +1755,11 @@ class KemonoDownloader:
                     post_id=task.post_id,
                     file_id=task.file_id,
                     file_hash=task.expected_sha256,
-                    filename=task.filename
+                    filename=task.filename,
+                    creator_name=task.creator_name,
+                    post_title=task.post_title,
+                    file_size=task.downloaded_bytes,
+                    file_path=found_existing_path
                 )
             if self.on_task_status_changed:
                 self.on_task_status_changed(task)
@@ -1644,6 +1800,19 @@ class KemonoDownloader:
                 task.status = "completed"
                 task.progress_pct = 100
                 task.eta_str = "Done"
+                if self.archive_manager and self.archive_manager.is_enabled:
+                    self.archive_manager.record_file(
+                        service=task.service,
+                        creator_id=task.user_id,
+                        post_id=task.post_id,
+                        file_id=task.file_id,
+                        file_hash=task.expected_sha256,
+                        filename=task.filename,
+                        creator_name=task.creator_name,
+                        post_title=task.post_title,
+                        file_size=task.downloaded_bytes,
+                        file_path=task.target_path
+                    )
                 if self.on_task_status_changed:
                     self.on_task_status_changed(task)
                 logger.success(f"✔ [yt-dlp] {task.filename} successfully downloaded", category="ytdlp")

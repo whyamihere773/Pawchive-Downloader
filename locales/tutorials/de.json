@@ -365,6 +365,92 @@
     ]
   },
   {
+    "title": "Interaktive Beitragsauswahl und -prüfung",
+    "icon": "🖼️",
+    "summary": "Vorschau von Katalogbeiträgen, Raster- und Listenmodus, Beitragsinspektor, detaillierte Anhangsauswahl und Vollbild-Lightbox.",
+    "content": [
+      {
+        "heading": "Eröffnung der Beitragsauswahl",
+        "body": "Klicken Sie auf einer beliebigen Erstellerkarte neben der Schaltfläche „Herunterladen“ auf „Beiträge auswählen…“. Der interaktive Selektor lädt die Beiträge des Erstellers, sodass Sie genau das auswählen können, was Sie herunterladen möchten, anstatt alles blind durchzusuchen.",
+        "type": "intro"
+      },
+      {
+        "heading": "Raster- und Listenansichtsmodi",
+        "body": "• Rastermodus: Zeigt visuelle Vorschaukarten mit Miniaturansichten der Medien, Veröffentlichungsdaten und Anzahl der Anhänge an.\n• Listenmodus: Ein kompaktes tabellarisches Layout mit Beitragstiteln, Veröffentlichungsdaten, Anhangslisten und Direktprüfschaltflächen zum schnellen Durchsuchen großer Kataloge.",
+        "type": "tip"
+      },
+      {
+        "heading": "Drilldown-Post-Inspektor",
+        "body": "Klicken Sie auf eine beliebige Postkarte oder Zeile, um die Schublade „Post Inspector“ zu öffnen. Sie können den vollständigen Textkörper des Beitrags lesen, eingebettete Archivkennwörter durch Kopieren mit einem Klick anzeigen und Kontrollkästchen verwenden, um einzelne Anhänge auszuwählen oder die Auswahl aufzuheben.",
+        "type": "info"
+      },
+      {
+        "heading": "Vollbild-Medien-Lightbox",
+        "body": "Klicken Sie im Inspektor auf die Miniaturansicht eines Anhangs, um den Lightbox-Visualizer im Vollbildmodus zu öffnen. Durchsuchen Sie hochauflösende Medien mit den Pfeiltasten, drücken Sie die Leertaste, um die Dateiauswahl umzuschalten, oder drücken Sie zum Schließen die Escape-Taste.",
+        "type": "tip"
+      },
+      {
+        "heading": "Dynamische Auswahlzähler und schnelle Stapelverarbeitung",
+        "body": "Der Live-Zähler in der Fußzeile zeigt die genaue Anzahl der ausgewählten Beiträge und Dateien im gesamten Erstellerkatalog an. Verwenden Sie „Alle auswählen“ oder „Alle abwählen“, um alle sichtbaren Elemente mit einem einzigen Klick umzuschalten.",
+        "type": "info"
+      }
+    ]
+  },
+  {
+    "title": "Laden Sie Archive & File Verifier herunter",
+    "icon": "🗄️",
+    "summary": "Offline-Nachkatalogisierung, Datenträgerüberprüfung mit einem Klick, Indikatoren für fehlende Dateien und Datenbankbereinigung.",
+    "content": [
+      {
+        "heading": "Dedizierte Archivdatenbank",
+        "body": "Die Registerkarte „Archiv“ bietet eine vollständige Offline-Bibliothek aller Ersteller, Beiträge und Dateien, die jemals von der App heruntergeladen wurden. Suchen Sie sofort nach Namen von Erstellern oder veröffentlichen Sie Titel, ohne dass eine aktive Internetverbindung erforderlich ist.",
+        "type": "intro"
+      },
+      {
+        "heading": "Festplattenüberprüfungs-Engine",
+        "body": "Klicken Sie neben einem beliebigen Ersteller im Archiv auf die Schaltfläche 🔍Überprüfen. Pawchive scannt Ihre Speicherlaufwerke, um sicherzustellen, dass alle katalogisierten Dateien noch intakt und auf der Festplatte zugänglich sind.",
+        "type": "tip"
+      },
+      {
+        "heading": "Indikatoren für fehlende Dateien (rote/gelbe Abzeichen)",
+        "body": "Wenn Dateien verschoben, umbenannt oder von der Festplatte gelöscht wurden, wird die Postkarte in Gelb/Rot mit einem genauen Zähler für fehlende Dateien (⚠️ X fehlt) hervorgehoben. In der erweiterten Dateiliste werden fehlende Dateien rot markiert, sodass Sie unvollständige Downloads leicht erkennen können.",
+        "type": "warning"
+      },
+      {
+        "heading": "Fehlende Datensätze entfernen",
+        "body": "Wenn bei der Überprüfung fehlende Dateien festgestellt werden, wird eine gelbe Bannerschaltfläche „Fehlende entfernen“ angezeigt. Wenn Sie darauf klicken, können Sie die Datenbankeinträge mit einem Klick auf fehlende Dateien bereinigen und so Ihr Archiv sauber halten.",
+        "type": "info"
+      },
+      {
+        "heading": "Zusammenklappbarer Übersichtsheader",
+        "body": "Klicken Sie auf das Minimierungs-Chevron (▾/▸) oben rechts auf der Übersichtskarte der Archivdatenbank, um das Statistik- und Aktionsfeld zu minimieren und Ihren vertikalen Anzeigebereich zum Durchsuchen von Erstellern und Beiträgen zu maximieren.",
+        "type": "tip"
+      }
+    ]
+  },
+  {
+    "title": "Benutzerdefinierter Dateinamen-Vorlagen-Builder",
+    "icon": "🏷️",
+    "summary": "Interaktive Tag-Chips, anpassbare Dateibenennungsformate, Live-Vorschau und Dateisystembereinigung.",
+    "content": [
+      {
+        "heading": "Erstellen benutzerdefinierter Benennungsmuster",
+        "body": "Navigieren Sie zu Einstellungen → Speicherung und Dateiverarbeitung → Dateinamenformat und wählen Sie „Benutzerdefiniertes Muster (klicken Sie unten auf die Chips)“. Erstellen Sie benutzerdefinierte Namensvorlagen, indem Sie einfach auf die interaktiven Tag-Chips klicken.",
+        "type": "intro"
+      },
+      {
+        "heading": "Verfügbare Tag-Chips",
+        "body": "• {artist}: Anzeigename des Erstellers oder Künstlers\n• {title}: Titel des Beitrags\n• {post_id}: Eindeutige Beitragskennung\n• {Datum}: Veröffentlichungsdatum (JJJJ-MM-TT)\n• {Jahr}, {Monat}, {Tag}: Einzelne Datumskomponenten\n• {orig_name}: Originaldateiname mit Erweiterung\n• {name}: Dateiname ohne Erweiterung\n• {ext}: Dateierweiterung (z. B. .png, .mp4)\n• {file_index}: Fortlaufende Dateinummer innerhalb des Beitrags (01, 02)\n• {post_index}: Sequentielle Post-Zähler (001, 002)",
+        "type": "info"
+      },
+      {
+        "heading": "Live-Vorschau und Bereinigung in Echtzeit",
+        "body": "Eine Live-Mustervorschau wird sofort aktualisiert, wenn Sie das Muster bearbeiten oder auf Tag-Chips klicken. Unzulässige Windows-Zeichen (\\, /, :, *, ?, \", <, >, |) und nachfolgende Punkte/Leerzeichen werden automatisch bereinigt, um Dateisystemfehler zu verhindern.",
+        "type": "tip"
+      }
+    ]
+  },
+  {
     "title": "Vollständige Tooltip-Referenz",
     "icon": "💡",
     "summary": "Kurzes Spickzettel mit Erläuterungen zu allen Schaltflächen, Symbolen und Abzeichen auf der Benutzeroberfläche.",
@@ -388,6 +474,11 @@
         "heading": "Modale Aktionen wiederholen",
         "body": "• 🔗 Beitrag öffnen: Öffnet den Quellbeitrag auf Kemono/Coomer in Ihrem Webbrowser.\n• 📥 Testlink: Testet oder lädt die Datei direkt in Ihrem Browser herunter.\n• 🔁 Versucht Nx: Zeigt an, wie oft die Datei erneut versucht wurde.\n• 🛑 5/5 maximale Wiederholungsversuche: Zeigt an, dass der automatische Wiederholungsversuch diese Datei nicht mehr versucht.",
         "type": "info"
+      },
+      {
+        "heading": "Post-Selector- und Archiv-Verifier-Steuerelemente",
+        "body": "• 🖼️ Beiträge auswählen: Öffnet den interaktiven Katalogbrowser, um Beiträge und Anhänge vor dem Herunterladen manuell auszuwählen.\n• 🔍 Archiv überprüfen: Durchsucht den lokalen Speicher, um zu überprüfen, ob archivierte Dateien noch auf der Festplatte vorhanden sind.\n• ⚠️ Fehlende Abzeichen: Rote und gelbe Indikatoren weisen auf fehlende Dateien und unvollständige Downloads hin.\n• 🏷️ Dateinamenvorlage: Interaktiver Tag-Chip-Designer mit Live-Vorschau und benutzerdefinierter Formatierung.",
+        "type": "tip"
       }
     ]
   }

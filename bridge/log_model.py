@@ -18,7 +18,10 @@ class _ThreadSafeLogDispatcher(QObject):
 
     def push(self, entry: LogEntry):
         """Called from any thread — safely queues the entry to the main thread."""
-        self.entryReceived.emit(entry)
+        try:
+            self.entryReceived.emit(entry)
+        except (RuntimeError, ReferenceError):
+            pass
 
 
 # Module-level singleton dispatcher — created once on the main thread

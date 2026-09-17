@@ -29,7 +29,7 @@ ApplicationWindow {
     }
 
     property bool showConsole: true
-    property int currentTab: 0 // 0: Downloader, 1: Queue, 2: Watchlist, 3: Decompressor, 4: Link Vault, 5: Scheduler, 6: Known, 7: History, 8: Settings
+    property int currentTab: 0 // 0: Downloader, 1: Queue, 2: Watchlist, 3: Decompressor, 4: Link Vault, 5: Scheduler, 6: Known, 7: History, 8: Archive, 9: Settings
 
     onCurrentTabChanged: {
         if (typeof tabsFlickable !== "undefined" && tabsFlickable && tabsFlickable.ensureIndexVisible) {
@@ -462,13 +462,13 @@ ApplicationWindow {
                     }
                 }
 
-                // Tab: History (7th)
+                // Tab: Archive (7th — gallery-dl download archive database)
                 Rectangle {
                     width: tab7Row.implicitWidth + 18
                     height: 30
                     radius: 6
                     color: appWindow.currentTab === 7 ? "#181B22" : (tab7Mouse.containsMouse ? "#141720" : "transparent")
-                    border.color: appWindow.currentTab === 7 ? "#38BDF8" : "transparent"
+                    border.color: appWindow.currentTab === 7 ? "#2DD4BF" : "transparent"
                     border.width: 1
 
                     scale: tab7Mouse.pressed ? 0.94 : (tab7Mouse.containsMouse ? 1.035 : 1.0)
@@ -484,9 +484,9 @@ ApplicationWindow {
                         id: tab7Row
                         anchors.centerIn: parent
                         spacing: 6
-                        Text { text: "📜"; font.pixelSize: 12 }
+                        Text { text: "🗃️"; font.pixelSize: 12 }
                         Text {
-                            text: appWindow.tr("tab_history", "History")
+                            text: appWindow.tr("tab_archive", "Archive")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
                             font.weight: appWindow.currentTab === 7 ? 600 : Font.Normal
@@ -501,12 +501,12 @@ ApplicationWindow {
                         cursorShape: Qt.PointingHandCursor
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
-                        ToolTip.text: appWindow.tr("tab_history_tip", "Completed downloads and past batch sessions")
+                        ToolTip.text: appWindow.tr("tab_archive_tip", "Download archive database — persistent record of all downloaded files")
                         onClicked: appWindow.currentTab = 7
                     }
                 }
 
-                // Tab: Settings (8th — terminal tab)
+                // Tab: History (8th)
                 Rectangle {
                     width: tab8Row.implicitWidth + 18
                     height: 30
@@ -528,9 +528,9 @@ ApplicationWindow {
                         id: tab8Row
                         anchors.centerIn: parent
                         spacing: 6
-                        Text { text: "⚙️"; font.pixelSize: 12 }
+                        Text { text: "📜"; font.pixelSize: 12 }
                         Text {
-                            text: appWindow.tr("tab_settings", "Settings")
+                            text: appWindow.tr("tab_history", "History")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
                             font.weight: appWindow.currentTab === 8 ? 600 : Font.Normal
@@ -545,8 +545,52 @@ ApplicationWindow {
                         cursorShape: Qt.PointingHandCursor
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
-                        ToolTip.text: appWindow.tr("tab_settings_tip", "Global application and network configuration")
+                        ToolTip.text: appWindow.tr("tab_history_tip", "Completed downloads and past batch sessions")
                         onClicked: appWindow.currentTab = 8
+                    }
+                }
+
+                // Tab: Settings (9th — terminal tab)
+                Rectangle {
+                    width: tab9Row.implicitWidth + 18
+                    height: 30
+                    radius: 6
+                    color: appWindow.currentTab === 9 ? "#181B22" : (tab9Mouse.containsMouse ? "#141720" : "transparent")
+                    border.color: appWindow.currentTab === 9 ? "#38BDF8" : "transparent"
+                    border.width: 1
+
+                    scale: tab9Mouse.pressed ? 0.94 : (tab9Mouse.containsMouse ? 1.035 : 1.0)
+                    transformOrigin: Item.Center
+
+                    Behavior on scale {
+                        NumberAnimation { duration: 180; easing.type: Easing.OutBack; easing.overshoot: 1.5 }
+                    }
+                    Behavior on color { ColorAnimation { duration: 150; easing.type: Easing.OutCubic } }
+                    Behavior on border.color { ColorAnimation { duration: 150; easing.type: Easing.OutCubic } }
+
+                    Row {
+                        id: tab9Row
+                        anchors.centerIn: parent
+                        spacing: 6
+                        Text { text: "⚙️"; font.pixelSize: 12 }
+                        Text {
+                            text: appWindow.tr("tab_settings", "Settings")
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 12
+                            font.weight: appWindow.currentTab === 9 ? 600 : Font.Normal
+                            color: appWindow.currentTab === 9 ? "#F8FAFC" : "#94A3B8"
+                        }
+                    }
+
+                    MouseArea {
+                        id: tab9Mouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 400
+                        ToolTip.text: appWindow.tr("tab_settings_tip", "Global application and network configuration")
+                        onClicked: appWindow.currentTab = 9
                     }
                 }
             } // tabsRow
@@ -919,7 +963,7 @@ ApplicationWindow {
                 if (appBridge) appBridge.addToQueue()
             }
             onSettingsRequested: {
-                appWindow.currentTab = 8
+                appWindow.currentTab = 9
             }
         }
 
@@ -1133,6 +1177,59 @@ ApplicationWindow {
                             ? appWindow.tr("tip_extract_links", "Scan posts for external cloud links (Mega.nz, Drive, Dropbox, etc.) — no files downloaded")
                             : appWindow.tr("tip_start_download", "Fetch posts from the URL and start downloading immediately")
                         onClicked: if (appBridge) appBridge.startDownload()
+                    }
+                }
+
+                // ── Select Posts (Interactive Thumbnail Browser) ───────────
+                Rectangle {
+                    id: selectPostsBtn
+                    property bool isLoading: appBridge ? appBridge.postSelectionLoading : false
+                    Layout.preferredWidth: Math.max(124, selectPostsRow.implicitWidth + 24)
+                    Layout.preferredHeight: 34
+                    radius: 7
+                    color: selectPostsBtn.isLoading
+                        ? "#151F30"
+                        : (selectPostsMouse.containsMouse ? "#1A263C" : "#111827")
+                    border.color: selectPostsBtn.isLoading ? "#38BDF8" : (selectPostsMouse.containsMouse ? "#38BDF8" : "#2E3D59")
+                    border.width: 1
+
+                    scale: selectPostsMouse.pressed ? 0.94 : (selectPostsMouse.containsMouse ? 1.025 : 1.0)
+                    transformOrigin: Item.Center
+                    Behavior on scale { SpringAnimation { spring: 3.5; damping: 0.35; mass: 1.0 } }
+                    Behavior on color { ColorAnimation { duration: 120 } }
+                    Behavior on border.color { ColorAnimation { duration: 120 } }
+
+                    Row {
+                        id: selectPostsRow
+                        anchors.centerIn: parent
+                        spacing: 6
+                        Text {
+                            text: selectPostsBtn.isLoading ? "⏳" : "🖼️"
+                            font.pixelSize: 12
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+                        Text {
+                            text: selectPostsBtn.isLoading
+                                ? appWindow.tr("action_fetching_posts", "Fetching…")
+                                : appWindow.tr("action_select_posts", "Select Posts…")
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 12
+                            font.weight: 600
+                            color: selectPostsBtn.isLoading ? "#38BDF8" : "#E2E8F0"
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+                    }
+
+                    MouseArea {
+                        id: selectPostsMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: selectPostsBtn.isLoading ? Qt.ArrowCursor : Qt.PointingHandCursor
+                        enabled: !selectPostsBtn.isLoading
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 400
+                        ToolTip.text: appWindow.tr("tip_select_posts", "Fetch and visually select specific posts and thumbnails before downloading")
+                        onClicked: if (appBridge) appBridge.fetchPostsForSelection()
                     }
                 }
 
@@ -1895,7 +1992,7 @@ ApplicationWindow {
                             KnownManagerView { anchors.fill: parent; bridge: appBridge }
                         }
 
-                        // Tab 7: History View with Newtonian slide & fade transition
+                        // Tab 7: Archive View with Newtonian slide & fade transition
                         Item {
                             opacity: appWindow.currentTab === 7 ? 1.0 : 0.0
                             y: appWindow.currentTab === 7 ? 0 : 10
@@ -1905,10 +2002,10 @@ ApplicationWindow {
                             Behavior on y { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
                             Behavior on scale { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
 
-                            HistoryView { anchors.fill: parent; bridge: appBridge }
+                            ArchiveView { anchors.fill: parent; bridge: appBridge }
                         }
 
-                        // Tab 8: Settings View with Newtonian slide & fade transition
+                        // Tab 8: History View with Newtonian slide & fade transition
                         Item {
                             opacity: appWindow.currentTab === 8 ? 1.0 : 0.0
                             y: appWindow.currentTab === 8 ? 0 : 10
@@ -1918,7 +2015,20 @@ ApplicationWindow {
                             Behavior on y { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
                             Behavior on scale { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
 
-                            SettingsView { anchors.fill: parent; bridge: appBridge }
+                            HistoryView { anchors.fill: parent; bridge: appBridge }
+                        }
+
+                        // Tab 9: Settings View with Newtonian slide & fade transition
+                        Item {
+                            opacity: appWindow.currentTab === 9 ? 1.0 : 0.0
+                            y: appWindow.currentTab === 9 ? 0 : 10
+                            scale: appWindow.currentTab === 9 ? 1.0 : 0.985
+                            transformOrigin: Item.Center
+                            Behavior on opacity { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+                            Behavior on y { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
+                            Behavior on scale { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
+
+                            SettingsView { objectName: "settingsViewTab"; anchors.fill: parent; bridge: appBridge }
                         }
                     }
                 }
@@ -2235,6 +2345,25 @@ ApplicationWindow {
                 font.pixelSize: 12
                 font.weight: Font.DemiBold
                 color: "#FCD34D"
+            }
+        }
+    }
+
+    // ── Interactive Creator Post Selection Modal ──────────────────────────────
+    PostSelectionModal {
+        id: postSelectionModal
+        bridge: appBridge
+    }
+
+    Connections {
+        target: appBridge
+        function onPostSelectionReady(posts, creator, totalCount) {
+            postSelectionModal.openModal(posts, creator, totalCount)
+        }
+        function onPostSelectionError(msg) {
+            if (appBridge) {
+                appBridge.lastErrorMessage = msg
+                appBridge.hasError = true
             }
         }
     }

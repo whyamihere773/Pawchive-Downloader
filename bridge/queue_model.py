@@ -374,6 +374,9 @@ class QueueModel(QAbstractListModel):
     def addTasks(self, tasks: List[DownloadTask]):
         self.appendTasks(tasks)
 
+    def add_tasks(self, tasks: List[DownloadTask]):
+        return self.appendTasks(tasks)
+
     @Slot(str)
     def removeBatch(self, batch_id: str):
         if not batch_id:

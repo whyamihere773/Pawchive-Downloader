@@ -365,6 +365,92 @@
     ]
   },
   {
+    "title": "Sélection et inspecteur de messages interactifs",
+    "icon": "🖼️",
+    "summary": "Aperçu des publications du catalogue, modes Grille et Liste, Inspecteur de publication, sélection granulaire des pièces jointes et Lightbox plein écran.",
+    "content": [
+      {
+        "heading": "Sélection du message d'ouverture",
+        "body": "Cliquez sur « Sélectionner les publications… » à côté du bouton Télécharger sur n'importe quelle carte de créateur. Le sélecteur interactif charge les publications du créateur, vous permettant de sélectionner exactement ce que vous souhaitez télécharger au lieu de tout supprimer aveuglément.",
+        "type": "intro"
+      },
+      {
+        "heading": "Modes d'affichage Grille ou Liste",
+        "body": "• Mode Grille : affiche des cartes d'aperçu visuel avec des miniatures de médias, des dates de publication et le nombre de pièces jointes.\n• Mode Liste : une disposition tabulaire compacte affichant les titres des articles, les dates de publication, le nombre de pièces jointes et les boutons d'inspection directe pour une analyse rapide des catalogues volumineux.",
+        "type": "tip"
+      },
+      {
+        "heading": "Inspecteur de publication détaillé",
+        "body": "Cliquez sur n’importe quelle carte postale ou ligne pour ouvrir le tiroir Post Inspector. Vous pouvez lire le corps du texte intégral de la publication, révéler les mots de passe des archives intégrées avec une copie en 1 clic et utiliser des cases à cocher pour sélectionner ou désélectionner des pièces jointes individuelles.",
+        "type": "info"
+      },
+      {
+        "heading": "Lightbox multimédia plein écran",
+        "body": "Cliquez sur n’importe quelle vignette de pièce jointe dans l’inspecteur pour ouvrir le visualiseur Lightbox en plein écran. Parcourez les médias haute résolution à l'aide des touches fléchées, appuyez sur la barre d'espace pour basculer la sélection de fichiers ou appuyez sur Échap pour fermer.",
+        "type": "tip"
+      },
+      {
+        "heading": "Compteurs de sélection dynamique et traitement par lots rapide",
+        "body": "Le compteur en direct du pied de page affiche le nombre exact de publications et de fichiers sélectionnés dans l'ensemble du catalogue du créateur. Utilisez « Sélectionner tout » ou « Désélectionner tout » pour basculer tous les éléments visibles en un seul clic.",
+        "type": "info"
+      }
+    ]
+  },
+  {
+    "title": "Télécharger le vérificateur d'archives et de fichiers",
+    "icon": "🗄️",
+    "summary": "Post-cataloguement hors ligne, vérification du disque en un seul clic, indicateurs de fichiers manquants et élagage de la base de données.",
+    "content": [
+      {
+        "heading": "Base de données d'archives dédiée",
+        "body": "L'onglet Archive fournit une bibliothèque hors ligne complète de chaque créateur, publication et fichier jamais téléchargé par l'application. Recherchez des noms de créateurs ou publiez des titres instantanément sans avoir besoin d'une connexion Internet active.",
+        "type": "intro"
+      },
+      {
+        "heading": "Moteur de vérification de disque",
+        "body": "Cliquez sur le bouton 🔍 Vérifier à côté de n'importe quel créateur dans les archives. Pawchive analyse vos disques de stockage pour vérifier que tous les fichiers catalogués sont toujours intacts et accessibles sur le disque.",
+        "type": "tip"
+      },
+      {
+        "heading": "Indicateurs de fichiers manquants (badges rouges/ambres)",
+        "body": "Si des fichiers ont été déplacés, renommés ou supprimés du disque, la carte postale est surlignée en orange/rouge avec un compteur exact de fichiers manquants (⚠️ X manquant). Dans la liste développée des fichiers, les fichiers manquants sont marqués en rouge afin que vous puissiez facilement repérer les téléchargements incomplets.",
+        "type": "warning"
+      },
+      {
+        "heading": "Supprimer les enregistrements manquants",
+        "body": "Lorsque la vérification identifie des fichiers manquants, un bouton de bannière orange « Supprimer les fichiers manquants » apparaît. En cliquant dessus, vous pouvez supprimer les enregistrements de la base de données pour les fichiers manquants en un seul clic, gardant ainsi votre archive propre.",
+        "type": "info"
+      },
+      {
+        "heading": "En-tête de présentation pliable",
+        "body": "Cliquez sur le chevron de réduction (▾/▸) en haut à droite de la carte de présentation de la base de données d'archives pour minimiser les statistiques et le panneau d'action, maximisant ainsi votre zone d'affichage verticale pour parcourir les créateurs et les publications.",
+        "type": "tip"
+      }
+    ]
+  },
+  {
+    "title": "Générateur de modèles de noms de fichiers personnalisés",
+    "icon": "🏷️",
+    "summary": "Puces de balises interactives, formats de dénomination de fichiers personnalisables, aperçu en direct et nettoyage du système de fichiers.",
+    "content": [
+      {
+        "heading": "Création de modèles de dénomination personnalisés",
+        "body": "Accédez à Paramètres → Stockage et traitement des fichiers → Format du nom de fichier et sélectionnez « Modèle personnalisé (cliquez sur les puces ci-dessous) ». Créez des modèles de dénomination personnalisés en cliquant simplement sur les puces de balises interactives.",
+        "type": "intro"
+      },
+      {
+        "heading": "Puces d'étiquette disponibles",
+        "body": "• {artist} : nom d'affichage du créateur ou de l'artiste.\n• {title} : titre du message\n• {post_id} : identifiant unique de la publication\n• {date} : date de publication (AAAA-MM-JJ)\n• {année}, {mois}, {jour} : composants de date individuels\n• {orig_name} : nom de fichier d'origine avec extension\n• {name} : nom de fichier sans extension\n• {ext} : extension de fichier (par exemple .png, .mp4)\n• {file_index} : numéro de fichier séquentiel dans le message (01, 02)\n• {post_index} : compteur de publications séquentielles (001, 002)",
+        "type": "info"
+      },
+      {
+        "heading": "Aperçu et désinfection en temps réel",
+        "body": "Un aperçu de l'échantillon en direct se met à jour instantanément lorsque vous modifiez le motif ou cliquez sur les puces de balise. Les caractères Windows illégaux (\\, /, :, *, ?, \", <, >, |) et les points/espaces de fin sont automatiquement nettoyés pour éviter les erreurs du système de fichiers.",
+        "type": "tip"
+      }
+    ]
+  },
+  {
     "title": "Référence complète des info-bulles",
     "icon": "💡",
     "summary": "Aide-mémoire rapide expliquant chaque bouton, icône et badge de l'interface.",
@@ -388,6 +474,11 @@
         "heading": "Réessayer les actions modales",
         "body": "• 🔗 Ouvrir la publication : ouvre la publication source sur Kemono/Coomer dans votre navigateur Web.\n• 📥 Lien de test : teste ou télécharge le fichier directement dans votre navigateur.\n• 🔁 Tried Nx : indique combien de fois le fichier a été réessayé.\n• 🛑 5/5 Max Retries : indique que la nouvelle tentative automatique a cessé d'essayer ce fichier.",
         "type": "info"
+      },
+      {
+        "heading": "Contrôles du sélecteur de publication et du vérificateur d'archives",
+        "body": "• 🖼️ Sélectionner les publications : ouvre le navigateur de catalogue interactif pour sélectionner manuellement les publications et les pièces jointes avant de les télécharger.\n• 🔍 Vérifier l'archive : analyse le stockage local pour vérifier si les fichiers archivés existent toujours sur le disque.\n• ⚠️ Badges manquants : indicateurs rouges et orange mettant en évidence les fichiers manquants et les téléchargements incomplets.\n• 🏷️ Modèle de nom de fichier : concepteur de puces de balises interactives avec aperçu en direct et formatage personnalisé.",
+        "type": "tip"
       }
     ]
   }

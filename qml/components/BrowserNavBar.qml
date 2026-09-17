@@ -256,18 +256,6 @@ Rectangle {
                         text: tr("nav_start_page_tip", "Start page number (blank = 1)")
                         visible: pStartMouse.containsMouse
                         delay: 400
-                        contentItem: Text {
-                            text: tr("nav_start_page_tip", "Start page number (blank = 1)")
-                            font.family: "Segoe UI, Inter, sans-serif"
-                            font.pixelSize: 11
-                            color: "#F1F5F9"
-                        }
-                        background: Rectangle {
-                            color: "#181B24"
-                            border.color: "#38BDF8"
-                            border.width: 1
-                            radius: 6
-                        }
                     }
 
                     MouseArea {
@@ -330,18 +318,6 @@ Rectangle {
                         text: tr("nav_end_page_tip", "End page number (blank = all pages)")
                         visible: pEndMouse.containsMouse
                         delay: 400
-                        contentItem: Text {
-                            text: tr("nav_end_page_tip", "End page number (blank = all pages)")
-                            font.family: "Segoe UI, Inter, sans-serif"
-                            font.pixelSize: 11
-                            color: "#F1F5F9"
-                        }
-                        background: Rectangle {
-                            color: "#181B24"
-                            border.color: "#38BDF8"
-                            border.width: 1
-                            radius: 6
-                        }
                     }
 
                     MouseArea {

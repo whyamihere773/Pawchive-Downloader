@@ -1,8 +1,8 @@
 {
-    "version": "1.1.4",
+    "version": "1.1.5",
     "commit": "",
     "short_commit": "",
-    "date": "2026-09-16",
+    "date": "2026-09-17",
     "channel": "release",
     "history": [
         {
@@ -79,6 +79,11 @@
             "version": "1.1.4",
             "date": "2026-09-16",
             "notes": "Bulk Decompressor overhaul: encrypted archive password prompt modal with wrong-password shake animation and password bank auto-sync, collapsible creator-grouped Password Bank with active target matching highlights, parallel extraction serialisation (one modal at a time), disk space pre-flight check, already-extracted detection with amber colour-coding and re-extract confirmation modal, ghost folder prevention via 7za test-before-extract. Spring-physics (Newtonian) animations on all modals. Auto-password from Link Vault (WIP)."
+        },
+        {
+            "version": "1.1.5",
+            "date": "2026-09-17",
+            "notes": "Dedicated Archive tab with offline post and file cataloging, disk verification engine, missing file highlights & cleanup, collapsible overview header, and fluid virtual scrolling. Interactive Post Selector & Inspector with Grid/List modes, full descriptions, attachment checkboxes, dynamic selection counters, and fullscreen Lightbox visualizer. Interactive custom filename template builder with tag chips and live preview. Multi-drive storage overflow tracking and smart disk balancing. Temporary oversized file downloads (t1.pawchive.pw) with expiration tracking. Complete 14-language interactive tutorial guides for all new features."
         }
     ]
 }

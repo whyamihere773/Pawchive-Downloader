@@ -818,9 +818,10 @@ SmoothFlickable {
                                     font.family: "Segoe UI, Inter, sans-serif"
                                     font.pixelSize: 11
                                     color: "#F1F5F9"
+                                    wrapMode: Text.WordWrap
                                 }
                                 background: Rectangle {
-                                    color: "#181B24"
+                                    color: "#141924"
                                     border.color: (root.bridge && root.bridge.threadsLocked) ? "#EF4444" : "#38BDF8"
                                     border.width: 1
                                     radius: 6

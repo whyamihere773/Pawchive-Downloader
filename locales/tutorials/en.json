@@ -365,6 +365,92 @@
     ]
   },
   {
+    "title": "Interactive Post Selection & Inspector",
+    "icon": "🖼️",
+    "summary": "Previewing catalog posts, Grid and List modes, Post Inspector, granular attachment selection, and fullscreen Lightbox.",
+    "content": [
+      {
+        "heading": "Opening Post Selection",
+        "body": "Click 'Select Posts…' next to the Download button on any creator card. The interactive selector loads the creator's posts, letting you handpick exactly what you want to download instead of scraping everything blindly.",
+        "type": "intro"
+      },
+      {
+        "heading": "Grid vs List View Modes",
+        "body": "• Grid Mode: Displays visual preview cards with media thumbnails, publication dates, and attachment counts.\n• List Mode: A compact tabular layout displaying post titles, published dates, attachment tallies, and direct inspect buttons for fast scanning of large catalogs.",
+        "type": "tip"
+      },
+      {
+        "heading": "Drill-Down Post Inspector",
+        "body": "Click any post card or row to open the Post Inspector drawer. You can read the post's full text body, reveal embedded archive passwords with 1-click copy, and use checkboxes to select or deselect individual attachments.",
+        "type": "info"
+      },
+      {
+        "heading": "Fullscreen Media Lightbox",
+        "body": "Click any attachment thumbnail inside the inspector to open the fullscreen Lightbox visualizer. Browse through high-resolution media using arrow keys, press Spacebar to toggle file selection, or press Escape to close.",
+        "type": "tip"
+      },
+      {
+        "heading": "Dynamic Selection Counters & Fast Batching",
+        "body": "The footer live counter displays the exact number of selected posts and files across the entire creator catalog. Use 'Select All' or 'Deselect All' to toggle all visible items with a single click.",
+        "type": "info"
+      }
+    ]
+  },
+  {
+    "title": "Download Archive & File Verifier",
+    "icon": "🗄️",
+    "summary": "Offline post cataloging, single-click disk verification, missing file indicators, and database pruning.",
+    "content": [
+      {
+        "heading": "Dedicated Archive Database",
+        "body": "The Archive tab provides a complete offline library of every creator, post, and file ever downloaded by the app. Search creator names or post titles instantly without needing an active internet connection.",
+        "type": "intro"
+      },
+      {
+        "heading": "Disk Verification Engine",
+        "body": "Click the 🔍 Verify button next to any creator in the Archive. Pawchive scans your storage drives to verify that all cataloged files are still intact and accessible on disk.",
+        "type": "tip"
+      },
+      {
+        "heading": "Missing File Indicators (Red/Amber Badges)",
+        "body": "If files have been moved, renamed, or deleted from disk, the post card highlights in amber/red with an exact missing file counter (⚠️ X missing). In the expanded files list, missing files are marked in red so you can easily spot incomplete downloads.",
+        "type": "warning"
+      },
+      {
+        "heading": "Remove Missing Records",
+        "body": "When verification identifies missing files, an amber 'Remove Missing' banner button appears. Clicking it lets you prune the database records for missing files with one click, keeping your archive clean.",
+        "type": "info"
+      },
+      {
+        "heading": "Collapsible Overview Header",
+        "body": "Click the collapse chevron (▾/▸) in the top-right of the Archive database overview card to minimize the stats and action panel, maximizing your vertical viewing area for browsing creators and posts.",
+        "type": "tip"
+      }
+    ]
+  },
+  {
+    "title": "Custom Filename Template Builder",
+    "icon": "🏷️",
+    "summary": "Interactive tag chips, customizable file naming formats, live preview, and filesystem sanitization.",
+    "content": [
+      {
+        "heading": "Building Custom Naming Patterns",
+        "body": "Navigate to Settings → Storage & File Processing → Filename Format and select 'Custom Pattern (Click chips below)'. Build custom naming templates by simply clicking the interactive tag chips.",
+        "type": "intro"
+      },
+      {
+        "heading": "Available Tag Chips",
+        "body": "• {artist}: Creator or artist display name\n• {title}: Post title\n• {post_id}: Unique post identifier\n• {date}: Publication date (YYYY-MM-DD)\n• {year}, {month}, {day}: Individual date components\n• {orig_name}: Original filename with extension\n• {name}: Filename without extension\n• {ext}: File extension (e.g. .png, .mp4)\n• {file_index}: Sequential file number within post (01, 02)\n• {post_index}: Sequential post counter (001, 002)",
+        "type": "info"
+      },
+      {
+        "heading": "Real-Time Live Preview & Sanitization",
+        "body": "A live sample preview updates instantly as you edit the pattern or click tag chips. Illegal Windows characters (\\, /, :, *, ?, \", <, >, |) and trailing dots/spaces are automatically sanitized to prevent filesystem errors.",
+        "type": "tip"
+      }
+    ]
+  },
+  {
     "title": "Complete Tooltip Reference",
     "icon": "💡",
     "summary": "Quick cheatsheet explaining every button, icon, and badge across the interface.",
@@ -388,6 +474,11 @@
         "heading": "Retry Modal Actions",
         "body": "• 🔗 Open Post: Opens the source post on Kemono/Coomer in your web browser.\n• 📥 Test Link: Tests or downloads the file directly in your browser.\n• 🔁 Tried Nx: Shows how many times the file has been retried.\n• 🛑 5/5 Max Retries: Indicates auto-retry has stopped trying this file.",
         "type": "info"
+      },
+      {
+        "heading": "Post Selector & Archive Verifier Controls",
+        "body": "• 🖼️ Select Posts: Opens the interactive catalog browser to handpick posts and attachments before downloading.\n• 🔍 Verify Archive: Scans local storage to check whether archived files still exist on disk.\n• ⚠️ Missing Badges: Red and amber indicators highlighting missing files and incomplete downloads.\n• 🏷️ Filename Template: Interactive tag chip designer with live preview and custom formatting.",
+        "type": "tip"
       }
     ]
   }

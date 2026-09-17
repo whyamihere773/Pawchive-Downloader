@@ -365,6 +365,92 @@
     ]
   },
   {
+    "title": "İnteraktif Gönderi Seçimi ve Denetçi",
+    "icon": "🖼️",
+    "summary": "Katalog gönderilerinin, Izgara ve Liste modlarının, Gönderi Denetçisinin, ayrıntılı ek seçiminin ve tam ekran Işık Kutusunun önizlemesi.",
+    "content": [
+      {
+        "heading": "Açılış Yazısı Seçimi",
+        "body": "Herhangi bir yaratıcı kartındaki İndir düğmesinin yanındaki 'Gönderileri Seç…' seçeneğini tıklayın. Etkileşimli seçici, yaratıcının gönderilerini yükler ve her şeyi körü körüne kazımak yerine tam olarak indirmek istediğinizi seçmenize olanak tanır.",
+        "type": "intro"
+      },
+      {
+        "heading": "Izgara ve Liste Görünümü Modları",
+        "body": "• Izgara Modu: Medya küçük resimlerini, yayın tarihlerini ve ek sayılarını içeren görsel önizleme kartlarını görüntüler.\n• Liste Modu: Büyük katalogların hızlı taranması için gönderi başlıklarını, yayınlanma tarihlerini, ek çizelgelerini ve doğrudan inceleme düğmelerini görüntüleyen kompakt bir tablo düzeni.",
+        "type": "tip"
+      },
+      {
+        "heading": "Sondaj Postası Müfettişi",
+        "body": "Posta Denetçisi çekmecesini açmak için herhangi bir kartpostal veya satıra tıklayın. Gönderinin tam metnini okuyabilir, tek tıklamayla kopyayla gömülü arşiv şifrelerini ortaya çıkarabilir ve ekleri tek tek seçmek veya seçimlerini kaldırmak için onay kutularını kullanabilirsiniz.",
+        "type": "info"
+      },
+      {
+        "heading": "Tam Ekran Medya Işık Kutusu",
+        "body": "Tam ekran Işık Kutusu görselleştiricisini açmak için denetçinin içindeki herhangi bir ek küçük resmine tıklayın. Ok tuşlarını kullanarak yüksek çözünürlüklü medyaya göz atın, dosya seçimi arasında geçiş yapmak için Ara Çubuğu'na basın veya kapatmak için Escape tuşuna basın.",
+        "type": "tip"
+      },
+      {
+        "heading": "Dinamik Seçim Sayaçları ve Hızlı Toplu İşleme",
+        "body": "Altbilgi canlı sayacı, yaratıcı kataloğunun tamamında seçilen gönderilerin ve dosyaların tam sayısını görüntüler. Görünen tüm öğeleri tek bir tıklamayla değiştirmek için 'Tümünü Seç' veya 'Tüm Seçimleri Kaldır' seçeneğini kullanın.",
+        "type": "info"
+      }
+    ]
+  },
+  {
+    "title": "Arşiv ve Dosya Doğrulayıcıyı İndirin",
+    "icon": "🗄️",
+    "summary": "Çevrimdışı kataloglama, tek tıklamayla disk doğrulama, eksik dosya göstergeleri ve veritabanı düzeltme.",
+    "content": [
+      {
+        "heading": "Özel Arşiv Veritabanı",
+        "body": "Arşiv sekmesi, uygulama tarafından şimdiye kadar indirilen her yaratıcının, gönderinin ve dosyanın eksiksiz bir çevrimdışı kitaplığını sağlar. Aktif bir internet bağlantısına ihtiyaç duymadan yaratıcı adlarını arayın veya başlıkları anında arayın.",
+        "type": "intro"
+      },
+      {
+        "heading": "Disk Doğrulama Motoru",
+        "body": "Arşivdeki herhangi bir yaratıcının yanındaki 🔍 Doğrula düğmesine tıklayın. Pawchive, kataloglanmış tüm dosyaların hala sağlam ve diskte erişilebilir olduğunu doğrulamak için depolama sürücülerinizi tarar.",
+        "type": "tip"
+      },
+      {
+        "heading": "Eksik Dosya Göstergeleri (Kırmızı/Sarı Rozetler)",
+        "body": "Dosyalar taşınmış, yeniden adlandırılmış veya diskten silinmişse kartpostal, tam bir eksik dosya sayacıyla (⚠️ X eksik) sarı/kırmızı renkte vurgulanır. Genişletilmiş dosyalar listesinde eksik dosyalar kırmızıyla işaretlenir, böylece tamamlanmamış indirmeleri kolayca fark edebilirsiniz.",
+        "type": "warning"
+      },
+      {
+        "heading": "Eksik Kayıtları Kaldır",
+        "body": "Doğrulamada eksik dosyalar tespit edildiğinde sarı renkli bir 'Eksiği Kaldır' başlığı düğmesi görünür. Buna tıklamak, tek tıklamayla eksik dosyalar için veritabanı kayıtlarını budamanızı ve arşivinizi temiz tutmanızı sağlar.",
+        "type": "info"
+      },
+      {
+        "heading": "Daraltılabilir Genel Bakış Başlığı",
+        "body": "İstatistikleri ve eylem panelini en aza indirmek, yaratıcılara ve gönderilere göz atmak için dikey görüntüleme alanınızı en üst düzeye çıkarmak için Arşiv veritabanı genel bakış kartının sağ üst köşesindeki daraltma işaretini (▾/▸) tıklayın.",
+        "type": "tip"
+      }
+    ]
+  },
+  {
+    "title": "Özel Dosya Adı Şablonu Oluşturucu",
+    "icon": "🏷️",
+    "summary": "Etkileşimli etiket çipleri, özelleştirilebilir dosya adlandırma formatları, canlı önizleme ve dosya sistemi temizliği.",
+    "content": [
+      {
+        "heading": "Özel Adlandırma Kalıpları Oluşturma",
+        "body": "Ayarlar → Depolama ve Dosya İşleme → Dosya Adı Formatı'na gidin ve 'Özel Desen (Aşağıdaki çiplere tıklayın)' seçeneğini seçin. Etkileşimli etiket çiplerine tıklayarak özel adlandırma şablonları oluşturun.",
+        "type": "intro"
+      },
+      {
+        "heading": "Mevcut Etiket Cipsleri",
+        "body": "• {sanatçı}: Yaratıcının veya sanatçının görünen adı\n• {title}: Gönderi başlığı\n• {post_id}: Benzersiz gönderi tanımlayıcı\n• {tarih}: Yayınlanma tarihi (YYYY-AA-GG)\n• {yıl}, {ay}, {gün}: Bireysel tarih bileşenleri\n• {orig_name}: Uzantılı orijinal dosya adı\n• {name}: Uzantısı olmayan dosya adı\n• {ext}: Dosya uzantısı (ör. .png, .mp4)\n• {file_index}: Gönderi içindeki sıralı dosya numarası (01, 02)\n• {post_index}: Sıralı gönderi sayacı (001, 002)",
+        "type": "info"
+      },
+      {
+        "heading": "Gerçek Zamanlı Canlı Önizleme ve Temizleme",
+        "body": "Deseni düzenlediğinizde veya etiket çiplerine tıkladığınızda canlı örnek önizlemesi anında güncellenir. Yasadışı Windows karakterleri (\\, /, :, *, ?, \", <, >, |) ve sondaki noktalar/boşluklar, dosya sistemi hatalarını önlemek için otomatik olarak temizlenir.",
+        "type": "tip"
+      }
+    ]
+  },
+  {
     "title": "Tam Araç İpucu Referansı",
     "icon": "💡",
     "summary": "Arayüzdeki her düğmeyi, simgeyi ve rozeti açıklayan hızlı kopya sayfası.",
@@ -388,6 +474,11 @@
         "heading": "Kalıcı Eylemleri Yeniden Dene",
         "body": "• 🔗 Gönderiyi Aç: Kemono/Coomer'deki kaynak gönderiyi web tarayıcınızda açar.\n• 📥 Test Bağlantısı: Dosyayı doğrudan tarayıcınızda test eder veya indirir.\n• 🔁 Denenmiş Nx: Dosyanın kaç kez yeniden denendiğini gösterir.\n• 🛑 5/5 Maksimum Yeniden Deneme: Otomatik yeniden denemenin bu dosyayı denemeyi durdurduğunu belirtir.",
         "type": "info"
+      },
+      {
+        "heading": "Gönderi Seçici ve Arşiv Doğrulayıcı Kontrolleri",
+        "body": "• 🖼️ Gönderileri Seç: İndirmeden önce gönderileri ve ekleri tek tek seçmek için etkileşimli katalog tarayıcısını açar.\n• 🔍 Arşivi Doğrula: Arşivlenmiş dosyaların hala diskte bulunup bulunmadığını kontrol etmek için yerel depolamayı tarar.\n• ⚠️ Eksik Rozetler: Eksik dosyaları ve tamamlanmamış indirmeleri vurgulayan kırmızı ve sarı göstergeler.\n• 🏷️ Dosya Adı Şablonu: Canlı önizleme ve özel biçimlendirmeye sahip etkileşimli etiket çipi tasarımcısı.",
+        "type": "tip"
       }
     ]
   }

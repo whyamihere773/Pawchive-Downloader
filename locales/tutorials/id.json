@@ -365,6 +365,92 @@
     ]
   },
   {
+    "title": "Seleksi & Inspektur Pos Interaktif",
+    "icon": "🖼️",
+    "summary": "Pratinjau postingan katalog, mode Grid dan Daftar, Post Inspector, pilihan lampiran granular, dan Lightbox layar penuh.",
+    "content": [
+      {
+        "heading": "Pembukaan Seleksi Pos",
+        "body": "Klik 'Pilih Postingan…' di samping tombol Unduh pada kartu kreator mana pun. Pemilih interaktif memuat postingan pembuatnya, memungkinkan Anda memilih sendiri apa yang ingin Anda unduh alih-alih membuang semuanya secara membabi buta.",
+        "type": "intro"
+      },
+      {
+        "heading": "Mode Tampilan Kotak vs Daftar",
+        "body": "• Mode Grid: Menampilkan kartu pratinjau visual dengan thumbnail media, tanggal publikasi, dan jumlah lampiran.\n• Mode Daftar: Tata letak tabel ringkas yang menampilkan judul posting, tanggal penerbitan, jumlah lampiran, dan tombol pemeriksaan langsung untuk pemindaian cepat katalog besar.",
+        "type": "tip"
+      },
+      {
+        "heading": "Inspektur Pos Penelusuran",
+        "body": "Klik kartu pos atau baris mana saja untuk membuka laci Post Inspector. Anda dapat membaca isi teks lengkap postingan, menampilkan kata sandi arsip yang tertanam dengan salinan 1-klik, dan menggunakan kotak centang untuk memilih atau membatalkan pilihan lampiran individual.",
+        "type": "info"
+      },
+      {
+        "heading": "Lightbox Media Layar Penuh",
+        "body": "Klik thumbnail lampiran apa pun di dalam inspektur untuk membuka visualisator Lightbox layar penuh. Jelajahi media resolusi tinggi menggunakan tombol panah, tekan Spacebar untuk beralih pilihan file, atau tekan Escape untuk menutup.",
+        "type": "tip"
+      },
+      {
+        "heading": "Penghitung Seleksi Dinamis & Pengelompokan Cepat",
+        "body": "Penghitung langsung footer menampilkan jumlah pasti postingan dan file yang dipilih di seluruh katalog pembuat. Gunakan 'Pilih Semua' atau 'Batalkan Pilihan Semua' untuk mengalihkan semua item yang terlihat dengan satu klik.",
+        "type": "info"
+      }
+    ]
+  },
+  {
+    "title": "Unduh Arsip & Pemverifikasi File",
+    "icon": "🗄️",
+    "summary": "Katalog posting offline, verifikasi disk sekali klik, indikator file hilang, dan pemangkasan basis data.",
+    "content": [
+      {
+        "heading": "Basis Data Arsip Khusus",
+        "body": "Tab Arsip menyediakan perpustakaan offline lengkap dari setiap pembuat, postingan, dan file yang pernah diunduh oleh aplikasi. Cari nama pencipta atau judul postingan secara instan tanpa memerlukan koneksi internet aktif.",
+        "type": "intro"
+      },
+      {
+        "heading": "Mesin Verifikasi Disk",
+        "body": "Klik tombol 🔍 Verifikasi di samping pembuat konten mana pun di AO3. Pawchive memindai drive penyimpanan Anda untuk memverifikasi bahwa semua file yang dikatalogkan masih utuh dan dapat diakses di disk.",
+        "type": "tip"
+      },
+      {
+        "heading": "Indikator File Hilang (Lencana Merah/Kuning)",
+        "body": "Jika file telah dipindahkan, diganti namanya, atau dihapus dari disk, kartu pos disorot dalam warna kuning/merah dengan penghitung file yang hilang (⚠️ X hilang). Dalam daftar file yang diperluas, file yang hilang ditandai dengan warna merah sehingga Anda dapat dengan mudah melihat unduhan yang tidak lengkap.",
+        "type": "warning"
+      },
+      {
+        "heading": "Hapus Catatan yang Hilang",
+        "body": "Saat verifikasi mengidentifikasi file yang hilang, tombol spanduk 'Hapus yang Hilang' berwarna kuning akan muncul. Mengkliknya memungkinkan Anda memangkas catatan database untuk file yang hilang dengan satu klik, menjaga arsip Anda tetap bersih.",
+        "type": "info"
+      },
+      {
+        "heading": "Header Ikhtisar yang Dapat Dilipat",
+        "body": "Klik tanda chevron ciutkan (▾/▸) di kanan atas kartu ikhtisar basis data AO3 untuk meminimalkan panel statistik dan tindakan, sehingga memaksimalkan area tampilan vertikal untuk menjelajahi pembuat dan postingan.",
+        "type": "tip"
+      }
+    ]
+  },
+  {
+    "title": "Pembuat Templat Nama File Khusus",
+    "icon": "🏷️",
+    "summary": "Chip tag interaktif, format penamaan file yang dapat disesuaikan, pratinjau langsung, dan sanitasi sistem file.",
+    "content": [
+      {
+        "heading": "Membangun Pola Penamaan Kustom",
+        "body": "Navigasikan ke Pengaturan → Penyimpanan & Pemrosesan File → Format Nama File dan pilih 'Pola Kustom (Klik chip di bawah)'. Buat templat penamaan khusus hanya dengan mengeklik chip tag interaktif.",
+        "type": "intro"
+      },
+      {
+        "heading": "Chip Tag yang Tersedia",
+        "body": "• {artist}: Nama tampilan pencipta atau artis\n• {title}: Judul postingan\n• {post_id}: Pengidentifikasi postingan unik\n• {date}: Tanggal publikasi (YYYY-MM-DD)\n• {year}, {month}, {day}: Masing-masing komponen tanggal\n• {orig_name}: Nama file asli dengan ekstensi\n• {name}: Nama file tanpa ekstensi\n• {ext}: Ekstensi file (misalnya .png, .mp4)\n• {file_index}: Nomor file berurutan dalam postingan (01, 02)\n• {post_index}: Penghitung postingan berurutan (001, 002)",
+        "type": "info"
+      },
+      {
+        "heading": "Pratinjau & Sanitasi Langsung Waktu Nyata",
+        "body": "Pratinjau sampel langsung diperbarui secara instan saat Anda mengedit pola atau mengeklik chip tag. Karakter Windows ilegal (\\, /, :, *, ?, \", <, >, |) dan titik/spasi tambahan secara otomatis dibersihkan untuk mencegah kesalahan sistem file.",
+        "type": "tip"
+      }
+    ]
+  },
+  {
     "title": "Referensi Tooltip Lengkap",
     "icon": "💡",
     "summary": "Lembar contekan singkat yang menjelaskan setiap tombol, ikon, dan lencana di seluruh antarmuka.",
@@ -388,6 +474,11 @@
         "heading": "Coba lagi Tindakan Modal",
         "body": "• 🔗 Buka Postingan: Membuka postingan sumber di Kemono/Coomer di browser web Anda.\n• 📥 Tautan Tes: Menguji atau mengunduh file langsung di browser Anda.\n• 🔁 Mencoba Nx: Menampilkan berapa kali file telah dicoba ulang.\n• 🛑 5/5 Percobaan Ulang Maks: Menunjukkan percobaan ulang otomatis telah berhenti mencoba file ini.",
         "type": "info"
+      },
+      {
+        "heading": "Kontrol Pemilih Pos & Pemverifikasi Arsip",
+        "body": "• 🖼️ Pilih Postingan: Membuka browser katalog interaktif untuk memilih sendiri postingan dan lampiran sebelum mengunduh.\n• 🔍 Verifikasi Arsip: Memindai penyimpanan lokal untuk memeriksa apakah file yang diarsipkan masih ada di disk.\n• ⚠️ Lencana Hilang: Indikator merah dan kuning menyoroti file yang hilang dan unduhan yang belum selesai.\n• 🏷️ Templat Nama File: Perancang chip tag interaktif dengan pratinjau langsung dan format khusus.",
+        "type": "tip"
       }
     ]
   }

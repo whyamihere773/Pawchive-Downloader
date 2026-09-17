@@ -10,6 +10,7 @@ import time
 import subprocess
 import threading
 import json
+import re
 from typing import Optional, Dict, Any, List
 from PySide6.QtCore import QObject, Signal, Property, Slot, Qt, QUrl, QCoreApplication
 from PySide6.QtGui import QDesktopServices, QGuiApplication
@@ -22,7 +23,7 @@ if __name__ == "__main__" or "core" not in sys.modules:
 
 from core.logger import logger
 from core.parser import KemonoURLParser, URLParseResult
-from core.filter_engine import FilterEngine, FilterOptions
+from core.filter_engine import FilterEngine, FilterOptions, FilenameStyles
 from core.api_client import KemonoApiClient
 from core.downloader import KemonoDownloader, DownloadTask
 from core.session_manager import SessionManager
@@ -70,6 +71,7 @@ class AppBridge(QObject):
     downloadThumbnailsOnlyChanged = Signal()
     skipPostCoversChanged = Signal()
     scanContentImagesChanged = Signal()
+    downloadPawchiveTemporaryFilesChanged = Signal()
     compressWebpChanged = Signal()
     keepDuplicatesChanged = Signal()
     favoriteModeChanged = Signal()
@@ -82,6 +84,10 @@ class AppBridge(QObject):
     autoRetryAtEndChanged = Signal()
     mangaModeChanged = Signal()
     filenameStyleChanged = Signal()
+    filenameTemplateChanged = Signal()
+    postSelectionLoadingChanged = Signal()
+    postSelectionReady = Signal(list, str, int)
+    postSelectionError = Signal(str)
     proxyUrlChanged = Signal()
     threadsCountChanged = Signal()
     threadsLockedChanged = Signal()
@@ -127,6 +133,10 @@ class AppBridge(QObject):
 
     enableDownloadArchiveChanged = Signal()
     archiveRecordCountChanged    = Signal()
+    archiveUpdated               = Signal()
+    archiveCreatorVerificationStarted  = Signal(str, str)
+    archiveCreatorVerificationProgress = Signal(str, str, int, int)
+    archiveCreatorVerificationFinished = Signal(str, str, 'QVariant')
 
     tagFolderModeChanged      = Signal()
     watchlistChanged          = Signal()
@@ -211,6 +221,7 @@ class AppBridge(QObject):
         self._download_thumbnails_only = bool(saved_settings.get("download_thumbnails_only", False))
         self._skip_post_covers = bool(saved_settings.get("skip_post_covers", False))
         self._scan_content_images = saved_settings.get("scan_content_images", True)
+        self._download_pawchive_temporary_files = saved_settings.get("download_pawchive_temporary_files", True)
         self._compress_webp = saved_settings.get("compress_webp", False)
         self._keep_duplicates = saved_settings.get("keep_duplicates", False)
         self._favorite_mode = False
@@ -226,6 +237,11 @@ class AppBridge(QObject):
         self._auto_retry_at_end = saved_settings.get("auto_retry_at_end", False)
         self._manga_mode = saved_settings.get("manga_mode", False)
         self._filename_style = saved_settings.get("filename_style", "post_title")
+        self._filename_template = saved_settings.get("filename_template", "{title} - {orig_name}")
+        self._is_post_selection_loading = False
+        self._selection_cached_posts = []
+        self._selection_parsed = None
+        self._selection_creator_name = ""
         self._proxy_url = saved_settings.get("proxy_url", "")
         self._max_cpu_threads = max(4, os.cpu_count() or 16)
         self._threads_count = int(saved_settings.get("threads", min(8, self._max_cpu_threads)))
@@ -315,11 +331,17 @@ class AppBridge(QObject):
             logger.warning("Unfinished download session detected from previous crash. Ready for recovery.", category="session")
 
         # Hook downloader callbacks — they emit our private signals (thread-safe)
-        self.downloader.on_progress_update        = lambda info: self._progressSignal.emit(info)
-        self.downloader.on_task_status_changed    = lambda task: self._taskSignal.emit(task)
-        self.downloader.on_download_finished      = lambda ok, msg: self._finishedSignal.emit(ok, msg)
-        self.downloader.on_concurrency_throttled  = lambda count: self._throttledSignal.emit(count)
-        self.downloader.on_pause_changed          = lambda paused: self._pauseSignal.emit(paused)
+        def _safe_emit(sig, *args):
+            try:
+                sig.emit(*args)
+            except (RuntimeError, ReferenceError):
+                pass
+
+        self.downloader.on_progress_update        = lambda info: _safe_emit(self._progressSignal, info)
+        self.downloader.on_task_status_changed    = lambda task: _safe_emit(self._taskSignal, task)
+        self.downloader.on_download_finished      = lambda ok, msg: _safe_emit(self._finishedSignal, ok, msg)
+        self.downloader.on_concurrency_throttled  = lambda count: _safe_emit(self._throttledSignal, count)
+        self.downloader.on_pause_changed          = lambda paused: _safe_emit(self._pauseSignal, paused)
 
         # Connect private signals to main-thread handlers with QueuedConnection
         self._progressSignal.connect(self._handle_progress,    Qt.QueuedConnection)
@@ -578,6 +600,17 @@ class AppBridge(QObject):
             self._scan_content_images = val
             self.scanContentImagesChanged.emit()
 
+    @Property(bool, notify=downloadPawchiveTemporaryFilesChanged)
+    def downloadPawchiveTemporaryFiles(self) -> bool:
+        return self._download_pawchive_temporary_files
+
+    @downloadPawchiveTemporaryFiles.setter
+    def downloadPawchiveTemporaryFiles(self, val: bool):
+        if self._download_pawchive_temporary_files != val:
+            self._download_pawchive_temporary_files = val
+            self.downloadPawchiveTemporaryFilesChanged.emit()
+            self.saveSettings()
+
     @Property(bool, notify=compressWebpChanged)
     def compressWebp(self) -> bool:
         return self._compress_webp
@@ -738,6 +771,22 @@ class AppBridge(QObject):
         if self._filename_style != val:
             self._filename_style = val
             self.filenameStyleChanged.emit()
+            self.saveSettings()
+
+    @Property(str, notify=filenameTemplateChanged)
+    def filenameTemplate(self) -> str:
+        return self._filename_template
+
+    @filenameTemplate.setter
+    def filenameTemplate(self, val: str):
+        if self._filename_template != val:
+            self._filename_template = val
+            self.filenameTemplateChanged.emit()
+            self.saveSettings()
+
+    @Property(bool, notify=postSelectionLoadingChanged)
+    def postSelectionLoading(self) -> bool:
+        return self._is_post_selection_loading
 
     @Property(str, notify=proxyUrlChanged)
     def proxyUrl(self) -> str:
@@ -857,9 +906,23 @@ class AppBridge(QObject):
     def hasError(self) -> bool:
         return self._has_error
 
+    @hasError.setter
+    def hasError(self, val: bool):
+        val = bool(val)
+        if self._has_error != val:
+            self._has_error = val
+            self.hasErrorChanged.emit()
+
     @Property(str, notify=lastErrorMessageChanged)
     def lastErrorMessage(self) -> str:
         return self._last_error_message
+
+    @lastErrorMessage.setter
+    def lastErrorMessage(self, val: str):
+        val = str(val or "")
+        if self._last_error_message != val:
+            self._last_error_message = val
+            self.lastErrorMessageChanged.emit()
 
     @Property(str, notify=creatorNameChanged)
     def creatorName(self) -> str:
@@ -971,11 +1034,142 @@ class AppBridge(QObject):
     def archiveRecordCount(self) -> int:
         return self.archive_manager.get_total_count()
 
+    @Slot(str, str, str, str, result="QVariantList")
+    def getArchiveHierarchy(self, query: str = "", service: str = "all", fileType: str = "all", sortBy: str = "creator_az"):
+        return self.archive_manager.get_hierarchical_records(
+            query=query,
+            service=service,
+            file_type=fileType,
+            sort_by=sortBy
+        )
+
+    @Slot(result="QVariantMap")
+    def getArchiveStatistics(self):
+        return self.archive_manager.get_statistics()
+
+    @Slot(int, result=bool)
+    def deleteArchiveRecord(self, recordId: int) -> bool:
+        ok = self.archive_manager.delete_record(recordId)
+        if ok:
+            self.archiveRecordCountChanged.emit()
+            self.archiveUpdated.emit()
+        return ok
+
+    @Slot(str, str, result=int)
+    def deleteArchivePost(self, service: str, postId: str) -> int:
+        count = self.archive_manager.delete_by_post(service, postId)
+        if count > 0:
+            self.archiveRecordCountChanged.emit()
+            self.archiveUpdated.emit()
+        return count
+
+    @Slot(str, str, result=int)
+    def deleteArchiveCreator(self, creatorId: str, service: str = "") -> int:
+        count = self.archive_manager.delete_by_creator(creatorId, service)
+        if count > 0:
+            self.archiveRecordCountChanged.emit()
+            self.archiveUpdated.emit()
+        return count
+
     @Slot(result=bool)
     def clearDownloadArchive(self) -> bool:
         success = self.archive_manager.clear_archive()
         self.archiveRecordCountChanged.emit()
+        self.archiveUpdated.emit()
         return success
+
+    @Slot(str, str, result=int)
+    def exportArchiveFile(self, filepath: str, exportFormat: str = "txt") -> int:
+        clean_path = filepath.replace("file:///", "").replace("file://", "")
+        return self.archive_manager.export_archive(clean_path, exportFormat)
+
+    @Slot(str, result=int)
+    def importArchiveFile(self, filepath: str) -> int:
+        clean_path = filepath.replace("file:///", "").replace("file://", "")
+        count = self.archive_manager.import_archive(clean_path)
+        if count > 0:
+            self.archiveRecordCountChanged.emit()
+            self.archiveUpdated.emit()
+        return count
+
+    @Slot(str, str, str)
+    def verifyCreatorArchiveIntegrity(self, service: str, creatorId: str, creatorName: str = "") -> None:
+        """Runs verify_creator_integrity in a background daemon thread."""
+        def _worker():
+            self.archiveCreatorVerificationStarted.emit(service, creatorId)
+            candidates = []
+            if self._download_dir:
+                candidates.append(self._download_dir)
+            try:
+                from core.storage_pool_manager import storage_pool_manager
+                if storage_pool_manager.enabled and storage_pool_manager.overflow_dirs:
+                    candidates.extend(storage_pool_manager.overflow_dirs)
+            except Exception:
+                pass
+            try:
+                if self._watchlist_manager:
+                    for item in self._watchlist_manager.get_all():
+                        if str(item.user_id) == str(creatorId) and str(item.service).lower() == str(service).lower():
+                            if getattr(item, "download_folder", None):
+                                candidates.append(item.download_folder)
+                            if getattr(item, "folder_path", None):
+                                candidates.append(item.folder_path)
+            except Exception:
+                pass
+
+            def _prog(cur, tot):
+                self.archiveCreatorVerificationProgress.emit(service, creatorId, cur, tot)
+
+            res = self.archive_manager.verify_creator_integrity(
+                service=service,
+                creator_id=creatorId,
+                creator_name=creatorName,
+                candidate_dirs=candidates,
+                progress_callback=_prog
+            )
+            self.archiveCreatorVerificationFinished.emit(service, creatorId, res)
+            self.archiveUpdated.emit()
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    @Slot(str, str, result=int)
+    def removeMissingArchiveRecordsForCreator(self, service: str, creatorId: str) -> int:
+        deleted = self.archive_manager.remove_missing_for_creator(service, creatorId)
+        if deleted > 0:
+            self.archiveRecordCountChanged.emit()
+            self.archiveUpdated.emit()
+        return deleted
+
+    @Slot(str, result=bool)
+    def revealFileInExplorer(self, filePath: str) -> bool:
+        """Reveals file or directory in Windows File Explorer / OS file manager."""
+        if not filePath:
+            return False
+        clean_path = os.path.normpath(filePath.replace("file:///", "").replace("file://", ""))
+        if not os.path.exists(clean_path):
+            d = os.path.dirname(clean_path)
+            if os.path.exists(d):
+                clean_path = d
+            else:
+                return False
+        try:
+            import subprocess
+            if os.name == 'nt':
+                if os.path.isfile(clean_path):
+                    subprocess.Popen(f'explorer /select,"{clean_path}"')
+                else:
+                    subprocess.Popen(f'explorer "{clean_path}"')
+                return True
+            else:
+                import sys
+                if sys.platform == 'darwin':
+                    subprocess.Popen(["open", "-R" if os.path.isfile(clean_path) else "", clean_path])
+                else:
+                    subprocess.Popen(["xdg-open", os.path.dirname(clean_path) if os.path.isfile(clean_path) else clean_path])
+                return True
+        except Exception as e:
+            logger.error(f"Failed to reveal file {filePath}: {e}", category="archive")
+            return False
 
     @Property(int, notify=consoleWidthChanged)
     def consoleWidth(self) -> int:
@@ -1212,6 +1406,7 @@ class AppBridge(QObject):
             auto_retry_at_end=self._auto_retry_at_end,
             manga_mode=self._manga_mode,
             filename_style=self._filename_style,
+            filename_template=self._filename_template,
             proxy_url=self._proxy_url,
             page_start=self._page_start,
             page_end=self._page_end,
@@ -1221,7 +1416,8 @@ class AppBridge(QObject):
             tag_folder_mode=self._tag_folder_mode,
             skip_post_covers=self._skip_post_covers,
             date_after=self._date_after,
-            date_before=self._date_before
+            date_before=self._date_before,
+            download_pawchive_temporary_files=self._download_pawchive_temporary_files
         )
 
     def _get_link_identity(self, parsed: URLParseResult) -> tuple[str, str, Optional[str], str]:
@@ -1421,6 +1617,347 @@ class AppBridge(QObject):
             daemon=True
         ).start()
 
+    @Slot(str, result=str)
+    def previewCustomFilename(self, template: str) -> str:
+        """Evaluate a custom filename template against realistic sample metadata for live preview."""
+        opts = FilterOptions(
+            filename_style=FilenameStyles.CUSTOM,
+            filename_template=template
+        )
+        return FilterEngine.format_custom_filename(
+            original_filename="sample_illustration.png",
+            post_title="Excited Artwork #10",
+            post_date="2026-09-17",
+            post_index=1,
+            file_index=1,
+            options=opts,
+            folder_index=1,
+            post_id="167342511",
+            artist="SampleArtist",
+            service="patreon",
+            user_id="82901778"
+        )
+
+    @Slot()
+    def fetchPostsForSelection(self):
+        """
+        Fetches creator profile and posts in a background worker for the interactive
+        PostSelectionModal so the user can visually review and check/uncheck items before downloading.
+        """
+        if self._is_post_selection_loading:
+            return
+
+        url_input = (self._current_url or "").strip()
+        if not url_input:
+            self.postSelectionError.emit("Please enter a creator or post URL first.")
+            return
+
+        parsed = KemonoURLParser.parse(url_input)
+        if not parsed.is_valid:
+            self.postSelectionError.emit(parsed.error_msg or "Invalid URL")
+            return
+
+        self._is_post_selection_loading = True
+        self.postSelectionLoadingChanged.emit()
+
+        def _worker():
+            try:
+                creator_name = ""
+                posts = []
+
+                if parsed.is_external_provider:
+                    creator_name = parsed.domain
+                    if parsed.provider == "bunkr":
+                        album_title, files = fetch_bunkr_album(parsed.raw_url, resolve_files=True)
+                        creator_name = clean_text(album_title) or "Bunkr Album"
+                        posts = [{"id": f["url"], "title": f.get("filename", "File"), "published": "", "file": {"path": f["url"]}, "attachments": []} for f in files]
+                    elif parsed.provider == "erome":
+                        album_title, files = fetch_erome_album(parsed.raw_url)
+                        creator_name = clean_text(album_title) or "Erome Album"
+                        posts = [{"id": f["url"], "title": f.get("filename", "File"), "published": "", "file": {"path": f["url"]}, "attachments": []} for f in files]
+                    elif parsed.provider == "nhentai":
+                        gallery_title, files = fetch_nhentai_gallery(parsed.post_id or parsed.raw_url)
+                        creator_name = clean_text(gallery_title) or f"Gallery {parsed.post_id}"
+                        posts = [{"id": f["url"], "title": f.get("filename", "File"), "published": "", "file": {"path": f["url"]}, "attachments": []} for f in files]
+                else:
+                    profile = self.api_client.fetch_creator_profile(parsed)
+                    creator_name = clean_text(profile.get("name", parsed.user_id) or parsed.user_id)
+                    if parsed.is_single_post:
+                        single = self.api_client.fetch_single_post(parsed)
+                        posts = [single] if single else []
+                    else:
+                        effective_page_end = self._page_end
+                        if self._date_auto_scan_pages and (self._date_after or self._date_before):
+                            effective_page_end = 999999
+                        posts = self.api_client.fetch_user_posts(
+                            parsed=parsed,
+                            page_start=self._page_start,
+                            page_end=effective_page_end,
+                            date_after=self._date_after,
+                            date_before=self._date_before,
+                            cancel_event=self._scan_cancel_event
+                        )
+
+                if not posts:
+                    self._is_post_selection_loading = False
+                    self.postSelectionLoadingChanged.emit()
+                    self.postSelectionError.emit(f"No posts found for {creator_name or 'URL'}.")
+                    return
+
+                self._selection_cached_posts = list(posts)
+                self._selection_parsed = parsed
+                self._selection_creator_name = creator_name
+
+                # Build cards list for UI
+                cards = []
+                domain = parsed.domain or "pawchive.pw"
+                for p in posts:
+                    pid = str(p.get("id", ""))
+                    raw_title = p.get("title") or p.get("caption") or "Untitled Post"
+                    title = re.sub(r'<[^>]+>', '', str(raw_title)).strip() or "Untitled Post"
+                    published = str(p.get("published") or "")[:10]
+
+                    image_exts = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".avif")
+                    def _is_image(p_str: str) -> bool:
+                        if not p_str:
+                            return False
+                        return p_str.lower().split("?")[0].endswith(image_exts)
+
+                    thumb_url = ""
+                    f = p.get("file")
+                    if f and isinstance(f, dict):
+                        fpath = f.get("path") or ""
+                        fname = f.get("name") or ""
+                        if fpath and (_is_image(fpath) or _is_image(fname)):
+                            clean_p = fpath if fpath.startswith("/") else f"/{fpath}"
+                            if clean_p.startswith("/data/"):
+                                clean_p = clean_p[5:]
+                            thumb_url = f"https://img.{domain}/thumbnail/data{clean_p}"
+                    if not thumb_url:
+                        for att in p.get("attachments", []) or []:
+                            if isinstance(att, dict) and att.get("path"):
+                                apath = att["path"]
+                                aname = att.get("name") or ""
+                                if _is_image(apath) or _is_image(aname):
+                                    clean_p = apath if apath.startswith("/") else f"/{apath}"
+                                    if clean_p.startswith("/data/"):
+                                        clean_p = clean_p[5:]
+                                    thumb_url = f"https://img.{domain}/thumbnail/data{clean_p}"
+                                    break
+
+                    post_files = []
+                    # 1. Main post file
+                    if f and isinstance(f, dict) and (f.get("path") or f.get("storageKey")):
+                        mf_name = f.get("name") or os.path.basename(f.get("path", "") or "main_file")
+                        mf_path = f.get("path") or ""
+                        mf_thumb = ""
+                        if mf_path and (_is_image(mf_path) or _is_image(mf_name)):
+                            clean_p = mf_path if mf_path.startswith("/") else f"/{mf_path}"
+                            if clean_p.startswith("/data/"):
+                                clean_p = clean_p[5:]
+                            mf_thumb = f"https://img.{domain}/thumbnail/data{clean_p}"
+                        post_files.append({
+                            "name": mf_name,
+                            "path": mf_path,
+                            "thumbnail": mf_thumb,
+                            "previewUrl": mf_thumb,
+                            "is_main": True,
+                            "selected": True
+                        })
+
+                    # 2. Attachments
+                    for att in p.get("attachments", []) or []:
+                        if isinstance(att, dict) and (att.get("path") or att.get("storageKey")):
+                            att_name = att.get("name") or os.path.basename(att.get("path", "") or "attachment")
+                            att_path = att.get("path") or ""
+                            att_thumb = ""
+                            if att_path and (_is_image(att_path) or _is_image(att_name)):
+                                clean_p = att_path if att_path.startswith("/") else f"/{att_path}"
+                                if clean_p.startswith("/data/"):
+                                    clean_p = clean_p[5:]
+                                att_thumb = f"https://img.{domain}/thumbnail/data{clean_p}"
+                            post_files.append({
+                                "name": att_name,
+                                "path": att_path,
+                                "thumbnail": att_thumb,
+                                "previewUrl": att_thumb,
+                                "is_main": False,
+                                "selected": True
+                            })
+
+                    # Clean post content / description
+                    import html
+                    raw_content = p.get("content") or p.get("captionHtml") or p.get("caption") or ""
+                    clean_content = re.sub(r'<br\s*/?>', '\n', str(raw_content), flags=re.IGNORECASE)
+                    clean_content = html.unescape(re.sub(r'<[^>]+>', '', clean_content).strip())
+
+                    cards.append({
+                        "id": pid,
+                        "title": title,
+                        "content": clean_content,
+                        "published": published,
+                        "thumbnail": thumb_url,
+                        "fileCount": len(post_files),
+                        "files": post_files,
+                        "selected": True
+                    })
+
+                self._is_post_selection_loading = False
+                self.postSelectionLoadingChanged.emit()
+                self.postSelectionReady.emit(cards, creator_name, len(cards))
+
+            except Exception as ex:
+                logger.error(f"Error fetching posts for selection: {ex}", category="api")
+                self._has_error = True
+                self._last_error_message = str(ex)
+                self.hasErrorChanged.emit()
+                self.lastErrorMessageChanged.emit()
+                self._is_post_selection_loading = False
+                self.postSelectionLoadingChanged.emit()
+                self.postSelectionError.emit(str(ex))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    @Slot(list, bool)
+    @Slot(list, bool, 'QVariant')
+    def startDownloadSelectedPosts(self, selectedPostIds: list, autoStart: bool, selectedFilesMap: Any = None):
+        """
+        Given the list of selected post IDs from the PostSelectionModal,
+        filters cached posts and builds download tasks for queueing or immediate start.
+        If selectedFilesMap ({postId: [allowedPaths]}) is provided, only selected files are queued.
+        """
+        if not self._selection_cached_posts or not self._selection_parsed:
+            logger.warning("No cached selection posts available.", category="downloader")
+            return
+
+        if hasattr(selectedFilesMap, "toVariant"):
+            selectedFilesMap = selectedFilesMap.toVariant()
+        elif isinstance(selectedFilesMap, str):
+            try:
+                selectedFilesMap = json.loads(selectedFilesMap)
+            except Exception:
+                pass
+
+        files_map = {str(k): v for k, v in selectedFilesMap.items()} if isinstance(selectedFilesMap, dict) else {}
+
+        def _norm_path(p):
+            if not p:
+                return ""
+            s = str(p).replace("\\", "/").strip()
+            if s.startswith("/data/"):
+                s = s[5:]
+            if not s.startswith("/"):
+                s = "/" + s
+            return s.lower()
+
+        if hasattr(selectedPostIds, "toVariant"):
+            selectedPostIds = selectedPostIds.toVariant()
+        elif isinstance(selectedPostIds, str):
+            try:
+                selectedPostIds = json.loads(selectedPostIds)
+            except Exception:
+                pass
+        if not isinstance(selectedPostIds, (list, set, tuple)):
+            selectedPostIds = [selectedPostIds] if selectedPostIds else []
+
+        selected_id_set = {str(pid) for pid in selectedPostIds}
+        filtered_posts = []
+        for p in self._selection_cached_posts:
+            pid = str(p.get("id", ""))
+            if pid not in selected_id_set:
+                continue
+
+            if files_map and pid in files_map:
+                raw_allowed = files_map[pid]
+                if isinstance(raw_allowed, list):
+                    allowed_set = set(str(x) for x in raw_allowed)
+                    allowed_norm = {_norm_path(x) for x in raw_allowed}
+                    allowed_names = {os.path.basename(str(x)).lower() for x in raw_allowed if x}
+
+                    def _keep_f(f_dict):
+                        if not isinstance(f_dict, dict):
+                            return False
+                        fp = str(f_dict.get("path") or f_dict.get("storageKey") or "")
+                        fn = (f_dict.get("name") or os.path.basename(fp) or "").lower()
+                        if fp in allowed_set or _norm_path(fp) in allowed_norm:
+                            return True
+                        if fn and fn in allowed_names:
+                            return True
+                        return False
+
+                    p_copy = dict(p)
+                    if "attachments" in p and isinstance(p["attachments"], list):
+                        p_copy["attachments"] = [
+                            att for att in p["attachments"]
+                            if _keep_f(att)
+                        ]
+                    if "file" in p and isinstance(p["file"], dict):
+                        if not _keep_f(p["file"]):
+                            p_copy["file"] = {}
+                    filtered_posts.append(p_copy)
+                else:
+                    filtered_posts.append(p)
+            else:
+                filtered_posts.append(p)
+
+        if not filtered_posts:
+            logger.warning("No posts were selected for download.", category="downloader")
+            return
+
+        parsed = self._selection_parsed
+        creator_name = self._selection_creator_name
+        options = self._get_filter_options()
+
+        # Build download tasks
+        tasks = self.downloader.build_tasks_from_posts(
+            posts=filtered_posts,
+            creator_name=creator_name,
+            service=parsed.service,
+            domain=parsed.domain,
+            base_dir=self._download_dir,
+            options=options,
+            batch_id=f"{parsed.service}_{parsed.user_id}"
+        )
+
+        if not tasks:
+            logger.warning("No downloadable files found matching active filters in selected posts.", category="downloader")
+            return
+
+        if autoStart:
+            if self._is_downloading:
+                self._handle_append_tasks(tasks)
+                self.downloader.append_tasks(tasks, options=options, cookie_str=self._cookie_string)
+                logger.info(f"Appended {len(tasks)} tasks from {len(filtered_posts)} selected posts to active queue.", category="downloader")
+            else:
+                self._queue_model.clear()
+                self._active_queue_model.clear()
+                self._queued_links.clear()
+                self.downloader.reset_state()
+                self.downloader.tasks = list(tasks)
+                self._handle_set_tasks(tasks)
+
+                self._scan_cancel_event.clear()
+                self._has_error = False
+                self.hasErrorChanged.emit()
+                self._is_downloading = True
+                self.isDownloadingChanged.emit()
+                self.isPausedChanged.emit()
+                self._status_text = f"Starting download for {len(tasks)} selected files..."
+                self.statusTextChanged.emit()
+
+                logger.info(f"Starting download for {len(tasks)} file(s) across {len(filtered_posts)} selected posts...", category="downloader")
+                self.downloader.start_download_queue(
+                    tasks=tasks,
+                    options=options,
+                    cookie_str=self._cookie_string
+                )
+        else:
+            self._handle_append_tasks(tasks)
+            self.downloader.append_tasks(tasks)
+            self._status_text = f"Queued {len(tasks)} files ({creator_name})."
+            self.statusTextChanged.emit()
+            logger.success(f"Added {len(tasks)} tasks from {len(filtered_posts)} selected posts to queue.", category="queue")
+
     def _auto_harvest_posts_to_vault(self, posts: List[Dict[str, Any]], creator_name: str, domain: str, service: str, user_id: str):
         """
         Background worker to harvest cloud links, smart passwords, and post metadata
@@ -1461,6 +1998,27 @@ class AppBridge(QObject):
                             category="vault"
                         )
                         self.linkVaultChanged.emit()
+
+                    if self.archive_manager and self.archive_manager.is_enabled:
+                        archived_link_count = 0
+                        for hp in harvested_posts:
+                            p_id = str(hp.get("post_id") or "")
+                            p_title = str(hp.get("post_title") or "")
+                            for lk in hp.get("links", []):
+                                u = lk.get("url")
+                                if u:
+                                    if self.archive_manager.record_link(
+                                        service=service,
+                                        creator_id=user_id,
+                                        post_id=p_id,
+                                        url=u,
+                                        creator_name=creator_name or user_id,
+                                        post_title=p_title,
+                                        link_title=lk.get("title") or u
+                                    ):
+                                        archived_link_count += 1
+                        if archived_link_count > 0:
+                            self.archiveUpdated.emit()
             except Exception as e:
                 logger.debug(f"Link Vault auto-harvest error: {e}", category="vault")
 
@@ -2529,6 +3087,7 @@ class AppBridge(QObject):
             "auto_retry_at_end": self._auto_retry_at_end,
             "manga_mode": self._manga_mode,
             "filename_style": self._filename_style,
+            "filename_template": self._filename_template,
             "proxy_url": self._proxy_url,
             "compress_webp": self._compress_webp,
             "keep_duplicates": self._keep_duplicates,
@@ -2549,7 +3108,8 @@ class AppBridge(QObject):
             "date_after": self._date_after,
             "date_before": self._date_before,
             "date_auto_scan_pages": self._date_auto_scan_pages,
-            "enable_download_archive": self._enable_download_archive
+            "enable_download_archive": self._enable_download_archive,
+            "download_pawchive_temporary_files": self._download_pawchive_temporary_files
         }
         self.session_manager.save_settings(settings_dict, silent=True)
 
@@ -2591,6 +3151,9 @@ class AppBridge(QObject):
     def _handle_task_status(self, task: DownloadTask):
         self._queue_model.updateTask(task)
         self._active_queue_model.updateTask(task)
+        if task.status == "completed" and self._enable_download_archive:
+            self.archiveRecordCountChanged.emit()
+            self.archiveUpdated.emit()
 
     @Slot(int)
     def _handle_throttled(self, new_count: int):
@@ -3133,18 +3696,58 @@ class AppBridge(QObject):
     def resolve_artist_download_dir(self, entry) -> str:
         """
         Return the exact directory to download an artist into:
-        1. If entry.download_dir is set and non-empty, resolve it (ensuring no duplicate creator folder).
-        2. Otherwise, construct the default path inside self._download_dir: os.path.join(self._download_dir, f"{clean_c} [{service}]").
+        1. If multi-drive overflow is enabled:
+           - Automatically chooses the drive with the MOST free space among
+             existing artist directories and storage pool drives.
+        2. Otherwise:
+           - If entry.download_dir is set and non-empty, resolve it.
+           - Otherwise, construct the default path inside self._download_dir.
         """
         from core.filter_engine import FilterEngine
+        from core.storage_pool_manager import storage_pool_manager
+
         clean_c = FilterEngine.clean_filesystem_text(entry.creator_name or entry.user_id, max_len=80, fallback="creator")
         expected_folder = f"{clean_c} [{entry.service}]"
 
+        if storage_pool_manager.enabled and storage_pool_manager.overflow_dirs:
+            # Multi-drive overflow active: discover existing artist folders across drives
+            reg_paths = list(getattr(entry, "download_dirs", []) or [])
+            if entry.download_dir and entry.download_dir not in reg_paths:
+                reg_paths.insert(0, entry.download_dir)
+
+            existing_locs = storage_pool_manager.find_artist_locations(
+                creator_name=entry.creator_name or entry.user_id,
+                service=entry.service,
+                additional_paths=reg_paths
+            )
+            # Sync discovered back into entry.download_dirs
+            synced = False
+            for loc in existing_locs:
+                if loc not in entry.download_dirs:
+                    entry.download_dirs.append(loc)
+                    synced = True
+            if synced:
+                self._watchlist_manager.save()
+
+            if existing_locs:
+                # Pick the existing artist location that sits on the disk with the MOST free space
+                best_loc, _ = storage_pool_manager.get_most_free_drive(existing_locs)
+                return best_loc
+            else:
+                # No artist folder exists yet -> pick among primary and all overflow roots by most free disk
+                roots = ([storage_pool_manager.primary_dir] if storage_pool_manager.primary_dir else [self._download_dir]) + list(storage_pool_manager.overflow_dirs)
+                best_root, _ = storage_pool_manager.get_most_free_drive(roots)
+                target = os.path.join(best_root, expected_folder)
+                if target not in entry.download_dirs:
+                    entry.download_dirs.append(target)
+                    self._watchlist_manager.save()
+                return target
+
+        # Standard single-drive fallback
         target = (getattr(entry, "download_dir", "") or "").strip()
         if target:
             return self.resolve_artist_download_dir_for_folder(target, entry.creator_name or entry.user_id, entry.service)
 
-        # Default fallback: inside self._download_dir
         base_dir = self._download_dir or os.path.join(os.path.expanduser("~"), "Downloads", "KemonoDownloads")
         return os.path.join(base_dir, expected_folder)
 
@@ -3226,12 +3829,15 @@ class AppBridge(QObject):
                 options = self._get_filter_options()
 
             artist_folder = self.resolve_artist_download_dir(entry)
-            # Ensure the entry knows its download_dir if it was previously empty
+            # Ensure the entry knows its download_dir and download_dirs
             if not entry.download_dir:
                 entry.download_dir = artist_folder
-                self._watchlist_manager.save()
-                self._watchlist_model.refresh()
-                self.watchlistChanged.emit()
+            if hasattr(entry, "download_dirs") and isinstance(entry.download_dirs, list):
+                if artist_folder not in entry.download_dirs:
+                    entry.download_dirs.insert(0, artist_folder)
+            self._watchlist_manager.save()
+            self._watchlist_model.refresh()
+            self.watchlistChanged.emit()
 
             tasks = self.downloader.build_tasks_from_posts(
                 posts=new_posts,
@@ -3459,6 +4065,116 @@ class AppBridge(QObject):
             else:
                 resolved = norm_folder
             self.setWatchlistDownloadDir(userId, service, resolved)
+
+    @Slot(str, str, result="QVariantList")
+    def getArtistDownloadDirs(self, userId: str, service: str) -> list:
+        """
+        Returns all discovered and registered filesystem paths for an artist across
+        primary storage and overflow drives, enriched with free space statistics.
+        """
+        entry = self._watchlist_manager._find(userId, service)
+        if not entry:
+            return []
+
+        import shutil
+        from core.storage_pool_manager import storage_pool_manager
+
+        registered = list(getattr(entry, "download_dirs", []) or [])
+        if entry.download_dir and entry.download_dir not in registered:
+            registered.insert(0, entry.download_dir)
+
+        # Discovered on-disk folders across primary & overflow drives
+        discovered = storage_pool_manager.find_artist_locations(
+            creator_name=entry.creator_name or entry.user_id,
+            service=entry.service,
+            additional_paths=registered
+        )
+
+        updated = False
+        for p in discovered:
+            if p not in registered:
+                registered.append(p)
+                updated = True
+        if updated:
+            entry.download_dirs = registered
+            self._watchlist_manager.save()
+            self._watchlist_model.refresh()
+            self.watchlistChanged.emit()
+
+        if not registered:
+            default_p = self.resolve_artist_download_dir(entry)
+            registered = [default_p]
+
+        results = []
+        for p in registered:
+            norm = os.path.normpath(p)
+            exists = os.path.exists(norm)
+            free_gb = 0.0
+            total_gb = 0.0
+            drive_label = ""
+            try:
+                drive_root = norm if exists else (os.path.splitdrive(norm)[0] or norm)
+                if os.path.exists(drive_root):
+                    usage = shutil.disk_usage(drive_root)
+                    free_gb = round(getattr(usage, "free", usage[2] if len(usage) > 2 else 0) / (1024 ** 3), 1)
+                    total_gb = round(getattr(usage, "total", usage[0] if len(usage) > 0 else 0) / (1024 ** 3), 1)
+                    drive_label = os.path.splitdrive(norm)[0]
+            except Exception:
+                pass
+
+            results.append({
+                "path": norm,
+                "exists": exists,
+                "freeGb": free_gb,
+                "totalGb": total_gb,
+                "driveLabel": drive_label,
+                "isPrimary": (norm == entry.download_dir or (registered and norm == registered[0]))
+            })
+
+        return results
+
+    @Slot(str, str, str)
+    def removeArtistDownloadDir(self, userId: str, service: str, path: str):
+        """Remove a location path from an artist's tracked download_dirs list."""
+        if self._watchlist_manager.remove_download_dir(userId, service, path):
+            self._watchlist_model.refresh()
+            self.watchlistChanged.emit()
+
+    @Slot(str, str, str)
+    def addArtistDownloadDir(self, userId: str, service: str, path: str):
+        """Add a custom location path to an artist's tracked download_dirs list."""
+        entry = self._watchlist_manager._find(userId, service)
+        if entry:
+            resolved = self.resolve_artist_download_dir_for_folder(path, entry.creator_name, entry.service)
+        else:
+            resolved = os.path.normpath(path)
+        if self._watchlist_manager.add_download_dir(userId, service, resolved):
+            self._watchlist_model.refresh()
+            self.watchlistChanged.emit()
+
+    @Slot(str, str)
+    def browseAndAddArtistDownloadDir(self, userId: str, service: str):
+        """Open a folder picker and append the chosen path to the artist's download_dirs list."""
+        entry = self._watchlist_manager._find(userId, service)
+        initial_dir = (
+            entry.download_dir
+            if entry and entry.download_dir and os.path.exists(entry.download_dir)
+            else self._download_dir
+        )
+        folder = QFileDialog.getExistingDirectory(
+            None,
+            f"Add Storage Location for {entry.creator_name if entry else userId}",
+            initial_dir
+        )
+        if folder:
+            norm_folder = os.path.normpath(folder)
+            if self._watchlist_manager.add_download_dir(userId, service, norm_folder):
+                self._watchlist_model.refresh()
+                self.watchlistChanged.emit()
+                logger.info(
+                    f"Added storage location {norm_folder!r} for {entry.creator_name if entry else userId}.",
+                    category="watchlist"
+                )
 
     @Slot(str)
     def openFolder(self, path: str):

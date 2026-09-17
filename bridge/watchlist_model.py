@@ -26,6 +26,7 @@ class WatchlistModel(QAbstractListModel):
     DownloadDirRole  = Qt.UserRole + 11
     IgnoredCountRole = Qt.UserRole + 12
     CachedPostsRole  = Qt.UserRole + 13
+    DownloadDirsRole = Qt.UserRole + 14
 
     countChanged = Signal()
 
@@ -101,6 +102,9 @@ class WatchlistModel(QAbstractListModel):
     def get(self, index: int) -> dict:
         if 0 <= index < len(self._display_entries):
             e = self._display_entries[index]
+            d_dirs = list(getattr(e, "download_dirs", []) or [])
+            if e.download_dir and e.download_dir not in d_dirs:
+                d_dirs.insert(0, e.download_dir)
             return {
                 "url": e.url,
                 "creatorName": e.creator_name,
@@ -113,6 +117,7 @@ class WatchlistModel(QAbstractListModel):
                 "autoCheck": e.auto_check,
                 "newPostCount": e.new_post_count,
                 "downloadDir": e.download_dir,
+                "downloadDirs": d_dirs,
                 "ignoredCount": len(getattr(e, "ignored_post_ids", [])),
                 "cachedNewPosts": [
                     {
@@ -135,6 +140,9 @@ class WatchlistModel(QAbstractListModel):
         if not index.isValid() or index.row() >= len(self._display_entries):
             return None
         entry = self._display_entries[index.row()]
+        d_dirs = list(getattr(entry, "download_dirs", []) or [])
+        if entry.download_dir and entry.download_dir not in d_dirs:
+            d_dirs.insert(0, entry.download_dir)
         return {
             self.UrlRole:          entry.url,
             self.CreatorNameRole:  entry.creator_name,
@@ -147,6 +155,7 @@ class WatchlistModel(QAbstractListModel):
             self.AutoCheckRole:    entry.auto_check,
             self.NewPostCountRole: entry.new_post_count,
             self.DownloadDirRole:  entry.download_dir,
+            self.DownloadDirsRole: d_dirs,
             self.IgnoredCountRole: len(getattr(entry, "ignored_post_ids", [])),
             self.CachedPostsRole:  [
                 {
@@ -173,6 +182,7 @@ class WatchlistModel(QAbstractListModel):
             self.AutoCheckRole:    b"autoCheck",
             self.NewPostCountRole: b"newPostCount",
             self.DownloadDirRole:  b"downloadDir",
+            self.DownloadDirsRole: b"downloadDirs",
             self.IgnoredCountRole: b"ignoredCount",
             self.CachedPostsRole:  b"cachedNewPosts",
             Qt.DisplayRole:        b"display",

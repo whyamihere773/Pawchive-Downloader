@@ -27,11 +27,18 @@ class WatchlistEntry:
     auto_check: bool = True
     new_post_count: int = 0    # transient — not persisted, set after checks
     download_dir: str = ""
+    download_dirs: List[str] = field(default_factory=list)
     options: Dict[str, Any] = field(default_factory=dict)
     ignored_post_ids: List[str] = field(default_factory=list)
     cached_new_posts: List[Dict[str, Any]] = field(default_factory=list)  # transient — discovered new posts
 
     def to_dict(self) -> Dict[str, Any]:
+        # Sync primary download_dir with the first valid entry in download_dirs
+        if self.download_dirs and not self.download_dir:
+            self.download_dir = self.download_dirs[0]
+        elif self.download_dir and self.download_dir not in self.download_dirs:
+            self.download_dirs.insert(0, self.download_dir)
+
         d = asdict(self)
         d.pop("new_post_count", None)   # don't persist transient field
         d.pop("cached_new_posts", None) # don't persist transient field
@@ -39,6 +46,16 @@ class WatchlistEntry:
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "WatchlistEntry":
+        single_dir = str(d.get("download_dir", "") or "").strip()
+        raw_dirs = d.get("download_dirs", [])
+        if not isinstance(raw_dirs, list):
+            raw_dirs = [raw_dirs] if raw_dirs else []
+        norm_dirs = [os.path.normpath(str(p)) for p in raw_dirs if str(p).strip()]
+        if single_dir:
+            norm_single = os.path.normpath(single_dir)
+            if norm_single not in norm_dirs:
+                norm_dirs.insert(0, norm_single)
+
         return cls(
             url=d.get("url", ""),
             service=d.get("service", ""),
@@ -50,7 +67,8 @@ class WatchlistEntry:
             added_at=d.get("added_at", ""),
             auto_check=bool(d.get("auto_check", True)),
             new_post_count=0,
-            download_dir=d.get("download_dir", ""),
+            download_dir=single_dir or (norm_dirs[0] if norm_dirs else ""),
+            download_dirs=norm_dirs,
             options=d.get("options", {}) if isinstance(d.get("options"), dict) else {},
             ignored_post_ids=list(d.get("ignored_post_ids", [])) if isinstance(d.get("ignored_post_ids"), list) else [],
             cached_new_posts=[],
@@ -228,10 +246,54 @@ class WatchlistManager:
         """Set or update the custom download directory for an entry."""
         existing = self._find(user_id, service)
         if existing:
-            existing.download_dir = download_dir
+            norm = os.path.normpath(download_dir) if download_dir else ""
+            existing.download_dir = norm
+            if norm:
+                if not hasattr(existing, "download_dirs") or not isinstance(existing.download_dirs, list):
+                    existing.download_dirs = []
+                if norm not in existing.download_dirs:
+                    existing.download_dirs.insert(0, norm)
             self.save()
             return True
         return False
+
+    def add_download_dir(self, user_id: str, service: str, new_dir: str) -> bool:
+        """Add a path to an artist's download_dirs list if not present."""
+        existing = self._find(user_id, service)
+        if existing and new_dir:
+            norm = os.path.normpath(new_dir)
+            if not hasattr(existing, "download_dirs") or not isinstance(existing.download_dirs, list):
+                existing.download_dirs = [existing.download_dir] if existing.download_dir else []
+            if norm not in existing.download_dirs:
+                existing.download_dirs.append(norm)
+            if not existing.download_dir:
+                existing.download_dir = norm
+            self.save()
+            return True
+        return False
+
+    def remove_download_dir(self, user_id: str, service: str, target_dir: str) -> bool:
+        """Remove a path from an artist's download_dirs list (e.g. when consolidated by user)."""
+        existing = self._find(user_id, service)
+        if existing and target_dir:
+            norm = os.path.normpath(target_dir).lower()
+            if hasattr(existing, "download_dirs") and isinstance(existing.download_dirs, list):
+                existing.download_dirs = [d for d in existing.download_dirs if os.path.normpath(d).lower() != norm]
+            if existing.download_dir and os.path.normpath(existing.download_dir).lower() == norm:
+                existing.download_dir = existing.download_dirs[0] if existing.download_dirs else ""
+            self.save()
+            return True
+        return False
+
+    def get_download_dirs(self, user_id: str, service: str) -> List[str]:
+        """Returns all registered paths for an artist."""
+        existing = self._find(user_id, service)
+        if existing:
+            dirs = list(getattr(existing, "download_dirs", []) or [])
+            if existing.download_dir and existing.download_dir not in dirs:
+                dirs.insert(0, existing.download_dir)
+            return dirs
+        return []
 
     @staticmethod
     def normalize_date(s: str) -> Optional[str]:

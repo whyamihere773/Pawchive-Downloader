@@ -119,18 +119,5 @@ Item {
         text: root.tooltip
         delay: 400
         timeout: 5000
-        contentItem: Text {
-            text: root.tooltip
-            font.family: "Segoe UI, Inter, sans-serif"
-            font.pixelSize: 11
-            color: "#F1F5F9"
-            wrapMode: Text.Wrap
-        }
-        background: Rectangle {
-            color: "#181B24"
-            border.color: root.accentColor
-            border.width: 1
-            radius: 6
-        }
     }
 }

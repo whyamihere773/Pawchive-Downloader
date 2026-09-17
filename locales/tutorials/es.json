@@ -365,6 +365,92 @@
     ]
   },
   {
+    "title": "Selección e inspector de publicaciones interactivas",
+    "icon": "🖼️",
+    "summary": "Vista previa de publicaciones del catálogo, modos de cuadrícula y lista, inspector de publicaciones, selección granular de archivos adjuntos y Lightbox en pantalla completa.",
+    "content": [
+      {
+        "heading": "Selección de puesto de apertura",
+        "body": "Haga clic en 'Seleccionar publicaciones...' junto al botón Descargar en cualquier tarjeta de creador. El selector interactivo carga las publicaciones del creador, permitiéndote elegir exactamente lo que deseas descargar en lugar de raspar todo a ciegas.",
+        "type": "intro"
+      },
+      {
+        "heading": "Modos de vista de cuadrícula versus lista",
+        "body": "• Modo de cuadrícula: muestra tarjetas de vista previa visual con miniaturas de medios, fechas de publicación y recuentos de archivos adjuntos.\n• Modo de lista: un diseño tabular compacto que muestra títulos de publicaciones, fechas de publicación, recuentos de archivos adjuntos y botones de inspección directa para escanear rápidamente catálogos grandes.",
+        "type": "tip"
+      },
+      {
+        "heading": "Inspector de publicaciones detalladas",
+        "body": "Haga clic en cualquier tarjeta postal o fila para abrir el cajón del Inspector de publicaciones. Puede leer el cuerpo de texto completo de la publicación, revelar contraseñas de archivos incrustados con una copia con 1 clic y usar casillas de verificación para seleccionar o anular la selección de archivos adjuntos individuales.",
+        "type": "info"
+      },
+      {
+        "heading": "Caja de luz multimedia en pantalla completa",
+        "body": "Haga clic en cualquier miniatura de un archivo adjunto dentro del inspector para abrir el visualizador Lightbox en pantalla completa. Navegue por medios de alta resolución usando las teclas de flecha, presione la barra espaciadora para alternar la selección de archivos o presione Escape para cerrar.",
+        "type": "tip"
+      },
+      {
+        "heading": "Contadores de selección dinámicos y procesamiento por lotes rápido",
+        "body": "El contador en vivo del pie de página muestra la cantidad exacta de publicaciones y archivos seleccionados en todo el catálogo de creadores. Utilice 'Seleccionar todo' o 'Deseleccionar todo' para alternar todos los elementos visibles con un solo clic.",
+        "type": "info"
+      }
+    ]
+  },
+  {
+    "title": "Descargar el Verificador de Archivos y Archivos",
+    "icon": "🗄️",
+    "summary": "Catalogación de publicaciones sin conexión, verificación de disco con un solo clic, indicadores de archivos faltantes y poda de bases de datos.",
+    "content": [
+      {
+        "heading": "Base de datos de archivo dedicada",
+        "body": "La pestaña Archivo proporciona una biblioteca completa sin conexión de cada creador, publicación y archivo descargado por la aplicación. Busque nombres de creadores o publique títulos al instante sin necesidad de una conexión a Internet activa.",
+        "type": "intro"
+      },
+      {
+        "heading": "Motor de verificación de disco",
+        "body": "Haz clic en el botón 🔍 Verificar junto a cualquier creador en el Archivo. Pawchive escanea sus unidades de almacenamiento para verificar que todos los archivos catalogados aún estén intactos y accesibles en el disco.",
+        "type": "tip"
+      },
+      {
+        "heading": "Indicadores de archivos faltantes (insignias rojas/ámbar)",
+        "body": "Si los archivos se han movido, renombrado o eliminado del disco, la tarjeta postal se resalta en ámbar/rojo con un contador exacto de archivos faltantes (⚠️ Falta X). En la lista de archivos ampliada, los archivos que faltan están marcados en rojo para que puedas detectar fácilmente descargas incompletas.",
+        "type": "warning"
+      },
+      {
+        "heading": "Eliminar registros faltantes",
+        "body": "Cuando la verificación identifica archivos faltantes, aparece un botón de pancarta ámbar que dice \"Eliminar faltantes\". Al hacer clic en él, podrá eliminar los registros de la base de datos en busca de archivos faltantes con un solo clic, manteniendo su archivo limpio.",
+        "type": "info"
+      },
+      {
+        "heading": "Encabezado de descripción general plegable",
+        "body": "Haga clic en el botón de contracción (▾/▸) en la parte superior derecha de la tarjeta de descripción general de la base de datos de archivo para minimizar el panel de estadísticas y acciones, maximizando su área de visualización vertical para explorar creadores y publicaciones.",
+        "type": "tip"
+      }
+    ]
+  },
+  {
+    "title": "Creador de plantillas de nombres de archivos personalizados",
+    "icon": "🏷️",
+    "summary": "Chips de etiquetas interactivos, formatos de nombres de archivos personalizables, vista previa en vivo y desinfección del sistema de archivos.",
+    "content": [
+      {
+        "heading": "Creación de patrones de nombres personalizados",
+        "body": "Vaya a Configuración → Almacenamiento y procesamiento de archivos → Formato de nombre de archivo y seleccione 'Patrón personalizado (haga clic en los chips a continuación)'. Cree plantillas de nombres personalizadas simplemente haciendo clic en los chips de etiquetas interactivos.",
+        "type": "intro"
+      },
+      {
+        "heading": "Chips de etiquetas disponibles",
+        "body": "• {artista}: nombre para mostrar del creador o artista\n• {título}: título de la publicación\n• {post_id}: identificador único de publicación\n• {fecha}: fecha de publicación (AAAA-MM-DD)\n• {año}, {mes}, {día}: componentes de fecha individuales\n• {orig_name}: nombre de archivo original con extensión\n• {nombre}: nombre de archivo sin extensión\n• {ext}: extensión de archivo (por ejemplo, .png, .mp4)\n• {file_index}: número de archivo secuencial dentro de la publicación (01, 02)\n• {post_index}: contador de publicaciones secuenciales (001, 002)",
+        "type": "info"
+      },
+      {
+        "heading": "Vista previa en vivo y desinfección en tiempo real",
+        "body": "Una vista previa de muestra en vivo se actualiza instantáneamente a medida que edita el patrón o hace clic en los chips de etiquetas. Los caracteres ilegales de Windows (\\, /, :, *, ?, \", <, >, |) y los puntos/espacios finales se desinfectan automáticamente para evitar errores en el sistema de archivos.",
+        "type": "tip"
+      }
+    ]
+  },
+  {
     "title": "Referencia completa de información sobre herramientas",
     "icon": "💡",
     "summary": "Hoja de referencia rápida que explica cada botón, ícono e insignia en la interfaz.",
@@ -388,6 +474,11 @@
         "heading": "Reintentar acciones modales",
         "body": "• 🔗 Abrir publicación: abre la publicación fuente en Kemono/Coomer en su navegador web.\n• 📥 Enlace de prueba: prueba o descarga el archivo directamente en su navegador.\n• 🔁 Probado Nx: muestra cuántas veces se ha reintentado el archivo.\n• 🛑 5/5 reintentos máximos: indica que el reintento automático dejó de intentar este archivo.",
         "type": "info"
+      },
+      {
+        "heading": "Controles del selector de publicaciones y del verificador de archivos",
+        "body": "• 🖼️ Seleccionar publicaciones: abre el navegador del catálogo interactivo para seleccionar publicaciones y archivos adjuntos antes de descargarlos.\n• 🔍 Verificar archivo: analiza el almacenamiento local para comprobar si los archivos archivados todavía existen en el disco.\n• ⚠️ Insignias faltantes: indicadores rojos y ámbar que resaltan archivos faltantes y descargas incompletas.\n• 🏷️ Plantilla de nombre de archivo: diseñador de chips de etiquetas interactivo con vista previa en vivo y formato personalizado.",
+        "type": "tip"
       }
     ]
   }

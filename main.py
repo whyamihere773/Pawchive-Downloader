@@ -52,7 +52,15 @@ def main():
     from bridge.updater_bridge import UpdaterBridge
     updater_bridge = UpdaterBridge()
 
+    from PySide6.QtQuickControls2 import QQuickStyle
+
     engine = QQmlApplicationEngine()
+    style_dir = os.path.join(base_dir, "qml", "style")
+    if os.path.exists(style_dir):
+        engine.addImportPath(style_dir)
+        QQuickStyle.setFallbackStyle("Basic")
+        QQuickStyle.setStyle("PawchiveStyle")
+
     engine.rootContext().setContextProperty("appBridge", app_bridge)
     engine.rootContext().setContextProperty("decompressorBridge", app_bridge.decompressorBridge)
     engine.rootContext().setContextProperty("updaterBridge", updater_bridge)

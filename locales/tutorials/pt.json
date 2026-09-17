@@ -365,6 +365,92 @@
     ]
   },
   {
+    "title": "Seleção e Inspetor de Postagens Interativas",
+    "icon": "🖼️",
+    "summary": "Visualização de postagens de catálogo, modos de grade e lista, Post Inspector, seleção granular de anexos e Lightbox em tela cheia.",
+    "content": [
+      {
+        "heading": "Seleção de postagem de abertura",
+        "body": "Clique em 'Selecionar postagens…' próximo ao botão Baixar em qualquer cartão de criador. O seletor interativo carrega as postagens do criador, permitindo que você escolha exatamente o que deseja baixar, em vez de copiar tudo às cegas.",
+        "type": "intro"
+      },
+      {
+        "heading": "Modos de visualização em grade versus lista",
+        "body": "• Modo Grade: Exibe cartões de visualização com miniaturas de mídia, datas de publicação e contagens de anexos.\n• Modo de lista: um layout tabular compacto que exibe títulos de postagens, datas de publicação, contagens de anexos e botões de inspeção direta para digitalização rápida de grandes catálogos.",
+        "type": "tip"
+      },
+      {
+        "heading": "Inspetor de Posto de Drill-Down",
+        "body": "Clique em qualquer cartão postal ou linha para abrir a gaveta do Post Inspector. Você pode ler o corpo do texto completo da postagem, revelar senhas de arquivos incorporadas com cópia com 1 clique e usar caixas de seleção para marcar ou desmarcar anexos individuais.",
+        "type": "info"
+      },
+      {
+        "heading": "Lightbox de mídia em tela cheia",
+        "body": "Clique em qualquer miniatura de anexo dentro do inspetor para abrir o visualizador Lightbox em tela cheia. Navegue pela mídia de alta resolução usando as teclas de seta, pressione a barra de espaço para alternar a seleção de arquivos ou pressione Escape para fechar.",
+        "type": "tip"
+      },
+      {
+        "heading": "Contadores de seleção dinâmica e lote rápido",
+        "body": "O contador ao vivo do rodapé exibe o número exato de postagens e arquivos selecionados em todo o catálogo do criador. Use 'Selecionar tudo' ou 'Desmarcar tudo' para alternar todos os itens visíveis com um único clique.",
+        "type": "info"
+      }
+    ]
+  },
+  {
+    "title": "Baixar arquivo e verificador de arquivos",
+    "icon": "🗄️",
+    "summary": "Catalogação pós-offline, verificação de disco com um único clique, indicadores de arquivos ausentes e remoção de banco de dados.",
+    "content": [
+      {
+        "heading": "Banco de dados de arquivo dedicado",
+        "body": "A guia Arquivo fornece uma biblioteca off-line completa de todos os criadores, postagens e arquivos já baixados pelo aplicativo. Pesquise nomes de criadores ou poste títulos instantaneamente, sem precisar de uma conexão ativa com a Internet.",
+        "type": "intro"
+      },
+      {
+        "heading": "Mecanismo de verificação de disco",
+        "body": "Clique no botão 🔍 Verificar ao lado de qualquer criador no Arquivo. Pawchive verifica suas unidades de armazenamento para verificar se todos os arquivos catalogados ainda estão intactos e acessíveis no disco.",
+        "type": "tip"
+      },
+      {
+        "heading": "Indicadores de arquivos ausentes (emblemas vermelhos/âmbar)",
+        "body": "Se os arquivos foram movidos, renomeados ou excluídos do disco, o cartão postal é destacado em âmbar/vermelho com um contador exato de arquivos ausentes (⚠️ X ausente). Na lista expandida de arquivos, os arquivos ausentes são marcados em vermelho para que você possa identificar facilmente downloads incompletos.",
+        "type": "warning"
+      },
+      {
+        "heading": "Remover registros ausentes",
+        "body": "Quando a verificação identifica arquivos ausentes, um botão âmbar \"Remover ausentes\" aparece. Clicar nele permite remover os registros do banco de dados em busca de arquivos ausentes com um clique, mantendo seu arquivo limpo.",
+        "type": "info"
+      },
+      {
+        "heading": "Cabeçalho de visão geral recolhível",
+        "body": "Clique na divisa recolhida (▾/▸) no canto superior direito do cartão de visão geral do banco de dados de arquivo para minimizar o painel de estatísticas e ações, maximizando sua área de visualização vertical para navegar pelos criadores e postagens.",
+        "type": "tip"
+      }
+    ]
+  },
+  {
+    "title": "Construtor de modelo de nome de arquivo personalizado",
+    "icon": "🏷️",
+    "summary": "Chips de tags interativos, formatos de nomenclatura de arquivos personalizáveis, visualização ao vivo e higienização do sistema de arquivos.",
+    "content": [
+      {
+        "heading": "Construindo padrões de nomenclatura personalizados",
+        "body": "Navegue até Configurações → Armazenamento e processamento de arquivos → Formato do nome do arquivo e selecione ‘Padrão personalizado (clique nos ícones abaixo)’. Crie modelos de nomenclatura personalizados simplesmente clicando nos ícones de tags interativos.",
+        "type": "intro"
+      },
+      {
+        "heading": "Chips de tags disponíveis",
+        "body": "• {artist}: nome de exibição do criador ou artista\n• {title}: título da postagem\n• {post_id}: identificador exclusivo da postagem\n• {data}: Data de publicação (AAAA-MM-DD)\n• {ano}, {mês}, {dia}: componentes de data individuais\n• {orig_name}: nome do arquivo original com extensão\n• {nome}: Nome do arquivo sem extensão\n• {ext}: extensão do arquivo (por exemplo, .png, .mp4)\n• {file_index}: número sequencial do arquivo na postagem (01, 02)\n• {post_index}: Contador de postagens sequencial (001, 002)",
+        "type": "info"
+      },
+      {
+        "heading": "Pré-visualização e higienização ao vivo em tempo real",
+        "body": "Uma visualização de amostra ao vivo é atualizada instantaneamente conforme você edita o padrão ou clica nos chips da tag. Caracteres ilegais do Windows (\\, /, :, *, ?, \", <, >, |) e pontos/espaços finais são automaticamente limpos para evitar erros no sistema de arquivos.",
+        "type": "tip"
+      }
+    ]
+  },
+  {
     "title": "Referência completa da dica de ferramenta",
     "icon": "💡",
     "summary": "Folha de dicas rápida explicando cada botão, ícone e emblema da interface.",
@@ -388,6 +474,11 @@
         "heading": "Tentar novamente ações modais",
         "body": "• 🔗 Abrir postagem: abre a postagem de origem no Kemono/Coomer em seu navegador.\n• 📥 Link de teste: testa ou baixa o arquivo diretamente no seu navegador.\n• 🔁 Tried Nx: Mostra quantas vezes o arquivo foi repetido.\n• 🛑 5/5 Max Retries: Indica que a repetição automática parou de tentar este arquivo.",
         "type": "info"
+      },
+      {
+        "heading": "Controles de pós-seletor e verificador de arquivo",
+        "body": "• 🖼️ Selecionar postagens: abre o navegador do catálogo interativo para escolher postagens e anexos antes de fazer o download.\n• 🔍 Verificar arquivo: verifica o armazenamento local para verificar se os arquivos arquivados ainda existem no disco.\n• ⚠️ Selos ausentes: indicadores vermelhos e âmbar destacando arquivos ausentes e downloads incompletos.\n• 🏷️ Modelo de nome de arquivo: designer de chip de tag interativo com visualização ao vivo e formatação personalizada.",
+        "type": "tip"
       }
     ]
   }

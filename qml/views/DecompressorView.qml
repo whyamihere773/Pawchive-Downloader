@@ -3244,11 +3244,11 @@ Item {
 
                 x: 18
                 y: (pwBankCard.height - 18 - (clearAllBtn.visible ? 42 : 0) - 34) - height - 6
-                width: 230
-                height: Math.min(creatorListView.contentHeight + 12, 220)
+                width: 240
+                height: Math.min(creatorListView.contentHeight + 14, 230)
                 radius: 8
-                color: "#0C1017"
-                border.color: "#38BDF8"
+                color: "#0E1422"
+                border.color: "#1E293B"
                 border.width: 1
                 clip: true
 
@@ -3326,13 +3326,42 @@ Item {
                     delegate: Rectangle {
                         id: creatorItemDelegate
                         width: creatorListView.width - (menuScroll.visible ? 8 : 0)
-                        height: 28
+                        height: 30
                         radius: 5
-                        color: (creatorListView.currentIndex === index || itemMouse.containsMouse) ? "#1E293B" : "transparent"
+                        property bool isSelected: root.selectedBankCreator === modelData
+                        property int pwCount: {
+                            var name = modelData;
+                            if (root.pwBankTree) {
+                                for (var i = 0; i < root.pwBankTree.length; i++) {
+                                    if (root.pwBankTree[i].creator === name) {
+                                        return root.pwBankTree[i].count || (root.pwBankTree[i].passwords ? root.pwBankTree[i].passwords.length : 0);
+                                    }
+                                }
+                            }
+                            return 0;
+                        }
+
+                        color: isSelected ? "#162234" : (itemMouse.containsMouse ? "#151D2C" : "transparent")
+                        border.color: isSelected ? "#1E3A5F" : "transparent"
+                        border.width: 1
+                        clip: true
+
+                        // Active item left blue accent bar
+                        Rectangle {
+                            width: 3
+                            anchors.left: parent.left
+                            anchors.top: parent.top
+                            anchors.bottom: parent.bottom
+                            anchors.topMargin: 4
+                            anchors.bottomMargin: 4
+                            radius: 1.5
+                            color: "#38BDF8"
+                            visible: creatorItemDelegate.isSelected
+                        }
 
                         RowLayout {
                             anchors.fill: parent
-                            anchors.leftMargin: 8
+                            anchors.leftMargin: creatorItemDelegate.isSelected ? 10 : 8
                             anchors.rightMargin: 8
                             spacing: 6
 
@@ -3345,10 +3374,30 @@ Item {
                                 text: modelData
                                 font.pixelSize: 11
                                 font.family: "Segoe UI, Inter, sans-serif"
-                                font.weight: root.selectedBankCreator === modelData ? Font.Bold : Font.Normal
-                                color: root.selectedBankCreator === modelData ? "#38BDF8" : (itemMouse.containsMouse ? "#F1F5F9" : "#CBD5E1")
+                                font.weight: creatorItemDelegate.isSelected ? Font.DemiBold : Font.Normal
+                                color: creatorItemDelegate.isSelected ? "#38BDF8" : (itemMouse.containsMouse ? "#F1F5F9" : "#CBD5E1")
                                 elide: Text.ElideRight
                                 Layout.fillWidth: true
+                            }
+
+                            // Saved password count badge for each artist
+                            Rectangle {
+                                visible: creatorItemDelegate.pwCount > 0
+                                implicitHeight: 16
+                                implicitWidth: Math.max(16, countTxt.implicitWidth + 8)
+                                radius: 8
+                                color: creatorItemDelegate.isSelected ? "#0284C7" : "#1E293B"
+                                border.color: creatorItemDelegate.isSelected ? "#38BDF8" : "#334155"
+                                border.width: 1
+
+                                Text {
+                                    id: countTxt
+                                    anchors.centerIn: parent
+                                    text: creatorItemDelegate.pwCount.toString()
+                                    font.pixelSize: 9
+                                    font.weight: Font.Bold
+                                    color: creatorItemDelegate.isSelected ? "#FFFFFF" : "#94A3B8"
+                                }
                             }
 
                             Text {
@@ -3356,7 +3405,7 @@ Item {
                                 font.pixelSize: 10
                                 font.weight: Font.Bold
                                 color: "#38BDF8"
-                                visible: root.selectedBankCreator === modelData
+                                visible: creatorItemDelegate.isSelected
                             }
                         }
 

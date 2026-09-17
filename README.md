@@ -57,6 +57,9 @@
 > Pawchive Downloader is designed to take the heavy lifting off your hands. You point it at what you want — and it handles the rest: automated schedules, background link harvesting, multi-drive overflow, self-healing recovery, and intelligent file organisation. You stay in control; the app does the work.
 
 - ⏰ **Task Scheduler & Automation Hub:** Create recurring automation schedules to poll your Watchlist for new creator posts, schedule off-peak **Night Owl** download windows, prevent Windows sleep during active jobs, and automatically sweep-retry any rate-limited or dropped files.
+- 🖼️ **Interactive Post Selector & Inspector:** Browse, search, and selectively download or queue individual creator posts. Drill down into post descriptions and passwords, pick individual attachments, view files in a fullscreen media Lightbox visualizer, and track real-time file and post selection tallies.
+- 🗄️ **Download Archive Database & Verifier:** Dedicated offline database cataloging all downloaded posts and files. Includes a disk verification engine to detect missing files, red/amber visual warning indicators, and a one-click database cleanup flow.
+- 🏷️ **Custom Filename Template Builder:** Flexible pattern designer with interactive tag chips (`{artist}`, `{title}`, `{post_id}`, `{date}`, `{file_index}`, etc.), real-time live preview, and filesystem sanitization.
 - 🗄️ **Permanent Link Vault & Harvester:** Harvests external cloud links (Mega, Google Drive, Pixeldrain, etc.) and archive passwords from posts *(WIP)* into a permanent offline vault. Run link health checks, prune dead links, sync passwords to the Decompressor with one click, or harvest entire creator histories without downloading files.
 - 💾 **Multi-Drive Storage Pools (Auto-Spanning Overflow):** Never suffer "Disk Full" crashes again. Automatically spills downloads to secondary drives or folders when your primary drive reaches its safety margin, preserving creator and post folder hierarchies seamlessly.
 - 📌 **Artist Watchlist:** Track followed creators and automatically check for new posts. Features one-click "Download All Updates", an interactive post review drawer with per-post and bulk ignoring, custom download paths per artist, saved per-artist filter settings, and an editable last-downloaded cutoff date with smart auto-normalization.
@@ -122,7 +125,7 @@
 ### Option A: Pre-compiled Windows Binary (Recommended for most users)
 
 1. Head over to the **[Latest Release](https://github.com/whyamihere773/Pawchive-Downloader/releases/latest)** page.
-2. Download `Pawchive-Downloader-v1.1.4-Windows.zip`.
+2. Download `Pawchive-Downloader-v1.1.5-Windows.zip`.
 3. Extract the ZIP archive anywhere on your computer.
 4. Run `Pawchive Downloader.exe` — that's it!
 

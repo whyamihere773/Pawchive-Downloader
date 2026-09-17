@@ -14,18 +14,6 @@ Button {
         visible: control.tooltip.length > 0 && control.hovered
         delay: 400
         timeout: 5000
-        contentItem: Text {
-            text: control.tooltip
-            font.family: "Segoe UI, Inter, sans-serif"
-            font.pixelSize: 11
-            color: "#F1F5F9"
-        }
-        background: Rectangle {
-            color: "#181B24"
-            border.color: "#38BDF8"
-            border.width: 1
-            radius: 6
-        }
     }
 
     font.family: "Segoe UI, Inter, sans-serif"

@@ -32,6 +32,7 @@ class FilenameStyles:
     DATE_POST_TITLE = "date_post_title"
     DATE_BASED = "date_based"
     POST_TITLE_GLOBAL_NUMBERING = "post_title_global_numbering"
+    CUSTOM = "custom"
 
 
 class FilterOptions:
@@ -58,6 +59,7 @@ class FilterOptions:
         auto_retry_at_end: bool = False,
         manga_mode: bool = False,
         filename_style: str = "post_title",
+        filename_template: str = "{title} - {orig_name}",
         proxy_url: str = "",
         page_start: int = 1,
         page_end: int = 999999,
@@ -68,7 +70,8 @@ class FilterOptions:
         tag_folder_mode: bool = False,
         skip_post_covers: bool = False,
         date_after: str = "",
-        date_before: str = ""
+        date_before: str = "",
+        download_pawchive_temporary_files: bool = True
     ):
         self.characters = characters
         self.character_scope = character_scope
@@ -92,6 +95,7 @@ class FilterOptions:
         self.auto_retry_at_end = auto_retry_at_end
         self.manga_mode = manga_mode
         self.filename_style = filename_style
+        self.filename_template = filename_template or "{title} - {orig_name}"
         self.proxy_url = proxy_url
         self.page_start = page_start
         self.page_end = page_end
@@ -102,6 +106,7 @@ class FilterOptions:
         self.skip_post_covers = skip_post_covers
         self.date_after = date_after
         self.date_before = date_before
+        self.download_pawchive_temporary_files = download_pawchive_temporary_files
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize filter options to dictionary for persistence."""
@@ -128,6 +133,7 @@ class FilterOptions:
             "auto_retry_at_end": self.auto_retry_at_end,
             "manga_mode": self.manga_mode,
             "filename_style": self.filename_style,
+            "filename_template": self.filename_template,
             "proxy_url": self.proxy_url,
             "page_start": self.page_start,
             "page_end": self.page_end,
@@ -138,6 +144,7 @@ class FilterOptions:
             "skip_post_covers": self.skip_post_covers,
             "date_after": self.date_after,
             "date_before": self.date_before,
+            "download_pawchive_temporary_files": self.download_pawchive_temporary_files,
         }
 
     @classmethod
@@ -168,6 +175,7 @@ class FilterOptions:
             auto_retry_at_end=bool(d.get("auto_retry_at_end", False)),
             manga_mode=bool(d.get("manga_mode", False)),
             filename_style=d.get("filename_style", "post_title"),
+            filename_template=d.get("filename_template", "{title} - {orig_name}"),
             proxy_url=d.get("proxy_url", ""),
             page_start=int(d.get("page_start", 1)),
             page_end=int(d.get("page_end", 999999)),
@@ -178,6 +186,7 @@ class FilterOptions:
             skip_post_covers=bool(d.get("skip_post_covers", False)),
             date_after=d.get("date_after", ""),
             date_before=d.get("date_before", ""),
+            download_pawchive_temporary_files=bool(d.get("download_pawchive_temporary_files", True)),
         )
 
 
@@ -470,16 +479,55 @@ class FilterEngine:
         post_index: int,
         file_index: int,
         options: FilterOptions,
-        folder_index: Optional[int] = None
+        folder_index: Optional[int] = None,
+        post_id: str = "",
+        artist: str = "",
+        service: str = "",
+        user_id: str = ""
     ) -> str:
         clean_orig = cls.sanitize_filename(original_filename, options)
         name_stem, ext = os.path.splitext(clean_orig)
         clean_title = cls.clean_filesystem_text(post_title, max_len=100, fallback="Post")
+        clean_artist = cls.clean_filesystem_text(artist, max_len=80, fallback="Artist")
         date_str = (post_date or "")[:10]
+        year = date_str[:4] if len(date_str) >= 4 else ""
+        month = date_str[5:7] if len(date_str) >= 7 else ""
+        day = date_str[8:10] if len(date_str) >= 10 else ""
+        f_idx = folder_index if folder_index is not None else file_index
 
         style = options.filename_style or FilenameStyles.POST_TITLE
 
-        if style == FilenameStyles.DATE_POST_TITLE:
+        if style == FilenameStyles.CUSTOM:
+            tpl = getattr(options, "filename_template", "") or "{title} - {orig_name}"
+            replacements = {
+                "{post_id}": str(post_id or ""),
+                "{artist}": clean_artist,
+                "{service}": str(service or ""),
+                "{user_id}": str(user_id or ""),
+                "{title}": clean_title,
+                "{date}": date_str,
+                "{year}": year,
+                "{month}": month,
+                "{day}": day,
+                "{orig_name}": clean_orig,
+                "{name}": name_stem,
+                "{ext}": ext,
+                "{file_index}": f"{file_index:02d}",
+                "{post_index}": f"{post_index:03d}",
+                "{seq_idx}": f"{f_idx:03d}" if f_idx is not None else f"{file_index:03d}",
+                "{folder_index}": f"{f_idx:03d}" if f_idx is not None else f"{file_index:03d}",
+            }
+            res = tpl
+            for k, v in replacements.items():
+                res = res.replace(k, v)
+
+            # If user template didn't include {ext} or {orig_name}, ensure the file extension is preserved
+            if "{ext}" not in tpl and "{orig_name}" not in tpl and ext:
+                if not res.lower().endswith(ext.lower()):
+                    res = f"{res}{ext}"
+
+            res = cls.clean_filesystem_text(res, max_len=220, fallback=clean_orig)
+        elif style == FilenameStyles.DATE_POST_TITLE:
             res = f"{date_str} - {clean_title} - {clean_orig}" if date_str else f"{clean_title} - {clean_orig}"
         elif style == FilenameStyles.DATE_BASED:
             res = f"{date_str}_{post_index:03d}_{file_index:02d}{ext}" if date_str else f"{post_index:03d}_{file_index:02d}{ext}"
@@ -488,7 +536,7 @@ class FilterEngine:
         else:
             res = clean_orig
 
-        if getattr(options, "file_index_prefix", False):
+        if getattr(options, "file_index_prefix", False) and style != FilenameStyles.CUSTOM:
             idx = folder_index if folder_index is not None else file_index
             if idx is not None and idx > 0:
                 res = f"{idx:03d}_{res}"
