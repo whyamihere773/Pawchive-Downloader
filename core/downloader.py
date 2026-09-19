@@ -11,6 +11,7 @@ import re
 import time
 import datetime
 import hashlib
+import random
 import threading
 import requests
 import urllib.parse
@@ -33,6 +34,8 @@ from core.archive_manager import ArchiveManager
 from services.multipart_downloader import download_multipart_file
 from services.link_extractor import LinkExtractor
 from services.ytdlp_manager import YtDlpManager
+from core.audio_tagger import AudioTagger
+from services.telegram_service import TelegramService
 
 
 class DownloadTask:
@@ -48,6 +51,9 @@ class DownloadTask:
         file_size: int = 0,
         expected_sha256: str = "",
         is_ytdlp: bool = False,
+        is_telegram: bool = False,
+        telegram_channel_id: str = "",
+        telegram_message_id: int = 0,
         batch_id: str = "",
         post_url: str = "",
         post_date: str = "",
@@ -64,6 +70,9 @@ class DownloadTask:
         self.file_size = file_size
         self.expected_sha256 = expected_sha256
         self.is_ytdlp = is_ytdlp
+        self.is_telegram = is_telegram
+        self.telegram_channel_id = telegram_channel_id
+        self.telegram_message_id = telegram_message_id
         self.batch_id = batch_id or (f"{service}_{creator_name}_{post_id}".strip("_") if (service or creator_name or post_id) else "batch_default")
         self.post_url = post_url
         self.post_date = post_date
@@ -97,6 +106,9 @@ class DownloadTask:
             "error_msg": self.error_msg,
             "retry_count": self.retry_count,
             "is_ytdlp": self.is_ytdlp,
+            "is_telegram": getattr(self, "is_telegram", False),
+            "telegram_channel_id": getattr(self, "telegram_channel_id", ""),
+            "telegram_message_id": getattr(self, "telegram_message_id", 0),
             "batch_id": getattr(self, "batch_id", ""),
             "post_url": getattr(self, "post_url", ""),
             "post_date": getattr(self, "post_date", "")
@@ -115,6 +127,9 @@ class DownloadTask:
             file_size=int(d.get("file_size", 0)),
             expected_sha256=d.get("expected_sha256", ""),
             is_ytdlp=bool(d.get("is_ytdlp", False)),
+            is_telegram=bool(d.get("is_telegram", False)),
+            telegram_channel_id=str(d.get("telegram_channel_id", "")),
+            telegram_message_id=int(d.get("telegram_message_id", 0)),
             batch_id=d.get("batch_id", ""),
             post_url=d.get("post_url", ""),
             post_date=d.get("post_date", "")
@@ -124,6 +139,7 @@ class DownloadTask:
         t.error_msg = d.get("error_msg", "")
         t.retry_count = int(d.get("retry_count", 0))
         return t
+
 
 class KemonoDownloader:
     """
@@ -152,6 +168,8 @@ class KemonoDownloader:
         self._pause_event = threading.Event()
         self._is_running = False
         self.current_options: Optional[FilterOptions] = None
+        self._active_responses: set = set()
+        self._active_resp_lock = threading.Lock()
 
         self.total_bytes = 0
         self.downloaded_bytes = 0
@@ -192,6 +210,46 @@ class KemonoDownloader:
         self._cancel_event.set()
         self._pause_event.clear()  # Ensure paused workers wake up to handle cancel
         logger.warning("Download cancellation requested.", category="downloader")
+
+        # 1. Instantly abort any active Telegram downloads
+        try:
+            from services.telegram_service import TelegramService
+            TelegramService.instance().cancel_all_downloads()
+        except Exception:
+            pass
+
+        # 2. Instantly abort all active multipart downloads (Bunkr, Kemono, Coomer, Erome, etc.)
+        try:
+            from services.multipart_downloader import cancel_all_multipart
+            cancel_all_multipart()
+        except Exception:
+            pass
+
+        # 3. Instantly kill all active yt-dlp child processes
+        try:
+            if hasattr(self, "ytdlp_manager") and self.ytdlp_manager:
+                self.ytdlp_manager.cancel_all()
+        except Exception:
+            pass
+
+        # 4. Instantly abort any active cloud downloads (Mega, Dropbox, Gofile)
+        try:
+            from services.cloud_downloader import cancel_all_cloud_downloads
+            cancel_all_cloud_downloads()
+        except Exception:
+            pass
+
+        # 5. Instantly close active single-stream HTTP responses to terminate open network sockets
+        with self._active_resp_lock:
+            for resp in list(self._active_responses):
+                try:
+                    resp.close()
+                    if hasattr(resp, "raw") and resp.raw:
+                        resp.raw.close()
+                except Exception:
+                    pass
+            self._active_responses.clear()
+
         rec = getattr(self.session_manager, "recovery_manager", None)
         if rec:
             rec.discard_recovery()
@@ -324,10 +382,16 @@ class KemonoDownloader:
         logger.debug(f"Fetching post HTML to resolve {len(deferred_items)} temporary oversized file(s): {page_url}", category="downloader")
 
         session = requests.Session()
-        session.headers.update({
+        session_headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Referer": f"https://{eff_domain}/"
-        })
+            "Referer": f"https://{eff_domain}/",
+            "X-Contact": "https://github.com/whyamihere773/Pawchive-Downloader",
+            "X-Client-Notice": (
+                "Pawchive Downloader user here! Love your site. If my client is ever causing server strain, "
+                "please open an issue on GitHub instead of a hard ban and I'll fix my request pacing immediately."
+            )
+        }
+        session.headers.update(session_headers)
         try:
             resp = session.get(page_url, timeout=20)
             if resp.status_code != 200 or not resp.text:
@@ -363,6 +427,11 @@ class KemonoDownloader:
         except Exception as e:
             logger.warning(f"Failed resolving temporary attachments for post {post_id}: {e}", category="downloader")
             return 0
+        finally:
+            try:
+                session.close()
+            except Exception:
+                pass
 
     def build_tasks_from_posts(
         self,
@@ -1242,10 +1311,10 @@ class KemonoDownloader:
         return len(deduped)
 
     def cancel_batch(self, batch_id: str) -> int:
-        """Cancels all pending tasks belonging to a specific batch_id."""
+        """Cancels all pending and downloading tasks belonging to a specific batch_id."""
         cancelled = 0
         for t in self.tasks:
-            if getattr(t, "batch_id", "") == batch_id and t.status == "pending":
+            if getattr(t, "batch_id", "") == batch_id and t.status in ("pending", "downloading"):
                 t.status = "cancelled"
                 cancelled += 1
                 if self.on_task_status_changed:
@@ -1314,6 +1383,20 @@ class KemonoDownloader:
 
         eligible_tasks = []
         for t in all_failed:
+            err = str(getattr(t, "error_msg", "")).lower()
+            is_fatal_auth = any(f in err for f in (
+                "key is not registered",
+                "session expired",
+                "session revoked",
+                "authkey",
+                "auth_key",
+                "unregistered",
+                "unauthorized"
+            ))
+            if is_fatal_auth:
+                t.retry_capped = True
+                continue
+
             cur_retries = getattr(t, "retry_count", 0)
             if cur_retries >= max_auto_retries:
                 t.retry_capped = True
@@ -1403,8 +1486,22 @@ class KemonoDownloader:
         consecutive_successes = 0
         scale_step_interval = 5.0 # Check scaling up every 5 seconds of healthy throughput
 
+        # Strict Telegram Concurrency Lock: Under ANY circumstance, Telegram downloads must never exceed 2 threads
+        is_pure_telegram = bool(self.tasks) and all(
+            getattr(t, "is_telegram", False) or getattr(t, "service", "") == "telegram" or (t.url and t.url.startswith("tg://"))
+            for t in self.tasks
+        )
+
+        if is_pure_telegram:
+            self.max_workers = min(self.max_workers, 2)
+            target_max_workers = 2
+            is_locked = True
+            options.adaptive_threading = False
+            logger.info("🔒 [Telegram] Concurrency locked strictly to 2 worker threads for MTProto session stability.", category="telegram")
+            if self.on_concurrency_throttled:
+                self.on_concurrency_throttled(self.max_workers)
         # If Adaptive Threading is enabled and threads are not locked, start with 2 worker threads and scale up to CPU core count
-        if options.adaptive_threading and not is_locked:
+        elif options.adaptive_threading and not is_locked:
             self.max_workers = min(2, target_max_workers)
             logger.info(f"⚡ [Adaptive Threading] Active: Starting with {self.max_workers} worker threads (Max CPU limit: {target_max_workers} threads)...", category="adaptive")
             if self.on_concurrency_throttled:
@@ -1433,6 +1530,14 @@ class KemonoDownloader:
         })
         if clean_cookie:
             session.headers["Cookie"] = clean_cookie
+            session.headers.pop("X-Contact", None)
+            session.headers.pop("X-Client-Notice", None)
+        else:
+            session.headers["X-Contact"] = "https://github.com/whyamihere773/Pawchive-Downloader"
+            session.headers["X-Client-Notice"] = (
+                "Pawchive Downloader user here! Love your site. If my client is ever causing server strain, "
+                "please open an issue on GitHub instead of a hard ban and I'll fix my request pacing immediately."
+            )
 
         active_futures = {}
         auto_retried_once = False
@@ -1512,7 +1617,7 @@ class KemonoDownloader:
                                 self.on_task_status_changed(task)
 
                             # Fast Adaptive Scaling: Scale up after 4 consecutive successful files if below ceiling
-                            if options.adaptive_threading and not is_locked and consecutive_successes >= 4 and (now - last_scale_time >= 3.0):
+                            if options.adaptive_threading and not is_locked and not is_pure_telegram and consecutive_successes >= 4 and (now - last_scale_time >= 3.0):
                                 effective_ceiling = self._learned_stable_ceiling if self._learned_stable_ceiling is not None else target_max_workers
                                 if now >= self._rate_limit_cooldown_until and self.max_workers < effective_ceiling:
                                     self.max_workers += 1
@@ -1586,6 +1691,19 @@ class KemonoDownloader:
                             all_failed = [t for t in self.tasks if t.status == "failed"]
                             failed_tasks = []
                             for t in all_failed:
+                                err = str(getattr(t, "error_msg", "")).lower()
+                                is_fatal_auth = any(f in err for f in (
+                                    "key is not registered",
+                                    "session expired",
+                                    "session revoked",
+                                    "authkey",
+                                    "auth_key",
+                                    "unregistered",
+                                    "unauthorized"
+                                ))
+                                if is_fatal_auth:
+                                    t.retry_capped = True
+                                    continue
                                 if getattr(t, "retry_count", 0) < 5:
                                     failed_tasks.append(t)
                                 else:
@@ -1597,8 +1715,10 @@ class KemonoDownloader:
                                         self.on_task_status_changed(t)
 
                             if failed_tasks:
+                                retry_attempt = getattr(failed_tasks[0], 'retry_count', 0) + 1
+                                wait_time = min(6.0, 1.5 * retry_attempt)
                                 logger.info(
-                                    f"🔄 Auto-retry triggered for {len(failed_tasks)} failed files (attempt {getattr(failed_tasks[0], 'retry_count', 0) + 1}/5)...",
+                                    f"🔄 Auto-retry triggered for {len(failed_tasks)} failed files (attempt {retry_attempt}/5, cooling down {wait_time:.1f}s)...",
                                     category="downloader"
                                 )
                                 for t in failed_tasks:
@@ -1613,18 +1733,37 @@ class KemonoDownloader:
                                     t.eta_str = "--"
                                     if self.on_task_status_changed:
                                         self.on_task_status_changed(t)
-                                time.sleep(0.5)
+                                time.sleep(wait_time)
                                 continue
 
                         # All tasks completed or finished
                         break
 
-                    for i, task in enumerate(pending_tasks[:slots_available]):
+                    # Telegram concurrency cap (strictly max 2 active Telegram downloads under any circumstance)
+                    active_tg_count = sum(
+                        1 for t in active_futures.values()
+                        if getattr(t, "is_telegram", False) or getattr(t, "service", "") == "telegram" or (t.url and t.url.startswith("tg://"))
+                    )
+
+                    tasks_to_dispatch = []
+                    for task in pending_tasks:
+                        if len(tasks_to_dispatch) >= slots_available:
+                            break
+                        is_tg = getattr(task, "is_telegram", False) or getattr(task, "service", "") == "telegram" or (task.url and task.url.startswith("tg://"))
+                        if is_tg and (active_tg_count >= 2):
+                            continue
+                        if is_tg:
+                            active_tg_count += 1
+                        tasks_to_dispatch.append(task)
+
+                    for i, task in enumerate(tasks_to_dispatch):
                         if self._cancel_event.is_set():
                             break
                         # Feature 4: Jittered Inter-Request Staggering (Anti-Burst Smoothing)
                         if i > 0 and not self._cancel_event.is_set():
-                            time.sleep(0.06) # 60ms micro-stagger between concurrent request launches
+                            is_pawchive_target = "pawchive" in (task.url or "").lower() or (getattr(task, "service", None) and "pawchive" in str(task.service).lower())
+                            stagger = random.uniform(0.12, 0.22) if is_pawchive_target else 0.06
+                            time.sleep(stagger)
 
                         if self._cancel_event.is_set():
                             break
@@ -1672,15 +1811,34 @@ class KemonoDownloader:
                 if now - last_checkpoint_time >= 30.0:
                     last_checkpoint_time = now
                     self._save_recovery_checkpoint(options)
+                    try:
+                        from core.memory_collector import MemoryCollector
+                        MemoryCollector.instance().collect()
+                    except Exception:
+                        pass
 
                 time.sleep(0.05)
 
-            # Wait for remaining active futures if cancelling
+            # Cancel and drain remaining active futures if cancelling
             for f in list(active_futures.keys()):
                 try:
-                    f.result(timeout=1.0)
+                    f.cancel()
                 except Exception:
                     pass
+                try:
+                    f.result(timeout=0.2)
+                except Exception:
+                    pass
+
+        try:
+            session.close()
+        except Exception:
+            pass
+        try:
+            from core.memory_collector import MemoryCollector
+            MemoryCollector.instance().collect()
+        except Exception:
+            pass
 
         self._is_running = False
         duration = time.time() - self.start_time
@@ -1766,6 +1924,16 @@ class KemonoDownloader:
             logger.info(f"⏳ Skipping existing file: '{task.filename}' (already present on disk)", category="file")
             return True, "Already downloaded"
 
+        # Gentle inter-file pacing for Pawchive targets to prevent burst strain on host
+        is_pawchive_target = "pawchive" in (task.url or "").lower() or (getattr(task, "service", None) and "pawchive" in str(task.service).lower())
+        if is_pawchive_target and not self._cancel_event.is_set():
+            pacing_delay = random.uniform(0.25, 0.40)
+            steps = int(pacing_delay / 0.05)
+            for _ in range(steps):
+                if self._cancel_event.is_set():
+                    return False, "Cancelled"
+                time.sleep(0.05)
+
         # ── yt-dlp embedded media download execution ─────────────────────────
         if task.is_ytdlp:
             logger.info(f"▶ [yt-dlp] Downloading embedded player media: {task.url}", category="ytdlp")
@@ -1819,6 +1987,77 @@ class KemonoDownloader:
                 return True, "Completed"
             else:
                 logger.warning(f"✖ [yt-dlp] {task.filename}: {msg}", category="ytdlp")
+                return False, msg
+
+        # ── Telegram MTProto media download execution ────────────────────────
+        if getattr(task, "is_telegram", False):
+            logger.info(f"▶ [Telegram] Downloading MTProto media: {task.url}", category="telegram")
+            _prev_tg_bytes = [0]
+            _last_tg_emit = [0.0]
+
+            def _tg_prog(done_b, total_b, speed_s, eta_s):
+                delta = done_b - _prev_tg_bytes[0]
+                if delta > 0:
+                    with self._lock:
+                        self.downloaded_bytes += delta
+                    _prev_tg_bytes[0] = done_b
+                task.downloaded_bytes = done_b
+                task.file_size = total_b or task.file_size
+                task.speed_str = speed_s
+                task.eta_str = eta_s
+                if total_b > 0:
+                    task.progress_pct = min(99, int(done_b / total_b * 100))
+
+                now = time.time()
+                is_done = (total_b > 0 and done_b >= total_b)
+                if is_done or (now - _last_tg_emit[0] >= 0.25):
+                    _last_tg_emit[0] = now
+                    if self.on_task_status_changed:
+                        self.on_task_status_changed(task)
+
+            tg_service = TelegramService.instance()
+            channel_id = getattr(task, "telegram_channel_id", "") or task.user_id
+            message_id = getattr(task, "telegram_message_id", 0) or int(task.post_id if str(task.post_id).isdigit() else 0)
+
+            ok, msg = tg_service.download_media(
+                channel_id=channel_id,
+                message_id=message_id,
+                target_path=task.target_path,
+                progress_callback=_tg_prog,
+                cancel_event=self._cancel_event,
+                pause_event=self._pause_event
+            )
+            if ok:
+                task.status = "completed"
+                task.progress_pct = 100
+                task.eta_str = "Done"
+                if self.archive_manager and self.archive_manager.is_enabled:
+                    self.archive_manager.record_file(
+                        service=task.service,
+                        creator_id=task.user_id,
+                        post_id=task.post_id,
+                        file_id=task.file_id,
+                        file_hash=task.expected_sha256,
+                        filename=task.filename,
+                        creator_name=task.creator_name,
+                        post_title=task.post_title,
+                        file_size=task.downloaded_bytes,
+                        file_path=task.target_path
+                    )
+                if self.on_task_status_changed:
+                    self.on_task_status_changed(task)
+                logger.success(f"✔ [Telegram] {task.filename} successfully downloaded", category="telegram")
+                return True, "Completed"
+            else:
+                if "Cancelled" in msg:
+                    task.status = "cancelled"
+                    task.error_msg = msg
+                else:
+                    task.status = "failed"
+                    task.error_msg = msg
+                if self.on_task_status_changed:
+                    self.on_task_status_changed(task)
+                logger.warning(f"✖ [Telegram] {task.filename}: {msg}", category="telegram")
                 return False, msg
 
         # Check existing file for resume capability
@@ -1880,6 +2119,12 @@ class KemonoDownloader:
                         req_headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
                         req_headers["Referer"] = "https://pawchive.pw/"
                         req_headers["Accept"] = "*/*"
+                        if "Cookie" not in session.headers and "Cookie" not in req_headers:
+                            req_headers["X-Contact"] = "https://github.com/whyamihere773/Pawchive-Downloader"
+                            req_headers["X-Client-Notice"] = (
+                                "Pawchive Downloader user here! Love your site. If my client is ever causing server strain, "
+                                "please open an issue on GitHub instead of a hard ban and I'll fix my request pacing immediately."
+                            )
                     elif "cum.st" in u_low:
                         req_headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
                         req_headers["Referer"] = "https://cum.st/"
@@ -1894,6 +2139,13 @@ class KemonoDownloader:
                         if resp.status_code in (200, 206, 416):
                             task.url = attempt_url
                             break
+                        elif resp.status_code == 404 and len(urls_to_try) <= 1:
+                            # Definitive 404 on single-mirror host — skip second pass to avoid redundant server load
+                            msg = "404 Not Found — file does not exist on server"
+                            logger.warning(f"  ✖ {task.filename}: {msg}", category="file")
+                            resp.close()
+                            resp = None
+                            return False, msg
                         elif resp.status_code == 403:
                             # If we sent a Range header, the CDN might be rejecting range requests with 403.
                             # Retry from byte 0 without Range and without cookies.
@@ -1902,11 +2154,14 @@ class KemonoDownloader:
                                 try:
                                     fresh_resp = session.get(attempt_url, stream=True, timeout=30, headers=no_range_headers)
                                     if fresh_resp.status_code in (200, 206):
+                                        resp.close()
                                         resp = fresh_resp
                                         task.url = attempt_url
                                         mode = "wb"
                                         existing_size = 0
                                         break
+                                    else:
+                                        fresh_resp.close()
                                 except Exception:
                                     pass
 
@@ -1923,6 +2178,7 @@ class KemonoDownloader:
                                 }
                                 clean_resp = requests.get(attempt_url, stream=True, timeout=30, headers=browser_headers)
                                 if clean_resp.status_code in (200, 206):
+                                    resp.close()
                                     resp = clean_resp
                                     task.url = attempt_url
                                     mode = "wb"
@@ -1930,33 +2186,55 @@ class KemonoDownloader:
                                     break
                                 elif clean_resp.status_code == 403 and len(urls_to_try) == 1:
                                     # Single-mirror CDN (like file.pawchive.pw) transient burst 403 — progressive pause & retry
+                                    clean_resp.close()
                                     for delay in (1.5, 3.0):
                                         time.sleep(delay)
                                         if self._cancel_event.is_set():
                                             break
                                         retry_resp = requests.get(attempt_url, stream=True, timeout=30, headers=browser_headers)
                                         if retry_resp.status_code in (200, 206):
+                                            resp.close()
                                             resp = retry_resp
                                             task.url = attempt_url
                                             mode = "wb"
                                             existing_size = 0
                                             break
-                                    if resp and resp.status_code in (200, 206):
-                                        break
+                                        else:
+                                            retry_resp.close()
+                                else:
+                                    clean_resp.close()
+                                if resp and resp.status_code in (200, 206):
+                                    break
                             except Exception:
                                 pass
 
                             # Still 403 — rotate to next mirror
                             logger.debug(f"  ↪ Mirror 403 on {attempt_url} — trying next mirror...", category="file")
+                            if resp:
+                                resp.close()
+                                resp = None
                             continue
                         elif resp.status_code == 429:
                             # 429 on this mirror — smoothly rotate to next available mirror
                             logger.debug(f"  ↪ Mirror 429 on {attempt_url} — rotating to next mirror...", category="file")
+                            resp.close()
+                            resp = None
                             continue
                         elif resp.status_code == 404 and len(urls_to_try) > 1:
                             logger.debug(f"  ↪ Mirror 404 on {attempt_url} — trying next mirror...", category="file")
+                            resp.close()
+                            resp = None
                             continue
+                        else:
+                            resp.close()
+                            resp = None
                     except Exception as ex:
+                        if resp:
+                            try:
+                                resp.close()
+                            except Exception:
+                                pass
+                            resp = None
                         logger.debug(f"  ↪ Mirror connect error on {attempt_url}: {ex}", category="file")
                         continue
 
@@ -2047,9 +2325,13 @@ class KemonoDownloader:
                 pass
 
             # ── Fast-path: Multipart chunking for large files (>= 25 MB) ─────
+            # NOTE: For Pawchive, we intentionally use 1 continuous resumable stream
+            # to protect their storage backend from multi-socket connection exhaustion.
             accept_ranges = resp.headers.get("Accept-Ranges", "").lower()
-            if task.file_size >= 25 * 1024 * 1024 and existing_size == 0 and ("bytes" in accept_ranges or status == 206):
+            is_pawchive = "pawchive" in (task.url or "").lower() or (getattr(task, "service", None) and "pawchive" in str(task.service).lower())
+            if not is_pawchive and task.file_size >= 25 * 1024 * 1024 and existing_size == 0 and ("bytes" in accept_ranges or status == 206):
                 resp.close()
+                resp = None
                 logger.info(f"  ⚡ Activating 4-part parallel chunked download for {task.filename} ({size_str})", category="file")
 
                 # ── Disk-polling progress thread ──────────────────────────────
@@ -2137,6 +2419,10 @@ class KemonoDownloader:
                     )
                 finally:
                     _poll_stop.set()
+                    try:
+                        _poll_thread.join(timeout=1.0)
+                    except Exception:
+                        pass
 
                 if mp_ok:
                     final_mp_size = os.path.getsize(task.target_path) if os.path.exists(task.target_path) else 0
@@ -2149,6 +2435,7 @@ class KemonoDownloader:
                         mp_ok = False
                         mp_err = "Multipart download resulted in empty 0-byte file"
                     else:
+                        self._post_process_downloaded_file(task, options)
                         task.status = "completed"
                         task.downloaded_bytes = task.file_size
                         task.progress_pct = 100
@@ -2196,12 +2483,23 @@ class KemonoDownloader:
                         if resp.status_code not in (200, 206):
                             clean_resp = requests.get(task.url, stream=True, timeout=30, headers=browser_headers)
                             if clean_resp.status_code in (200, 206):
+                                resp.close()
                                 resp = clean_resp
+                            else:
+                                clean_resp.close()
                         if resp.status_code not in (200, 206):
                             msg = f"HTTP {resp.status_code} on single-stream fallback"
                             logger.warning(f"  ✖ {task.filename}: {msg}", category="file")
+                            resp.close()
+                            resp = None
                             return False, msg
                     except Exception as ex:
+                        if resp:
+                            try:
+                                resp.close()
+                            except Exception:
+                                pass
+                            resp = None
                         msg = f"Single-stream fallback connection error: {ex}"
                         logger.error(f"  ✖ {task.filename}: {msg}", category="file")
                         return False, msg
@@ -2212,60 +2510,65 @@ class KemonoDownloader:
             last_log_time   = time.time()
             bytes_since_speed = 0
 
-            with open(task.target_path, mode) as f:
-                for chunk in resp.iter_content(chunk_size=chunk_size):
-                    if self._cancel_event.is_set():
-                        try:
-                            resp.close()
-                        except Exception:
-                            pass
-                        return False, "Cancelled"
-                    was_paused = False
-                    while self._pause_event.is_set():
-                        was_paused = True
-                        time.sleep(0.3)
+            with self._active_resp_lock:
+                self._active_responses.add(resp)
+            try:
+                with open(task.target_path, mode) as f:
+                    for chunk in resp.iter_content(chunk_size=chunk_size):
                         if self._cancel_event.is_set():
                             try:
                                 resp.close()
                             except Exception:
                                 pass
                             return False, "Cancelled"
-                    if was_paused:
-                        last_speed_time = time.time()
-                        bytes_since_speed = 0
+                        was_paused = False
+                        while self._pause_event.is_set():
+                            was_paused = True
+                            time.sleep(0.3)
+                            if self._cancel_event.is_set():
+                                try:
+                                    resp.close()
+                                except Exception:
+                                    pass
+                                return False, "Cancelled"
+                        if was_paused:
+                            last_speed_time = time.time()
+                            bytes_since_speed = 0
 
-                    if not chunk:
-                        continue
+                        if not chunk:
+                            continue
 
-                    f.write(chunk)
-                    chunk_len = len(chunk)
-                    task.downloaded_bytes += chunk_len
-                    with self._lock:
-                        self.downloaded_bytes += chunk_len
+                        f.write(chunk)
+                        chunk_len = len(chunk)
+                        task.downloaded_bytes += chunk_len
+                        with self._lock:
+                            self.downloaded_bytes += chunk_len
 
-                    bytes_since_speed += chunk_len
-                    now = time.time()
+                        bytes_since_speed += chunk_len
+                        now = time.time()
 
-                    # Speed calculation every 0.5 s
-                    delta_speed = now - last_speed_time
-                    if delta_speed >= 0.5:
-                        task.speed_bps = int(bytes_since_speed / delta_speed)
-                        task.speed_str = KemonoDownloader.format_speed(task.speed_bps)
-                        if task.file_size > 0:
-                            rem_bytes = max(0, task.file_size - task.downloaded_bytes)
-                            task.progress_pct = int(task.downloaded_bytes / task.file_size * 100)
-                            if task.speed_bps > 0:
-                                s = int(rem_bytes / task.speed_bps)
-                                task.eta_str = f"{s//60}m {s%60}s" if s > 60 else f"{s}s"
-                        bytes_since_speed = 0
-                        last_speed_time = now
-                        if self.on_task_status_changed:
-                            self.on_task_status_changed(task)
+                        # Speed calculation every 0.5 s
+                        delta_speed = now - last_speed_time
+                        if delta_speed >= 0.5:
+                            task.speed_bps = int(bytes_since_speed / delta_speed)
+                            task.speed_str = KemonoDownloader.format_speed(task.speed_bps)
+                            if task.file_size > 0:
+                                rem_bytes = max(0, task.file_size - task.downloaded_bytes)
+                                task.progress_pct = int(task.downloaded_bytes / task.file_size * 100)
+                                if task.speed_bps > 0:
+                                    s = int(rem_bytes / task.speed_bps)
+                                    task.eta_str = f"{s//60}m {s%60}s" if s > 60 else f"{s}s"
+                            bytes_since_speed = 0
+                            last_speed_time = now
+                            if self.on_task_status_changed:
+                                self.on_task_status_changed(task)
+            finally:
+                with self._active_resp_lock:
+                    self._active_responses.discard(resp)
 
 
             # ── Post-download processing ───────────────────────────────────────
-            if options.compress_to_webp:
-                self._convert_to_webp(task.target_path)
+            self._post_process_downloaded_file(task, options)
 
             final_size = os.path.getsize(task.target_path) if os.path.exists(task.target_path) else 0
             if task.file_size > 0 and final_size == 0:
@@ -2324,14 +2627,35 @@ class KemonoDownloader:
             return True, "Success"
 
         except requests.exceptions.Timeout:
+            if self._cancel_event.is_set():
+                if os.path.exists(task.target_path):
+                    try:
+                        os.remove(task.target_path)
+                    except OSError:
+                        pass
+                return False, "Cancelled"
             msg = "Connection timed out"
             logger.error(f"  ✖ {task.filename}: {msg}", category="file")
             return False, msg
         except requests.exceptions.ConnectionError as e:
+            if self._cancel_event.is_set():
+                if os.path.exists(task.target_path):
+                    try:
+                        os.remove(task.target_path)
+                    except OSError:
+                        pass
+                return False, "Cancelled"
             msg = f"Connection error: {e}"
             logger.error(f"  ✖ {task.filename}: {msg}", category="file")
             return False, msg
         except OSError as e:
+            if self._cancel_event.is_set():
+                if os.path.exists(task.target_path):
+                    try:
+                        os.remove(task.target_path)
+                    except OSError:
+                        pass
+                return False, "Cancelled"
             is_disk_full = (
                 getattr(e, "errno", None) == 28
                 or getattr(e, "winerror", None) == 112
@@ -2351,8 +2675,41 @@ class KemonoDownloader:
             task.eta_str = "--"
             return False, msg
         except Exception as e:
+            if self._cancel_event.is_set():
+                if os.path.exists(task.target_path):
+                    try:
+                        os.remove(task.target_path)
+                    except OSError:
+                        pass
+                return False, "Cancelled"
             logger.error(f"  ✖ {task.filename}: {type(e).__name__}: {e}", category="file")
             return False, str(e)
+        finally:
+            if resp is not None:
+                try:
+                    resp.close()
+                except Exception:
+                    pass
+
+    def _post_process_downloaded_file(self, task: DownloadTask, options: FilterOptions):
+        """Runs post-download processing such as WebP compression and audio metadata tagging."""
+        if not task.target_path or not os.path.exists(task.target_path):
+            return
+
+        # 1. WebP conversion
+        if options.compress_to_webp:
+            self._convert_to_webp(task.target_path)
+
+        # 2. Audio metadata tagging
+        if getattr(options, "write_audio_metadata", True) and AudioTagger.is_supported(task.target_path):
+            AudioTagger.tag_audio_file(
+                file_path=task.target_path,
+                artist=task.creator_name,
+                title=task.post_title or os.path.splitext(task.filename)[0],
+                album=task.post_title or task.creator_name,
+                date=getattr(task, "post_date", "") or "",
+                comment=getattr(task, "post_url", "") or task.url
+            )
 
     def _convert_to_webp(self, file_path: str):
         try:

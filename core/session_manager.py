@@ -30,6 +30,7 @@ class SessionManager:
         self.settings_file = os.path.join(self.config_dir, "settings.json")
 
         self.history: Dict[str, Any] = {"downloaded_files": [], "processed_posts": []}
+        self._downloaded_files_set: set = set()
         self.load_history()
 
     def load_history(self):
@@ -37,6 +38,7 @@ class SessionManager:
             try:
                 with open(self.history_file, "r", encoding="utf-8") as f:
                     self.history = json.load(f)
+                self._downloaded_files_set = set(self.history.get("downloaded_files", []))
                 logger.info(
                     f"Loaded {len(self.history.get('downloaded_files', []))} last downloaded files and "
                     f"{len(self.history.get('processed_posts', []))} processed posts from history.",
@@ -55,14 +57,17 @@ class SessionManager:
     def record_downloaded_file(self, file_id_or_path: str):
         if "downloaded_files" not in self.history:
             self.history["downloaded_files"] = []
-        if file_id_or_path not in self.history["downloaded_files"]:
+        if file_id_or_path not in self._downloaded_files_set:
+            self._downloaded_files_set.add(file_id_or_path)
             self.history["downloaded_files"].append(file_id_or_path)
             if len(self.history["downloaded_files"]) > 50000:
+                removed = self.history["downloaded_files"][:-50000]
                 self.history["downloaded_files"] = self.history["downloaded_files"][-50000:]
+                self._downloaded_files_set.difference_update(removed)
             self.save_history()
 
     def is_file_downloaded(self, file_id_or_path: str) -> bool:
-        return file_id_or_path in self.history.get("downloaded_files", [])
+        return file_id_or_path in self._downloaded_files_set
 
     def record_download_session(self, creator_name: str, url: str, service: str, file_count: int):
         if "download_history" not in self.history:

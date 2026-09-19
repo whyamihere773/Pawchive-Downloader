@@ -198,6 +198,25 @@ Rectangle {
                     onClicked: failedItemsModel.selectAll(false)
                 }
 
+                StyledButton {
+                    text: modalRoot.tr("btn_clear", "Clear") + (failedItemsModel.countSelected() > 0 ? (" (" + failedItemsModel.countSelected() + ")") : "")
+                    iconText: "🗑"
+                    variant: "ghost"
+                    implicitHeight: 26
+                    enabled: failedItemsModel.countSelected() > 0
+                    tooltip: modalRoot.tr("tip_clear_selected_failed", "Remove selected failed files from the queue")
+                    onClicked: {
+                        var selected = failedItemsModel.getSelectedIds()
+                        if (modalRoot.bridge && selected.length > 0) {
+                            modalRoot.bridge.clearFailedTasks(selected)
+                        }
+                        failedItemsModel.populate()
+                        if (failedItemsModel.count === 0) {
+                            modalRoot.isOpen = false
+                        }
+                    }
+                }
+
                 Item { Layout.fillWidth: true }
 
                 Text {
@@ -228,7 +247,8 @@ Rectangle {
 
                     delegate: Rectangle {
                         width: failedList.width - 12
-                        implicitHeight: itemCol.implicitHeight + 16
+                        height: itemCol.implicitHeight + 16
+                        implicitHeight: height
                         radius: 6
                         color: model.isSelected ? "#1F1A24" : "#141722"
                         border.color: model.isSelected ? "#EF4444" : "#242A38"
@@ -236,6 +256,7 @@ Rectangle {
 
                         MouseArea {
                             anchors.fill: parent
+                            preventStealing: false
                             onClicked: {
                                 failedItemsModel.setProperty(index, "isSelected", !model.isSelected)
                             }
@@ -243,7 +264,9 @@ Rectangle {
 
                         ColumnLayout {
                             id: itemCol
-                            anchors.fill: parent
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.top: parent.top
                             anchors.margins: 8
                             spacing: 5
 
@@ -473,6 +496,30 @@ Rectangle {
                         var selected = failedItemsModel.getSelectedIds()
                         if (modalRoot.bridge) {
                             modalRoot.bridge.exportFailedTasks(selected)
+                        }
+                    }
+                }
+
+                // Clear Failed Tasks Button
+                StyledButton {
+                    text: failedItemsModel.countSelected() > 0 ? (modalRoot.tr("btn_clear_selected", "Clear Selected") + " (" + failedItemsModel.countSelected() + ")") : modalRoot.tr("btn_clear_all_failed", "Clear All Failed")
+                    iconText: "🗑"
+                    variant: "ghost"
+                    implicitHeight: 32
+                    tooltip: modalRoot.tr("tip_clear_failed_tasks", "Remove failed downloads permanently from the queue")
+                    enabled: failedItemsModel.count > 0
+                    onClicked: {
+                        var selected = failedItemsModel.getSelectedIds()
+                        if (modalRoot.bridge) {
+                            if (selected.length > 0) {
+                                modalRoot.bridge.clearFailedTasks(selected)
+                            } else {
+                                modalRoot.bridge.clearFailedTasks()
+                            }
+                        }
+                        failedItemsModel.populate()
+                        if (failedItemsModel.count === 0) {
+                            modalRoot.isOpen = false
                         }
                     }
                 }

@@ -46,6 +46,37 @@ Rectangle {
         return fallback !== undefined ? fallback : key
     }
 
+    property bool _needsReload: false
+
+    Timer {
+        id: reloadDebounceTimer
+        interval: 1500
+        repeat: false
+        onTriggered: {
+            if (root.visible) {
+                root._needsReload = false
+                root.reload()
+            } else {
+                root._needsReload = true
+            }
+        }
+    }
+
+    function scheduleReload() {
+        if (!root.visible) {
+            root._needsReload = true
+            return
+        }
+        reloadDebounceTimer.restart()
+    }
+
+    onVisibleChanged: {
+        if (visible && _needsReload) {
+            _needsReload = false
+            reload()
+        }
+    }
+
     function reload() {
         if (!root.bridge) return
         root.hierarchyData = root.bridge.getArchiveHierarchy(root.searchFilter, root.serviceFilter, root.fileTypeFilter, root.sortOrder)
@@ -55,13 +86,10 @@ Rectangle {
     Connections {
         target: root.bridge
         function onArchiveUpdated() {
-            root.reload()
-        }
-        function onArchiveRecordCountChanged() {
-            root.reload()
+            root.scheduleReload()
         }
         function onEnableDownloadArchiveChanged() {
-            root.reload()
+            root.scheduleReload()
         }
 
         function onArchiveCreatorVerificationStarted(service, creatorId) {
@@ -92,7 +120,11 @@ Rectangle {
     }
 
     Component.onCompleted: {
-        root.reload()
+        if (root.visible) {
+            root.reload()
+        } else {
+            root._needsReload = true
+        }
     }
 
     // Status Toast notification overlay
@@ -1447,19 +1479,28 @@ Rectangle {
                 }
             }
 
-            // SmoothListView with virtual scrolling
-            SmoothListView {
+            // SmoothFlickable with fluid continuous scrolling (eliminates scrollbar indicator skipping on dynamic creator tree heights)
+            SmoothFlickable {
                 id: creatorsListView
                 anchors.fill: parent
                 visible: root.hierarchyData.length > 0
-                spacing: 8
-                model: root.hierarchyData
+                contentWidth: width
+                contentHeight: creatorsCol.implicitHeight
 
-                delegate: Rectangle {
-                    id: creatorCard
+                ColumnLayout {
+                    id: creatorsCol
                     width: creatorsListView.width
-                    radius: 8
-                    clip: true
+                    spacing: 8
+
+                    Repeater {
+                        model: root.hierarchyData
+
+                        Rectangle {
+                            id: creatorCard
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
+                            radius: 8
+                            clip: true
 
                     property var creatorModel: modelData
                     property bool isCollapsed: root.collapsedCreators[creatorModel.creator_name] === true
@@ -2456,10 +2497,12 @@ Rectangle {
                             }
                         }
                     }
-                }
-            }
-        }
-    }
+                } // end creatorCard Rectangle
+            } // end Repeater
+        } // end creatorsCol
+    } // end creatorsListView
+} // end content container Item
+} // end main ColumnLayout
 
     // ── Toast Notification Banner ──────────────────────────────────────
     Rectangle {

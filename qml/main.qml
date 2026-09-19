@@ -1060,6 +1060,7 @@ ApplicationWindow {
                             if (u.indexOf("erome") >= 0) return "Erome"
                             if (u.indexOf("nhentai") >= 0) return "nHentai"
                             if (u.indexOf("saint2") >= 0) return "Saint2"
+                            if (u.indexOf("telegram") >= 0 || u.indexOf("t.me") >= 0) return "Telegram"
                             return ""
                         }
                         font.pixelSize: 9
@@ -1123,21 +1124,27 @@ ApplicationWindow {
                     id: mainStartBtn
                     property bool isLinksMode: appBridge ? appBridge.filterType === "links" : false
                     property bool isDownloading: appBridge ? appBridge.isDownloading : false
+                    property bool hasPendingQueue: (appBridge && appBridge.queueModel) ? (appBridge.queueModel.pendingCount > 0 || appBridge.queueModel.count > 0) : false
+                    property bool isTelegramBlocked: (appBridge ? appBridge.isTelegramUrl : false) && !hasPendingQueue
 
                     Layout.preferredWidth: Math.max(isLinksMode ? 162 : 148, startBtnRow.implicitWidth + 28)
                     Layout.preferredHeight: 34
                     radius: 7
 
-                    color: mainStartBtn.isDownloading
-                        ? "#0F2A1A"
-                        : (startBtnMouse.containsMouse
-                            ? (mainStartBtn.isLinksMode ? "#0D3330" : "#1a3a52")
-                            : (mainStartBtn.isLinksMode ? "#0A2825" : "#0D2137"))
-                    border.color: mainStartBtn.isDownloading ? "#10B981" : (mainStartBtn.isLinksMode ? "#2DD4BF" : "#38BDF8")
+                    color: mainStartBtn.isTelegramBlocked
+                        ? "#10131B"
+                        : (mainStartBtn.isDownloading
+                            ? "#0F2A1A"
+                            : (startBtnMouse.containsMouse
+                                ? (mainStartBtn.isLinksMode ? "#0D3330" : "#1a3a52")
+                                : (mainStartBtn.isLinksMode ? "#0A2825" : "#0D2137")))
+                    border.color: mainStartBtn.isTelegramBlocked
+                        ? "#334155"
+                        : (mainStartBtn.isDownloading ? "#10B981" : (mainStartBtn.isLinksMode ? "#2DD4BF" : "#38BDF8"))
                     border.width: 1
-                    opacity: mainStartBtn.isDownloading ? 0.7 : 1.0
+                    opacity: mainStartBtn.isTelegramBlocked ? 0.45 : (mainStartBtn.isDownloading ? 0.7 : 1.0)
 
-                    scale: startBtnMouse.pressed ? 0.94 : (startBtnMouse.containsMouse ? 1.03 : 1.0)
+                    scale: (!mainStartBtn.isTelegramBlocked && startBtnMouse.pressed) ? 0.94 : ((!mainStartBtn.isTelegramBlocked && startBtnMouse.containsMouse) ? 1.03 : 1.0)
                     transformOrigin: Item.Center
 
                     Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutBack; easing.overshoot: 1.5 } }
@@ -1150,17 +1157,18 @@ ApplicationWindow {
                         anchors.centerIn: parent
                         spacing: 6
                         Text {
-                            text: mainStartBtn.isDownloading ? "⏳" : (mainStartBtn.isLinksMode ? "🔗" : "⚡")
+                            text: mainStartBtn.isTelegramBlocked ? "🚫" : (mainStartBtn.isDownloading ? "⏳" : (mainStartBtn.isLinksMode ? "🔗" : "⚡"))
                             font.pixelSize: 13
                             anchors.verticalCenter: parent.verticalCenter
                         }
                         Text {
-                            text: mainStartBtn.isDownloading ? appWindow.tr("action_downloading", "Downloading…")
-                                : (mainStartBtn.isLinksMode ? appWindow.tr("action_extract_links", "Extract Links") : appWindow.tr("action_start_download", "Start Download"))
+                            text: mainStartBtn.isTelegramBlocked ? appWindow.tr("action_select_required", "Use 'Select Posts'")
+                                : (mainStartBtn.isDownloading ? appWindow.tr("action_downloading", "Downloading…")
+                                : (mainStartBtn.isLinksMode ? appWindow.tr("action_extract_links", "Extract Links") : appWindow.tr("action_start_download", "Start Download")))
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
                             font.weight: 600
-                            color: mainStartBtn.isDownloading ? "#34D399" : (mainStartBtn.isLinksMode ? "#2DD4BF" : "#38BDF8")
+                            color: mainStartBtn.isTelegramBlocked ? "#64748B" : (mainStartBtn.isDownloading ? "#34D399" : (mainStartBtn.isLinksMode ? "#2DD4BF" : "#38BDF8"))
                             anchors.verticalCenter: parent.verticalCenter
                         }
                     }
@@ -1169,13 +1177,15 @@ ApplicationWindow {
                         id: startBtnMouse
                         anchors.fill: parent
                         hoverEnabled: true
-                        cursorShape: mainStartBtn.isDownloading ? Qt.ArrowCursor : Qt.PointingHandCursor
-                        enabled: !mainStartBtn.isDownloading
+                        cursorShape: (mainStartBtn.isDownloading || mainStartBtn.isTelegramBlocked) ? Qt.ArrowCursor : Qt.PointingHandCursor
+                        enabled: !mainStartBtn.isDownloading && !mainStartBtn.isTelegramBlocked
                         ToolTip.visible: containsMouse
-                        ToolTip.delay: 400
-                        ToolTip.text: mainStartBtn.isLinksMode
-                            ? appWindow.tr("tip_extract_links", "Scan posts for external cloud links (Mega.nz, Drive, Dropbox, etc.) — no files downloaded")
-                            : appWindow.tr("tip_start_download", "Fetch posts from the URL and start downloading immediately")
+                        ToolTip.delay: 300
+                        ToolTip.text: mainStartBtn.isTelegramBlocked
+                            ? appWindow.tr("tip_tg_disabled", "Direct download is disabled for Telegram links. Please click 'Select Posts…' to configure download scope and media filters.")
+                            : (mainStartBtn.isLinksMode
+                                ? appWindow.tr("tip_extract_links", "Scan posts for external cloud links (Mega.nz, Drive, Dropbox, etc.) — no files downloaded")
+                                : appWindow.tr("tip_start_download", "Fetch posts from the URL and start downloading immediately"))
                         onClicked: if (appBridge) appBridge.startDownload()
                     }
                 }
@@ -1184,20 +1194,47 @@ ApplicationWindow {
                 Rectangle {
                     id: selectPostsBtn
                     property bool isLoading: appBridge ? appBridge.postSelectionLoading : false
+                    property bool isTelegram: appBridge ? appBridge.isTelegramUrl : false
                     Layout.preferredWidth: Math.max(124, selectPostsRow.implicitWidth + 24)
                     Layout.preferredHeight: 34
                     radius: 7
                     color: selectPostsBtn.isLoading
                         ? "#151F30"
                         : (selectPostsMouse.containsMouse ? "#1A263C" : "#111827")
-                    border.color: selectPostsBtn.isLoading ? "#38BDF8" : (selectPostsMouse.containsMouse ? "#38BDF8" : "#2E3D59")
-                    border.width: 1
+                    border.color: selectPostsBtn.isLoading ? "#38BDF8" : (isTelegram ? "#38BDF8" : (selectPostsMouse.containsMouse ? "#38BDF8" : "#2E3D59"))
+                    border.width: isTelegram ? 1.5 : 1
 
-                    scale: selectPostsMouse.pressed ? 0.94 : (selectPostsMouse.containsMouse ? 1.025 : 1.0)
+                    // Newtonian fluid weight and hydraulic spring
+                    scale: selectPostsMouse.pressed ? 0.93 : (selectPostsMouse.containsMouse ? 1.03 : 1.0)
                     transformOrigin: Item.Center
-                    Behavior on scale { SpringAnimation { spring: 3.5; damping: 0.35; mass: 1.0 } }
-                    Behavior on color { ColorAnimation { duration: 120 } }
-                    Behavior on border.color { ColorAnimation { duration: 120 } }
+                    Behavior on scale { SpringAnimation { spring: 3.8; damping: 0.32; mass: 1.8 } }
+                    Behavior on color { ColorAnimation { duration: 140 } }
+                    Behavior on border.color { ColorAnimation { duration: 140 } }
+
+                    // Fluid surface tension aura wave for Telegram link
+                    Rectangle {
+                        anchors.fill: parent
+                        anchors.margins: -3
+                        radius: 10
+                        color: "transparent"
+                        border.color: "#38BDF8"
+                        border.width: 1.5
+                        visible: selectPostsBtn.isTelegram && !selectPostsBtn.isLoading
+                        opacity: 0.2
+
+                        SequentialAnimation on opacity {
+                            loops: Animation.Infinite
+                            running: selectPostsBtn.isTelegram && !selectPostsBtn.isLoading
+                            NumberAnimation { to: 0.85; duration: 1400; easing.type: Easing.InOutSine }
+                            NumberAnimation { to: 0.15; duration: 1400; easing.type: Easing.InOutSine }
+                        }
+                        SequentialAnimation on scale {
+                            loops: Animation.Infinite
+                            running: selectPostsBtn.isTelegram && !selectPostsBtn.isLoading
+                            NumberAnimation { to: 1.03; duration: 1400; easing.type: Easing.InOutSine }
+                            NumberAnimation { to: 0.99; duration: 1400; easing.type: Easing.InOutSine }
+                        }
+                    }
 
                     Row {
                         id: selectPostsRow
@@ -1229,7 +1266,16 @@ ApplicationWindow {
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
                         ToolTip.text: appWindow.tr("tip_select_posts", "Fetch and visually select specific posts and thumbnails before downloading")
-                        onClicked: if (appBridge) appBridge.fetchPostsForSelection()
+                        onClicked: {
+                            if (!appBridge) return
+                            if (appBridge.isTelegramUrl) {
+                                if (!appBridge.telegramSafetyAcknowledged || !appBridge.telegramLiabilityAcknowledged) {
+                                    telegramWarningModal.open()
+                                    return
+                                }
+                            }
+                            appBridge.fetchPostsForSelection()
+                        }
                     }
                 }
 
@@ -1903,6 +1949,7 @@ ApplicationWindow {
 
                         // Tab 0: Downloader View with Newtonian slide & fade transition
                         Item {
+                            visible: opacity > 0.001
                             opacity: appWindow.currentTab === 0 ? 1.0 : 0.0
                             y: appWindow.currentTab === 0 ? 0 : 10
                             scale: appWindow.currentTab === 0 ? 1.0 : 0.985
@@ -1916,6 +1963,7 @@ ApplicationWindow {
 
                         // Tab 1: Queue View with Newtonian slide & fade transition
                         Item {
+                            visible: opacity > 0.001
                             opacity: appWindow.currentTab === 1 ? 1.0 : 0.0
                             y: appWindow.currentTab === 1 ? 0 : 10
                             scale: appWindow.currentTab === 1 ? 1.0 : 0.985
@@ -1929,6 +1977,7 @@ ApplicationWindow {
 
                         // Tab 2: Watchlist View with Newtonian slide & fade transition
                         Item {
+                            visible: opacity > 0.001
                             opacity: appWindow.currentTab === 2 ? 1.0 : 0.0
                             y: appWindow.currentTab === 2 ? 0 : 10
                             scale: appWindow.currentTab === 2 ? 1.0 : 0.985
@@ -1942,6 +1991,7 @@ ApplicationWindow {
 
                         // Tab 3: Bulk Decompressor View with Newtonian slide & fade transition
                         Item {
+                            visible: opacity > 0.001
                             opacity: appWindow.currentTab === 3 ? 1.0 : 0.0
                             y: appWindow.currentTab === 3 ? 0 : 10
                             scale: appWindow.currentTab === 3 ? 1.0 : 0.985
@@ -1955,6 +2005,7 @@ ApplicationWindow {
 
                         // Tab 4: Link Vault View with Newtonian slide & fade transition
                         Item {
+                            visible: opacity > 0.001
                             opacity: appWindow.currentTab === 4 ? 1.0 : 0.0
                             y: appWindow.currentTab === 4 ? 0 : 10
                             scale: appWindow.currentTab === 4 ? 1.0 : 0.985
@@ -1968,6 +2019,7 @@ ApplicationWindow {
 
                         // Tab 5: Scheduler View with Newtonian slide & fade transition
                         Item {
+                            visible: opacity > 0.001
                             opacity: appWindow.currentTab === 5 ? 1.0 : 0.0
                             y: appWindow.currentTab === 5 ? 0 : 10
                             scale: appWindow.currentTab === 5 ? 1.0 : 0.985
@@ -1981,6 +2033,7 @@ ApplicationWindow {
 
                         // Tab 6: Known Manager View with Newtonian slide & fade transition
                         Item {
+                            visible: opacity > 0.001
                             opacity: appWindow.currentTab === 6 ? 1.0 : 0.0
                             y: appWindow.currentTab === 6 ? 0 : 10
                             scale: appWindow.currentTab === 6 ? 1.0 : 0.985
@@ -1994,6 +2047,7 @@ ApplicationWindow {
 
                         // Tab 7: Archive View with Newtonian slide & fade transition
                         Item {
+                            visible: opacity > 0.001
                             opacity: appWindow.currentTab === 7 ? 1.0 : 0.0
                             y: appWindow.currentTab === 7 ? 0 : 10
                             scale: appWindow.currentTab === 7 ? 1.0 : 0.985
@@ -2007,6 +2061,7 @@ ApplicationWindow {
 
                         // Tab 8: History View with Newtonian slide & fade transition
                         Item {
+                            visible: opacity > 0.001
                             opacity: appWindow.currentTab === 8 ? 1.0 : 0.0
                             y: appWindow.currentTab === 8 ? 0 : 10
                             scale: appWindow.currentTab === 8 ? 1.0 : 0.985
@@ -2020,6 +2075,7 @@ ApplicationWindow {
 
                         // Tab 9: Settings View with Newtonian slide & fade transition
                         Item {
+                            visible: opacity > 0.001
                             opacity: appWindow.currentTab === 9 ? 1.0 : 0.0
                             y: appWindow.currentTab === 9 ? 0 : 10
                             scale: appWindow.currentTab === 9 ? 1.0 : 0.985
@@ -2355,6 +2411,58 @@ ApplicationWindow {
         bridge: appBridge
     }
 
+    // ── Telegram Authentication Modal ─────────────────────────────────────────
+    TelegramAuthModal {
+        id: telegramAuthModal
+        bridge: appBridge
+        onContinued: {
+            if (appBridge) {
+                if (appBridge.isTelegramUrl) {
+                    if (!appBridge.telegramSafetyAcknowledged || !appBridge.telegramLiabilityAcknowledged) {
+                        telegramWarningModal.open()
+                        return
+                    }
+                }
+                if (typeof appBridge.resumeTelegramAction === "function") {
+                    appBridge.resumeTelegramAction()
+                } else {
+                    appBridge.fetchPostsForSelection()
+                }
+            }
+        }
+    }
+
+    // ── Telegram Channel Scope / Options Modal ────────────────────────────────
+    TelegramScopeModal {
+        id: telegramScopeModal
+    }
+
+    // ── Telegram Safety & Liability Warning Modal ─────────────────────────────
+    TelegramWarningModal {
+        id: telegramWarningModal
+        bridge: appBridge
+        onAccepted: {
+            if (appBridge) appBridge.fetchPostsForSelection()
+        }
+    }
+
+    function openTelegramAuthModal(isPrivate) {
+        telegramAuthModal.isPrivateChannel = isPrivate
+        telegramAuthModal.isOpen = true
+    }
+
+    function openTelegramScopeModal(channelId, rawUrl, isPrivate, defaultAction) {
+        telegramScopeModal.targetChannelId = channelId
+        telegramScopeModal.targetRawUrl = rawUrl
+        telegramScopeModal.isPrivateChannel = isPrivate
+        telegramScopeModal.channelTitle = (channelId && channelId.length > 0) ? channelId : "Telegram Channel"
+        telegramScopeModal.defaultAction = (defaultAction === "select") ? "select" : "download"
+        telegramScopeModal.isOpen = true
+        if (typeof telegramBridge !== "undefined" && telegramBridge) {
+            telegramBridge.resolveTarget(channelId, isPrivate)
+        }
+    }
+
     Connections {
         target: appBridge
         function onPostSelectionReady(posts, creator, totalCount) {
@@ -2364,6 +2472,21 @@ ApplicationWindow {
             if (appBridge) {
                 appBridge.lastErrorMessage = msg
                 appBridge.hasError = true
+            }
+        }
+        function onTelegramAuthRequested(isPrivate) {
+            openTelegramAuthModal(isPrivate)
+        }
+        function onTelegramScopeRequested(channelId, rawUrl, isPrivate, defaultAction) {
+            openTelegramScopeModal(channelId, rawUrl, isPrivate, defaultAction)
+        }
+    }
+
+    Connections {
+        target: (typeof telegramBridge !== "undefined" && telegramBridge) ? telegramBridge : null
+        function onChannelMetadataReady(meta) {
+            if (meta && meta.title) {
+                telegramScopeModal.channelTitle = meta.title
             }
         }
     }

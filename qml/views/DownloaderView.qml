@@ -165,7 +165,8 @@ SmoothFlickable {
                             StyledTextField {
                                 Layout.fillWidth: true
                                 Layout.minimumWidth: 0
-                                placeholderText: root.tr("placeholder_skip_words", "e.g., WM, WIP, sketch, preview")
+                                placeholderText: root.tr("placeholder_skip_words", "e.g., WIP, preview, [1GB-2GB]")
+                                tooltip: root.tr("tooltip_skip_words_size", "Skip specific words or filter by file size! Use [1GB-2GB], [>=1GB], [<500MB], or [1024-2048] (in MB)")
                                 text: root.bridge ? root.bridge.skipWords : ""
                                 onTextChanged: {
                                     if (root.bridge && root.bridge.skipWords !== text) {
@@ -400,6 +401,245 @@ SmoothFlickable {
                         onCheckedChanged: if (root.bridge) root.bridge.dateAutoScanPages = checked
                     }
                 }
+
+                // File Size Range Filter (Min / Max)
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    spacing: 4
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 6
+
+                        Text {
+                            text: root.tr("label_file_size_range", "📦 File Size Range:")
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 11
+                            color: "#94A3B8"
+                        }
+
+                        Item { Layout.fillWidth: true }
+
+                        // Quick clear button when either field has content
+                        Text {
+                            visible: (root.bridge && ((root.bridge.minFileSize && root.bridge.minFileSize.length > 0) || (root.bridge.maxFileSize && root.bridge.maxFileSize.length > 0)))
+                            text: root.tr("btn_clear_size_range", "Clear Range ✕")
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 10
+                            color: sizeClearMouse.containsMouse ? "#F87171" : "#94A3B8"
+                            MouseArea {
+                                id: sizeClearMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    if (root.bridge) {
+                                        root.bridge.minFileSize = ""
+                                        root.bridge.maxFileSize = ""
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Format explanation subtitle
+                    Text {
+                        Layout.fillWidth: true
+                        text: root.tr("hint_size_formats", "Only download files within a size window (e.g. 500MB, 1GB, 2.5GB). Leave blank for any size.")
+                        font.family: "Segoe UI, sans-serif"
+                        font.pixelSize: 10
+                        color: "#64748B"
+                    }
+
+                    GridLayout {
+                        columns: root.width > 540 ? 2 : 1
+                        Layout.fillWidth: true
+                        rowSpacing: 6
+                        columnSpacing: 12
+
+                        // Min File Size
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
+                            spacing: 8
+
+                            Text {
+                                text: root.tr("label_size_min", "Min:")
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 11
+                                color: "#64748B"
+                            }
+
+                            StyledTextField {
+                                id: minFileSizeInput
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                placeholderText: root.tr("ph_size_min", "e.g. 1GB or 500MB")
+                                tooltip: root.tr("tip_size_min", "Minimum file size. Files smaller than this will be skipped before downloading.")
+                                text: root.bridge ? root.bridge.minFileSize : ""
+                                validator: RegularExpressionValidator {
+                                    regularExpression: /^\s*(\d+(\.\d*)?|\.\d+)?\s*([KMGTP]B?|B)?\s*$/i
+                                }
+                                onTextChanged: {
+                                    if (root.bridge && root.bridge.minFileSize !== text) {
+                                        root.bridge.minFileSize = text
+                                    }
+                                }
+                                onEditingFinished: {
+                                    var norm = sizeRangeBadge.normalizeSizeInput(text)
+                                    if (text !== norm) {
+                                        text = norm
+                                    }
+                                    if (root.bridge && root.bridge.minFileSize !== norm) {
+                                        root.bridge.minFileSize = norm
+                                    }
+                                }
+                            }
+                        }
+
+                        // Max File Size
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
+                            spacing: 8
+
+                            Text {
+                                text: root.tr("label_size_max", "Max:")
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 11
+                                color: "#64748B"
+                            }
+
+                            StyledTextField {
+                                id: maxFileSizeInput
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                placeholderText: root.tr("ph_size_max", "e.g. 2GB or 2048MB")
+                                tooltip: root.tr("tip_size_max", "Maximum file size. Files larger than this will be skipped before downloading.")
+                                text: root.bridge ? root.bridge.maxFileSize : ""
+                                validator: RegularExpressionValidator {
+                                    regularExpression: /^\s*(\d+(\.\d*)?|\.\d+)?\s*([KMGTP]B?|B)?\s*$/i
+                                }
+                                onTextChanged: {
+                                    if (root.bridge && root.bridge.maxFileSize !== text) {
+                                        root.bridge.maxFileSize = text
+                                    }
+                                }
+                                onEditingFinished: {
+                                    var norm = sizeRangeBadge.normalizeSizeInput(text)
+                                    if (text !== norm) {
+                                        text = norm
+                                    }
+                                    if (root.bridge && root.bridge.maxFileSize !== norm) {
+                                        root.bridge.maxFileSize = norm
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Live interpreted range badge
+                    Rectangle {
+                        id: sizeRangeBadge
+                        property string minText: root.bridge ? (root.bridge.minFileSize || "").trim() : ""
+                        property string maxText: root.bridge ? (root.bridge.maxFileSize || "").trim() : ""
+                        readonly property bool isMinInvalid: minText.length > 0 && parseBytes(minText) === 0
+                        readonly property bool isMaxInvalid: maxText.length > 0 && parseBytes(maxText) === 0
+                        readonly property bool hasInvalid: isMinInvalid || isMaxInvalid
+                        readonly property bool isInverted: {
+                            if (hasInvalid || !minText || !maxText) return false
+                            var minB = parseBytes(minText)
+                            var maxB = parseBytes(maxText)
+                            return minB > 0 && maxB > 0 && minB > maxB
+                        }
+                        visible: minText.length > 0 || maxText.length > 0
+                        Layout.fillWidth: true
+                        implicitHeight: 22
+                        radius: 4
+                        color: (hasInvalid || isInverted) ? "#221C11" : "#0F172A"
+                        border.color: (hasInvalid || isInverted) ? "#F59E0B" : "#1E293B"
+                        border.width: 1
+
+                        function normalizeSizeInput(s) {
+                            if (!s) return ""
+                            var str = s.trim()
+                            if (!str) return ""
+                            var m = str.match(/^([\d.]+)\s*([A-Za-z]+)?/)
+                            if (!m || !m[1]) return ""
+                            var val = parseFloat(m[1])
+                            if (isNaN(val) || val <= 0) return ""
+                            var rawUnit = (m[2] || "MB").toUpperCase()
+                            var unit = "MB"
+                            if (rawUnit === "B" || rawUnit === "BYTE" || rawUnit === "BYTES") unit = "B"
+                            else if (rawUnit.indexOf("K") === 0) unit = "KB"
+                            else if (rawUnit.indexOf("M") === 0) unit = "MB"
+                            else if (rawUnit.indexOf("G") === 0) unit = "GB"
+                            else if (rawUnit.indexOf("T") === 0) unit = "TB"
+                            else if (rawUnit.indexOf("P") === 0) unit = "PB"
+
+                            var numStr = (Math.round(val * 100) / 100).toString()
+                            return numStr + " " + unit
+                        }
+
+                        function parseBytes(s) {
+                            if (!s) return 0
+                            var str = s.trim().toUpperCase()
+                            var m = str.match(/^([\d.]+)\s*([A-Z]+)?$/)
+                            if (!m || !m[1]) return 0
+                            var val = parseFloat(m[1])
+                            if (isNaN(val) || val <= 0) return 0
+                            var unit = m[2] || "MB"
+                            if (unit.indexOf("K") === 0) return Math.round(val * 1024)
+                            if (unit.indexOf("M") === 0) return Math.round(val * 1048576)
+                            if (unit.indexOf("G") === 0) return Math.round(val * 1073741824)
+                            if (unit.indexOf("T") === 0) return Math.round(val * 1099511627776)
+                            if (unit.indexOf("P") === 0) return Math.round(val * 1125899906842624)
+                            if (unit.indexOf("B") === 0) return Math.round(val)
+                            return Math.round(val * 1048576)
+                        }
+
+                        function describeSizeRange() {
+                            if (hasInvalid) {
+                                var invalidVal = isMinInvalid ? minText : maxText
+                                return root.tr("notice_invalid_size", "⚠️ Invalid size format: \"") + invalidVal + root.tr("notice_invalid_size_hint", "\" — use e.g. 500MB, 1.5GB")
+                            }
+                            var normMin = normalizeSizeInput(minText)
+                            var normMax = normalizeSizeInput(maxText)
+                            if (minText.length > 0 && maxText.length > 0) {
+                                if (isInverted) {
+                                    return root.tr("notice_inverted_size", "⚠️ Min exceeds Max — auto-correcting to: ") + normMax + " to " + normMin
+                                }
+                                return root.tr("notice_range_size", "Filtering files between ") + normMin + " and " + normMax
+                            } else if (minText.length > 0) {
+                                return root.tr("notice_min_size", "Filtering files at least ") + normMin + root.tr("notice_min_size_end", " (skipping smaller files)")
+                            } else if (maxText.length > 0) {
+                                return root.tr("notice_max_size", "Filtering files up to ") + normMax + root.tr("notice_max_size_end", " (skipping larger files)")
+                            }
+                            return ""
+                        }
+
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 8
+                            anchors.rightMargin: 8
+                            spacing: 6
+
+                            Text {
+                                text: (sizeRangeBadge.hasInvalid || sizeRangeBadge.isInverted) ? "⚠️" : "📦"
+                                font.pixelSize: 10
+                            }
+                            Text {
+                                text: sizeRangeBadge.describeSizeRange()
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 10
+                                color: (sizeRangeBadge.hasInvalid || sizeRangeBadge.isInverted) ? "#FCD34D" : "#38BDF8"
+                                elide: Text.ElideRight
+                                Layout.fillWidth: true
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -524,6 +764,13 @@ SmoothFlickable {
                     }
 
                     StyledCheckBox {
+                        text: root.tr("opt_tag_audio_files", "Tag Audio Metadata (Artist/Title)")
+                        tooltip: root.tr("opt_tag_audio_files_tip", "Embed creator name into Artist tag and post title into Title tag for MP3, FLAC, M4A, and audio files")
+                        checked: root.bridge ? root.bridge.writeAudioMetadata : true
+                        onCheckedChanged: if (root.bridge) root.bridge.writeAudioMetadata = checked
+                    }
+
+                    StyledCheckBox {
                         text: root.tr("opt_download_embeds", "Download Embedded Media (yt-dlp)")
                         tooltip: root.tr("opt_download_embeds_tip", "Download embedded video players (Vimeo, YouTube, Streamable, RedGifs, etc.) via standalone yt-dlp")
                         checked: root.bridge ? root.bridge.downloadEmbeds : true
@@ -624,13 +871,15 @@ SmoothFlickable {
                     StyledCheckBox {
                         id: adaptiveCheck
                         text: root.tr("opt_adaptive_threading", "Adaptive Threading")
-                        tooltip: (root.bridge && root.bridge.threadsLocked)
-                                 ? root.tr("opt_adaptive_disabled_tip", "Adaptive Threading is disabled because Thread Lock is active")
-                                 : root.tr("opt_adaptive_threading_tip", "Automatically scale worker thread count based on network conditions and 429 rate limits")
-                        enabled: root.bridge ? !root.bridge.threadsLocked : true
+                        tooltip: (root.bridge && root.bridge.isTelegramUrl)
+                                 ? root.tr("opt_adaptive_telegram_tip", "Adaptive Threading is disabled for Telegram downloads (locked strictly to 2 threads to prevent account bans)")
+                                 : ((root.bridge && root.bridge.threadsLocked)
+                                    ? root.tr("opt_adaptive_disabled_tip", "Adaptive Threading is disabled because Thread Lock is active")
+                                    : root.tr("opt_adaptive_threading_tip", "Automatically scale worker thread count based on network conditions and 429 rate limits"))
+                        enabled: (root.bridge && root.bridge.isTelegramUrl) ? false : (root.bridge ? !root.bridge.threadsLocked : true)
                         opacity: enabled ? 1.0 : 0.38
                         Behavior on opacity { NumberAnimation { duration: 180 } }
-                        checked: root.bridge ? root.bridge.adaptiveThreading : false
+                        checked: (root.bridge && root.bridge.isTelegramUrl) ? false : (root.bridge ? root.bridge.adaptiveThreading : false)
                         onCheckedChanged: if (root.bridge && enabled) root.bridge.adaptiveThreading = checked
                     }
 
@@ -647,8 +896,8 @@ SmoothFlickable {
                     width: parent.width
                     Layout.fillWidth: true
                     spacing: 8
-                    // Dim the slider when Adaptive Threading is on
-                    opacity: (root.bridge && root.bridge.adaptiveThreading) ? 0.38 : 1.0
+                    // Dim the slider when Adaptive Threading or Telegram lock is active
+                    opacity: (root.bridge && root.bridge.isTelegramUrl) ? 0.45 : ((root.bridge && root.bridge.adaptiveThreading) ? 0.38 : 1.0)
                     Behavior on opacity { NumberAnimation { duration: 180 } }
 
                     Text {
@@ -669,12 +918,12 @@ SmoothFlickable {
                             from: 1
                             to: root.bridge ? root.bridge.maxCpuThreads : 24
                             stepSize: 1
-                            value: root.bridge ? root.bridge.threadsCount : 4
+                            value: (root.bridge && root.bridge.isTelegramUrl) ? 2 : (root.bridge ? root.bridge.threadsCount : 4)
                             implicitWidth: root.width > 540 ? 160 : 110
                             implicitHeight: 32
-                            // Disable interaction when Adaptive Threading is managing concurrency
-                            enabled: root.bridge ? !root.bridge.adaptiveThreading : true
-                            onMoved: if (root.bridge) root.bridge.threadsCount = Math.round(value)
+                            // Physically disable interaction when Telegram link is active or Adaptive Threading is managing concurrency
+                            enabled: (root.bridge && root.bridge.isTelegramUrl) ? false : (root.bridge ? !root.bridge.adaptiveThreading : true)
+                            onMoved: if (root.bridge && enabled) root.bridge.threadsCount = Math.round(value)
 
                             background: Item {
                                 x: threadSlider.leftPadding
@@ -733,18 +982,21 @@ SmoothFlickable {
                             implicitWidth: workerVal.implicitWidth + 18
                             height: 24; radius: 12
                             color: "#0C1828"
-                            border.color: (root.bridge && root.bridge.threadsLocked) ? "#7F1D1D" : "#164E63"
+                            border.color: (root.bridge && root.bridge.isTelegramUrl) ? "#92400E"
+                                          : ((root.bridge && root.bridge.threadsLocked) ? "#7F1D1D" : "#164E63")
                             border.width: 1
                             Text {
                                 id: workerVal
                                 anchors.centerIn: parent
-                                text: root.bridge && root.bridge.adaptiveThreading
-                                      ? root.bridge.threadsCount.toString()
-                                      : Math.round(threadSlider.value).toString()
+                                text: (root.bridge && root.bridge.isTelegramUrl) ? "2"
+                                      : (root.bridge && root.bridge.adaptiveThreading
+                                         ? root.bridge.threadsCount.toString()
+                                         : Math.round(threadSlider.value).toString())
                                 font.family: "Segoe UI, sans-serif"
                                 font.bold: true
                                 font.pixelSize: 11
-                                color: (root.bridge && root.bridge.threadsLocked) ? "#FCA5A5" : "#7DD3FA"
+                                color: (root.bridge && root.bridge.isTelegramUrl) ? "#FCD34D"
+                                       : ((root.bridge && root.bridge.threadsLocked) ? "#FCA5A5" : "#7DD3FA")
                             }
                         }
                     }
@@ -758,6 +1010,8 @@ SmoothFlickable {
                             id: lockBtn
                             height: 24
                             radius: 5
+                            opacity: (root.bridge && root.bridge.isTelegramUrl) ? 0.35 : 1.0
+                            Behavior on opacity { NumberAnimation { duration: 180 } }
                             implicitWidth: lockRow.implicitWidth + 16
                             color: (root.bridge && root.bridge.threadsLocked)
                                    ? (lockMouse.containsMouse ? "#3A1A1C" : "#2D1517")
@@ -797,9 +1051,9 @@ SmoothFlickable {
                                 id: lockMouse
                                 anchors.fill: parent
                                 hoverEnabled: true
-                                cursorShape: Qt.PointingHandCursor
+                                cursorShape: (root.bridge && root.bridge.isTelegramUrl) ? Qt.ArrowCursor : Qt.PointingHandCursor
                                 onClicked: {
-                                    if (root.bridge) {
+                                    if (root.bridge && !(root.bridge.isTelegramUrl)) {
                                         root.bridge.threadsLocked = !root.bridge.threadsLocked
                                     }
                                 }
@@ -810,9 +1064,11 @@ SmoothFlickable {
                                 visible: lockMouse.containsMouse
                                 delay: 400
                                 timeout: 5000
-                                text: (root.bridge && root.bridge.threadsLocked)
-                                      ? (root.tr("tip_thread_locked_active", "Thread Lock Active: Worker concurrency is locked. Adaptive scaling is disabled and HTTP 429 cooldown is 30s."))
-                                      : (root.tr("tip_thread_lock", "Lock Thread Sweetspot: Lock current concurrency. Disables adaptive scaling and prevents rate limits from altering your thread count."))
+                                text: (root.bridge && root.bridge.isTelegramUrl)
+                                      ? root.tr("tip_thread_tg_locked", "Telegram Lock: Concurrency is locked to 2 threads to prevent FloodWait bans and connection drops.")
+                                      : ((root.bridge && root.bridge.threadsLocked)
+                                         ? (root.tr("tip_thread_locked_active", "Thread Lock Active: Worker concurrency is locked. Adaptive scaling is disabled and HTTP 429 cooldown is 30s."))
+                                         : (root.tr("tip_thread_lock", "Lock Thread Sweetspot: Lock current concurrency. Disables adaptive scaling and prevents rate limits from altering your thread count.")))
                                 contentItem: Text {
                                     text: lockToolTip.text
                                     font.family: "Segoe UI, Inter, sans-serif"
@@ -823,6 +1079,80 @@ SmoothFlickable {
                                 background: Rectangle {
                                     color: "#141924"
                                     border.color: (root.bridge && root.bridge.threadsLocked) ? "#EF4444" : "#38BDF8"
+                                    border.width: 1
+                                    radius: 6
+                                }
+                            }
+                        }
+
+                        // Telegram thread lock reason badge
+                        Rectangle {
+                            id: tgLockBadge
+                            visible: root.bridge && root.bridge.isTelegramUrl
+                            height: 24; radius: 5
+                            implicitWidth: tgLockRow.implicitWidth + 14
+                            color: "#2E1A11"; border.color: "#F59E0B"; border.width: 1
+
+                            // Newtonian buoyant hover & fluid squash-stretch
+                            scale: tgLockMouse.pressed ? 0.95 : (tgLockMouse.containsMouse ? 1.03 : 1.0)
+                            transformOrigin: Item.Center
+                            Behavior on scale { SpringAnimation { spring: 3.8; damping: 0.32; mass: 1.8 } }
+
+                            transform: Translate {
+                                y: tgLockMouse.containsMouse ? -2 : 0
+                                Behavior on y { SpringAnimation { spring: 3.5; damping: 0.35; mass: 1.8 } }
+                            }
+
+                            // Liquid amber breathing aura
+                            Rectangle {
+                                anchors.fill: parent
+                                anchors.margins: -3
+                                radius: 8
+                                color: "transparent"
+                                border.color: "#F59E0B"
+                                border.width: 1
+                                opacity: 0.25
+
+                                SequentialAnimation on opacity {
+                                    loops: Animation.Infinite
+                                    running: tgLockBadge.visible
+                                    NumberAnimation { to: 0.75; duration: 1500; easing.type: Easing.InOutSine }
+                                    NumberAnimation { to: 0.15; duration: 1500; easing.type: Easing.InOutSine }
+                                }
+                            }
+
+                            RowLayout {
+                                id: tgLockRow
+                                anchors.centerIn: parent; spacing: 5
+                                Text { text: "\uD83D\uDD12"; font.pixelSize: 10 }
+                                Text {
+                                    text: root.tr("tg_threads_locked_reason", "Telegram: Locked to 2 threads (anti-ban)")
+                                    font.family: "Segoe UI, sans-serif"; font.pixelSize: 11; font.bold: true; color: "#FCD34D"
+                                }
+                            }
+
+                            MouseArea {
+                                id: tgLockMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                            }
+
+                            ToolTip {
+                                id: tgLockTooltip
+                                visible: tgLockMouse.containsMouse
+                                delay: 200
+                                timeout: 8000
+                                text: root.tr("tg_threads_locked_tooltip", "Telegram limits simultaneous connections per account. Concurrency is locked to 2 worker threads to prevent FloodWait temporary bans and connection drops.")
+                                contentItem: Text {
+                                    text: tgLockTooltip.text
+                                    font.family: "Segoe UI, Inter, sans-serif"
+                                    font.pixelSize: 11
+                                    color: "#F1F5F9"
+                                    wrapMode: Text.WordWrap
+                                }
+                                background: Rectangle {
+                                    color: "#141924"
+                                    border.color: "#F59E0B"
                                     border.width: 1
                                     radius: 6
                                 }

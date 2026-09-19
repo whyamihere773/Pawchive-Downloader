@@ -39,6 +39,8 @@ class YtDlpManager:
         self.exe_path = os.path.join(self.dependencies_dir, "yt-dlp.exe")
         self._update_in_progress = False
         self._lock = threading.Lock()
+        self._active_processes: set = set()
+        self._proc_lock = threading.Lock()
 
     def get_executable_path(self) -> str:
         """Returns path to yt-dlp.exe, ensuring dependencies directory exists."""
@@ -154,6 +156,16 @@ class YtDlpManager:
 
         threading.Thread(target=_bg_worker, daemon=True).start()
 
+    def cancel_all(self):
+        """Instantly terminates all active yt-dlp child processes."""
+        with self._proc_lock:
+            for proc in list(self._active_processes):
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            self._active_processes.clear()
+
     def download_media(
         self,
         url: str,
@@ -171,6 +183,9 @@ class YtDlpManager:
         progress_callback signature: (done_bytes, total_bytes, speed_str, eta_str)
         Returns: (success: bool, error_msg_or_filename: str)
         """
+        if cancel_event and cancel_event.is_set():
+            return False, "Cancelled"
+
         if not self.is_binary_available():
             ok = self.download_latest_binary()
             if not ok or not self.is_binary_available():
@@ -210,17 +225,25 @@ class YtDlpManager:
                 errors="replace",
                 creationflags=creationflags
             )
+            with self._proc_lock:
+                self._active_processes.add(proc)
 
             # Read stdout line by line for live progress
             while proc.poll() is None:
                 if cancel_event and cancel_event.is_set():
-                    proc.kill()
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
                     return False, "Cancelled"
 
                 while pause_event and pause_event.is_set():
                     time.sleep(0.3)
                     if cancel_event and cancel_event.is_set():
-                        proc.kill()
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
                         return False, "Cancelled"
 
                 line = proc.stdout.readline()
@@ -251,6 +274,13 @@ class YtDlpManager:
                         except Exception:
                             pass
 
+            if cancel_event and cancel_event.is_set():
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                return False, "Cancelled"
+
             stdout_rem, stderr_rem = proc.communicate(timeout=10)
             if proc.returncode == 0:
                 return True, "Completed"
@@ -267,4 +297,10 @@ class YtDlpManager:
                     proc.kill()
                 except Exception:
                     pass
+            if cancel_event and cancel_event.is_set():
+                return False, "Cancelled"
             return False, str(e)
+        finally:
+            if proc is not None:
+                with self._proc_lock:
+                    self._active_processes.discard(proc)

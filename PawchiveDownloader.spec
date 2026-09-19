@@ -59,6 +59,8 @@ hidden_imports = [
     'core.downloader',
     'core.session_manager',
     'core.recovery_manager',
+    'core.memory_collector',
+    'core.crypto_utils',
     'core.link_vault_manager',
     'core.storage_pool_manager',
     'core.task_scheduler',
@@ -77,6 +79,7 @@ hidden_imports = [
     'services.text_exporter',
     'services.bulk_decompressor',
     'services.report_generator',
+    'services.telegram_service',
     'bridge',
     'bridge.app_bridge',
     'bridge.log_model',
@@ -84,6 +87,11 @@ hidden_imports = [
     'bridge.known_model',
     'bridge.watchlist_model',
     'bridge.decompressor_bridge',
+    'bridge.telegram_bridge',
+    'core.audio_tagger',
+    'mutagen',
+    'telethon',
+    'qrcode',
 ]
 
 # Optional application icon

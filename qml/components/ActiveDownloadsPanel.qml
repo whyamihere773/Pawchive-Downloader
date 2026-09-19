@@ -296,7 +296,7 @@ Rectangle {
 
             // Physical momentum settling when siblings shift
             displaced: Transition {
-                NumberAnimation { properties: "y"; duration: 280; easing.type: Easing.OutBack; easing.overshoot: 1.25 }
+                NumberAnimation { properties: "y"; duration: 200; easing.type: Easing.OutQuad }
             }
 
             delegate: Rectangle {

@@ -7,6 +7,7 @@ with exponential backoff, rate limiting recovery, and diagnostic logging.
 import os
 import sys
 import time
+import random
 import threading
 import requests
 import re
@@ -123,6 +124,15 @@ class KemonoApiClient:
         }
         if self.cookie_string:
             headers["Cookie"] = self.cookie_string
+            self.session.headers.pop("X-Contact", None)
+            self.session.headers.pop("X-Client-Notice", None)
+        else:
+            self.session.headers.pop("Cookie", None)
+            headers["X-Contact"] = "https://github.com/whyamihere773/Pawchive-Downloader"
+            headers["X-Client-Notice"] = (
+                "Pawchive Downloader user here! Love your site. If my client is ever causing server strain, "
+                "please open an issue on GitHub instead of a hard ban and I'll fix my request pacing immediately."
+            )
         self.session.headers.update(headers)
 
     def _get_with_log(self, url: str, timeout: int = 20, extra_headers: dict = None) -> Optional[requests.Response]:
@@ -584,7 +594,10 @@ class KemonoApiClient:
 
             offset += batch
             current_page += 1
-            time.sleep(0.15)  # polite throttle
+            # Polite API pagination delay (prevents database load spikes on Pawchive)
+            domain_lower = (parsed.domain or "").lower()
+            page_delay = random.uniform(0.35, 0.55) if ("pawchive" in domain_lower) else 0.15
+            time.sleep(page_delay)
 
         logger.success(
             f"Enumeration done: {len(all_posts)} posts collected "
