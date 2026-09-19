@@ -1,8 +1,8 @@
 {
-    "version": "1.1.5",
+    "version": "1.1.6",
     "commit": "",
     "short_commit": "",
-    "date": "2026-09-17",
+    "date": "2026-09-20",
     "channel": "release",
     "history": [
         {
@@ -84,6 +84,11 @@
             "version": "1.1.5",
             "date": "2026-09-17",
             "notes": "Dedicated Archive tab with offline post and file cataloging, disk verification engine, missing file highlights & cleanup, collapsible overview header, and fluid virtual scrolling. Interactive Post Selector & Inspector with Grid/List modes, full descriptions, attachment checkboxes, dynamic selection counters, and fullscreen Lightbox visualizer. Interactive custom filename template builder with tag chips and live preview. Multi-drive storage overflow tracking and smart disk balancing. Temporary oversized file downloads (t1.pawchive.pw) with expiration tracking. Complete 14-language interactive tutorial guides for all new features."
+        },
+        {
+            "version": "1.1.6",
+            "date": "2026-09-20",
+            "notes": "Polite Pawchive server protection: single continuous resumable stream for Pawchive, gentle inter-file pacing (250-400ms), and relaxed API pagination delays. Embedded audio metadata tagger (ID3v2.3, Vorbis, MP4) for MP3, FLAC, M4A, OGG, and WAV. Queue batch cancellation fixes, Retry modal failed-task clearing, and smooth scroll fixes across Queue, Archive, and Retry modals. Custom min/max file size filtering."
         }
     ]
 }

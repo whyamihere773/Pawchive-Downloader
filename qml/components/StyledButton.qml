@@ -28,9 +28,8 @@ Button {
 
     Behavior on scale {
         NumberAnimation {
-            duration: control.down ? 110 : 220
-            easing.type: control.down ? Easing.OutCubic : Easing.OutBack
-            easing.overshoot: 1.4
+            duration: control.down ? 110 : 160
+            easing.type: Easing.OutCubic
         }
     }
 

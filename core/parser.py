@@ -34,6 +34,8 @@ class URLParseResult:
 
     @property
     def is_single_post(self) -> bool:
+        if self.provider == "telegram":
+            return bool(self.post_id)
         return bool(self.post_id) or self.provider in ("bunkr", "erome", "nhentai")
 
     @property
@@ -140,6 +142,24 @@ class KemonoURLParser:
         re.IGNORECASE
     )
 
+    # Telegram patterns
+    TELEGRAM_PRIVATE_POST_PATTERN = re.compile(
+        r"https?://(?:www\.)?(?:t\.me|telegram\.me)/c/(\d+)/(\d+)",
+        re.IGNORECASE
+    )
+    TELEGRAM_INVITE_PATTERN = re.compile(
+        r"https?://(?:www\.)?(?:t\.me|telegram\.me)/(?:\+|joinchat/)([a-zA-Z0-9_-]+)",
+        re.IGNORECASE
+    )
+    TELEGRAM_PUBLIC_POST_PATTERN = re.compile(
+        r"https?://(?:www\.)?(?:t\.me|telegram\.me)/(?:s/)?([a-zA-Z0-9_]{4,})/(\d+)",
+        re.IGNORECASE
+    )
+    TELEGRAM_CHANNEL_PATTERN = re.compile(
+        r"https?://(?:www\.)?(?:t\.me|telegram\.me)/(?:s/)?([a-zA-Z0-9_]{4,})/?$",
+        re.IGNORECASE
+    )
+
     @classmethod
     def parse(cls, url: str) -> URLParseResult:
         if not url:
@@ -148,6 +168,68 @@ class KemonoURLParser:
         url = url.strip()
         if not url.startswith("http://") and not url.startswith("https://"):
             url = "https://" + url
+
+        # Telegram Private Post (e.g. t.me/c/123456789/45)
+        m_tg_priv = cls.TELEGRAM_PRIVATE_POST_PATTERN.search(url)
+        if m_tg_priv:
+            channel_id = m_tg_priv.group(1)
+            message_id = m_tg_priv.group(2)
+            return URLParseResult(
+                domain="t.me",
+                service="telegram",
+                user_id=channel_id,
+                post_id=message_id,
+                raw_url=url,
+                is_valid=True,
+                provider="telegram",
+                extra_data={"is_private": True, "type": "private_post", "channel_id": channel_id, "message_id": int(message_id)}
+            )
+
+        # Telegram Invite Link (e.g. t.me/+hash or t.me/joinchat/hash)
+        m_tg_inv = cls.TELEGRAM_INVITE_PATTERN.search(url)
+        if m_tg_inv:
+            invite_hash = m_tg_inv.group(1)
+            return URLParseResult(
+                domain="t.me",
+                service="telegram",
+                user_id=invite_hash,
+                post_id=None,
+                raw_url=url,
+                is_valid=True,
+                provider="telegram",
+                extra_data={"is_private": True, "type": "invite", "invite_hash": invite_hash}
+            )
+
+        # Telegram Public Post (e.g. t.me/channel/123)
+        m_tg_post = cls.TELEGRAM_PUBLIC_POST_PATTERN.search(url)
+        if m_tg_post:
+            channel_name = m_tg_post.group(1)
+            message_id = m_tg_post.group(2)
+            return URLParseResult(
+                domain="t.me",
+                service="telegram",
+                user_id=channel_name,
+                post_id=message_id,
+                raw_url=url,
+                is_valid=True,
+                provider="telegram",
+                extra_data={"is_private": False, "type": "public_post", "channel_name": channel_name, "message_id": int(message_id)}
+            )
+
+        # Telegram Public Channel (e.g. t.me/channel_name)
+        m_tg_chan = cls.TELEGRAM_CHANNEL_PATTERN.search(url)
+        if m_tg_chan:
+            channel_name = m_tg_chan.group(1)
+            return URLParseResult(
+                domain="t.me",
+                service="telegram",
+                user_id=channel_name,
+                post_id=None,
+                raw_url=url,
+                is_valid=True,
+                provider="telegram",
+                extra_data={"is_private": False, "type": "channel", "channel_name": channel_name}
+            )
 
         m_nh = cls.NHENTAI_PATTERN.search(url)
         if m_nh:

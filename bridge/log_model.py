@@ -80,6 +80,8 @@ class LogModel(QAbstractListModel):
     def _level_color(self, entry: LogEntry) -> str:
         msg_lower = entry.message.lower()
         cat_lower = entry.category.lower() if entry.category else ""
+        if cat_lower == "memory" or "memory collector" in msg_lower or "🧹" in entry.message:
+            return "#FF1493"  # Vibrant Electric Hot Pink for Memory Collector
         if cat_lower == "adaptive" or "adaptive threading" in msg_lower or "[adaptive" in msg_lower or "⚡ adaptive" in msg_lower:
             return "#C084FC"  # Vibrant Neon Purple / Violet for Adaptive Threading
         # Link scan results get a distinct warm amber/teal so they pop in the log
@@ -98,6 +100,8 @@ class LogModel(QAbstractListModel):
     def _level_icon(self, entry: LogEntry) -> str:
         msg_lower = entry.message.lower()
         cat_lower = entry.category.lower() if entry.category else ""
+        if cat_lower == "memory" or "memory collector" in msg_lower or "🧹" in entry.message:
+            return "🧹"
         if cat_lower == "adaptive" or "adaptive threading" in msg_lower or "[adaptive" in msg_lower or "⚡ adaptive" in msg_lower:
             return "⚡"
         # Link scan messages get a chain-link icon
@@ -113,9 +117,18 @@ class LogModel(QAbstractListModel):
             LogLevel.ERROR:   "✖",
         }.get(entry.level, "•")
 
+    MAX_LOG_ENTRIES = 1500
+    PRUNE_BATCH_SIZE = 200
+
     # ── Slot runs on the main thread ──────────────────────────────────────────
+    @Slot(object)
     def _on_new_log(self, entry: LogEntry):
         self._all_entries.append(entry)
+        if len(self._all_entries) > self.MAX_LOG_ENTRIES:
+            del self._all_entries[:self.PRUNE_BATCH_SIZE]
+            self._reapply_filter()
+            return
+
         if self._matches_filter(entry):
             pos = len(self._filtered_entries)
             self.beginInsertRows(QModelIndex(), pos, pos)

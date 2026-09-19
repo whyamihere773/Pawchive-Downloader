@@ -5,9 +5,9 @@
 </p>
 
 <p align="center">
-  <strong>A modern, high-speed desktop media archiver and downloader for Pawchive, Kemono, Coomer, and external cloud hosts.</strong><br>
+  <strong>A modern, high-speed desktop media archiver and downloader for Pawchive, Kemono, Coomer, Telegram, and external cloud hosts.</strong><br>
   Built with Python, PySide6, and modern reactive QML.<br>
-  <em>Engineered for maximum automation: hands-off scheduled syncing, permanent link vaulting, multi-drive overflow, and self-healing session recovery.</em>
+  <em>Engineered for maximum automation: hands-off scheduled syncing, permanent link vaulting, multi-drive overflow, self-healing session recovery, and Telegram channel archiving.</em>
 </p>
 
 <p align="center">
@@ -56,6 +56,10 @@
 > 💡 **Philosophy: Maximum Automation, Minimum Friction**  
 > Pawchive Downloader is designed to take the heavy lifting off your hands. You point it at what you want — and it handles the rest: automated schedules, background link harvesting, multi-drive overflow, self-healing recovery, and intelligent file organisation. You stay in control; the app does the work.
 
+- ✈️ **Telegram Channel Downloader & Media Browser:** Download photos, videos, and files directly from public channels, private links, and individual posts (`t.me/...`). Features an interactive visual thumbnail post selector with checkboxes, one-click criteria filtering (dates, media types), effortless QR code / phone login, client-side encrypted session storage, and automated anti-ban safeguards (locked 2-thread concurrency & FloodWait cooldowns).
+- 🧹 **Automatic Memory Cleanup Daemon *(WIP)*:** Periodic memory management daemon that continuously monitors process memory, sweeping cyclic objects and reclaiming unused RAM during massive download sessions to keep long-running tasks light and stable.
+- 🛑 **Sub-Second Multi-Service Cancellation:** Universal instant abort across multi-part files, child `yt-dlp` video processes, cloud mirrors (Mega, Dropbox, GoFile), and Telegram downloads in less than a second.
+- 🎵 **Automatic ID3 Audio Tagging:** Automatically embeds creator as Artist and post title as Track Title on `.mp3`, `.m4a`, `.flac`, `.ogg`, and `.wav` downloads for instant integration with iTunes, Plex, and MusicBee.
 - ⏰ **Task Scheduler & Automation Hub:** Create recurring automation schedules to poll your Watchlist for new creator posts, schedule off-peak **Night Owl** download windows, prevent Windows sleep during active jobs, and automatically sweep-retry any rate-limited or dropped files.
 - 🖼️ **Interactive Post Selector & Inspector:** Browse, search, and selectively download or queue individual creator posts. Drill down into post descriptions and passwords, pick individual attachments, view files in a fullscreen media Lightbox visualizer, and track real-time file and post selection tallies.
 - 🗄️ **Download Archive Database & Verifier:** Dedicated offline database cataloging all downloaded posts and files. Includes a disk verification engine to detect missing files, red/amber visual warning indicators, and a one-click database cleanup flow.
@@ -104,6 +108,7 @@
 - **Kemono** (`kemono.su`)
 - **Coomer** (`coomer.su`)
 - **Cum.st** (`cum.st`)
+- **Telegram** (`t.me/...` public channels, private links, and individual media posts)
 - *Supported creator services:* Patreon, Pixiv Fanbox, Fantia, Subscribestar, Gumroad, Boosty, Discord, OnlyFans, Fansly, Afdian, DLsite, and more.
 
 ### Cloud Drives & Direct Storage
@@ -125,7 +130,7 @@
 ### Option A: Pre-compiled Windows Binary (Recommended for most users)
 
 1. Head over to the **[Latest Release](https://github.com/whyamihere773/Pawchive-Downloader/releases/latest)** page.
-2. Download `Pawchive-Downloader-v1.1.5-Windows.zip`.
+2. Download `Pawchive-Downloader-v1.1.6-Windows.zip`.
 3. Extract the ZIP archive anywhere on your computer.
 4. Run `Pawchive Downloader.exe` — that's it!
 
@@ -177,6 +182,7 @@ Feedback, bug reports, and pull requests are warmly welcome!
 - **Coomer:** `coomer`, `coomer.su`, `coomer.party`, `coomer-party`, `coomerparty`, `coomer party`, `coomer downloader`, `coomer-downloader`, `coomerdownloader`, `coomer scraper`
 - **Pawchive:** `pawchive`, `pawchive.pw`, `pawchive downloader`, `pawchive-downloader`, `pawchivedownloader`, `pawchive grabber`, `pawchive scraper`, `pawchive archiver`
 - **Cum.st:** `cum.st`, `cum-st`, `cumst`, `cum.st downloader`, `cum-st downloader`, `cumst downloader`, `cum-st scraper`, `cumst scraper`, `cum.st grabber`
+- **Telegram:** `telegram-downloader`, `telegram downloader`, `telegram channel downloader`, `telegram media downloader`, `telegram media archiver`, `telegram scraper`, `t.me downloader`
 - **Cloud & Hosts:** `mega-downloader`, `megadownloader`, `mega downloader`, `mega folder downloader`, `mega decryptor`, `mega decrypter`, `google drive downloader`, `gdrive downloader`, `dropbox downloader`, `gofile downloader`, `bunkr downloader`, `pixeldrain downloader`, `catbox downloader`
 - **Patreon & Creator Sites:** `patreon-downloader`, `patreondownloader`, `patreon downloader`, `patreon scraper`, `patreon ripper`, `patreon archiver`, `fanbox-downloader`, `fanboxdownloader`, `fanbox downloader`, `fantia-downloader`, `fantiadownloader`, `fantia downloader`, `subscribestar-downloader`, `subscribestar downloader`, `boosty downloader`, `gumroad downloader`
 - **Archiving & Utilities:** `media-downloader`, `mediadownloader`, `media downloader`, `media grabber`, `media archiver`, `data-hoarder`, `datahoarder`, `data hoarder`, `data-hoarding`, `datahoarding`, `data hoarding`, `batch downloader`, `bulk downloader`, `pyside6`, `qml`, `yt-dlp`

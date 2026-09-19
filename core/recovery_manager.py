@@ -11,6 +11,8 @@ import json
 import time
 import shutil
 import datetime
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Any, List, Optional
 from core.logger import logger
 
@@ -30,6 +32,9 @@ class RecoveryManager:
         self.journal_file = os.path.join(self.config_dir, "recovery_journal.json")
         self.tmp_file = os.path.join(self.config_dir, "recovery_journal.json.tmp")
         self.bak_file = os.path.join(self.config_dir, "recovery_journal.json.bak")
+        self.retry_spillover_file = os.path.join(self.config_dir, "retry_spillover.json")
+        self._write_lock = threading.Lock()
+        self._async_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="recovery_writer")
 
     @staticmethod
     def _detect_platform(service: str, domain: str = "", url: str = "") -> str:
@@ -204,61 +209,136 @@ class RecoveryManager:
         tasks: List[Any],
         batches: Optional[List[Dict[str, Any]]] = None,
         settings: Optional[Dict[str, Any]] = None,
-        status: str = "interrupted"
+        status: str = "interrupted",
+        async_write: bool = False
     ) -> bool:
         """
-        Atomically writes the recovery journal using flush + os.fsync + backup rotation + atomic replace.
-        Ensures zero file corruption even during sudden power loss or process kill.
+        Atomically writes the recovery journal using compact JSON + fsync + backup rotation + atomic replace.
+        Can run asynchronously in the background so it never pauses network streaming or freezes GUI.
         """
         if not tasks:
             return False
 
-        try:
-            summary = self.build_summary(tasks, batches)
-            raw_tasks = [
-                t.to_dict() if hasattr(t, "to_dict") else t
-                for t in tasks
-            ]
-
-            payload = {
-                "version": 1,
-                "status": status,
-                "saved_at": datetime.datetime.now().isoformat(),
-                "summary": summary,
-                "settings": settings or {},
-                "batches": batches or [],
-                "tasks": raw_tasks
-            }
-
-            # Step 1: Write to temporary file
-            with open(self.tmp_file, "w", encoding="utf-8") as f:
-                json.dump(payload, f, indent=2, ensure_ascii=False)
-                f.flush()
-                # Step 2: Force physical OS / NTFS disk write barrier
-                try:
-                    os.fsync(f.fileno())
-                except Exception:
-                    pass
-
-            # Step 3: Rotate current valid journal to .bak if it exists
-            if os.path.exists(self.journal_file):
-                try:
-                    shutil.copy2(self.journal_file, self.bak_file)
-                except Exception as bak_err:
-                    logger.debug(f"Could not update journal .bak: {bak_err}", category="session")
-
-            # Step 4: Atomic file replace (NTFS MFT pointer swap)
-            os.replace(self.tmp_file, self.journal_file)
-            logger.debug("Download recovery checkpoint saved atomically.", category="session")
+        if async_write:
+            self._async_executor.submit(
+                self._save_checkpoint_sync,
+                list(tasks),
+                list(batches) if batches else None,
+                dict(settings) if settings else None,
+                status
+            )
             return True
+        return self._save_checkpoint_sync(tasks, batches, settings, status)
 
-        except Exception as e:
-            logger.error(f"Failed to save recovery checkpoint: {e}", category="session")
-            if os.path.exists(self.tmp_file):
+    def _save_checkpoint_sync(
+        self,
+        tasks: List[Any],
+        batches: Optional[List[Dict[str, Any]]] = None,
+        settings: Optional[Dict[str, Any]] = None,
+        status: str = "interrupted"
+    ) -> bool:
+        with self._write_lock:
+            try:
+                summary = self.build_summary(tasks, batches)
+                raw_tasks = [
+                    t.to_dict() if hasattr(t, "to_dict") else t
+                    for t in tasks
+                ]
+
+                payload = {
+                    "version": 1,
+                    "status": status,
+                    "saved_at": datetime.datetime.now().isoformat(),
+                    "summary": summary,
+                    "settings": settings or {},
+                    "batches": batches or [],
+                    "tasks": raw_tasks
+                }
+
+                # Step 1: Write to temporary file using compact JSON (reduces disk IO and RAM by ~70%)
+                with open(self.tmp_file, "w", encoding="utf-8") as f:
+                    json.dump(payload, f, separators=(',', ':'), ensure_ascii=False)
+                    f.flush()
+                    # Step 2: Force physical OS / NTFS disk write barrier
+                    try:
+                        os.fsync(f.fileno())
+                    except Exception:
+                        pass
+
+                # Step 3: Rotate current valid journal to .bak if it exists
+                if os.path.exists(self.journal_file):
+                    try:
+                        if os.path.exists(self.bak_file):
+                            try:
+                                os.remove(self.bak_file)
+                            except OSError:
+                                pass
+                        shutil.copyfile(self.journal_file, self.bak_file)
+                    except Exception as bak_err:
+                        logger.debug(f"Could not update journal .bak: {bak_err}", category="session")
+
+                # Step 4: Atomic file replace (NTFS MFT pointer swap)
+                os.replace(self.tmp_file, self.journal_file)
+                logger.debug("Download recovery checkpoint saved atomically.", category="session")
+                return True
+
+            except Exception as e:
+                logger.error(f"Failed to save recovery checkpoint: {e}", category="session")
+                if os.path.exists(self.tmp_file):
+                    try:
+                        os.remove(self.tmp_file)
+                    except Exception:
+                        pass
+                return False
+
+    def dump_retries(self, failed_tasks: List[Any], async_write: bool = True) -> bool:
+        """Dumps failed retry tasks to disk in compact JSON to keep memory low during long sessions."""
+        if not failed_tasks:
+            return False
+
+        def _do_dump(tasks_list):
+            with self._write_lock:
                 try:
-                    os.remove(self.tmp_file)
-                except Exception:
-                    pass
+                    raw_tasks = [t.to_dict() if hasattr(t, "to_dict") else t for t in tasks_list]
+                    tmp = f"{self.retry_spillover_file}.tmp"
+                    with open(tmp, "w", encoding="utf-8") as f:
+                        json.dump(raw_tasks, f, separators=(',', ':'), ensure_ascii=False)
+                        f.flush()
+                    os.replace(tmp, self.retry_spillover_file)
+                    logger.debug(f"Spilled {len(raw_tasks)} failed retry tasks to disk.", category="session")
+                    return True
+                except Exception as ex:
+                    logger.debug(f"Failed to spill retry tasks to disk: {ex}", category="session")
+                    return False
+
+        if async_write:
+            self._async_executor.submit(_do_dump, list(failed_tasks))
+            return True
+        return _do_dump(failed_tasks)
+
+    def load_retries(self) -> List[Dict[str, Any]]:
+        """Loads spilled retry tasks from disk."""
+        with self._write_lock:
+            if not os.path.exists(self.retry_spillover_file):
+                return []
+            try:
+                with open(self.retry_spillover_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    return data if isinstance(data, list) else []
+            except Exception as ex:
+                logger.debug(f"Could not load retry spillover file: {ex}", category="session")
+                return []
+
+    def clear_retries(self) -> bool:
+        """Removes the retry spillover file when user manually clears retries or upon app exit."""
+        with self._write_lock:
+            if os.path.exists(self.retry_spillover_file):
+                try:
+                    os.remove(self.retry_spillover_file)
+                    logger.debug("Retry spillover file removed.", category="session")
+                    return True
+                except Exception as ex:
+                    logger.debug(f"Could not remove retry spillover file: {ex}", category="session")
             return False
 
     def load_checkpoint(self) -> Optional[Dict[str, Any]]:

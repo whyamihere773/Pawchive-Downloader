@@ -20,12 +20,12 @@ VSVersionInfo(
         [
           StringStruct('CompanyName',      'whyamihere773'),
           StringStruct('FileDescription',  'Pawchive Downloader'),
-          StringStruct('FileVersion', '1.1.5.0'),
+          StringStruct('FileVersion', '1.1.6.0'),
           StringStruct('InternalName',     'PawchiveDownloader'),
           StringStruct('LegalCopyright',   'Copyright 2026 whyamihere773'),
           StringStruct('OriginalFilename', 'Pawchive Downloader.exe'),
           StringStruct('ProductName',      'Pawchive Downloader'),
-          StringStruct('ProductVersion', '1.1.5'),
+          StringStruct('ProductVersion', '1.1.6'),
         ]
       )
     ]),

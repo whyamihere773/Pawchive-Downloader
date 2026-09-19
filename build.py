@@ -35,7 +35,7 @@ if hasattr(sys.stderr, "reconfigure"):
 
 def check_and_install_dependencies():
     """Ensures all runtime dependencies and PyInstaller are installed."""
-    required = ["PySide6", "requests", "urllib3", "PIL", "Crypto", "gdown", "PyInstaller"]
+    required = ["PySide6", "requests", "urllib3", "PIL", "Crypto", "gdown", "PyInstaller", "telethon", "qrcode", "mutagen"]
     missing = []
 
     for pkg in required:

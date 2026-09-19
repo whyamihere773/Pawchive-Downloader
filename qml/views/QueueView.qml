@@ -409,15 +409,22 @@ Rectangle {
                     spacing: 8
                     clip: true
                     visible: root.bridge && root.bridge.queueModel && root.bridge.queueModel.viewMode === "grouped" && root.bridge.queueModel.selectedBatchId === ""
-                    model: root.bridge && root.bridge.queueModel ? root.bridge.queueModel.groups : []
+                    model: root.bridge && root.bridge.queueModel ? root.bridge.queueModel.groupsModel : null
 
                     delegate: Rectangle {
                         id: groupCard
+                        readonly property var modelData: model
+                        readonly property int cardDownloading: (typeof downloadingFiles !== "undefined" ? downloadingFiles : (model && model.downloadingFiles !== undefined ? model.downloadingFiles : 0))
+                        readonly property int cardPending: (typeof pendingFiles !== "undefined" ? pendingFiles : (model && model.pendingFiles !== undefined ? model.pendingFiles : 0))
+                        readonly property int cardFailed: (typeof failedFiles !== "undefined" ? failedFiles : (model && model.failedFiles !== undefined ? model.failedFiles : 0))
+                        readonly property string cardStatus: (typeof status !== "undefined" ? status : (model && model.status !== undefined ? model.status : "pending"))
+                        readonly property string cardBatchId: (typeof batchId !== "undefined" ? batchId : (model && model.batchId !== undefined ? model.batchId : ""))
                         width: groupsList.width - 12
-                        implicitHeight: cardInnerCol.implicitHeight + 20
+                        height: cardInnerCol.implicitHeight + 20
+                        implicitHeight: height
                         radius: 8
-                        color: modelData.status === "failed" ? "#22161A" : (modelData.status === "downloading" ? "#131E30" : (cardMouse.containsMouse ? "#1D2332" : "#171B26"))
-                        border.color: modelData.status === "downloading" ? "#0EA5E9" : (modelData.status === "failed" ? "#EF4444" : (cardMouse.containsMouse ? "#3B465E" : "#283042"))
+                        color: groupCard.cardStatus === "failed" ? "#22161A" : (groupCard.cardStatus === "downloading" ? "#131E30" : (cardMouse.containsMouse ? "#1D2332" : "#171B26"))
+                        border.color: groupCard.cardStatus === "downloading" ? "#0EA5E9" : (groupCard.cardStatus === "failed" ? "#EF4444" : (cardMouse.containsMouse ? "#3B465E" : "#283042"))
                         border.width: 1.5
 
                         Behavior on color { ColorAnimation { duration: 150 } }
@@ -427,12 +434,15 @@ Rectangle {
                             id: cardMouse
                             anchors.fill: parent
                             hoverEnabled: true
+                            preventStealing: false
                             z: -1
                         }
 
                         ColumnLayout {
                             id: cardInnerCol
-                            anchors.fill: parent
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.top: parent.top
                             anchors.margins: 10
                             spacing: 8
 
@@ -652,7 +662,7 @@ Rectangle {
                                     }
 
                                     StyledButton {
-                                        visible: modelData.failedFiles > 0
+                                        visible: groupCard.cardFailed > 0
                                         text: root.isVeryNarrow ? "" : root.tr("btn_retry_batch", "Retry Failed")
                                         iconText: "🔁"
                                         variant: "danger"
@@ -660,13 +670,13 @@ Rectangle {
                                         tooltip: root.tr("btn_retry_batch", "Retry Failed")
                                         onClicked: {
                                             if (root.bridge && root.bridge.queueModel) {
-                                                root.bridge.queueModel.retryBatch(modelData.batchId)
+                                                root.bridge.queueModel.retryBatch(groupCard.cardBatchId)
                                             }
                                         }
                                     }
 
                                     StyledButton {
-                                        visible: modelData.downloadingFiles > 0 || modelData.pendingFiles > 0
+                                        visible: groupCard.cardDownloading > 0 || groupCard.cardPending > 0
                                         text: root.isVeryNarrow ? "" : root.tr("btn_cancel_batch", "Cancel")
                                         iconText: "⏸"
                                         variant: "ghost"
@@ -674,7 +684,7 @@ Rectangle {
                                         tooltip: root.tr("btn_cancel_batch", "Cancel")
                                         onClicked: {
                                             if (root.bridge && root.bridge.queueModel) {
-                                                root.bridge.queueModel.cancelBatch(modelData.batchId)
+                                                root.bridge.queueModel.cancelBatch(groupCard.cardBatchId)
                                             }
                                         }
                                     }
@@ -687,7 +697,7 @@ Rectangle {
                                         tooltip: root.tr("btn_remove_batch", "Remove")
                                         onClicked: {
                                             if (root.bridge && root.bridge.queueModel) {
-                                                root.bridge.queueModel.removeBatch(modelData.batchId)
+                                                root.bridge.queueModel.removeBatch(groupCard.cardBatchId)
                                             }
                                         }
                                     }
@@ -727,13 +737,13 @@ Rectangle {
                                     tooltip: root.tr("btn_view_files", "View Files")
                                     onClicked: {
                                         if (root.bridge && root.bridge.queueModel) {
-                                            root.bridge.queueModel.selectedBatchId = modelData.batchId
+                                            root.bridge.queueModel.selectedBatchId = groupCard.cardBatchId
                                         }
                                     }
                                 }
 
                                 StyledButton {
-                                    visible: modelData.failedFiles > 0
+                                    visible: groupCard.cardFailed > 0
                                     text: root.tr("btn_retry_batch", "Retry Failed")
                                     iconText: "🔁"
                                     variant: "danger"
@@ -741,13 +751,13 @@ Rectangle {
                                     tooltip: root.tr("btn_retry_batch", "Retry Failed")
                                     onClicked: {
                                         if (root.bridge && root.bridge.queueModel) {
-                                            root.bridge.queueModel.retryBatch(modelData.batchId)
+                                            root.bridge.queueModel.retryBatch(groupCard.cardBatchId)
                                         }
                                     }
                                 }
 
                                 StyledButton {
-                                    visible: modelData.downloadingFiles > 0 || modelData.pendingFiles > 0
+                                    visible: groupCard.cardDownloading > 0 || groupCard.cardPending > 0
                                     text: root.tr("btn_cancel_batch", "Cancel")
                                     iconText: "⏸"
                                     variant: "ghost"
@@ -755,7 +765,7 @@ Rectangle {
                                     tooltip: root.tr("btn_cancel_batch", "Cancel")
                                     onClicked: {
                                         if (root.bridge && root.bridge.queueModel) {
-                                            root.bridge.queueModel.cancelBatch(modelData.batchId)
+                                            root.bridge.queueModel.cancelBatch(groupCard.cardBatchId)
                                         }
                                     }
                                 }
@@ -768,7 +778,7 @@ Rectangle {
                                     tooltip: root.tr("btn_remove_batch", "Remove")
                                     onClicked: {
                                         if (root.bridge && root.bridge.queueModel) {
-                                            root.bridge.queueModel.removeBatch(modelData.batchId)
+                                            root.bridge.queueModel.removeBatch(groupCard.cardBatchId)
                                         }
                                     }
                                 }
@@ -801,7 +811,8 @@ Rectangle {
                 delegate: Rectangle {
                     id: delegateRoot
                     width: queueList.width - 12
-                    implicitHeight: taskCol.implicitHeight + 16
+                    height: taskCol.implicitHeight + 16
+                    implicitHeight: height
                     radius: 6
                     color: model.status === "failed" ? "#1F161A" : (model.status === "downloading" ? "#131E2E" : (delegateHover.containsMouse ? "#1D222F" : "#1A1E29"))
                     border.color: model.status === "downloading" ? "#38BDF8" : (model.status === "failed" ? "#EF4444" : (delegateHover.containsMouse ? "#3E485D" : "#282E3D"))
@@ -814,12 +825,15 @@ Rectangle {
                         id: delegateHover
                         anchors.fill: parent
                         hoverEnabled: true
+                        preventStealing: false
                         z: -1
                     }
 
                     ColumnLayout {
                         id: taskCol
-                        anchors.fill: parent
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
                         anchors.margins: 8
                         spacing: 6
 

@@ -3,9 +3,303 @@ Download Queue Qt Model
 Exposes an observable QAbstractListModel for active, pending, completed, and failed tasks.
 """
 
-from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt, Signal, Slot, Property
+import time
+from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt, Signal, Slot, Property, QObject
 from typing import List, Dict, Any, Optional
 from core.downloader import DownloadTask
+
+
+class QueueGroupsModel(QAbstractListModel):
+    BatchIdRole = Qt.UserRole + 1
+    CreatorNameRole = Qt.UserRole + 2
+    PostTitleRole = Qt.UserRole + 3
+    ServiceRole = Qt.UserRole + 4
+    PostIdRole = Qt.UserRole + 5
+    TotalFilesRole = Qt.UserRole + 6
+    CompletedFilesRole = Qt.UserRole + 7
+    FailedFilesRole = Qt.UserRole + 8
+    DownloadingFilesRole = Qt.UserRole + 9
+    PendingFilesRole = Qt.UserRole + 10
+    TotalBytesRole = Qt.UserRole + 11
+    DownloadedBytesRole = Qt.UserRole + 12
+    TotalBytesStrRole = Qt.UserRole + 13
+    DownloadedBytesStrRole = Qt.UserRole + 14
+    StatusRole = Qt.UserRole + 15
+    TotalProgressRole = Qt.UserRole + 16
+    ProgressRole = Qt.UserRole + 17
+    ActiveFileNameRole = Qt.UserRole + 18
+    ActiveFileProgressPctRole = Qt.UserRole + 19
+    ActiveFileSpeedRole = Qt.UserRole + 20
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._groups: List[Dict[str, Any]] = []
+        self._row_by_id: Dict[str, int] = {}
+        self._tasks_by_id: Dict[str, List[DownloadTask]] = {}
+        self._last_progress_time: Dict[str, float] = {}
+        self._last_emitted_stats: Dict[str, tuple] = {}
+
+    def rowCount(self, parent=QModelIndex()):
+        return len(self._groups)
+
+    def data(self, index, role=Qt.DisplayRole):
+        if not index.isValid() or index.row() >= len(self._groups):
+            return None
+        g = self._groups[index.row()]
+        role_map = {
+            self.BatchIdRole: "batchId",
+            self.CreatorNameRole: "creatorName",
+            self.PostTitleRole: "postTitle",
+            self.ServiceRole: "service",
+            self.PostIdRole: "postId",
+            self.TotalFilesRole: "totalFiles",
+            self.CompletedFilesRole: "completedFiles",
+            self.FailedFilesRole: "failedFiles",
+            self.DownloadingFilesRole: "downloadingFiles",
+            self.PendingFilesRole: "pendingFiles",
+            self.TotalBytesRole: "totalBytes",
+            self.DownloadedBytesRole: "downloadedBytes",
+            self.TotalBytesStrRole: "totalBytesStr",
+            self.DownloadedBytesStrRole: "downloadedBytesStr",
+            self.StatusRole: "status",
+            self.TotalProgressRole: "totalProgress",
+            self.ProgressRole: "progress",
+            self.ActiveFileNameRole: "activeFileName",
+            self.ActiveFileProgressPctRole: "activeFileProgressPct",
+            self.ActiveFileSpeedRole: "activeFileSpeed",
+        }
+        key = role_map.get(role)
+        if key:
+            return g.get(key)
+        return None
+
+    def roleNames(self):
+        return {
+            self.BatchIdRole: b"batchId",
+            self.CreatorNameRole: b"creatorName",
+            self.PostTitleRole: b"postTitle",
+            self.ServiceRole: b"service",
+            self.PostIdRole: b"postId",
+            self.TotalFilesRole: b"totalFiles",
+            self.CompletedFilesRole: b"completedFiles",
+            self.FailedFilesRole: b"failedFiles",
+            self.DownloadingFilesRole: b"downloadingFiles",
+            self.PendingFilesRole: b"pendingFiles",
+            self.TotalBytesRole: b"totalBytes",
+            self.DownloadedBytesRole: b"downloadedBytes",
+            self.TotalBytesStrRole: b"totalBytesStr",
+            self.DownloadedBytesStrRole: b"downloadedBytesStr",
+            self.StatusRole: b"status",
+            self.TotalProgressRole: b"totalProgress",
+            self.ProgressRole: b"progress",
+            self.ActiveFileNameRole: b"activeFileName",
+            self.ActiveFileProgressPctRole: b"activeFileProgressPct",
+            self.ActiveFileSpeedRole: b"activeFileSpeed",
+        }
+
+    @staticmethod
+    def _format_size(b: int) -> str:
+        if b <= 0:
+            return "-"
+        if b >= 1024 * 1024 * 1024:
+            return f"{b / (1024 * 1024 * 1024):.2f} GB"
+        elif b >= 1024 * 1024:
+            return f"{b / (1024 * 1024):.1f} MB"
+        elif b >= 1024:
+            return f"{b / 1024:.1f} KB"
+        return f"{b} B"
+
+    def _calc_group_stats(self, g: Dict[str, Any], tasks: List[DownloadTask]):
+        total_files = len(tasks)
+        completed_files = 0
+        failed_files = 0
+        downloading_files = 0
+        pending_files = 0
+        total_bytes = 0
+        downloaded_bytes = 0
+        active_task = None
+
+        for t in tasks:
+            eff_size = max(t.file_size, t.downloaded_bytes)
+            total_bytes += eff_size
+            downloaded_bytes += t.downloaded_bytes
+            if t.status == "completed":
+                completed_files += 1
+            elif t.status == "failed":
+                failed_files += 1
+            elif t.status in ("downloading", "retrying"):
+                downloading_files += 1
+                if active_task is None:
+                    active_task = t
+            elif t.status == "cancelled":
+                pass
+            else:
+                pending_files += 1
+
+        if completed_files == total_files and total_files > 0:
+            status = "completed"
+        elif downloading_files > 0:
+            status = "downloading"
+        elif failed_files > 0 and (completed_files + failed_files == total_files):
+            status = "failed"
+        elif completed_files > 0:
+            status = "partial"
+        elif pending_files > 0:
+            status = "pending"
+        else:
+            status = "cancelled"
+
+        total_progress = (completed_files / total_files) if total_files > 0 else (1.0 if status == "completed" else 0.0)
+        progress = (downloaded_bytes / total_bytes) if total_bytes > 0 else (1.0 if status == "completed" else 0.0)
+
+        g["totalFiles"] = total_files
+        g["completedFiles"] = completed_files
+        g["failedFiles"] = failed_files
+        g["downloadingFiles"] = downloading_files
+        g["pendingFiles"] = pending_files
+        g["totalBytes"] = total_bytes
+        g["downloadedBytes"] = downloaded_bytes
+        g["totalBytesStr"] = self._format_size(total_bytes)
+        g["downloadedBytesStr"] = self._format_size(downloaded_bytes)
+        g["status"] = status
+        g["totalProgress"] = total_progress
+        g["progress"] = progress
+
+        if active_task:
+            g["activeFileName"] = getattr(active_task, "filename", "") or ""
+            g["activeFileProgressPct"] = getattr(active_task, "progress_pct", 0)
+            g["activeFileSpeed"] = getattr(active_task, "speed_str", "0 KB/s") or "0 KB/s"
+        else:
+            g["activeFileName"] = ""
+            g["activeFileProgressPct"] = 0
+            g["activeFileSpeed"] = ""
+
+    def rebuild(self, all_tasks: List[DownloadTask]):
+        self.beginResetModel()
+        self._groups = []
+        self._row_by_id = {}
+        self._tasks_by_id = {}
+        self._last_progress_time.clear()
+        self._last_emitted_stats.clear()
+
+        for t in all_tasks:
+            bid = getattr(t, "batch_id", "") or f"{t.service}_{t.creator_name}_{t.post_id}".strip("_")
+            if not bid:
+                bid = "batch_default"
+            if bid not in self._tasks_by_id:
+                self._tasks_by_id[bid] = []
+                post_title = t.post_title or "Media Collection"
+                if bid.startswith("artist_") or bid.startswith("creator_"):
+                    post_title = "All Works / Posts"
+                g = {
+                    "batchId": bid,
+                    "creatorName": t.creator_name or "Unknown Creator",
+                    "postTitle": post_title,
+                    "service": t.service or "kemono",
+                    "postId": t.post_id or "",
+                }
+                self._row_by_id[bid] = len(self._groups)
+                self._groups.append(g)
+            self._tasks_by_id[bid].append(t)
+
+        for g in self._groups:
+            bid = g["batchId"]
+            self._calc_group_stats(g, self._tasks_by_id[bid])
+            self._last_emitted_stats[bid] = (
+                g["totalFiles"], g["completedFiles"], g["failedFiles"],
+                g["downloadingFiles"], g["pendingFiles"], g["status"]
+            )
+
+        self.endResetModel()
+
+    def update_task(self, task: DownloadTask):
+        bid = getattr(task, "batch_id", "") or f"{task.service}_{task.creator_name}_{task.post_id}".strip("_")
+        if not bid:
+            bid = "batch_default"
+
+        if bid not in self._row_by_id:
+            row = len(self._groups)
+            self.beginInsertRows(QModelIndex(), row, row)
+            self._tasks_by_id[bid] = [task]
+            self._row_by_id[bid] = row
+            post_title = task.post_title or "Media Collection"
+            if bid.startswith("artist_") or bid.startswith("creator_"):
+                post_title = "All Works / Posts"
+            g = {
+                "batchId": bid,
+                "creatorName": task.creator_name or "Unknown Creator",
+                "postTitle": post_title,
+                "service": task.service or "kemono",
+                "postId": task.post_id or "",
+            }
+            self._calc_group_stats(g, self._tasks_by_id[bid])
+            self._groups.append(g)
+            self._last_emitted_stats[bid] = (
+                g["totalFiles"], g["completedFiles"], g["failedFiles"],
+                g["downloadingFiles"], g["pendingFiles"], g["status"]
+            )
+            self.endInsertRows()
+        else:
+            row = self._row_by_id[bid]
+            g = self._groups[row]
+            tasks = self._tasks_by_id.get(bid, [])
+            if task not in tasks:
+                tasks.append(task)
+            self._calc_group_stats(g, tasks)
+
+            old_stats = self._last_emitted_stats.get(bid)
+            new_stats = (
+                g["totalFiles"], g["completedFiles"], g["failedFiles"],
+                g["downloadingFiles"], g["pendingFiles"], g["status"]
+            )
+            idx = self.index(row, 0)
+
+            # If structural stats (counts, status) changed, emit full dataChanged
+            if old_stats != new_stats:
+                self._last_emitted_stats[bid] = new_stats
+                self.dataChanged.emit(idx, idx)
+            else:
+                # Only byte progress or speed changed: throttle to ~80ms and emit ONLY progress roles
+                # so structural UI bindings (buttons, visibility, layout) do not jitter or drop hover
+                now = time.time()
+                if now - self._last_progress_time.get(bid, 0.0) < 0.08:
+                    return
+                self._last_progress_time[bid] = now
+                self.dataChanged.emit(idx, idx, [
+                    self.ProgressRole,
+                    self.TotalProgressRole,
+                    self.DownloadedBytesRole,
+                    self.DownloadedBytesStrRole,
+                    self.ActiveFileNameRole,
+                    self.ActiveFileProgressPctRole,
+                    self.ActiveFileSpeedRole
+                ])
+
+    def remove_batch(self, batch_id: str):
+        if batch_id in self._row_by_id:
+            row = self._row_by_id[batch_id]
+            self.beginRemoveRows(QModelIndex(), row, row)
+            self._groups.pop(row)
+            if batch_id in self._tasks_by_id:
+                del self._tasks_by_id[batch_id]
+            if batch_id in self._last_progress_time:
+                del self._last_progress_time[batch_id]
+            if batch_id in self._last_emitted_stats:
+                del self._last_emitted_stats[batch_id]
+            self._row_by_id = {g["batchId"]: i for i, g in enumerate(self._groups)}
+            self.endRemoveRows()
+
+    def clear(self):
+        self.beginResetModel()
+        self._groups.clear()
+        self._row_by_id.clear()
+        self._tasks_by_id.clear()
+        self._last_progress_time.clear()
+        self._last_emitted_stats.clear()
+        self.endResetModel()
+
+    def to_dict_list(self) -> List[Dict[str, Any]]:
+        return list(self._groups)
 
 
 class QueueModel(QAbstractListModel):
@@ -51,6 +345,38 @@ class QueueModel(QAbstractListModel):
         self._selected_batch_id: str = ""
         self._view_mode: str = "grouped" # "grouped" or "flat"
         self._visible_tasks: List[DownloadTask] = []
+        self._groups_model = QueueGroupsModel(self)
+        self._last_counts: Optional[tuple] = None
+        self._pending_count: int = 0
+        self._downloading_count: int = 0
+        self._completed_count: int = 0
+        self._failed_count: int = 0
+        self._task_last_status: Dict[int, str] = {}
+        self._task_last_emit: Dict[int, float] = {}
+
+    def _recalculate_counts(self):
+        pending = 0
+        downloading = 0
+        completed = 0
+        failed = 0
+        for t in self._tasks:
+            st = getattr(t, "status", "")
+            if st in ("downloading", "retrying"):
+                downloading += 1
+            elif st == "completed":
+                completed += 1
+            elif st == "failed":
+                failed += 1
+            elif st == "pending":
+                pending += 1
+        self._pending_count = pending
+        self._downloading_count = downloading
+        self._completed_count = completed
+        self._failed_count = failed
+
+    @staticmethod
+    def _format_size(b: int) -> str:
+        return QueueGroupsModel._format_size(b)
 
     def _matches_filter(self, task: DownloadTask) -> bool:
         if self._selected_batch_id:
@@ -113,19 +439,19 @@ class QueueModel(QAbstractListModel):
 
     @Property(int, notify=countsChanged)
     def downloadingCount(self) -> int:
-        return sum(1 for t in self._tasks if t.status in ("downloading", "retrying"))
+        return self._downloading_count
 
     @Property(int, notify=countsChanged)
     def completedCount(self) -> int:
-        return sum(1 for t in self._tasks if t.status == "completed")
+        return self._completed_count
 
     @Property(int, notify=failedCountChanged)
     def failedCount(self) -> int:
-        return sum(1 for t in self._tasks if t.status == "failed")
+        return self._failed_count
 
     @Property(int, notify=countsChanged)
     def pendingCount(self) -> int:
-        return sum(1 for t in self._tasks if t.status == "pending")
+        return self._pending_count
 
     @Property(int, notify=countChanged)
     def count(self) -> int:
@@ -229,113 +555,36 @@ class QueueModel(QAbstractListModel):
             self._view_mode = val
             self.viewModeChanged.emit()
 
+    @Property(QObject, constant=True)
+    def groupsModel(self) -> QAbstractListModel:
+        return self._groups_model
+
     @Property(int, notify=groupsChanged)
     def groupsCount(self) -> int:
-        return len(self.groups)
+        return self._groups_model.rowCount()
 
     @Property("QVariantList", notify=groupsChanged)
     def groups(self) -> List[Dict[str, Any]]:
-        groups_dict: Dict[str, Dict[str, Any]] = {}
-        # Also track the active (first downloading) task per group
-        active_task_dict: Dict[str, Any] = {}
-        for t in self._tasks:
-            bid = getattr(t, "batch_id", "") or f"{t.service}_{t.creator_name}_{t.post_id}".strip("_")
-            if not bid:
-                bid = "batch_default"
-            if bid not in groups_dict:
-                post_title = t.post_title or "Media Collection"
-                if bid.startswith("artist_") or bid.startswith("creator_"):
-                    post_title = "All Works / Posts"
-                groups_dict[bid] = {
-                    "batchId": bid,
-                    "creatorName": t.creator_name or "Unknown Creator",
-                    "postTitle": post_title,
-                    "service": t.service or "kemono",
-                    "postId": t.post_id or "",
-                    "totalFiles": 0,
-                    "completedFiles": 0,
-                    "failedFiles": 0,
-                    "downloadingFiles": 0,
-                    "pendingFiles": 0,
-                    "totalBytes": 0,
-                    "downloadedBytes": 0,
-                    "status": "pending"
-                }
-            g = groups_dict[bid]
-            g["totalFiles"] += 1
-            eff_size = max(t.file_size, t.downloaded_bytes)
-            g["totalBytes"] += eff_size
-            g["downloadedBytes"] += t.downloaded_bytes
-            if t.status == "completed":
-                g["completedFiles"] += 1
-            elif t.status == "failed":
-                g["failedFiles"] += 1
-            elif t.status in ("downloading", "retrying"):
-                g["downloadingFiles"] += 1
-                # Record first downloading task per group for active-file info
-                if bid not in active_task_dict:
-                    active_task_dict[bid] = t
-            else:
-                g["pendingFiles"] += 1
+        return self._groups_model.to_dict_list()
 
-        result = []
-        for g in groups_dict.values():
-            bid = g["batchId"]
-            if g["completedFiles"] == g["totalFiles"] and g["totalFiles"] > 0:
-                g["status"] = "completed"
-            elif g["downloadingFiles"] > 0:
-                g["status"] = "downloading"
-            elif g["failedFiles"] > 0 and (g["completedFiles"] + g["failedFiles"] == g["totalFiles"]):
-                g["status"] = "failed"
-            elif g["completedFiles"] > 0:
-                g["status"] = "partial"
-            else:
-                g["status"] = "pending"
-
-            # Total progress: strictly file-counter-based (completedFiles / totalFiles)
-            total = g["totalFiles"]
-            completed = g["completedFiles"]
-            if total > 0:
-                g["totalProgress"] = completed / total
-            else:
-                g["totalProgress"] = 1.0 if g["status"] == "completed" else 0.0
-
-            # Active file progress: from the currently downloading task
-            at = active_task_dict.get(bid)
-            if at:
-                g["activeFileName"] = getattr(at, "filename", "") or ""
-                g["activeFileProgressPct"] = getattr(at, "progress_pct", 0)
-                g["activeFileSpeed"] = getattr(at, "speed_str", "0 KB/s") or "0 KB/s"
-            else:
-                g["activeFileName"] = ""
-                g["activeFileProgressPct"] = 0
-                g["activeFileSpeed"] = ""
-
-            g["progress"] = (g["downloadedBytes"] / g["totalBytes"]) if g["totalBytes"] > 0 else (1.0 if g["status"] == "completed" else 0.0)
-            g["totalBytesStr"] = self._format_size(g["totalBytes"])
-            g["downloadedBytesStr"] = self._format_size(g["downloadedBytes"])
-            result.append(g)
-        return result
-
-    def _format_size(self, b: int) -> str:
-        if b <= 0:
-            return "-"
-        if b >= 1024 * 1024 * 1024:
-            return f"{b / (1024 * 1024 * 1024):.2f} GB"
-        elif b >= 1024 * 1024:
-            return f"{b / (1024 * 1024):.1f} MB"
-        elif b >= 1024:
-            return f"{b / 1024:.1f} KB"
-        return f"{b} B"
+    @groups.setter
+    def groups(self, val):
+        pass
 
     def setTasks(self, tasks: List[DownloadTask]):
         self.beginResetModel()
         self._tasks = list(tasks)
+        self._task_last_status.clear()
+        self._task_last_emit.clear()
+        for t in self._tasks:
+            self._task_last_status[id(t)] = getattr(t, "status", "")
+        self._recalculate_counts()
         self._rebuild_visible()
         self.endResetModel()
         self.countChanged.emit()
         self.countsChanged.emit()
         self.failedCountChanged.emit()
+        self._groups_model.rebuild(self._tasks)
         self.groupsChanged.emit()
 
     def appendTasks(self, tasks: List[DownloadTask]) -> int:
@@ -356,6 +605,7 @@ class QueueModel(QAbstractListModel):
             existing_signatures.add(sig1)
             if sig2:
                 existing_signatures.add(sig2)
+            t._last_model_status = getattr(t, "status", "")
             deduped.append(t)
 
         if not deduped:
@@ -363,11 +613,13 @@ class QueueModel(QAbstractListModel):
 
         self.beginResetModel()
         self._tasks.extend(deduped)
+        self._recalculate_counts()
         self._rebuild_visible()
         self.endResetModel()
         self.countChanged.emit()
         self.countsChanged.emit()
         self.failedCountChanged.emit()
+        self._groups_model.rebuild(self._tasks)
         self.groupsChanged.emit()
         return len(deduped)
 
@@ -383,6 +635,7 @@ class QueueModel(QAbstractListModel):
             return
         self.beginResetModel()
         self._tasks = [t for t in self._tasks if (getattr(t, "batch_id", "") or f"{t.service}_{t.creator_name}_{t.post_id}".strip("_")) != batch_id or t.status == "downloading"]
+        self._recalculate_counts()
         if self._selected_batch_id == batch_id:
             self._selected_batch_id = ""
             self.selectedBatchIdChanged.emit()
@@ -391,6 +644,7 @@ class QueueModel(QAbstractListModel):
         self.countChanged.emit()
         self.countsChanged.emit()
         self.failedCountChanged.emit()
+        self._groups_model.remove_batch(batch_id)
         self.groupsChanged.emit()
         self.batchRemoveRequested.emit(batch_id)
 
@@ -400,9 +654,10 @@ class QueueModel(QAbstractListModel):
             return
         for t in self._tasks:
             bid = getattr(t, "batch_id", "") or f"{t.service}_{t.creator_name}_{t.post_id}".strip("_")
-            if bid == batch_id and t.status == "pending":
+            if bid == batch_id and t.status in ("pending", "downloading"):
                 t.status = "cancelled"
                 self.updateTask(t)
+        self._groups_model.rebuild(self._tasks)
         self.groupsChanged.emit()
         self.batchCancelRequested.emit(batch_id)
 
@@ -417,6 +672,7 @@ class QueueModel(QAbstractListModel):
                 t.error_msg = ""
                 t.retry_count = getattr(t, "retry_count", 0) + 1
                 self.updateTask(t)
+        self._groups_model.rebuild(self._tasks)
         self.groupsChanged.emit()
         self.failedCountChanged.emit()
 
@@ -424,12 +680,29 @@ class QueueModel(QAbstractListModel):
         try:
             matches = self._matches_filter(task)
             is_visible = task in self._visible_tasks
+            old_status = self._task_last_status.get(id(task))
+            new_status = getattr(task, "status", "")
+
+            # Throttle dataChanged ONLY if the task is ALREADY visible and its status hasn't changed
+            now = time.time()
+            last_emit = self._task_last_emit.get(id(task), 0.0)
+            status_changed = (old_status != new_status)
+            if is_visible and not status_changed and (now - last_emit < 0.08):
+                return
+            self._task_last_emit[id(task)] = now
 
             if is_visible:
                 if matches:
                     row = self._visible_tasks.index(task)
                     idx = self.index(row, 0)
-                    self.dataChanged.emit(idx, idx)
+                    self.dataChanged.emit(idx, idx, [
+                        self.ProgressRole,
+                        self.PercentageRole,
+                        self.DownloadedBytesRole,
+                        self.SpeedRole,
+                        self.EtaRole,
+                        self.StatusRole
+                    ])
                 else:
                     row = self._visible_tasks.index(task)
                     self.beginRemoveRows(QModelIndex(), row, row)
@@ -444,9 +717,18 @@ class QueueModel(QAbstractListModel):
                     self.endInsertRows()
                     self.countChanged.emit()
 
-            self.countsChanged.emit()
-            self.failedCountChanged.emit()
-            self.groupsChanged.emit()
+            if status_changed:
+                self._task_last_status[id(task)] = new_status
+                self._recalculate_counts()
+                curr_counts = (self._pending_count, self._downloading_count, self._completed_count, self._failed_count)
+                if self._last_counts != curr_counts:
+                    prev_failed = self._last_counts[3] if self._last_counts else None
+                    self._last_counts = curr_counts
+                    self.countsChanged.emit()
+                    if prev_failed is None or prev_failed != curr_counts[3]:
+                        self.failedCountChanged.emit()
+
+            self._groups_model.update_task(task)
         except (ValueError, RuntimeError):
             pass
 
@@ -455,12 +737,46 @@ class QueueModel(QAbstractListModel):
         self.beginResetModel()
         self._tasks.clear()
         self._visible_tasks.clear()
+        self._task_last_status.clear()
+        self._task_last_emit.clear()
+        self._last_counts = None
+        self._pending_count = 0
+        self._downloading_count = 0
+        self._completed_count = 0
+        self._failed_count = 0
         self.endResetModel()
         self.countChanged.emit()
         self.countsChanged.emit()
         self.failedCountChanged.emit()
+        self._groups_model.clear()
         self.groupsChanged.emit()
         self.cleared.emit()
+
+    @Slot()
+    @Slot("QVariantList")
+    def clearFailedTasks(self, selected_file_ids: Optional[List[str]] = None):
+        """Removes failed tasks from the queue (all failed tasks if selected_file_ids is empty/None)."""
+        selected_set = set(selected_file_ids) if selected_file_ids else None
+
+        self.beginResetModel()
+        if selected_set:
+            self._tasks = [
+                t for t in self._tasks
+                if not (t.status == "failed" and (t.file_id in selected_set or t.url in selected_set or t.filename in selected_set))
+            ]
+        else:
+            self._tasks = [t for t in self._tasks if t.status != "failed"]
+
+        self._recalculate_counts()
+        self._rebuild_visible()
+        self.endResetModel()
+
+        self._last_counts = None
+        self.countChanged.emit()
+        self.countsChanged.emit()
+        self.failedCountChanged.emit()
+        self._groups_model.rebuild(self._tasks)
+        self.groupsChanged.emit()
 
     @Slot()
     def retryFailed(self):

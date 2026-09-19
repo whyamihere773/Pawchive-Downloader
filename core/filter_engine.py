@@ -35,6 +35,41 @@ class FilenameStyles:
     CUSTOM = "custom"
 
 
+def normalize_size_str(s: str) -> str:
+    """
+    Normalizes a size string into canonical human-readable format like '1.5 GB', '500 MB'.
+    Handles shorthand ('1g' -> '1 GB', '500' -> '500 MB', '1kb1' -> '1 KB').
+    Returns empty string if invalid or 0.
+    """
+    if not s:
+        return ""
+    s = str(s).strip()
+    if not s:
+        return ""
+    m = re.match(r'^([\d.]+)\s*([A-Za-z]+)?', s)
+    if not m or not m.group(1):
+        return ""
+    try:
+        val = float(m.group(1))
+        if val <= 0:
+            return ""
+    except ValueError:
+        return ""
+
+    raw_unit = (m.group(2) or "MB").upper()
+    unit_map = {
+        "B": "B", "BYTE": "B", "BYTES": "B",
+        "K": "KB", "KB": "KB", "KIB": "KB",
+        "M": "MB", "MB": "MB", "MIB": "MB",
+        "G": "GB", "GB": "GB", "GIB": "GB",
+        "T": "TB", "TB": "TB", "TIB": "TB",
+        "P": "PB", "PB": "PB", "PIB": "PB",
+    }
+    unit = unit_map.get(raw_unit, "MB")
+    val_str = f"{val:g}"
+    return f"{val_str} {unit}"
+
+
 class FilterOptions:
     def __init__(
         self,
@@ -71,7 +106,10 @@ class FilterOptions:
         skip_post_covers: bool = False,
         date_after: str = "",
         date_before: str = "",
-        download_pawchive_temporary_files: bool = True
+        download_pawchive_temporary_files: bool = True,
+        min_file_size: str = "",
+        max_file_size: str = "",
+        write_audio_metadata: bool = True
     ):
         self.characters = characters
         self.character_scope = character_scope
@@ -107,6 +145,9 @@ class FilterOptions:
         self.date_after = date_after
         self.date_before = date_before
         self.download_pawchive_temporary_files = download_pawchive_temporary_files
+        self.min_file_size = normalize_size_str(min_file_size) if min_file_size else ""
+        self.max_file_size = normalize_size_str(max_file_size) if max_file_size else ""
+        self.write_audio_metadata = bool(write_audio_metadata)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize filter options to dictionary for persistence."""
@@ -145,6 +186,9 @@ class FilterOptions:
             "date_after": self.date_after,
             "date_before": self.date_before,
             "download_pawchive_temporary_files": self.download_pawchive_temporary_files,
+            "min_file_size": self.min_file_size,
+            "max_file_size": self.max_file_size,
+            "write_audio_metadata": self.write_audio_metadata,
         }
 
     @classmethod
@@ -187,6 +231,9 @@ class FilterOptions:
             date_after=d.get("date_after", ""),
             date_before=d.get("date_before", ""),
             download_pawchive_temporary_files=bool(d.get("download_pawchive_temporary_files", True)),
+            min_file_size=d.get("min_file_size", ""),
+            max_file_size=d.get("max_file_size", ""),
+            write_audio_metadata=bool(d.get("write_audio_metadata", True)),
         )
 
 
@@ -277,15 +324,72 @@ class FilterEngine:
                 items.append(cleaned)
         return items
 
+    normalize_size_str = staticmethod(normalize_size_str)
+
+    @classmethod
+    def _parse_size_str(cls, s: str) -> int:
+        if not s:
+            return 0
+        norm = normalize_size_str(s)
+        if not norm:
+            return 0
+        m = re.match(r'^([\d.]+)\s*(B|KB|MB|GB|TB|PB)$', norm)
+        if not m:
+            return 0
+        try:
+            val = float(m.group(1))
+            unit = m.group(2)
+            multipliers = {'B': 1, 'KB': 1024, 'MB': 1024**2, 'GB': 1024**3, 'TB': 1024**4, 'PB': 1024**5}
+            return int(val * multipliers.get(unit, 1024**2))
+        except (ValueError, TypeError):
+            return 0
+
+    @classmethod
+    def get_file_size_range_bytes(cls, skip_words: str) -> Tuple[Optional[int], Optional[int]]:
+        """
+        Parses size range filters embedded in skip_words inside brackets:
+        - Ranges: [1GB-2GB], [1GB..2GB], [1024-2048], [1.5GB to 3GB]
+        - Minimums: [>=1GB], [>1GB], [1GB+], [1000] (legacy min MB)
+        - Maximums: [<=2GB], [<500MB]
+        Returns (min_bytes, max_bytes).
+        """
+        if not skip_words:
+            return None, None
+        m = re.search(r'\[\s*(?:size:)?\s*([^\]]+)\]', skip_words, re.IGNORECASE)
+        if not m:
+            return None, None
+        expr = m.group(1).strip()
+
+        # Range: A - B or A..B or A to B
+        range_m = re.match(r'^([\d.]+\s*(?:[KMGTP]?B)?)\s*(?:-|–|\.\.|to|<=)\s*([\d.]+\s*(?:[KMGTP]?B)?)$', expr, re.IGNORECASE)
+        if range_m:
+            min_b = cls._parse_size_str(range_m.group(1))
+            max_b = cls._parse_size_str(range_m.group(2))
+            if min_b and max_b and min_b > max_b:
+                min_b, max_b = max_b, min_b
+            return (min_b, max_b)
+
+        # Minimum only: >= A or > A or A+
+        gt_m = re.match(r'^(?:>=|>|\+)?\s*([\d.]+\s*(?:[KMGTP]?B)?)\+?$', expr, re.IGNORECASE)
+        if expr.startswith(('>', '>=')) or expr.endswith('+'):
+            return (cls._parse_size_str(gt_m.group(1)), None)
+
+        # Maximum only: <= B or < B
+        lt_m = re.match(r'^(?:<=|<)\s*([\d.]+\s*(?:[KMGTP]?B)?)$', expr, re.IGNORECASE)
+        if lt_m:
+            return (None, cls._parse_size_str(lt_m.group(1)))
+
+        # Single number (backward compatible: min MB if no unit, or unit-aware)
+        single_m = re.match(r'^([\d.]+\s*(?:[KMGTP]?B)?)$', expr, re.IGNORECASE)
+        if single_m:
+            return (cls._parse_size_str(single_m.group(1)), None)
+
+        return None, None
+
     @classmethod
     def get_min_file_size_bytes(cls, skip_words: str) -> Optional[int]:
-        if not skip_words:
-            return None
-        match = re.search(r'\[(\d+)\]', skip_words)
-        if match:
-            mb_val = int(match.group(1))
-            return mb_val * 1024 * 1024
-        return None
+        min_size, _ = cls.get_file_size_range_bytes(skip_words)
+        return min_size
 
     @classmethod
     def should_keep_post(cls, post: Dict[str, Any], options: FilterOptions) -> Tuple[bool, str]:
@@ -371,9 +475,31 @@ class FilterEngine:
         _, ext = os.path.splitext(filename.lower())
 
         if file_size is not None and file_size > 0:
-            min_size = cls.get_min_file_size_bytes(options.skip_words)
-            if min_size and file_size < min_size:
-                return False, f"File size ({file_size // 1024 // 1024} MB) is below minimum threshold ({min_size // 1024 // 1024} MB)"
+            # Check explicit min/max fields first, then bracket expression in skip_words
+            opt_min_str = (getattr(options, "min_file_size", "") or "").strip()
+            opt_max_str = (getattr(options, "max_file_size", "") or "").strip()
+            min_size = cls._parse_size_str(opt_min_str) if opt_min_str else None
+            max_size = cls._parse_size_str(opt_max_str) if opt_max_str else None
+
+            # If either is not set, check skip_words bracket expression e.g. [1GB-2GB]
+            sw_min, sw_max = cls.get_file_size_range_bytes(options.skip_words)
+            if min_size is None and sw_min is not None:
+                min_size = sw_min
+            if max_size is None and sw_max is not None:
+                max_size = sw_max
+
+            # Auto-correct inverted range (e.g. Min: 2GB, Max: 1GB) so downloads don't fail
+            if min_size is not None and max_size is not None and min_size > max_size:
+                min_size, max_size = max_size, min_size
+
+            if min_size is not None and file_size < min_size:
+                min_str = f"{min_size / (1024 * 1024 * 1024):.1f} GB" if min_size >= 1024**3 else f"{min_size // (1024 * 1024)} MB"
+                curr_str = f"{file_size / (1024 * 1024 * 1024):.2f} GB" if file_size >= 1024**3 else f"{file_size // (1024 * 1024)} MB"
+                return False, f"File size ({curr_str}) is below minimum threshold ({min_str})"
+            if max_size is not None and file_size > max_size:
+                max_str = f"{max_size / (1024 * 1024 * 1024):.1f} GB" if max_size >= 1024**3 else f"{max_size // (1024 * 1024)} MB"
+                curr_str = f"{file_size / (1024 * 1024 * 1024):.2f} GB" if file_size >= 1024**3 else f"{file_size // (1024 * 1024)} MB"
+                return False, f"File size ({curr_str}) exceeds maximum threshold ({max_str})"
 
         if options.skip_archives and ext in MediaTypes.ARCHIVE_EXTS:
             return False, "Archive skipped due to 'Skip Archives' setting"

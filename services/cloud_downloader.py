@@ -34,6 +34,21 @@ from core.logger import logger
 
 MEGA_API_URL = "https://g.api.mega.co.nz"
 
+_active_cloud_resps: set = set()
+_active_cloud_lock = Lock()
+
+def cancel_all_cloud_downloads():
+    """Instantly terminates all active cloud download HTTP streams and sockets (Mega, Dropbox, Gofile)."""
+    with _active_cloud_lock:
+        for r in list(_active_cloud_resps):
+            try:
+                r.close()
+                if hasattr(r, "raw") and r.raw:
+                    r.raw.close()
+            except Exception:
+                pass
+        _active_cloud_resps.clear()
+
 
 def _urlb64_to_b64(s: str) -> str:
     s += '=' * (-len(s) % 4)
@@ -213,27 +228,43 @@ def download_and_decrypt_mega_file(
     last_log_time = time.time()
 
     with requests.get(dl_url, headers=headers, stream=True, timeout=(15, 300)) as r:
-        r.raise_for_status()
-        mode = 'ab' if initial_bytes > 0 else 'wb'
-        with open(tmp_path, mode) as f:
-            for chunk in r.iter_content(chunk_size=16384):
-                if cancel_event and cancel_event.is_set():
-                    log_func(f"   [Mega] Download cancelled for '{file_name}'.")
-                    return
-                while pause_event and pause_event.is_set():
-                    time.sleep(0.5)
+        with _active_cloud_lock:
+            _active_cloud_resps.add(r)
+        try:
+            r.raise_for_status()
+            mode = 'ab' if initial_bytes > 0 else 'wb'
+            with open(tmp_path, mode) as f:
+                for chunk in r.iter_content(chunk_size=16384):
                     if cancel_event and cancel_event.is_set():
+                        log_func(f"   [Mega] Download cancelled for '{file_name}'.")
+                        if os.path.exists(tmp_path):
+                            try:
+                                os.remove(tmp_path)
+                            except OSError:
+                                pass
                         return
+                    while pause_event and pause_event.is_set():
+                        time.sleep(0.5)
+                        if cancel_event and cancel_event.is_set():
+                            if os.path.exists(tmp_path):
+                                try:
+                                    os.remove(tmp_path)
+                                except OSError:
+                                    pass
+                            return
 
-                decrypted = cipher.decrypt(chunk)
-                f.write(decrypted)
-                downloaded += len(chunk)
+                    decrypted = cipher.decrypt(chunk)
+                    f.write(decrypted)
+                    downloaded += len(chunk)
 
-                now = time.time()
-                if now - last_log_time >= 1.0:
-                    if progress_callback:
-                        progress_callback(file_name, downloaded, file_size, file_index, total_files)
-                    last_log_time = now
+                    now = time.time()
+                    if now - last_log_time >= 1.0:
+                        if progress_callback:
+                            progress_callback(file_name, downloaded, file_size, file_index, total_files)
+                        last_log_time = now
+        finally:
+            with _active_cloud_lock:
+                _active_cloud_resps.discard(r)
 
     if os.path.exists(tmp_path):
         if os.path.exists(final_path):
@@ -667,34 +698,50 @@ def download_dropbox_link(
     log_func(f"   [Dropbox] Connecting to direct stream: {direct_url}")
     try:
         with requests.get(direct_url, stream=True, allow_redirects=True, timeout=(20, 600)) as r:
-            r.raise_for_status()
-            cd = r.headers.get('content-disposition', '')
-            fname_match = re.findall(r'filename="?([^"]+)"?', cd)
-            filename = fname_match[0].strip() if fname_match else os.path.basename(parsed.path) or "dropbox_download"
-            if not os.path.splitext(filename)[1]:
-                filename += ".zip"
+            with _active_cloud_lock:
+                _active_cloud_resps.add(r)
+            try:
+                r.raise_for_status()
+                cd = r.headers.get('content-disposition', '')
+                fname_match = re.findall(r'filename="?([^"]+)"?', cd)
+                filename = fname_match[0].strip() if fname_match else os.path.basename(parsed.path) or "dropbox_download"
+                if not os.path.splitext(filename)[1]:
+                    filename += ".zip"
 
-            full_path = os.path.join(target_folder, filename)
-            total_size = int(r.headers.get('content-length', 0))
-            downloaded = 0
-            last_log = time.time()
+                full_path = os.path.join(target_folder, filename)
+                total_size = int(r.headers.get('content-length', 0))
+                downloaded = 0
+                last_log = time.time()
 
-            with open(full_path, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=16384):
-                    if cancel_event and cancel_event.is_set():
-                        log_func("   [Dropbox] Download cancelled.")
-                        return False
-                    while pause_event and pause_event.is_set():
-                        time.sleep(0.5)
+                with open(full_path, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=16384):
                         if cancel_event and cancel_event.is_set():
+                            log_func("   [Dropbox] Download cancelled.")
+                            if os.path.exists(full_path):
+                                try:
+                                    os.remove(full_path)
+                                except OSError:
+                                    pass
                             return False
+                        while pause_event and pause_event.is_set():
+                            time.sleep(0.5)
+                            if cancel_event and cancel_event.is_set():
+                                if os.path.exists(full_path):
+                                    try:
+                                        os.remove(full_path)
+                                    except OSError:
+                                        pass
+                                return False
 
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if time.time() - last_log >= 1.0:
-                        if progress_callback:
-                            progress_callback(filename, downloaded, total_size, 1, 1)
-                        last_log = time.time()
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if time.time() - last_log >= 1.0:
+                            if progress_callback:
+                                progress_callback(filename, downloaded, total_size, 1, 1)
+                            last_log = time.time()
+            finally:
+                with _active_cloud_lock:
+                    _active_cloud_resps.discard(r)
 
             log_func(f"   [Dropbox] ✅ Downloaded '{filename}'")
 
@@ -794,31 +841,53 @@ def download_gofile_link(
 
             try:
                 with session.get(furl, stream=True, timeout=(30, 600)) as r:
-                    r.raise_for_status()
-                    downloaded = 0
-                    last_t = time.time()
-                    with open(fpath, "wb") as f:
-                        for chunk in r.iter_content(chunk_size=16384):
-                            if cancel_event and cancel_event.is_set():
-                                return
-                            while pause_event and pause_event.is_set():
-                                time.sleep(0.5)
+                    with _active_cloud_lock:
+                        _active_cloud_resps.add(r)
+                    try:
+                        r.raise_for_status()
+                        downloaded = 0
+                        last_t = time.time()
+                        with open(fpath, "wb") as f:
+                            for chunk in r.iter_content(chunk_size=16384):
                                 if cancel_event and cancel_event.is_set():
+                                    if os.path.exists(fpath):
+                                        try:
+                                            os.remove(fpath)
+                                        except OSError:
+                                            pass
                                     return
+                                while pause_event and pause_event.is_set():
+                                    time.sleep(0.5)
+                                    if cancel_event and cancel_event.is_set():
+                                        if os.path.exists(fpath):
+                                            try:
+                                                os.remove(fpath)
+                                            except OSError:
+                                                pass
+                                        return
 
-                            f.write(chunk)
-                            downloaded += len(chunk)
-                            if time.time() - last_t >= 1.0:
-                                if progress_callback:
-                                    progress_callback(fname, downloaded, fsize, processed_count + 1, total_files)
-                                last_t = time.time()
+                                f.write(chunk)
+                                downloaded += len(chunk)
+                                if time.time() - last_t >= 1.0:
+                                    if progress_callback:
+                                        progress_callback(fname, downloaded, fsize, processed_count + 1, total_files)
+                                    last_t = time.time()
+                    finally:
+                        with _active_cloud_lock:
+                            _active_cloud_resps.discard(r)
 
                 log_func(f"   [GoFile] ✅ Finished '{fname}'")
                 if progress_callback:
                     progress_callback(fname, fsize, fsize, processed_count + 1, total_files)
             except Exception as e:
-                if not (cancel_event and cancel_event.is_set()):
-                    log_func(f"   [GoFile] ❌ Error on '{fname}': {e}")
+                if cancel_event and cancel_event.is_set():
+                    if os.path.exists(fpath):
+                        try:
+                            os.remove(fpath)
+                        except OSError:
+                            pass
+                    return
+                log_func(f"   [GoFile] ❌ Error on '{fname}': {e}")
             finally:
                 with progress_lock:
                     processed_count += 1

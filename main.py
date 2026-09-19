@@ -63,6 +63,7 @@ def main():
 
     engine.rootContext().setContextProperty("appBridge", app_bridge)
     engine.rootContext().setContextProperty("decompressorBridge", app_bridge.decompressorBridge)
+    engine.rootContext().setContextProperty("telegramBridge", app_bridge.telegramBridge)
     engine.rootContext().setContextProperty("updaterBridge", updater_bridge)
     engine.rootContext().setContextProperty("Lang", translation_manager)
 
@@ -79,14 +80,8 @@ def main():
 
     win = engine.rootObjects()[0]
 
-    # Real-time hardware FPS tracking via QQuickWindow.frameSwapped
-    import time
-    recent_frames = []
-
-    def on_frame_swapped():
-        recent_frames.append(time.perf_counter())
-
-    win.frameSwapped.connect(on_frame_swapped)
+    from core.memory_collector import memory_collector
+    memory_collector.start()
 
     def update_screen_hz(target_screen=None):
         scr = target_screen or win.screen() or app.primaryScreen()
@@ -96,26 +91,10 @@ def main():
     update_screen_hz()
     win.screenChanged.connect(update_screen_hz)
 
-    # DEV DEBUGGING: Hardware FPS measurement loop
-    # fps_timer.setInterval(200)
-    # def compute_fps():
-    #     nonlocal recent_frames
-    #     now = time.perf_counter()
-    #     cutoff = now - 0.5
-    #     recent_frames = [t for t in recent_frames if t >= cutoff]
-    #     count = len(recent_frames)
-    #     if count >= 2:
-    #         span = recent_frames[-1] - recent_frames[0]
-    #         fps = int(round((count - 1) / span)) if span > 0.04 else int(round(count / 0.5))
-    #     elif count == 1:
-    #         fps = 1
-    #     else:
-    #         fps = 0
-    #     app_bridge.setCurrentFps(fps)
-    # fps_timer.timeout.connect(compute_fps)
-    # fps_timer.start()
-
+    from services.telegram_service import TelegramService
     app.aboutToQuit.connect(app_bridge.onAppClosing)
+    app.aboutToQuit.connect(memory_collector.stop)
+    app.aboutToQuit.connect(TelegramService.instance().stop)
 
     logger.success("Application interface initialized successfully.", category="system")
     sys.exit(app.exec())

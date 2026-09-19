@@ -48,28 +48,36 @@ def sign_bunkr_path(
     Calls the Bunkr token signing microservice for a given storage path.
     Returns: {"token": "...", "ex": ...} or None.
     """
+    created_session = session is None
     s = session or requests.Session()
-    req_headers = dict(DEFAULT_HEADERS)
-    if headers:
-        req_headers.update(headers)
+    try:
+        req_headers = dict(DEFAULT_HEADERS)
+        if headers:
+            req_headers.update(headers)
 
-    encoded_path = urllib.parse.quote(path)
-    url = f"{sign_url}?path={encoded_path}"
+        encoded_path = urllib.parse.quote(path)
+        url = f"{sign_url}?path={encoded_path}"
 
-    for attempt in range(3):
-        try:
-            resp = s.get(url, headers=req_headers, timeout=timeout)
-            if resp.status_code == 429:
-                time.sleep(1.0 * (attempt + 1))
-                continue
-            if resp.status_code == 200:
-                data = resp.json()
-                if "token" in data and "ex" in data:
-                    return data
-        except Exception:
-            time.sleep(0.8 * (attempt + 1))
+        for attempt in range(3):
+            try:
+                resp = s.get(url, headers=req_headers, timeout=timeout)
+                if resp.status_code == 429:
+                    time.sleep(1.0 * (attempt + 1))
+                    continue
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if "token" in data and "ex" in data:
+                        return data
+            except Exception:
+                time.sleep(0.8 * (attempt + 1))
 
-    return None
+        return None
+    finally:
+        if created_session:
+            try:
+                s.close()
+            except Exception:
+                pass
 
 
 def fetch_bunkr_file_by_id(
@@ -83,60 +91,68 @@ def fetch_bunkr_file_by_id(
     Resolves file metadata via Bunkr's metadata API (/api/_001_v2) and signs the storage path.
     Returns a file dictionary: {"url": ..., "filename": ..., "size": ..., "headers": ...}
     """
+    created_session = session is None
     s = session or requests.Session()
-    req_headers = dict(DEFAULT_HEADERS)
-    req_headers.update({
-        "Content-Type": "application/json",
-        "Origin": "https://dl.bunkr.cr",
-        "Referer": f"https://dl.bunkr.cr/file/{file_id}"
-    })
-    if headers:
-        req_headers.update(headers)
+    try:
+        req_headers = dict(DEFAULT_HEADERS)
+        req_headers.update({
+            "Content-Type": "application/json",
+            "Origin": "https://dl.bunkr.cr",
+            "Referer": f"https://dl.bunkr.cr/file/{file_id}"
+        })
+        if headers:
+            req_headers.update(headers)
 
-    meta_data = None
-    for attempt in range(3):
-        try:
-            resp = s.post(
-                METADATA_ENDPOINT_DEFAULT,
-                headers=req_headers,
-                json={"id": str(file_id)},
-                timeout=timeout
-            )
-            if resp.status_code == 429:
-                time.sleep(1.2 * (attempt + 1))
-                continue
-            if resp.status_code == 200:
-                meta_data = resp.json()
-                break
-        except Exception:
-            time.sleep(0.8 * (attempt + 1))
+        meta_data = None
+        for attempt in range(3):
+            try:
+                resp = s.post(
+                    METADATA_ENDPOINT_DEFAULT,
+                    headers=req_headers,
+                    json={"id": str(file_id)},
+                    timeout=timeout
+                )
+                if resp.status_code == 429:
+                    time.sleep(1.2 * (attempt + 1))
+                    continue
+                if resp.status_code == 200:
+                    meta_data = resp.json()
+                    break
+            except Exception:
+                time.sleep(0.8 * (attempt + 1))
 
-    if not meta_data or not isinstance(meta_data, dict):
-        return None
+        if not meta_data or not isinstance(meta_data, dict):
+            return None
 
-    mediafiles = meta_data.get("mediafiles")
-    path = meta_data.get("path")
-    fname = meta_data.get("original") or original_name or "video.mp4"
-    fname = _sanitize_name(fname)
+        mediafiles = meta_data.get("mediafiles")
+        path = meta_data.get("path")
+        fname = meta_data.get("original") or original_name or "video.mp4"
+        fname = _sanitize_name(fname)
 
-    if not mediafiles or not path:
-        return None
+        if not mediafiles or not path:
+            return None
 
-    sig = sign_bunkr_path(path, session=s, headers=headers, timeout=timeout)
-    if not sig:
-        return None
+        sig = sign_bunkr_path(path, session=s, headers=headers, timeout=timeout)
+        if not sig:
+            return None
 
-    token = sig.get("token")
-    ex = sig.get("ex")
-    raw_url = f"{mediafiles}{path}"
-    dl_url = f"{raw_url}?n={urllib.parse.quote(fname)}&token={token}&ex={ex}"
+        token = sig.get("token")
+        ex = sig.get("ex")
+        raw_url = f"{mediafiles}{path}"
+        dl_url = f"{raw_url}?n={urllib.parse.quote(fname)}&token={token}&ex={ex}"
 
-    return {
-        "url": dl_url,
-        "filename": fname,
-        "size": 0,
-        "headers": {"Referer": "https://bunkr.cr/"}
-    }
+        return {
+            "url": dl_url,
+            "filename": fname,
+            "size": 0,
+            "headers": {"Referer": "https://bunkr.cr/"}
+        }
+    finally:
+        if created_session:
+            try:
+                s.close()
+            except Exception:
+                pass
 
 
 def resolve_bunkr_file_page(
@@ -149,84 +165,92 @@ def resolve_bunkr_file_page(
     Resolves a single file page (e.g. https://bunkr.cr/f/<slug>).
     Extracts filename, jsCDN, signUrl, or dl link, and mints a signed download URL.
     """
+    created_session = session is None
     s = session or requests.Session()
-    req_headers = dict(DEFAULT_HEADERS)
-    req_headers["Referer"] = page_url
-    if headers:
-        req_headers.update(headers)
+    try:
+        req_headers = dict(DEFAULT_HEADERS)
+        req_headers["Referer"] = page_url
+        if headers:
+            req_headers.update(headers)
 
-    content = None
-    for attempt in range(3):
-        try:
-            resp = s.get(page_url, headers=req_headers, timeout=timeout)
-            if resp.status_code == 429:
-                time.sleep(1.2 * (attempt + 1))
-                continue
-            resp.raise_for_status()
-            content = _get_response_text(resp)
-            break
-        except Exception:
-            time.sleep(0.8 * (attempt + 1))
+        content = None
+        for attempt in range(3):
+            try:
+                resp = s.get(page_url, headers=req_headers, timeout=timeout)
+                if resp.status_code == 429:
+                    time.sleep(1.2 * (attempt + 1))
+                    continue
+                resp.raise_for_status()
+                content = _get_response_text(resp)
+                break
+            except Exception:
+                time.sleep(0.8 * (attempt + 1))
 
-    if not content:
-        return None
+        if not content:
+            return None
 
-    # 1. Extract filename
-    title_m = re.search(r'<title>(.*?)</title>', content, re.IGNORECASE)
-    og_m = re.search(r'<meta\s+property=["\']og:title["\']\s+content=["\'](.*?)["\']', content, re.IGNORECASE)
-    ogname_m = re.search(r'var\s+ogname\s*=\s*["\'](.*?)["\']', content)
+        # 1. Extract filename
+        title_m = re.search(r'<title>(.*?)</title>', content, re.IGNORECASE)
+        og_m = re.search(r'<meta\s+property=["\']og:title["\']\s+content=["\'](.*?)["\']', content, re.IGNORECASE)
+        ogname_m = re.search(r'var\s+ogname\s*=\s*["\'](.*?)["\']', content)
 
-    raw_name = ""
-    if ogname_m:
-        raw_name = ogname_m.group(1)
-    elif og_m:
-        raw_name = og_m.group(1)
-    elif title_m:
-        raw_name = title_m.group(1).split("|")[0].strip()
+        raw_name = ""
+        if ogname_m:
+            raw_name = ogname_m.group(1)
+        elif og_m:
+            raw_name = og_m.group(1)
+        elif title_m:
+            raw_name = title_m.group(1).split("|")[0].strip()
 
-    fname = _sanitize_name(raw_name or "video.mp4")
+        fname = _sanitize_name(raw_name or "video.mp4")
 
-    # 2. Check for jsCDN & signUrl in script
-    cdn_m = re.search(r'var\s+jsCDN\s*=\s*["\']([^"\']+)["\']', content)
-    sign_m = re.search(r'var\s+signUrl\s*=\s*["\']([^"\']+)["\']', content)
-    sign_service_m = re.search(r'SIGN_SERVICE_URL\s*=\s*["\']([^"\']+)["\']', content)
+        # 2. Check for jsCDN & signUrl in script
+        cdn_m = re.search(r'var\s+jsCDN\s*=\s*["\']([^"\']+)["\']', content)
+        sign_m = re.search(r'var\s+signUrl\s*=\s*["\']([^"\']+)["\']', content)
+        sign_service_m = re.search(r'SIGN_SERVICE_URL\s*=\s*["\']([^"\']+)["\']', content)
 
-    if cdn_m:
-        raw_cdn = cdn_m.group(1).replace(r'\/', '/')
-        sign_url = sign_m.group(1) if sign_m else (sign_service_m.group(1) if sign_service_m else SIGN_ENDPOINT_DEFAULT)
-        parsed_path = urllib.parse.urlparse(raw_cdn).path
-        sig = sign_bunkr_path(parsed_path, sign_url=sign_url, session=s, headers=headers, timeout=timeout)
-        if sig:
-            dl_url = f"{raw_cdn}?n={urllib.parse.quote(fname)}&token={sig['token']}&ex={sig['ex']}"
+        if cdn_m:
+            raw_cdn = cdn_m.group(1).replace(r'\/', '/')
+            sign_url = sign_m.group(1) if sign_m else (sign_service_m.group(1) if sign_service_m else SIGN_ENDPOINT_DEFAULT)
+            parsed_path = urllib.parse.urlparse(raw_cdn).path
+            sig = sign_bunkr_path(parsed_path, sign_url=sign_url, session=s, headers=headers, timeout=timeout)
+            if sig:
+                dl_url = f"{raw_cdn}?n={urllib.parse.quote(fname)}&token={sig['token']}&ex={sig['ex']}"
+                return {
+                    "url": dl_url,
+                    "filename": fname,
+                    "size": 0,
+                    "headers": {"Referer": "https://bunkr.cr/"}
+                }
+
+        # 3. Check for dl.bunkr.cr/file/<id> or download button data-id
+        dl_btn_m = re.search(r'id=["\']download-btn["\'][^>]*data-id=["\'](\d+)["\']', content)
+        dl_link_m = re.search(r'href=["\']https?://(?:[a-zA-Z0-9_-]+\.)?bunkr\.[a-z0-9]+/file/(\d+)["\']', content)
+        f_id = dl_btn_m.group(1) if dl_btn_m else (dl_link_m.group(1) if dl_link_m else None)
+
+        if f_id:
+            file_res = fetch_bunkr_file_by_id(f_id, original_name=fname, session=s, headers=headers, timeout=timeout)
+            if file_res:
+                return file_res
+
+        # 4. Fallback: check for direct media links in tags
+        media_m = re.search(r'(?:src|href)=["\'](https?://[^"\']+\.(?:mp4|mkv|webm|mov|avi|zip|rar|7z|jpg|png|jpeg|webp))["\']', content, re.IGNORECASE)
+        if media_m:
+            direct_url = media_m.group(1)
             return {
-                "url": dl_url,
+                "url": direct_url,
                 "filename": fname,
                 "size": 0,
-                "headers": {"Referer": "https://bunkr.cr/"}
+                "headers": {"Referer": page_url}
             }
 
-    # 3. Check for dl.bunkr.cr/file/<id> or download button data-id
-    dl_btn_m = re.search(r'id=["\']download-btn["\'][^>]*data-id=["\'](\d+)["\']', content)
-    dl_link_m = re.search(r'href=["\']https?://(?:[a-zA-Z0-9_-]+\.)?bunkr\.[a-z0-9]+/file/(\d+)["\']', content)
-    f_id = dl_btn_m.group(1) if dl_btn_m else (dl_link_m.group(1) if dl_link_m else None)
-
-    if f_id:
-        file_res = fetch_bunkr_file_by_id(f_id, original_name=fname, session=s, headers=headers, timeout=timeout)
-        if file_res:
-            return file_res
-
-    # 4. Fallback: check for direct media links in tags
-    media_m = re.search(r'(?:src|href)=["\'](https?://[^"\']+\.(?:mp4|mkv|webm|mov|avi|zip|rar|7z|jpg|png|jpeg|webp))["\']', content, re.IGNORECASE)
-    if media_m:
-        direct_url = media_m.group(1)
-        return {
-            "url": direct_url,
-            "filename": fname,
-            "size": 0,
-            "headers": {"Referer": page_url}
-        }
-
-    return None
+        return None
+    finally:
+        if created_session:
+            try:
+                s.close()
+            except Exception:
+                pass
 
 
 def fetch_bunkr_album(
@@ -247,6 +271,22 @@ def fetch_bunkr_album(
     Returns: (album_or_file_title, list_of_file_dicts)
     """
     session = requests.Session()
+    try:
+        return _do_fetch_bunkr_album(url, headers=headers, timeout=timeout, resolve_files=resolve_files, session=session)
+    finally:
+        try:
+            session.close()
+        except Exception:
+            pass
+
+
+def _do_fetch_bunkr_album(
+    url: str,
+    headers: Optional[dict] = None,
+    timeout: int = 25,
+    resolve_files: bool = True,
+    session: Optional[requests.Session] = None
+) -> Tuple[Optional[str], List[Dict[str, Any]]]:
     clean_url = url.strip()
 
     # ── 1. Direct CDN link with token ──────────────────────────────────────────

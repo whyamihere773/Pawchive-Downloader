@@ -40,6 +40,8 @@ from services.text_exporter import TextExporter
 from services.bunkr_client import fetch_bunkr_album
 from services.erome_client import fetch_erome_album
 from services.nhentai_client import fetch_nhentai_gallery
+from bridge.telegram_bridge import TelegramBridge
+from services.telegram_service import TelegramService
 from services.cloud_downloader import (
     download_mega_link,
     download_gdrive_link,
@@ -64,6 +66,8 @@ class AppBridge(QObject):
     dateAfterChanged = Signal()
     dateBeforeChanged = Signal()
     dateAutoScanPagesChanged = Signal()
+    minFileSizeChanged = Signal()
+    maxFileSizeChanged = Signal()
     currentFpsChanged = Signal()
     screenHzChanged = Signal()
     filterTypeChanged = Signal()
@@ -73,6 +77,7 @@ class AppBridge(QObject):
     scanContentImagesChanged = Signal()
     downloadPawchiveTemporaryFilesChanged = Signal()
     compressWebpChanged = Signal()
+    writeAudioMetadataChanged = Signal()
     keepDuplicatesChanged = Signal()
     favoriteModeChanged = Signal()
     subfolderPerPostChanged = Signal()
@@ -153,6 +158,12 @@ class AppBridge(QObject):
     vaultHarvestProgress      = Signal(str, int, int)   # (statusMsg, currentPage, currentLinks)
     vaultHarvestFinished      = Signal(bool, str, int, int)  # (success, creatorName, newLinks, totalPosts)
 
+    # Telegram integration signals
+    telegramAuthRequested     = Signal(bool)                 # (is_private)
+    telegramScopeRequested    = Signal(str, str, bool, str)  # (channelId, rawUrl, isPrivate, defaultAction)
+    telegramSafetyAcknowledgedChanged = Signal()
+    telegramLiabilityAcknowledgedChanged = Signal()
+
 
     # Storage Pool signals
     storagePoolChanged        = Signal()
@@ -216,6 +227,8 @@ class AppBridge(QObject):
         self._date_after = str(saved_settings.get("date_after", ""))
         self._date_before = str(saved_settings.get("date_before", ""))
         self._date_auto_scan_pages = bool(saved_settings.get("date_auto_scan_pages", True))
+        self._min_file_size = str(saved_settings.get("min_file_size", ""))
+        self._max_file_size = str(saved_settings.get("max_file_size", ""))
         self._filter_type = "all"
         self._skip_archives = False
         self._download_thumbnails_only = bool(saved_settings.get("download_thumbnails_only", False))
@@ -223,7 +236,9 @@ class AppBridge(QObject):
         self._scan_content_images = saved_settings.get("scan_content_images", True)
         self._download_pawchive_temporary_files = saved_settings.get("download_pawchive_temporary_files", True)
         self._compress_webp = saved_settings.get("compress_webp", False)
+        self._write_audio_metadata = bool(saved_settings.get("write_audio_metadata", True))
         self._keep_duplicates = saved_settings.get("keep_duplicates", False)
+        self._last_archive_emit_time: float = 0.0
         self._favorite_mode = False
         self._subfolder_per_post = saved_settings.get("subfolder_per_post", True)
         self._date_prefix = saved_settings.get("date_prefix", True)
@@ -263,6 +278,9 @@ class AppBridge(QObject):
         self._screen_hz = 60
         self._creator_name = ""
         self._tag_folder_mode = bool(saved_settings.get("tag_folder_mode", False))
+        self._telegram_safety_acknowledged = bool(saved_settings.get("telegram_safety_acknowledged", False))
+        self._telegram_liability_acknowledged = bool(saved_settings.get("telegram_liability_acknowledged", False))
+        self._telegram_pending_action = ""
 
         # Watchlist
         self._watchlist_manager = WatchlistManager(self.session_manager.config_dir)
@@ -273,6 +291,9 @@ class AppBridge(QObject):
 
         # Bulk Decompressor
         self._decompressor_bridge = DecompressorBridge(self._watchlist_manager, self, self)
+
+        # Telegram Bridge
+        self._telegram_bridge = TelegramBridge(self)
 
         # Scan & Cloud cancellation state
         self._scan_cancel_event = threading.Event()
@@ -411,6 +432,23 @@ class AppBridge(QObject):
                 self._creator_name = ""
                 self.creatorNameChanged.emit()
 
+    @Property(bool, notify=currentUrlChanged)
+    def isTelegramUrl(self) -> bool:
+        url = (self._current_url or "").strip()
+        if url:
+            if re.search(r'(?:https?://)?(?:www\.)?(?:t(?:elegram)?\.(?:me|dog)|telegram\.org)/', url, re.I) or url.startswith("tg://"):
+                return True
+            parsed = KemonoURLParser.parse(url)
+            if parsed.is_valid and parsed.provider == "telegram":
+                return True
+        if hasattr(self, "downloader") and self.downloader.tasks:
+            return any(
+                getattr(t, "is_telegram", False) or getattr(t, "service", "") == "telegram" or (t.url and t.url.startswith("tg://"))
+                for t in self.downloader.tasks
+                if t.status in ("pending", "downloading")
+            )
+        return False
+
     @Property(int, notify=pageStartChanged)
     def pageStart(self) -> int:
         return self._page_start
@@ -528,6 +566,28 @@ class AppBridge(QObject):
             self.dateAutoScanPagesChanged.emit()
             self.saveSettings()
 
+    @Property(str, notify=minFileSizeChanged)
+    def minFileSize(self) -> str:
+        return self._min_file_size
+
+    @minFileSize.setter
+    def minFileSize(self, val: str):
+        if self._min_file_size != val:
+            self._min_file_size = val
+            self.minFileSizeChanged.emit()
+            self.saveSettings()
+
+    @Property(str, notify=maxFileSizeChanged)
+    def maxFileSize(self) -> str:
+        return self._max_file_size
+
+    @maxFileSize.setter
+    def maxFileSize(self, val: str):
+        if self._max_file_size != val:
+            self._max_file_size = val
+            self.maxFileSizeChanged.emit()
+            self.saveSettings()
+
     @Property(int, notify=currentFpsChanged)
     def currentFps(self) -> int:
         return self._current_fps
@@ -620,6 +680,17 @@ class AppBridge(QObject):
         if self._compress_webp != val:
             self._compress_webp = val
             self.compressWebpChanged.emit()
+
+    @Property(bool, notify=writeAudioMetadataChanged)
+    def writeAudioMetadata(self) -> bool:
+        return self._write_audio_metadata
+
+    @writeAudioMetadata.setter
+    def writeAudioMetadata(self, val: bool):
+        if self._write_audio_metadata != val:
+            self._write_audio_metadata = val
+            self.writeAudioMetadataChanged.emit()
+            self.saveSettings()
 
     @Property(bool, notify=keepDuplicatesChanged)
     def keepDuplicates(self) -> bool:
@@ -806,6 +877,16 @@ class AppBridge(QObject):
 
     @threadsCount.setter
     def threadsCount(self, val: int):
+        # Strict Telegram ceiling: Under any circumstance, clamp to max 2 threads for Telegram
+        is_pure_tg = False
+        if hasattr(self, "downloader") and self.downloader.tasks:
+            is_pure_tg = all(
+                getattr(t, "is_telegram", False) or getattr(t, "service", "") == "telegram" or (t.url and t.url.startswith("tg://"))
+                for t in self.downloader.tasks
+            )
+        if is_pure_tg:
+            val = min(val, 2)
+
         if self._threads_count != val:
             self._threads_count = max(1, min(self._max_cpu_threads, val))
             self.downloader.max_workers = self._threads_count
@@ -1236,6 +1317,10 @@ class AppBridge(QObject):
     def decompressorBridge(self) -> DecompressorBridge:
         return self._decompressor_bridge
 
+    @Property(QObject, constant=True)
+    def telegramBridge(self) -> TelegramBridge:
+        return self._telegram_bridge
+
     @Property(bool, notify=tagFolderModeChanged)
     def tagFolderMode(self) -> bool:
         return self._tag_folder_mode
@@ -1382,6 +1467,45 @@ class AppBridge(QObject):
         """Return download history as a list of dicts for the History tab."""
         return self.session_manager.get_download_history()
 
+    @Property(bool, notify=telegramSafetyAcknowledgedChanged)
+    def telegramSafetyAcknowledged(self) -> bool:
+        return self._telegram_safety_acknowledged
+
+    @telegramSafetyAcknowledged.setter
+    def telegramSafetyAcknowledged(self, val: bool):
+        if self._telegram_safety_acknowledged != val:
+            self._telegram_safety_acknowledged = val
+            self.telegramSafetyAcknowledgedChanged.emit()
+            self.saveSettings()
+
+    @Property(bool, notify=telegramLiabilityAcknowledgedChanged)
+    def telegramLiabilityAcknowledged(self) -> bool:
+        return self._telegram_liability_acknowledged
+
+    @telegramLiabilityAcknowledged.setter
+    def telegramLiabilityAcknowledged(self, val: bool):
+        if self._telegram_liability_acknowledged != val:
+            self._telegram_liability_acknowledged = val
+            self.telegramLiabilityAcknowledgedChanged.emit()
+            self.saveSettings()
+
+    @Slot(bool)
+    def setTelegramSafetyAcknowledged(self, val: bool):
+        self.telegramSafetyAcknowledged = val
+
+    @Slot(bool)
+    def setTelegramLiabilityAcknowledged(self, val: bool):
+        self.telegramLiabilityAcknowledged = val
+
+    @Slot()
+    def resetTelegramWarnings(self):
+        self._telegram_safety_acknowledged = False
+        self._telegram_liability_acknowledged = False
+        self.telegramSafetyAcknowledgedChanged.emit()
+        self.telegramLiabilityAcknowledgedChanged.emit()
+        self.saveSettings()
+        logger.info("Telegram warning modals reset.", category="telegram")
+
     def _get_filter_options(self) -> FilterOptions:
         return FilterOptions(
             characters=self._filter_characters,
@@ -1417,7 +1541,10 @@ class AppBridge(QObject):
             skip_post_covers=self._skip_post_covers,
             date_after=self._date_after,
             date_before=self._date_before,
-            download_pawchive_temporary_files=self._download_pawchive_temporary_files
+            download_pawchive_temporary_files=self._download_pawchive_temporary_files,
+            min_file_size=self._min_file_size,
+            max_file_size=self._max_file_size,
+            write_audio_metadata=self._write_audio_metadata
         )
 
     def _get_link_identity(self, parsed: URLParseResult) -> tuple[str, str, Optional[str], str]:
@@ -1471,12 +1598,45 @@ class AppBridge(QObject):
         if url_input:
             parsed_current = KemonoURLParser.parse(url_input)
             if parsed_current.is_valid:
-                _, identity_key, parent_artist_key, _ = self._get_link_identity(parsed_current)
-                if identity_key in self._queued_links or (parent_artist_key and parent_artist_key in self._queued_links):
-                    url_is_already_queued = True
+                if parsed_current.provider == "telegram":
+                    has_pending_telegram = any(
+                        getattr(t, "is_telegram", False) and t.status in ("pending", "failed", "cancelled")
+                        for t in self.downloader.tasks
+                    ) or any(
+                        getattr(t, "is_telegram", False) and t.status in ("pending", "failed", "cancelled")
+                        for t in self._queue_model.tasks
+                    )
+                    if has_pending or has_pending_telegram:
+                        # Tasks already queued — fall through to start existing queue
+                        url_input = ""
+                        parsed_current = None
+                        url_is_already_queued = False
+                    else:
+                        # Empty queue: open Scope Modal for criteria-based download
+                        self.telegramScopeRequested.emit(
+                            str(parsed_current.user_id),
+                            str(parsed_current.raw_url),
+                            bool(parsed_current.extra_data.get("is_private", False)),
+                            "download"
+                        )
+                        return
+                else:
+                    _, identity_key, parent_artist_key, _ = self._get_link_identity(parsed_current)
+                    if identity_key in self._queued_links or (parent_artist_key and parent_artist_key in self._queued_links):
+                        url_is_already_queued = True
 
         # Case 1: Start existing queue directly if URL is empty or already queued
         if has_pending and (not url_input or url_is_already_queued):
+            # Under ANY circumstance, lock Telegram downloads to max 2 threads
+            is_pure_tg = bool(self.downloader.tasks) and all(
+                getattr(t, "is_telegram", False) or getattr(t, "service", "") == "telegram" or (t.url and t.url.startswith("tg://"))
+                for t in self.downloader.tasks
+            )
+            if is_pure_tg:
+                self._threads_count = min(self._threads_count, 2)
+                self.downloader.max_workers = min(self.downloader.max_workers, 2)
+                self.threadsCountChanged.emit()
+
             options = self._get_filter_options()
             self._scan_cancel_event.clear()
             self._has_error = False
@@ -1679,6 +1839,39 @@ class AppBridge(QObject):
                         gallery_title, files = fetch_nhentai_gallery(parsed.post_id or parsed.raw_url)
                         creator_name = clean_text(gallery_title) or f"Gallery {parsed.post_id}"
                         posts = [{"id": f["url"], "title": f.get("filename", "File"), "published": "", "file": {"path": f["url"]}, "attachments": []} for f in files]
+                    elif parsed.provider == "telegram":
+                        self._telegram_pending_action = "select"
+                        if not TelegramService.instance().is_logged_in():
+                            self._is_post_selection_loading = False
+                            self.postSelectionLoadingChanged.emit()
+                            self.telegramAuthRequested.emit(bool(parsed.extra_data.get("is_private", False)))
+                            return
+
+                        if parsed.is_single_post:
+                            post = TelegramService.instance().fetch_single_post(parsed.user_id, int(parsed.post_id))
+                            if post:
+                                creator_name = clean_text(post.get("channel_title", parsed.user_id))
+                                posts = [{
+                                    "id": str(post["id"]),
+                                    "title": post.get("title", f"Telegram {post['id']}"),
+                                    "published": post.get("date", ""),
+                                    "file": {"name": post.get("filename", ""), "path": post["url"], "size": post.get("file_size", 0)},
+                                    "attachments": [],
+                                    "extra_data": {
+                                        "channel_id": str(post.get("channel_id", parsed.user_id)),
+                                        "message_id": int(post.get("message_id", 0))
+                                    }
+                                }]
+                        else:
+                            self._is_post_selection_loading = False
+                            self.postSelectionLoadingChanged.emit()
+                            self.telegramScopeRequested.emit(
+                                str(parsed.user_id),
+                                str(parsed.raw_url),
+                                bool(parsed.extra_data.get("is_private", False)),
+                                "select"
+                            )
+                            return
                 else:
                     profile = self.api_client.fetch_creator_profile(parsed)
                     creator_name = clean_text(profile.get("name", parsed.user_id) or parsed.user_id)
@@ -1818,6 +2011,123 @@ class AppBridge(QObject):
 
         threading.Thread(target=_worker, daemon=True).start()
 
+    @Slot()
+    def resumeTelegramAction(self):
+        """
+        Resumes the pending action (fetchPostsForSelection or startDownload)
+        after the user completes Telegram authentication.
+        """
+        action = self._telegram_pending_action or "select"
+        self._telegram_pending_action = ""
+        if action == "download":
+            self.startDownload()
+        else:
+            self.fetchPostsForSelection()
+
+    @Slot(str, list)
+    @Slot(str, list, bool)
+    def queueTelegramFiles(self, channel_title: str, files: list, auto_start: bool = True):
+        """
+        Queues resolved media files from TelegramScopeModal into the download engine.
+        """
+        if not files:
+            return
+        creator_name = clean_text(channel_title) or "Telegram Channel"
+        folder_name = sanitize_filesystem_name(creator_name, fallback="Telegram")
+        folder = os.path.join(self._download_dir, f"Telegram - {folder_name}")
+        os.makedirs(folder, exist_ok=True)
+
+        tasks = []
+        for f in files:
+            extra = f.get("extra_data", {}) if isinstance(f.get("extra_data"), dict) else {}
+            cid = str(f.get("channel_id") or extra.get("channel_id", ""))
+            mid = int(f.get("message_id") or extra.get("message_id", 0))
+            f_obj = f.get("file") if isinstance(f.get("file"), dict) else {}
+            fn = f.get("filename") or f_obj.get("name") or f"file_{mid}"
+            url = f.get("url") or f_obj.get("path") or f"tg://{cid}/{mid}"
+            fsize = int(f.get("file_size") or f_obj.get("size") or 0)
+
+            t = DownloadTask(
+                url=url,
+                target_path=os.path.join(folder, fn),
+                post_title=creator_name,
+                creator_name=creator_name,
+                service="telegram",
+                post_id=str(mid),
+                file_id=str(f.get("id", mid)),
+                file_size=fsize,
+                is_telegram=True,
+                telegram_channel_id=cid,
+                telegram_message_id=mid,
+                batch_id=f"telegram_{creator_name}"
+            )
+            tasks.append(t)
+
+        self._queue_model.add_tasks(tasks)
+        logger.info(f"Queued {len(tasks)} Telegram file(s) for '{creator_name}'.", category="telegram")
+
+        # Under ANY circumstance, lock Telegram downloads to max 2 threads
+        self._threads_count = min(self._threads_count, 2)
+        self.downloader.max_workers = min(self.downloader.max_workers, 2)
+        self.threadsCountChanged.emit()
+
+        if auto_start and not self._is_downloading:
+            self.startDownload()
+
+    @Slot(str, list)
+    @Slot(str, list, str)
+    def openTelegramPostSelection(self, channel_title: str, messages: list, raw_url: str = ""):
+        """
+        Takes fetched Telegram channel messages, formats them into cards for PostSelectionModal,
+        caches them for selection, and emits postSelectionReady to open the modal.
+        """
+        if not messages:
+            self._is_post_selection_loading = False
+            self.postSelectionLoadingChanged.emit()
+            self.postSelectionError.emit(f"No media found in {channel_title or 'Telegram channel'}.")
+            return
+
+        creator_name = clean_text(channel_title) or "Telegram Channel"
+        self._selection_cached_posts = list(messages)
+        parsed_url = raw_url or (self._current_url or "")
+        self._selection_parsed = KemonoURLParser.parse(parsed_url)
+        self._selection_creator_name = creator_name
+
+        cards = []
+        for m in messages:
+            mid = str(m.get("id") or m.get("message_id", ""))
+            fn = m.get("filename") or f"file_{mid}"
+            title = fn or m.get("title") or f"Telegram Media {mid}"
+            caption = m.get("caption") or ""
+            thumb = m.get("thumbnail") or ""
+            fsize = int(m.get("file_size") or 0)
+            url = m.get("url") or f"tg://{m.get('channel_id')}/{mid}"
+
+            file_item = {
+                "name": fn,
+                "path": url,
+                "thumbnail": thumb,
+                "previewUrl": thumb,
+                "size": fsize,
+                "is_main": True,
+                "selected": True
+            }
+
+            cards.append({
+                "id": mid,
+                "title": title,
+                "content": caption,
+                "published": m.get("date", "")[:10] if m.get("date") else "",
+                "thumbnail": thumb,
+                "fileCount": 1,
+                "files": [file_item],
+                "selected": True
+            })
+
+        self._is_post_selection_loading = False
+        self.postSelectionLoadingChanged.emit()
+        self.postSelectionReady.emit(cards, creator_name, len(cards))
+
     @Slot(list, bool)
     @Slot(list, bool, 'QVariant')
     def startDownloadSelectedPosts(self, selectedPostIds: list, autoStart: bool, selectedFilesMap: Any = None):
@@ -1906,6 +2216,11 @@ class AppBridge(QObject):
 
         parsed = self._selection_parsed
         creator_name = self._selection_creator_name
+
+        if parsed and parsed.provider == "telegram":
+            self.queueTelegramFiles(creator_name, filtered_posts, auto_start=autoStart)
+            return
+
         options = self._get_filter_options()
 
         # Build download tasks
@@ -2094,6 +2409,48 @@ class AppBridge(QObject):
                             batch_id=f"nhentai_{parsed.post_id or creator_name or 'nhentai'}"
                         )
                         tasks.append(t)
+
+                elif parsed.provider == "telegram":
+                    self._telegram_pending_action = "download"
+                    if not TelegramService.instance().is_logged_in():
+                        self._is_downloading = False
+                        self.isDownloadingChanged.emit()
+                        self.telegramAuthRequested.emit(bool(parsed.extra_data.get("is_private", False)))
+                        return
+
+                    if parsed.is_single_post:
+                        post = TelegramService.instance().fetch_single_post(parsed.user_id, int(parsed.post_id))
+                        if post:
+                            creator_name = clean_text(post.get("channel_title", parsed.user_id))
+                            folder_name = sanitize_filesystem_name(creator_name, fallback="Telegram")
+                            folder = os.path.join(self._download_dir, f"Telegram - {folder_name}")
+                            os.makedirs(folder, exist_ok=True)
+                            fn = post.get("filename") or f"file_{post['id']}"
+                            t = DownloadTask(
+                                url=post["url"],
+                                target_path=os.path.join(folder, fn),
+                                post_title=creator_name,
+                                creator_name=creator_name,
+                                service="telegram",
+                                post_id=str(post["message_id"]),
+                                file_id=str(post["id"]),
+                                file_size=int(post.get("file_size", 0)),
+                                is_telegram=True,
+                                telegram_channel_id=str(post.get("channel_id", parsed.user_id)),
+                                telegram_message_id=int(post.get("message_id", 0)),
+                                batch_id=f"telegram_{creator_name}"
+                            )
+                            tasks.append(t)
+                    else:
+                        self._is_downloading = False
+                        self.isDownloadingChanged.emit()
+                        self.telegramScopeRequested.emit(
+                            str(parsed.user_id),
+                            str(parsed.raw_url),
+                            bool(parsed.extra_data.get("is_private", False)),
+                            "download"
+                        )
+                        return
 
                 self._creator_name = creator_name
                 self.creatorNameChanged.emit()
@@ -2453,6 +2810,8 @@ class AppBridge(QObject):
                     status="paused"
                 )
             self.downloader.cancel()
+        if self.recovery_manager:
+            self.recovery_manager.clear_retries()
 
     @Slot()
     def retryFailed(self):
@@ -2463,6 +2822,16 @@ class AppBridge(QObject):
 
         if not self.downloader.tasks and self._queue_model.tasks:
             self.downloader.tasks = self._queue_model.getTasks()
+
+        # If no failed tasks are in memory, check if they were spilled to disk
+        if not any(t.status == "failed" for t in self.downloader.tasks):
+            spilled = self.recovery_manager.load_retries()
+            if spilled:
+                from core.downloader import DownloadTask
+                restored = [DownloadTask.from_dict(d) if isinstance(d, dict) else d for d in spilled]
+                self.downloader.tasks.extend(restored)
+                if self._queue_model:
+                    self._queue_model.addTasks(restored)
 
         count = self.downloader.retry_failed_tasks(options, self._cookie_string)
         if count == 0 and not self.downloader.is_running:
@@ -2514,11 +2883,47 @@ class AppBridge(QObject):
             logger.info(f"Retrying single task: {file_id}", category="downloader")
 
     @Slot()
+    @Slot("QVariantList")
+    def clearFailedTasks(self, selected_ids: Optional[list] = None):
+        """Removes failed tasks from both queue models and downloader."""
+        if self._queue_model:
+            self._queue_model.clearFailedTasks(selected_ids)
+        if self._active_queue_model:
+            self._active_queue_model.clearFailedTasks(selected_ids)
+        if self.downloader:
+            if selected_ids:
+                s_set = set(selected_ids)
+                self.downloader.tasks = [
+                    t for t in self.downloader.tasks
+                    if not (t.status == "failed" and (t.file_id in s_set or t.url in s_set or t.filename in s_set))
+                ]
+            else:
+                self.downloader.tasks = [t for t in self.downloader.tasks if t.status != "failed"]
+        if self.recovery_manager:
+            self.recovery_manager.clear_retries()
+        logger.info("Cleared failed tasks from queue.", category="queue")
+
+    @Slot()
     def cancelDownload(self):
         # Signal workers to stop
         self._scan_cancel_event.set()
         self.downloader.cancel()
         self.cancelCloudDownloads()
+        try:
+            from services.telegram_service import TelegramService
+            TelegramService.instance().cancel_all_downloads()
+        except Exception:
+            pass
+        try:
+            from services.multipart_downloader import cancel_all_multipart
+            cancel_all_multipart()
+        except Exception:
+            pass
+        try:
+            if hasattr(self.downloader, "ytdlp_manager") and self.downloader.ytdlp_manager:
+                self.downloader.ytdlp_manager.cancel_all()
+        except Exception:
+            pass
 
         # Full session reset — clear all queue state so the next download starts fresh
         self._queued_links.clear()
@@ -2528,6 +2933,7 @@ class AppBridge(QObject):
 
         # Discard recovery journal and saved session so restart doesn't prompt for cancelled download
         self.recovery_manager.discard_recovery()
+        self.recovery_manager.clear_retries()
         self.session_manager.discard_session()
         self._has_recovery_session = False
         self._has_saved_session = False
@@ -2818,6 +3224,11 @@ class AppBridge(QObject):
 
     @Slot()
     def cancelCloudDownloads(self):
+        try:
+            from services.cloud_downloader import cancel_all_cloud_downloads
+            cancel_all_cloud_downloads()
+        except Exception:
+            pass
         if self._is_cloud_downloading:
             self._cloud_cancel_event.set()
             self._is_cloud_downloading = False
@@ -3109,7 +3520,12 @@ class AppBridge(QObject):
             "date_before": self._date_before,
             "date_auto_scan_pages": self._date_auto_scan_pages,
             "enable_download_archive": self._enable_download_archive,
-            "download_pawchive_temporary_files": self._download_pawchive_temporary_files
+            "download_pawchive_temporary_files": self._download_pawchive_temporary_files,
+            "min_file_size": self._min_file_size,
+            "max_file_size": self._max_file_size,
+            "write_audio_metadata": self._write_audio_metadata,
+            "telegram_safety_acknowledged": self._telegram_safety_acknowledged,
+            "telegram_liability_acknowledged": self._telegram_liability_acknowledged
         }
         self.session_manager.save_settings(settings_dict, silent=True)
 
@@ -3152,8 +3568,11 @@ class AppBridge(QObject):
         self._queue_model.updateTask(task)
         self._active_queue_model.updateTask(task)
         if task.status == "completed" and self._enable_download_archive:
-            self.archiveRecordCountChanged.emit()
-            self.archiveUpdated.emit()
+            now = time.time()
+            if now - self._last_archive_emit_time >= 1.5:
+                self._last_archive_emit_time = now
+                self.archiveRecordCountChanged.emit()
+                self.archiveUpdated.emit()
 
     @Slot(int)
     def _handle_throttled(self, new_count: int):
@@ -3484,6 +3903,9 @@ class AppBridge(QObject):
         if tasks:
             completed_c = sum(1 for t in tasks if t.status == "completed")
             failed_c = sum(1 for t in tasks if t.status == "failed")
+            if failed_c > 0:
+                failed_tasks = [t for t in tasks if t.status == "failed"]
+                self.recovery_manager.dump_retries(failed_tasks, async_write=True)
             self._overall_progress = int(completed_c / len(tasks) * 100)
             if failed_c > 0:
                 self._status_text = f"Finished with {failed_c} error(s) ({completed_c}/{len(tasks)} completed)"
@@ -3493,6 +3915,10 @@ class AppBridge(QObject):
         else:
             self._overall_progress = 100 if success else self._overall_progress
             self._status_text = f"Progress: {message}"
+
+        if self._enable_download_archive:
+            self.archiveRecordCountChanged.emit()
+            self.archiveUpdated.emit()
 
         self.isDownloadingChanged.emit()
         self.isPausedChanged.emit()

@@ -5,44 +5,26 @@ Flickable {
     id: flickRoot
 
     clip: true
-    boundsBehavior: Flickable.DragAndOvershootBounds
-    boundsMovement: Flickable.FollowBoundsBehavior
+    boundsBehavior: Flickable.StopAtBounds
     flickableDirection: Flickable.VerticalFlick
-    flickDeceleration: 1500
-    maximumFlickVelocity: 4500
+    readonly property real contentRatio: Math.max(1.0, contentHeight / Math.max(1, height))
+
+    // Dynamic deceleration: snappy (6000) on short views, more fluid (4000) on large lists
+    flickDeceleration: Math.max(4000, 6000 - Math.min(2000, (contentRatio - 1.0) * 100))
+    // Dynamic velocity cap: 2500 on short views, scaling up to 7500 on massive lists
+    maximumFlickVelocity: Math.min(7500, 2500 + Math.min(5000, (contentRatio - 1.0) * 150))
 
     property real targetContentY: contentY
-    property real lastWheelTime: 0
-    property real wheelVelocityFactor: 1.0
-    readonly property bool isScrolling: moving || flicking || wheelAnim.running
+    readonly property bool isScrolling: moving || flicking
     property alias verticalScrollBar: vScrollBar
-
-    onMovingChanged: {
-        if (moving) {
-            wheelAnim.stop()
-            targetContentY = contentY
-        }
-    }
-
-    NumberAnimation {
-        id: wheelAnim
-        target: flickRoot
-        property: "contentY"
-        duration: 170
-        easing.type: Easing.OutQuad
-    }
+    property real _lastWheelTime: 0
+    property real _wheelMomentum: 1.0
 
     ScrollBar.vertical: ScrollBar {
         id: vScrollBar
-        active: flickRoot.moving || flickRoot.flicking || wheelAnim.running || vScrollHover.hovered
+        active: flickRoot.moving || flickRoot.flicking || vScrollHover.hovered
         policy: ScrollBar.AsNeeded
         width: 7
-        onPressedChanged: {
-            if (pressed) {
-                wheelAnim.stop()
-                flickRoot.targetContentY = flickRoot.contentY
-            }
-        }
         HoverHandler { id: vScrollHover }
 
         contentItem: Rectangle {
@@ -66,36 +48,40 @@ Flickable {
     WheelHandler {
         id: wheelHandler
         target: null
-        acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+        acceptedDevices: PointerDevice.Mouse
         onWheel: function(event) {
-            var now = Date.now()
-            var dt = now - flickRoot.lastWheelTime
-            flickRoot.lastWheelTime = now
-
-            // Accelerate velocity if scrolled rapidly (Newtonian momentum)
-            if (dt < 130) {
-                flickRoot.wheelVelocityFactor = Math.min(2.8, flickRoot.wheelVelocityFactor + 0.4)
-            } else {
-                flickRoot.wheelVelocityFactor = 1.0
-            }
-
             var delta = event.angleDelta.y
             if (delta === 0) return
 
-            var baseStep = 120 * flickRoot.wheelVelocityFactor
-            var step = (delta / 120.0) * baseStep
-            var maxY = Math.max(0, flickRoot.contentHeight - flickRoot.height)
+            var now = Date.now()
+            var dt = now - flickRoot._lastWheelTime
+            flickRoot._lastWheelTime = now
 
-            if (!wheelAnim.running) {
-                flickRoot.targetContentY = flickRoot.contentY
+            // Detect rapid wheel spinning and build momentum faster on larger lists
+            if (dt < 180) {
+                var accelStep = 0.25 + Math.min(0.5, (flickRoot.contentRatio - 1.0) * 0.05)
+                var maxMomentum = Math.min(4.5, 1.8 + Math.min(2.7, (flickRoot.contentRatio - 1.0) * 0.15))
+                flickRoot._wheelMomentum = Math.min(maxMomentum, flickRoot._wheelMomentum + accelStep)
+            } else {
+                flickRoot._wheelMomentum = 1.0
             }
 
-            flickRoot.targetContentY = Math.max(0, Math.min(maxY, flickRoot.targetContentY - step))
+            // Dynamic base notch scale: 1.0x on short views (~120px), scaling up to 2.8x on huge lists
+            var sizeScale = Math.min(2.8, 1.0 + Math.log2(Math.max(1.0, flickRoot.contentRatio / 1.8)) * 0.4)
+            var baseSpeed = 1200 * sizeScale * flickRoot._wheelMomentum
 
-            wheelAnim.stop()
-            wheelAnim.from = flickRoot.contentY
-            wheelAnim.to = flickRoot.targetContentY
-            wheelAnim.start()
+            var notchV = (delta / 120.0) * baseSpeed
+            var curV = flickRoot.flicking ? flickRoot.verticalVelocity : 0
+            var targetV = 0
+            if ((notchV > 0 && curV > 0) || (notchV < 0 && curV < 0)) {
+                var carryFactor = Math.min(0.55, 0.35 + Math.min(0.2, (flickRoot.contentRatio - 1.0) * 0.02))
+                targetV = curV * carryFactor + notchV
+            } else {
+                targetV = notchV
+            }
+            targetV = Math.max(-flickRoot.maximumFlickVelocity, Math.min(flickRoot.maximumFlickVelocity, targetV))
+            flickRoot.flick(0, targetV)
+            event.accepted = true
         }
     }
 }
