@@ -13,6 +13,7 @@
 <p align="center">
   <a href="https://github.com/whyamihere773/Pawchive-Downloader/releases/latest"><img src="https://img.shields.io/github/v/release/whyamihere773/Pawchive-Downloader?style=for-the-badge&color=blue&label=Latest%20Release" alt="Latest Release"></a>
   <a href="https://github.com/whyamihere773/Pawchive-Downloader/releases"><img src="https://img.shields.io/github/downloads/whyamihere773/Pawchive-Downloader/total?style=for-the-badge&color=success&label=Downloads" alt="Total Downloads"></a>
+  <a href="https://discord.gg/YBrKkzVq8"><img src="https://img.shields.io/badge/Discord-Join%20Community-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord Server"></a>
   <img src="https://img.shields.io/badge/Platform-Windows-0078D6?style=for-the-badge&logo=windows&logoColor=white" alt="Platform: Windows">
   <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.10+">
 </p>
@@ -167,6 +168,7 @@ Ensure you have **Python 3.10 or newer** installed.
 ## 🤝 Contributing & Community
 
 Feedback, bug reports, and pull requests are warmly welcome!
+- 💬 **Need further help or want to chat?** If you need assistance, have questions, or want to communicate directly with me, feel free to join our **[Discord Server](https://discord.gg/YBrKkzVq8)**!
 - **Have a suggestion or found a bug?** Please open an **[Issue](https://github.com/whyamihere773/Pawchive-Downloader/issues)**.
 - **Want to add a new host or feature?** Fork the repository, create a feature branch, and submit a **Pull Request**.
 
