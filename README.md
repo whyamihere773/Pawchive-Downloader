@@ -22,11 +22,17 @@
   <a href="https://github.com/whyamihere773/Pawchive-Downloader/releases/latest">
     <img src="https://img.shields.io/badge/Download-Windows%20Executable%20(.zip)-2ea44f?style=for-the-badge&logo=windows&logoColor=white" height="42" alt="Download Windows Executable">
   </a>
+  <a href="https://discord.gg/YBrKkzVq8">
+    <img src="https://img.shields.io/badge/Discord-Join%20Community%20%26%20Support-5865F2?style=for-the-badge&logo=discord&logoColor=white" height="42" alt="Join Discord Server">
+  </a>
 </p>
 
 <p align="center">
   <em>(Portable — no Python or command-line setup required! Just extract and run <code>Pawchive Downloader.exe</code>)</em>
 </p>
+
+> 💬 **Need Help, Support, or Want to Chat?**  
+> If you run into any issues, have suggestions, or need further help, you can communicate directly with me on our **[Discord Server](https://discord.gg/YBrKkzVq8)**!
 
 ---
 

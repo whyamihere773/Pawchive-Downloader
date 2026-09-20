@@ -2,7 +2,7 @@
 > ### 🛑 A Note Regarding Pawchive Downloads
 > Due to a direct request from the Pawchive site owner—and out of genuine respect for him and the service he provides to our community—I have made a few adjustments to how Pawchive downloads are handled in this update. 
 > 
-> I hope these changes won't impact your day-to-day experience too much, but if you run into any friction, please let me know and I will gladly continue fine-tuning things until I find the ideal sweet spot. Remember, Pawchive is a shared resource for all of us: please be courteous to their servers by keeping your active threads to **2** and setting a modest delay between downloads whenever possible.
+> I hope these changes won't impact your day-to-day experience too much. If you run into any friction, have questions, or need further help, you can communicate directly with me on our **[Discord Server](https://discord.gg/YBrKkzVq8)** and I will gladly continue fine-tuning things until I find the ideal sweet spot. Remember, Pawchive is a shared resource for all of us: please be courteous to their servers by keeping your active threads to **2** and setting a modest delay between downloads whenever possible.
 
 ---
 
