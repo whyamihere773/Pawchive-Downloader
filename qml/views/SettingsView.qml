@@ -532,7 +532,7 @@ SmoothFlickable {
                 StyledCheckBox {
                     text: tr("opt_tag_audio_files_settings", "Write creator and post tags to downloaded audio files (MP3/FLAC/M4A)")
                     tooltip: tr("opt_tag_audio_files_tip", "Automatically sets Artist to creator name and Title to post title for seamless import into music managers")
-                    checked: root.bridge ? root.bridge.writeAudioMetadata : true
+                    checked: root.bridge ? root.bridge.writeAudioMetadata : false
                     onCheckedChanged: if (root.bridge) root.bridge.writeAudioMetadata = checked
                 }
 

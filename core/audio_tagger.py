@@ -25,7 +25,7 @@ except ImportError:
 class AudioTagger:
     """Writes metadata tags into audio files."""
 
-    SUPPORTED_EXTS = {".mp3", ".flac", ".m4a", ".mp4", ".aac", ".ogg", ".opus", ".wav"}
+    SUPPORTED_EXTS = {".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wav"}
 
     @classmethod
     def is_supported(cls, file_path: str) -> bool:
@@ -89,7 +89,7 @@ class AudioTagger:
                 return cls._tag_mp3(file_path, artist, title, album, year or date, comment)
             elif ext == ".flac":
                 return cls._tag_flac(file_path, artist, title, album, year or date, comment)
-            elif ext in (".m4a", ".mp4", ".aac"):
+            elif ext in (".m4a", ".aac"):
                 return cls._tag_mp4(file_path, artist, title, album, year or date, comment)
             elif ext in (".ogg", ".opus"):
                 return cls._tag_ogg(file_path, artist, title, album, year or date, comment)

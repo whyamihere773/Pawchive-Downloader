@@ -22,8 +22,8 @@ Rectangle {
     property string serviceFilter: "all"
     property string fileTypeFilter: "all"
     property string sortOrder: "creator_az"
-    property var collapsedCreators: ({})
-    property var collapsedPosts: ({})
+    property var expandedCreators: ({})
+    property var expandedPosts: ({})
     property bool headerCollapsed: false
 
     // Verification state map: key = service+":"+creatorId
@@ -879,6 +879,15 @@ Rectangle {
                                 onTriggered: {
                                     root.searchFilter = searchInput.text
                                     root.reload()
+                                    if (root.searchFilter.trim().length > 0) {
+                                        var newMap = {}
+                                        for (var i = 0; i < root.hierarchyData.length; i++) {
+                                            newMap[root.hierarchyData[i].creator_name] = true
+                                        }
+                                        root.expandedCreators = newMap
+                                    } else {
+                                        root.expandedCreators = {}
+                                    }
                                 }
                             }
 
@@ -899,6 +908,8 @@ Rectangle {
                                     onClicked: {
                                         searchInput.text = ""
                                         root.searchFilter = ""
+                                        root.expandedCreators = {}
+                                        root.expandedPosts = {}
                                         root.reload()
                                     }
                                 }
@@ -1128,20 +1139,27 @@ Rectangle {
 
                     // Expand / Collapse All toggle
                     StyledButton {
-                        property bool allExpanded: Object.keys(root.collapsedCreators).length === 0
+                        property bool allExpanded: {
+                            if (!root.hierarchyData || root.hierarchyData.length === 0) return false
+                            var count = 0
+                            for (var i = 0; i < root.hierarchyData.length; i++) {
+                                if (root.expandedCreators && root.expandedCreators[root.hierarchyData[i].creator_name]) count++
+                            }
+                            return count === root.hierarchyData.length
+                        }
                         text: allExpanded ? root.tr("btn_collapse_all", "Collapse All") : root.tr("btn_expand_all", "Expand All")
                         iconText: allExpanded ? "🔼" : "🔽"
                         variant: "outline"
                         implicitHeight: 32
                         onClicked: {
                             if (allExpanded) {
+                                root.expandedCreators = {}
+                            } else {
                                 var newMap = {}
                                 for (var i = 0; i < root.hierarchyData.length; i++) {
                                     newMap[root.hierarchyData[i].creator_name] = true
                                 }
-                                root.collapsedCreators = newMap
-                            } else {
-                                root.collapsedCreators = {}
+                                root.expandedCreators = newMap
                             }
                         }
                     }
@@ -1503,7 +1521,7 @@ Rectangle {
                             clip: true
 
                     property var creatorModel: modelData
-                    property bool isCollapsed: root.collapsedCreators[creatorModel.creator_name] === true
+                    property bool isCollapsed: !(root.expandedCreators && root.expandedCreators[creatorModel.creator_name])
 
                     property int creatorMissingCount: {
                         if (typeof creatorModel.missing_count !== "undefined") return creatorModel.missing_count
@@ -1588,13 +1606,13 @@ Rectangle {
                                 cursorShape: Qt.PointingHandCursor
                                 z: 0
                                 onClicked: {
-                                    var newMap = Object.assign({}, root.collapsedCreators)
+                                    var newMap = Object.assign({}, root.expandedCreators)
                                     if (newMap[creatorModel.creator_name]) {
                                         delete newMap[creatorModel.creator_name]
                                     } else {
                                         newMap[creatorModel.creator_name] = true
                                     }
-                                    root.collapsedCreators = newMap
+                                    root.expandedCreators = newMap
                                 }
                             }
 
@@ -2011,14 +2029,14 @@ Rectangle {
                                 spacing: 6
 
                                 Repeater {
-                                    model: creatorModel.posts
+                                    model: creatorCard.isCollapsed ? null : creatorModel.posts
 
                                     delegate: Rectangle {
                                         id: postCard
                                         Layout.fillWidth: true
                                         property var postModel: modelData
                                         property string postKey: creatorModel.creator_name + "_" + postModel.post_id
-                                        property bool isPostCollapsed: root.collapsedPosts[postKey] === true
+                                        property bool isPostCollapsed: root.searchFilter.length === 0 && !(root.expandedPosts && root.expandedPosts[postKey])
 
                                         property int missingCount: {
                                             if (!postModel || !postModel.files) return 0
@@ -2087,13 +2105,13 @@ Rectangle {
                                                     cursorShape: Qt.PointingHandCursor
                                                     z: 0
                                                     onClicked: {
-                                                        var newMap = Object.assign({}, root.collapsedPosts)
+                                                        var newMap = Object.assign({}, root.expandedPosts)
                                                         if (newMap[postKey]) {
                                                             delete newMap[postKey]
                                                         } else {
                                                             newMap[postKey] = true
                                                         }
-                                                        root.collapsedPosts = newMap
+                                                        root.expandedPosts = newMap
                                                     }
                                                 }
 
@@ -2226,7 +2244,7 @@ Rectangle {
                                                 Layout.leftMargin: 14
 
                                                 Repeater {
-                                                    model: postModel.files
+                                                    model: (creatorCard.isCollapsed || postCard.isPostCollapsed) ? null : postModel.files
 
                                                     delegate: Rectangle {
                                                         Layout.fillWidth: true

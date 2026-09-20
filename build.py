@@ -126,13 +126,14 @@ def post_build_setup(output_dir: str, version: str):
 def patch_version_info(version: str):
     """Update version numbers in version_info.txt and version_info_updater.txt to match version.json."""
     import re
-    parts = version.split(".")
-    while len(parts) < 4:
-        parts.append("0")
+    num_parts = [re.sub(r'\D.*', '', p) for p in version.split(".")]
+    num_parts = [p for p in num_parts if p.isdigit()]
+    while len(num_parts) < 4:
+        num_parts.append("0")
     try:
-        ver_tuple = tuple(int(p) for p in parts[:4])
+        ver_tuple = tuple(int(p) for p in num_parts[:4])
     except ValueError:
-        ver_tuple = (1, 0, 0, 0)
+        ver_tuple = (1, 1, 6, 1)
     ver_str4 = ".".join(str(p) for p in ver_tuple)
 
     for info_file in ["version_info.txt", "version_info_updater.txt"]:

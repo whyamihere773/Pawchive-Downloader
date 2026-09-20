@@ -109,7 +109,7 @@ class FilterOptions:
         download_pawchive_temporary_files: bool = True,
         min_file_size: str = "",
         max_file_size: str = "",
-        write_audio_metadata: bool = True
+        write_audio_metadata: bool = False
     ):
         self.characters = characters
         self.character_scope = character_scope
@@ -233,7 +233,7 @@ class FilterOptions:
             download_pawchive_temporary_files=bool(d.get("download_pawchive_temporary_files", True)),
             min_file_size=d.get("min_file_size", ""),
             max_file_size=d.get("max_file_size", ""),
-            write_audio_metadata=bool(d.get("write_audio_metadata", True)),
+            write_audio_metadata=bool(d.get("write_audio_metadata", False)),
         )
 
 

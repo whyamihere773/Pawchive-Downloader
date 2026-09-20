@@ -1018,7 +1018,7 @@ Item {
                             Layout.leftMargin: 16
 
                             Repeater {
-                                model: creatorItem.posts
+                                model: creatorCard.isExpanded ? creatorItem.posts : null
 
                                 delegate: Rectangle {
                                     id: postBox
@@ -1143,7 +1143,7 @@ Item {
                                             Layout.leftMargin: 8
 
                                             Repeater {
-                                                model: postItem.links
+                                                model: creatorCard.isExpanded ? postItem.links : null
 
                                                 delegate: Rectangle {
                                                     id: linkRowRect
@@ -1236,7 +1236,7 @@ Item {
                                                         Flow {
                                                             spacing: 4
                                                             Repeater {
-                                                                model: linkItem.passwords || []
+                                                                model: creatorCard.isExpanded ? (linkItem.passwords || []) : null
 
                                                                 delegate: Rectangle {
                                                                     id: pwPill

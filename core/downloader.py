@@ -2435,6 +2435,7 @@ class KemonoDownloader:
                         mp_ok = False
                         mp_err = "Multipart download resulted in empty 0-byte file"
                     else:
+                        self._verify_file_hash(task, final_mp_size)
                         self._post_process_downloaded_file(task, options)
                         task.status = "completed"
                         task.downloaded_bytes = task.file_size
@@ -2567,9 +2568,6 @@ class KemonoDownloader:
                     self._active_responses.discard(resp)
 
 
-            # ── Post-download processing ───────────────────────────────────────
-            self._post_process_downloaded_file(task, options)
-
             final_size = os.path.getsize(task.target_path) if os.path.exists(task.target_path) else 0
             if task.file_size > 0 and final_size == 0:
                 if os.path.exists(task.target_path):
@@ -2594,31 +2592,11 @@ class KemonoDownloader:
             task.progress_pct = 100
             task.eta_str = "Done"
 
-            # Verify SHA-256 hash if provided
-            if task.expected_sha256 and os.path.exists(task.target_path):
-                hasher = hashlib.sha256()
-                try:
-                    with open(task.target_path, "rb") as check_f:
-                        while chunk := check_f.read(65536):
-                            hasher.update(chunk)
-                    computed_hash = hasher.hexdigest().lower()
-                    if computed_hash == task.expected_sha256.lower():
-                        logger.success(
-                            f"✔ {task.filename}  ({final_size / (1024*1024):.2f} MB saved, SHA-256 verified)",
-                            category="file"
-                        )
-                    else:
-                        logger.warning(
-                            f"⚠ {task.filename}: SHA-256 hash mismatch! (expected {task.expected_sha256[:8]}, got {computed_hash[:8]})",
-                            category="file"
-                        )
-                except Exception as ex:
-                    logger.debug(f"Hash calculation error for {task.filename}: {ex}", category="file")
-            else:
-                logger.success(
-                    f"✔ {task.filename}  ({final_size / (1024*1024):.2f} MB saved)",
-                    category="file"
-                )
+            # Verify hash BEFORE post-processing (mutagen tags or WebP conversion alter byte content)
+            self._verify_file_hash(task, final_size)
+
+            # ── Post-download processing ───────────────────────────────────────
+            self._post_process_downloaded_file(task, options)
 
             # Thread cooldown delay to avoid CDN rate limiting (429)
             if options.download_delay > 0 and not self._cancel_event.is_set():
@@ -2691,6 +2669,51 @@ class KemonoDownloader:
                 except Exception:
                     pass
 
+    def _verify_file_hash(self, task: DownloadTask, file_size: int):
+        """Verifies downloaded file integrity using SHA-256 or MD5 before any post-processing."""
+        raw_hash = (task.expected_sha256 or "").strip().lower()
+        if not raw_hash or not os.path.exists(task.target_path):
+            if file_size > 0:
+                logger.success(
+                    f"✔ {task.filename}  ({file_size / (1024*1024):.2f} MB saved)",
+                    category="file"
+                )
+            return
+
+        # Determine hash algorithm by length
+        if len(raw_hash) == 64 and all(c in "0123456789abcdef" for c in raw_hash):
+            algo_name = "SHA-256"
+            hasher = hashlib.sha256()
+        elif len(raw_hash) == 32 and all(c in "0123456789abcdef" for c in raw_hash):
+            algo_name = "MD5"
+            hasher = hashlib.md5()
+        else:
+            # Non-standard hash format (e.g. storageKey or arbitrary identifier)
+            if file_size > 0:
+                logger.success(
+                    f"✔ {task.filename}  ({file_size / (1024*1024):.2f} MB saved)",
+                    category="file"
+                )
+            return
+
+        try:
+            with open(task.target_path, "rb") as check_f:
+                while chunk := check_f.read(65536):
+                    hasher.update(chunk)
+            computed_hash = hasher.hexdigest().lower()
+            if computed_hash == raw_hash:
+                logger.success(
+                    f"✔ {task.filename}  ({file_size / (1024*1024):.2f} MB saved, {algo_name} verified)",
+                    category="file"
+                )
+            else:
+                logger.warning(
+                    f"⚠ {task.filename}: {algo_name} hash mismatch! (expected {raw_hash[:8]}, got {computed_hash[:8]})",
+                    category="file"
+                )
+        except Exception as ex:
+            logger.debug(f"Hash calculation error for {task.filename}: {ex}", category="file")
+
     def _post_process_downloaded_file(self, task: DownloadTask, options: FilterOptions):
         """Runs post-download processing such as WebP compression and audio metadata tagging."""
         if not task.target_path or not os.path.exists(task.target_path):
@@ -2701,7 +2724,7 @@ class KemonoDownloader:
             self._convert_to_webp(task.target_path)
 
         # 2. Audio metadata tagging
-        if getattr(options, "write_audio_metadata", True) and AudioTagger.is_supported(task.target_path):
+        if getattr(options, "write_audio_metadata", False) and AudioTagger.is_supported(task.target_path):
             AudioTagger.tag_audio_file(
                 file_path=task.target_path,
                 artist=task.creator_name,
