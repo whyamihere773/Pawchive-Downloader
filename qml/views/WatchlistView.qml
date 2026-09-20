@@ -2023,7 +2023,7 @@ Item {
 
                                     // Post items repeater (Uses safely guarded entryCard.currentCachedPosts)
                                     Repeater {
-                                        model: entryCard.currentCachedPosts
+                                        model: reviewDrawerContainer.shouldShow ? entryCard.currentCachedPosts : null
 
                                         Rectangle {
                                             width: reviewCol.width

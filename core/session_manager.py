@@ -6,6 +6,7 @@ Handles queue persistence, history records, application settings, and link file 
 import sys
 import json
 import os
+import time
 import datetime
 from typing import Dict, Any, List, Optional
 from core.logger import logger
@@ -64,7 +65,10 @@ class SessionManager:
                 removed = self.history["downloaded_files"][:-50000]
                 self.history["downloaded_files"] = self.history["downloaded_files"][-50000:]
                 self._downloaded_files_set.difference_update(removed)
-            self.save_history()
+            now = time.time()
+            if now - getattr(self, "_last_history_save_time", 0.0) >= 3.0:
+                self._last_history_save_time = now
+                self.save_history()
 
     def is_file_downloaded(self, file_id_or_path: str) -> bool:
         return file_id_or_path in self._downloaded_files_set

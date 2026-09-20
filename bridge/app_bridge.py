@@ -236,7 +236,7 @@ class AppBridge(QObject):
         self._scan_content_images = saved_settings.get("scan_content_images", True)
         self._download_pawchive_temporary_files = saved_settings.get("download_pawchive_temporary_files", True)
         self._compress_webp = saved_settings.get("compress_webp", False)
-        self._write_audio_metadata = bool(saved_settings.get("write_audio_metadata", True))
+        self._write_audio_metadata = bool(saved_settings.get("write_audio_metadata", False))
         self._keep_duplicates = saved_settings.get("keep_duplicates", False)
         self._last_archive_emit_time: float = 0.0
         self._favorite_mode = False

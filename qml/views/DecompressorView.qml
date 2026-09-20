@@ -1401,7 +1401,7 @@ Item {
                             visible: !root.isCreatorCollapsed(modelData)
 
                             Repeater {
-                                model: modelData.items
+                                model: root.isCreatorCollapsed(modelData) ? null : modelData.items
 
                                 delegate: Rectangle {
                                     id: archiveRow
@@ -2939,7 +2939,7 @@ Item {
                                         spacing: 4
 
                                         Repeater {
-                                            model: creatorData.passwords
+                                            model: creatorSectionCard.isCollapsed ? null : creatorData.passwords
                                             delegate: Rectangle {
                                                 id: pwRow
                                                 property var pwObj: modelData

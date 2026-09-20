@@ -345,6 +345,7 @@ class QueueModel(QAbstractListModel):
         self._selected_batch_id: str = ""
         self._view_mode: str = "grouped" # "grouped" or "flat"
         self._visible_tasks: List[DownloadTask] = []
+        self._visible_task_row: Dict[int, int] = {}
         self._groups_model = QueueGroupsModel(self)
         self._last_counts: Optional[tuple] = None
         self._pending_count: int = 0
@@ -403,6 +404,7 @@ class QueueModel(QAbstractListModel):
 
     def _rebuild_visible(self):
         self._visible_tasks = [t for t in self._tasks if self._matches_filter(t)]
+        self._visible_task_row = {id(t): i for i, t in enumerate(self._visible_tasks)}
 
     # ── Properties ────────────────────────────────────────────────────────────
     @Property(int, notify=minFileSizeChanged)
@@ -678,22 +680,23 @@ class QueueModel(QAbstractListModel):
 
     def updateTask(self, task: DownloadTask):
         try:
+            task_id = id(task)
+            row = self._visible_task_row.get(task_id)
+            is_visible = (row is not None)
             matches = self._matches_filter(task)
-            is_visible = task in self._visible_tasks
-            old_status = self._task_last_status.get(id(task))
+            old_status = self._task_last_status.get(task_id)
             new_status = getattr(task, "status", "")
 
             # Throttle dataChanged ONLY if the task is ALREADY visible and its status hasn't changed
             now = time.time()
-            last_emit = self._task_last_emit.get(id(task), 0.0)
+            last_emit = self._task_last_emit.get(task_id, 0.0)
             status_changed = (old_status != new_status)
             if is_visible and not status_changed and (now - last_emit < 0.08):
                 return
-            self._task_last_emit[id(task)] = now
+            self._task_last_emit[task_id] = now
 
             if is_visible:
                 if matches:
-                    row = self._visible_tasks.index(task)
                     idx = self.index(row, 0)
                     self.dataChanged.emit(idx, idx, [
                         self.ProgressRole,
@@ -704,9 +707,11 @@ class QueueModel(QAbstractListModel):
                         self.StatusRole
                     ])
                 else:
-                    row = self._visible_tasks.index(task)
                     self.beginRemoveRows(QModelIndex(), row, row)
                     self._visible_tasks.pop(row)
+                    del self._visible_task_row[task_id]
+                    for r in range(row, len(self._visible_tasks)):
+                        self._visible_task_row[id(self._visible_tasks[r])] = r
                     self.endRemoveRows()
                     self.countChanged.emit()
             else:
@@ -714,12 +719,31 @@ class QueueModel(QAbstractListModel):
                     row = len(self._visible_tasks)
                     self.beginInsertRows(QModelIndex(), row, row)
                     self._visible_tasks.append(task)
+                    self._visible_task_row[task_id] = row
                     self.endInsertRows()
                     self.countChanged.emit()
 
             if status_changed:
-                self._task_last_status[id(task)] = new_status
-                self._recalculate_counts()
+                self._task_last_status[task_id] = new_status
+                # O(1) incremental counter delta updates
+                if old_status in ("downloading", "retrying"):
+                    self._downloading_count = max(0, self._downloading_count - 1)
+                elif old_status == "completed":
+                    self._completed_count = max(0, self._completed_count - 1)
+                elif old_status == "failed":
+                    self._failed_count = max(0, self._failed_count - 1)
+                elif old_status == "pending":
+                    self._pending_count = max(0, self._pending_count - 1)
+
+                if new_status in ("downloading", "retrying"):
+                    self._downloading_count += 1
+                elif new_status == "completed":
+                    self._completed_count += 1
+                elif new_status == "failed":
+                    self._failed_count += 1
+                elif new_status == "pending":
+                    self._pending_count += 1
+
                 curr_counts = (self._pending_count, self._downloading_count, self._completed_count, self._failed_count)
                 if self._last_counts != curr_counts:
                     prev_failed = self._last_counts[3] if self._last_counts else None
@@ -737,6 +761,7 @@ class QueueModel(QAbstractListModel):
         self.beginResetModel()
         self._tasks.clear()
         self._visible_tasks.clear()
+        self._visible_task_row.clear()
         self._task_last_status.clear()
         self._task_last_emit.clear()
         self._last_counts = None

@@ -766,7 +766,7 @@ SmoothFlickable {
                     StyledCheckBox {
                         text: root.tr("opt_tag_audio_files", "Tag Audio Metadata (Artist/Title)")
                         tooltip: root.tr("opt_tag_audio_files_tip", "Embed creator name into Artist tag and post title into Title tag for MP3, FLAC, M4A, and audio files")
-                        checked: root.bridge ? root.bridge.writeAudioMetadata : true
+                        checked: root.bridge ? root.bridge.writeAudioMetadata : false
                         onCheckedChanged: if (root.bridge) root.bridge.writeAudioMetadata = checked
                     }
 

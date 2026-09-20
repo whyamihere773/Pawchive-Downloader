@@ -147,6 +147,10 @@ class ArchiveManager:
                 CREATE INDEX IF NOT EXISTS idx_archive_missing
                 ON downloaded_files(is_missing);
             """)
+            self._conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_archive_downloaded_at
+                ON downloaded_files(downloaded_at);
+            """)
             self._conn.commit()
         except Exception as e:
             logger.error(f"Failed to initialize download archive database: {e}", category="archive")
@@ -441,6 +445,11 @@ class ArchiveManager:
 
                     c_entry = creators_map[creator_key]
                     c_entry["total_files"] += 1
+                    if r_down_at:
+                        if "newest_downloaded_at" not in c_entry or r_down_at > c_entry["newest_downloaded_at"]:
+                            c_entry["newest_downloaded_at"] = r_down_at
+                        if "oldest_downloaded_at" not in c_entry or r_down_at < c_entry["oldest_downloaded_at"]:
+                            c_entry["oldest_downloaded_at"] = r_down_at
                     r_missing_int = int(r_is_missing if r_is_missing is not None else -1)
                     if r_missing_int == 1:
                         c_entry["missing_count"] += 1
@@ -530,12 +539,12 @@ class ArchiveManager:
                     result.sort(key=lambda x: x["total_files"], reverse=True)
                 elif clean_sort == "newest":
                     result.sort(
-                        key=lambda x: max((f["downloaded_at"] for p in x["posts"] for f in p["files"]), default=""),
+                        key=lambda x: x.get("newest_downloaded_at", ""),
                         reverse=True
                     )
                 elif clean_sort == "oldest":
                     result.sort(
-                        key=lambda x: min((f["downloaded_at"] for p in x["posts"] for f in p["files"]), default="")
+                        key=lambda x: x.get("oldest_downloaded_at", "")
                     )
                 else:
                     result.sort(key=lambda x: x["creator_name"].lower())
