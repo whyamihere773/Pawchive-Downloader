@@ -1,5 +1,5 @@
 {
-    "version": "1.1.6-hotfix.1",
+    "version": "1.1.7",
     "commit": "",
     "short_commit": "",
     "date": "2026-09-20",
@@ -91,9 +91,9 @@
             "notes": "Polite Pawchive server protection: single continuous resumable stream for Pawchive, gentle inter-file pacing (250-400ms), and relaxed API pagination delays. Embedded audio metadata tagger (ID3v2.3, Vorbis, MP4) for MP3, FLAC, M4A, OGG, and WAV. Queue batch cancellation fixes, Retry modal failed-task clearing, and smooth scroll fixes across Queue, Archive, and Retry modals. Custom min/max file size filtering."
         },
         {
-            "version": "1.1.6-hotfix.1",
+            "version": "1.1.7",
             "date": "2026-09-20",
-            "notes": "Fix false SHA-256 hash mismatch warnings on downloaded video files by excluding .mp4 from audio tagging and verifying checksums before post-processing. Collapsible file-trees in Archive tab folded by default to optimize UI rendering with 10k-100k files. Disable audio metadata tagging by default across settings."
+            "notes": "Archive tab performance overhaul: folded artist and post file-trees by default with lazy-loading for instantaneous loading with 10k-100k+ files. Extreme scale optimizations: O(1) Queue lookups, indexed archive queries, and throttled history writes. Download integrity & hash fixes: verified raw downloads before post-processing, excluded MP4 video files from audio tagger, and disabled audio tagging by default."
         }
     ]
 }

@@ -133,7 +133,7 @@ def patch_version_info(version: str):
     try:
         ver_tuple = tuple(int(p) for p in num_parts[:4])
     except ValueError:
-        ver_tuple = (1, 1, 6, 1)
+        ver_tuple = (1, 1, 7, 0)
     ver_str4 = ".".join(str(p) for p in ver_tuple)
 
     for info_file in ["version_info.txt", "version_info_updater.txt"]:
