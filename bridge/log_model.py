@@ -188,3 +188,27 @@ class LogModel(QAbstractListModel):
             f"[{e.timestamp}] [{e.level}] [{e.category}] {e.message}"
             for e in self._all_entries
         )
+
+    @Slot(result=str)
+    def getAllText(self) -> str:
+        """Returns all currently filtered visible log entries formatted as text."""
+        return "\n".join(
+            f"[{e.timestamp}] [{e.level}] [{e.category}] {e.message}"
+            for e in self._filtered_entries
+        )
+
+    @Slot(list, result=str)
+    def getSelectedText(self, indices: list) -> str:
+        """Returns selected visible log entries by their row indices in order."""
+        lines = []
+        valid_indices = set()
+        for i in indices:
+            try:
+                valid_indices.add(int(float(i)))
+            except (ValueError, TypeError):
+                pass
+        for idx in sorted(valid_indices):
+            if 0 <= idx < len(self._filtered_entries):
+                e = self._filtered_entries[idx]
+                lines.append(f"[{e.timestamp}] [{e.level}] [{e.category}] {e.message}")
+        return "\n".join(lines)

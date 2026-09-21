@@ -3267,6 +3267,17 @@ class AppBridge(QObject):
         else:
             subprocess.Popen(["xdg-open", logs_dir])
 
+    @Slot(str)
+    def copyToClipboard(self, text: str):
+        """Copies given text to the system clipboard in a thread-safe manner."""
+        try:
+            from PySide6.QtGui import QGuiApplication
+            cb = QGuiApplication.clipboard()
+            if cb:
+                cb.setText(str(text))
+        except Exception as e:
+            logger.debug(f"Failed to copy to clipboard: {e}", category="system")
+
     @Slot()
     def openDownloadFolder(self):
         os.makedirs(self._download_dir, exist_ok=True)
