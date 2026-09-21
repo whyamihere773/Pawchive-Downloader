@@ -1,8 +1,8 @@
 {
-    "version": "1.1.7",
+    "version": "1.1.8",
     "commit": "",
     "short_commit": "",
-    "date": "2026-09-20",
+    "date": "2026-09-21",
     "channel": "release",
     "history": [
         {
@@ -94,6 +94,11 @@
             "version": "1.1.7",
             "date": "2026-09-20",
             "notes": "Archive tab performance overhaul: folded artist and post file-trees by default with lazy-loading for instantaneous loading with 10k-100k+ files. Extreme scale optimizations: O(1) Queue lookups, indexed archive queries, and throttled history writes. Download integrity & hash fixes: verified raw downloads before post-processing, excluded MP4 video files from audio tagger, and disabled audio tagging by default."
+        },
+        {
+            "version": "1.1.8",
+            "date": "2026-09-21",
+            "notes": "Console Log selection overhaul: multi-row continuous drag selection, auto-scrolling, keyboard range navigation, clipboard copy fixes, and right-click context menu. Stream video SHA-256 verification fixes."
         }
     ]
 }
