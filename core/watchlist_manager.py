@@ -229,11 +229,54 @@ class WatchlistManager:
         """Update last-downloaded post metadata after a successful download."""
         existing = self._find(user_id, service)
         if existing:
-            existing.last_post_id = post_id
-            existing.last_post_date = post_date
+            if post_date and (not existing.last_post_date or post_date >= existing.last_post_date):
+                existing.last_post_date = post_date
+            if post_id:
+                existing.last_post_id = post_id
             existing.new_post_count = 0
             existing.cached_new_posts = []
             self.save()
+
+    def resolve_posts(
+        self,
+        user_id: str,
+        service: str,
+        post_ids: Optional[List[str]] = None,
+        latest_post_id: str = "",
+        latest_post_date: str = ""
+    ) -> bool:
+        """
+        Mark new posts as resolved (e.g. after download, or when files were already archived / on disk).
+        If post_ids is None: marks all pending updates as resolved, resetting new_post_count to 0.
+        If post_ids is given: removes those specific posts from cached_new_posts and updates new_post_count.
+        Advances last_post_date and last_post_id safely without regression.
+        """
+        existing = self._find(user_id, service)
+        if not existing:
+            return False
+
+        if post_ids:
+            p_set = set(str(pid) for pid in post_ids)
+            existing.cached_new_posts = [
+                p for p in getattr(existing, "cached_new_posts", [])
+                if str(p.get("id", "")) not in p_set
+            ]
+            existing.new_post_count = len(existing.cached_new_posts)
+            if existing.new_post_count == 0:
+                if latest_post_date and (not existing.last_post_date or latest_post_date >= existing.last_post_date):
+                    existing.last_post_date = latest_post_date
+                if latest_post_id:
+                    existing.last_post_id = latest_post_id
+        else:
+            if latest_post_date and (not existing.last_post_date or latest_post_date >= existing.last_post_date):
+                existing.last_post_date = latest_post_date
+            if latest_post_id:
+                existing.last_post_id = latest_post_id
+            existing.new_post_count = 0
+            existing.cached_new_posts = []
+
+        self.save()
+        return True
 
     def set_auto_check(self, user_id: str, service: str, enabled: bool):
         """Toggle the per-entry auto_check flag."""

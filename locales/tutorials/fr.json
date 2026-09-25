@@ -89,6 +89,11 @@
         "heading": "Contourner les quotas de méga bande passante (VPN et proxy)",
         "body": "Mega limite les comptes gratuits à environ 5 Go de transfert toutes les 6 heures par adresse IP. Lorsqu'une limite de quota est atteinte :\n• VPN Bypass : changez votre serveur VPN vers une autre ville ou un autre pays pour obtenir une nouvelle adresse IP, puis reprenez vos téléchargements.\n• Paramètres du proxy : ouvrez Paramètres -> Réseau et proxy et saisissez votre URL de proxy HTTP ou SOCKS5 (par exemple, chaussettes5://127.0.0.1:1080). Pawchive acheminera les demandes de fragments via le proxy, contournant instantanément le bloc de quota.",
         "type": "warning"
+      },
+      {
+        "heading": "Filtrage des liens Cloud & Tri par personnage",
+        "body": "Les fichiers découverts dans les dossiers partagés Mega, Google Drive, Dropbox et GoFile sont automatiquement vérifiés selon vos mots d'exclusion et limites de taille. Lorsque le tri par personnage est activé, les fichiers cloud sont organisés en sous-dossiers de franchise et de personnage, exactement comme les téléchargements directs.",
+        "type": "tip"
       }
     ]
   },
@@ -110,6 +115,48 @@
       {
         "heading": "Système d'apprentissage de personnages intelligent",
         "body": "Si un nom de personnage apparaît à plusieurs reprises dans les titres de publication ou les balises, l'application l'apprend de manière dynamique et crée des dossiers correspondants même si le personnage n'est pas encore dans Known.txt.",
+        "type": "tip"
+      },
+      {
+        "heading": "Reconnaissance multilingue & Base de données principale",
+        "body": "Le moteur de reconnaissance intègre plus de 100 000 personnages d'anime et de jeux vidéo avec un classement hiérarchique automatique (Franchise / Personnage / Post). Il prend en charge le japonais, le chinois, le coréen, le russe et les langues européennes sans aucune configuration manuelle.",
+        "type": "info"
+      },
+      {
+        "heading": "Correspondance contextuelle avec l'archive du créateur",
+        "body": "Lors de l'identification de personnages dans des titres ambigus, Pawchive croise les tags, les noms de fichiers joints et l'historique de téléchargement de l'artiste dans la base de données d'archives pour déterminer la franchise la plus probable.",
+        "type": "tip"
+      }
+    ]
+  },
+  {
+    "title": "Assistant sémantique IA & Raisonnement hors ligne",
+    "icon": "🧠",
+    "summary": "Plongements vectoriels hors ligne, raisonnement SLM, accélération matérielle et gestionnaire de modèles.",
+    "content": [
+      {
+        "heading": "Qu'est-ce que la reconnaissance IA des personnages ?",
+        "body": "Pawchive intègre un assistant IA optionnel, 100% hors ligne, conçu pour les PC modernes. Il analyse les titres désordonnés, sans espaces ou cryptiques que les règles classiques ne peuvent pas traiter, prédisant avec précision la franchise et le personnage sans envoyer de données sur Internet.",
+        "type": "intro"
+      },
+      {
+        "heading": "Architecture IA à deux niveaux",
+        "body": "• Niveau 1 (Correspondance sémantique rapide) : Un modèle vectoriel léger (~127 Mo) qui convertit les titres en vecteurs mathématiques et reconnaît les personnages en 1 à 3 ms sur CPU ou GPU.\n• Niveau 2 (Raisonnement contextuel profond) : Un petit modèle de langage (SLM) hors ligne qui analyse les indices du post et les croise avec l'historique de l'artiste pour déduire les personnages obscurs.",
+        "type": "info"
+      },
+      {
+        "heading": "Options de taille de modèle (Light vs Smart)",
+        "body": "• Light (Qwen 0.5B • ~490 Mo) : Très faible empreinte mémoire (~450 Mo de RAM), idéal pour les ordinateurs portables anciens et les CPU.\n• Smart (Qwen 1.5B • ~1.04 Go) : Intelligence supérieure et connaissances approfondies de la culture anime, recommandé pour les GPU récents ou les CPU puissants.",
+        "type": "tip"
+      },
+      {
+        "heading": "Accélération matérielle & Installation en 1 clic",
+        "body": "Téléchargez les modèles en un clic dans Paramètres → Stockage et traitement des fichiers. Le moteur détecte et active automatiquement les GPU NVIDIA (CUDA/TensorRT), AMD/Intel (DirectML) ou les CPU multi-cœurs. Affiche la vitesse en direct, le pourcentage et permet l'annulation.",
+        "type": "info"
+      },
+      {
+        "heading": "Bac à sable de test IA en direct",
+        "body": "Avant de lancer vos téléchargements, vous pouvez tester la classification IA dans le bac à sable des paramètres. Saisissez n'importe quel titre brut et cliquez sur 'Tester' pour voir les résultats heuristiques et IA en temps réel.",
         "type": "tip"
       }
     ]
@@ -479,6 +526,11 @@
         "heading": "Contrôles du sélecteur de publication et du vérificateur d'archives",
         "body": "• 🖼️ Sélectionner les publications : ouvre le navigateur de catalogue interactif pour sélectionner manuellement les publications et les pièces jointes avant de les télécharger.\n• 🔍 Vérifier l'archive : analyse le stockage local pour vérifier si les fichiers archivés existent toujours sur le disque.\n• ⚠️ Badges manquants : indicateurs rouges et orange mettant en évidence les fichiers manquants et les téléchargements incomplets.\n• 🏷️ Modèle de nom de fichier : concepteur de puces de balises interactives avec aperçu en direct et formatage personnalisé.",
         "type": "tip"
+      },
+      {
+        "heading": "Contrôles IA & Accélération matérielle",
+        "body": "• 🧠 Bascule IA : Active les plongements vectoriels et le raisonnement SLM hors ligne pour les titres complexes.\n• ⚡ Badge GPU : Indique l'accélération matérielle active (NVIDIA CUDA, DirectML ou CPU).\n• 🪶 Taille du modèle : Alterne entre Light (0.5B économe) et Smart (1.5B haute précision).\n• 🧪 Bac à sable IA : Aperçu interactif du classement des dossiers en temps réel.",
+        "type": "info"
       }
     ]
   }

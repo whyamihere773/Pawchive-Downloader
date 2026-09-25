@@ -89,6 +89,11 @@
         "heading": "Vượt qua hạn ngạch băng thông lớn (VPN & Proxy)",
         "body": "Mega giới hạn tài khoản miễn phí ở mức ~5 GB chuyển khoản cứ sau 6 giờ cho mỗi địa chỉ IP. Khi đạt đến giới hạn hạn ngạch:\n• Bỏ qua VPN: Chuyển máy chủ VPN của bạn sang thành phố hoặc quốc gia khác để lấy địa chỉ IP mới, sau đó tiếp tục tải xuống.\n• Cài đặt proxy: Mở Cài đặt -> Mạng & Proxy và nhập URL proxy HTTP hoặc SOCKS5 của bạn (ví dụ: socks5://127.0.0.1:1080). Pawchive sẽ định tuyến các yêu cầu chunk thông qua proxy, ngay lập tức bỏ qua khối hạn ngạch.",
         "type": "warning"
+      },
+      {
+        "heading": "Lọc liên kết đám mây & Phân loại nhân vật",
+        "body": "Các tệp được tìm thấy trong thư mục chia sẻ Mega, Google Drive, Dropbox và GoFile sẽ tự động được kiểm tra dựa trên từ khóa bỏ qua và giới hạn kích thước tệp. Khi tính năng sắp xếp nhân vật được bật, các tệp đám mây sẽ được tự động phân loại vào thư mục thương hiệu và nhân vật tương tự như tải xuống trực tiếp.",
+        "type": "tip"
       }
     ]
   },
@@ -110,6 +115,48 @@
       {
         "heading": "Hệ thống học nhân vật thông minh",
         "body": "Nếu tên ký tự xuất hiện lặp lại trên tiêu đề hoặc thẻ bài đăng, ứng dụng sẽ tự động tìm hiểu tên đó và tạo các thư mục phù hợp ngay cả khi ký tự đó chưa có trong Known.txt.",
+        "type": "tip"
+      },
+      {
+        "heading": "Nhận diện đa ngôn ngữ & Cơ sở dữ liệu chính",
+        "body": "Công cụ nhận diện tích hợp từ điển chính với hơn 100.000 nhân vật anime và trò chơi điện tử, hỗ trợ phân loại theo thứ bậc tự động (Thương hiệu / Nhân vật / Bài đăng). Hỗ trợ tiếng Nhật, tiếng Trung, tiếng Hàn, tiếng Nga và các ngôn ngữ châu Âu mà không cần cài đặt thủ công.",
+        "type": "info"
+      },
+      {
+        "heading": "Đối chiếu ngữ cảnh từ kho lưu trữ của tác giả",
+        "body": "Khi xác định nhân vật từ các tiêu đề không rõ ràng, Pawchive sẽ đối chiếu thẻ bài đăng, tên tệp đính kèm và lịch sử tải xuống trước đây của tác giả trong cơ sở dữ liệu lưu trữ để xác định thương hiệu chuẩn xác nhất.",
+        "type": "tip"
+      }
+    ]
+  },
+  {
+    "title": "Trợ lý ngữ nghĩa AI & Suy luận ngoại tuyến",
+    "icon": "🧠",
+    "summary": "Nhúng vector ngoại tuyến, suy luận mô hình ngôn ngữ SLM, tăng tốc phần cứng và quản lý mô hình.",
+    "content": [
+      {
+        "heading": "Nhận diện nhân vật bằng AI là gì?",
+        "body": "Pawchive tích hợp trợ lý AI 100% ngoại tuyến được thiết kế cho các máy tính hiện đại. Trợ lý này phân tích các tiêu đề bài đăng lộn xộn, không có dấu cách hoặc viết tắt mà quy tắc thông thường không thể nhận biết, dự đoán chính xác thương hiệu và nhân vật mà không gửi bất kỳ dữ liệu nào lên mạng.",
+        "type": "intro"
+      },
+      {
+        "heading": "Kiến trúc AI hai cấp độ",
+        "body": "• Cấp 1 (Bộ so khớp ngữ nghĩa nhanh): Mô hình vector siêu nhẹ (~127 MB) chuyển đổi tiêu đề thành vector và so khớp trong 1–3 ms trên CPU hoặc GPU.\n• Cấp 2 (Bộ suy luận ngữ cảnh sâu): Mô hình ngôn ngữ nhỏ (SLM) ngoại tuyến đọc các từ ngữ tinh tế và đối chiếu với lịch sử của tác giả để suy luận các nhân vật hiếm.",
+        "type": "info"
+      },
+      {
+        "heading": "Tùy chọn kích thước mô hình (Light vs Smart)",
+        "body": "• Light (Qwen 0.5B • ~490 MB): Mức tiêu thụ bộ nhớ cực thấp (~450 MB RAM), lý tưởng cho máy tính xách tay cũ và CPU tiêu chuẩn.\n• Smart (Qwen 1.5B • ~1.04 GB): Trí thông minh cao hơn và hiểu biết sâu sắc về văn hóa anime, khuyên dùng cho hệ thống có GPU hiện đại hoặc CPU mạnh.",
+        "type": "tip"
+      },
+      {
+        "heading": "Tăng tốc phần cứng & Cài đặt 1 cú nhấp",
+        "body": "Tải xuống mô hình trực tiếp trong Cài đặt → Lưu trữ & Xử lý tệp chỉ với một cú nhấp chuột. Tự động kích hoạt GPU NVIDIA (CUDA/TensorRT), AMD/Intel (DirectML) hoặc CPU đa lõi. Hỗ trợ hiển thị tốc độ, phần trăm và hủy tải xuống bất cứ lúc nào.",
+        "type": "info"
+      },
+      {
+        "heading": "Hộp thử nghiệm AI trực tiếp",
+        "body": "Trước khi tải xuống, bạn có thể kiểm tra cách AI phân loại tiêu đề trong hộp thử nghiệm tương tác tại Cài đặt. Nhập bất kỳ tiêu đề thô nào và nhấp vào 'Kiểm tra khớp' để xem kết quả suy luận AI ngay lập tức.",
         "type": "tip"
       }
     ]
@@ -479,6 +526,11 @@
         "heading": "Kiểm soát bộ chọn bài đăng và người xác minh lưu trữ",
         "body": "• 🖼️ Chọn Bài viết: Mở trình duyệt danh mục tương tác để chọn kỹ các bài đăng và tệp đính kèm trước khi tải xuống.\n• 🔍 Xác minh Lưu trữ: Quét bộ nhớ cục bộ để kiểm tra xem các tệp đã lưu trữ có còn tồn tại trên đĩa hay không.\n• ⚠️ Huy hiệu bị thiếu: Các chỉ báo màu đỏ và màu hổ phách làm nổi bật các tệp bị thiếu và các bản tải xuống chưa hoàn tất.\n• 🏷️ Mẫu tên tệp: Trình thiết kế chip thẻ tương tác với bản xem trước trực tiếp và định dạng tùy chỉnh.",
         "type": "tip"
+      },
+      {
+        "heading": "Điều khiển AI & Tăng tốc phần cứng",
+        "body": "• 🧠 Chuyển đổi AI: Kích hoạt nhúng vector và suy luận SLM ngoại tuyến cho các tiêu đề phức tạp.\n• ⚡ Huy hiệu GPU: Hiển thị tăng tốc phần cứng đang hoạt động (NVIDIA CUDA, DirectML hoặc CPU).\n• 🪶 Kích thước mô hình: Chuyển đổi giữa Light (0.5B tiết kiệm tài nguyên) và Smart (1.5B suy luận sâu).\n• 🧪 Hộp thử nghiệm AI: Khu vực thử nghiệm phân loại thư mục trực tiếp trong phần Cài đặt.",
+        "type": "info"
       }
     ]
   }

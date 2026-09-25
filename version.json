@@ -1,8 +1,8 @@
 {
-    "version": "1.1.8",
+    "version": "1.1.9",
     "commit": "",
     "short_commit": "",
-    "date": "2026-09-21",
+    "date": "2026-09-25",
     "channel": "release",
     "history": [
         {
@@ -99,6 +99,11 @@
             "version": "1.1.8",
             "date": "2026-09-21",
             "notes": "Console Log selection overhaul: multi-row continuous drag selection, auto-scrolling, keyboard range navigation, clipboard copy fixes, and right-click context menu. Stream video SHA-256 verification fixes."
+        },
+        {
+            "version": "1.1.9",
+            "date": "2026-09-25",
+            "notes": "Character recognition overhaul with optional offline AI assistant (Fast Multilingual Matcher + Deep Reasoner SLM), in-app model downloader with real-time speed & progress, live recognition test sandbox, cloud link keyword filtering & subfolder sorting (Mega, GDrive, Dropbox, GoFile), Watchlist update auto-resolution, and archive self-healing migration."
         }
     ]
 }

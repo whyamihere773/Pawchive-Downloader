@@ -89,6 +89,11 @@
         "heading": "Eludir las cuotas de mega ancho de banda (VPN y Proxy)",
         "body": "Mega limita las cuentas gratuitas a ~5 GB de transferencia cada 6 horas por dirección IP. Cuando se alcanza un límite de cuota:\n• VPN Bypass: cambie su servidor VPN a una ciudad o país diferente para obtener una nueva dirección IP y luego reanude sus descargas.\n• Configuración de proxy: abra Configuración -> Red y proxy e ingrese su URL de proxy HTTP o SOCKS5 (por ejemplo, calcetines5://127.0.0.1:1080). Pawchive enrutará las solicitudes de fragmentos a través del proxy, evitando instantáneamente el bloqueo de cuota.",
         "type": "warning"
+      },
+      {
+        "heading": "Filtrado de enlaces en la nube y ordenación por personaje",
+        "body": "Los archivos descubiertos en carpetas compartidas de Mega, Google Drive, Dropbox y GoFile se verifican automáticamente con sus palabras de exclusión y límites de tamaño. Además, con la ordenación por personaje activa, los archivos en la nube se organizan en subcarpetas de franquicia y personaje, igual que las descargas directas.",
+        "type": "tip"
       }
     ]
   },
@@ -110,6 +115,48 @@
       {
         "heading": "Sistema inteligente de aprendizaje de personajes",
         "body": "Si el nombre de un personaje aparece repetidamente en los títulos o etiquetas de las publicaciones, la aplicación lo aprende dinámicamente y crea carpetas coincidentes incluso si el personaje aún no está en Known.txt.",
+        "type": "tip"
+      },
+      {
+        "heading": "Reconocimiento multilingüe y base de datos maestra",
+        "body": "El motor de reconocimiento cuenta con una base de datos integrada de más de 100.000 personajes de anime y videojuegos con organización jerárquica automática (Franquicia / Personaje / Publicación). Reconoce japonés, chino, coreano, ruso y lenguas europeas con acentos sin configuración manual.",
+        "type": "info"
+      },
+      {
+        "heading": "Coincidencia contextual con el archivo del creador",
+        "body": "Al identificar personajes en títulos ambiguos, Pawchive compara las etiquetas, nombres de adjuntos y el historial de descargas del artista en la base de datos de archivos para determinar la franquicia más probable.",
+        "type": "tip"
+      }
+    ]
+  },
+  {
+    "title": "Asistente semántico IA y razonamiento sin conexión",
+    "icon": "🧠",
+    "summary": "Incrustaciones vectoriales sin conexión, razonamiento SLM, aceleración por hardware y gestor de modelos.",
+    "content": [
+      {
+        "heading": "¿Qué es el reconocimiento de personajes con IA?",
+        "body": "Pawchive incluye un asistente de IA opcional, 100% local, diseñado para ordenadores modernos. Analiza títulos desordenados, sin espacios o crípticos que las reglas normales no detectan, deduciendo con precisión la franquicia y el personaje sin enviar datos a internet.",
+        "type": "intro"
+      },
+      {
+        "heading": "Arquitectura de IA en dos niveles",
+        "body": "• Nivel 1 (Coincidencia semántica rápida): Un modelo vectorial ligero (~127 MB) que convierte títulos en vectores y los compara en 1–3 ms en CPU o GPU.\n• Nivel 2 (Razonador de contexto profundo): Un modelo de lenguaje pequeño (SLM) local que analiza pistas en la publicación y las cruza con el historial del creador para deducir personajes difíciles.",
+        "type": "info"
+      },
+      {
+        "heading": "Opciones de tamaño de modelo (Light vs Smart)",
+        "body": "• Light (Qwen 0.5B • ~490 MB): Muy bajo consumo de memoria (~450 MB de RAM), ideal para portátiles antiguos y CPUs modestas.\n• Smart (Qwen 1.5B • ~1.04 GB): Mayor inteligencia y amplio conocimiento de anime y cultura pop, recomendado para GPUs modernas o CPUs rápidas.",
+        "type": "tip"
+      },
+      {
+        "heading": "Aceleración por hardware e instalación fácil",
+        "body": "Descargue modelos con un clic en Ajustes → Almacenamiento y procesamiento de archivos. Detecta y activa automáticamente GPUs NVIDIA (CUDA/TensorRT), AMD/Intel (DirectML) o CPU multinúcleo. Muestra velocidad en vivo, porcentaje y opción de cancelar.",
+        "type": "info"
+      },
+      {
+        "heading": "Entorno de pruebas interactivo",
+        "body": "Antes de descargar, puede probar cómo categoriza la IA en el entorno de pruebas en Ajustes. Introduzca cualquier título y haga clic en 'Probar coincidencia' para ver los resultados heurísticos y de IA en tiempo real.",
         "type": "tip"
       }
     ]
@@ -479,6 +526,11 @@
         "heading": "Controles del selector de publicaciones y del verificador de archivos",
         "body": "• 🖼️ Seleccionar publicaciones: abre el navegador del catálogo interactivo para seleccionar publicaciones y archivos adjuntos antes de descargarlos.\n• 🔍 Verificar archivo: analiza el almacenamiento local para comprobar si los archivos archivados todavía existen en el disco.\n• ⚠️ Insignias faltantes: indicadores rojos y ámbar que resaltan archivos faltantes y descargas incompletas.\n• 🏷️ Plantilla de nombre de archivo: diseñador de chips de etiquetas interactivo con vista previa en vivo y formato personalizado.",
         "type": "tip"
+      },
+      {
+        "heading": "Controles de IA y aceleración",
+        "body": "• 🧠 Interruptor IA: Activa las incrustaciones vectoriales y razonamiento SLM local para títulos complejos.\n• ⚡ Insignia GPU: Muestra la aceleración activa (NVIDIA CUDA, DirectML o CPU).\n• 🪶 Tamaño de modelo: Alterna entre Light (0.5B bajo consumo) y Smart (1.5B razonamiento profundo).\n• 🧪 Entorno IA: Vista previa interactiva de la clasificación de carpetas en tiempo real.",
+        "type": "info"
       }
     ]
   }

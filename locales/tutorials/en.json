@@ -89,6 +89,11 @@
         "heading": "Bypassing Mega Bandwidth Quotas (VPN & Proxy)",
         "body": "Mega limits free accounts to ~5 GB of transfer every 6 hours per IP address. When a quota limit is reached:\n• VPN Bypass: Switch your VPN server to a different city or country to obtain a new IP address, then resume your downloads.\n• Proxy Setting: Open Settings -> Network & Proxy, and input your HTTP or SOCKS5 proxy URL (e.g. socks5://127.0.0.1:1080). Pawchive will route chunk requests through the proxy, instantly bypassing the quota block.",
         "type": "warning"
+      },
+      {
+        "heading": "Cloud Link Filtering & Character Sorting",
+        "body": "Files discovered inside shared Mega, Google Drive, Dropbox, and GoFile folders are automatically checked against your keyword skip words and file size limits. Furthermore, when character sorting is active, downloaded cloud files are organized into franchise and character folders just like direct downloads.",
+        "type": "tip"
       }
     ]
   },
@@ -110,6 +115,48 @@
       {
         "heading": "Smart Character Learning System",
         "body": "If a character name appears repeatedly across post titles or tags, the app dynamically learns it and creates matching folders even if the character isn't yet in Known.txt.",
+        "type": "tip"
+      },
+      {
+        "heading": "Multilingual Recognition & Master Database",
+        "body": "The character recognition engine supports over 100,000 anime and video game characters with automatic hierarchical sorting (Franchise / Character / Post). It recognizes characters across Japanese (Kanji, Kana, Romaji), Chinese (Simplified & Traditional Hanzi, Pinyin), Korean (Hangul), Russian (Cyrillic), and European languages with zero manual setup.",
+        "type": "info"
+      },
+      {
+        "heading": "Creator Archive Context Matching",
+        "body": "When identifying characters from ambiguous titles, Pawchive cross-references post tags, attachment filenames, and the artist's historical download patterns from the archive database to determine the most probable franchise.",
+        "type": "tip"
+      }
+    ]
+  },
+  {
+    "title": "AI Semantic Assistant & Reasoning",
+    "icon": "🧠",
+    "summary": "Offline vector embeddings, deep SLM reasoning, hardware acceleration, and in-app model manager.",
+    "content": [
+      {
+        "heading": "What is AI Character Recognition?",
+        "body": "Pawchive includes an optional, 100% offline AI assistant designed for modern PCs. It analyzes messy, unspaced, or cryptic post titles that traditional rules cannot parse, predicting the exact franchise and character without sending any data over the internet.",
+        "type": "intro"
+      },
+      {
+        "heading": "Two-Tier AI Architecture",
+        "body": "• Tier 1 (Fast Semantic Matcher): A lightweight vector model (~127 MB) that converts titles into mathematical vectors, recognizing characters across all supported languages in 1–3 ms on CPU or GPU.\n• Tier 2 (Deep Context Reasoner): An offline Small Language Model (SLM) that reads subtle post tokens and cross-references them against creator archive history to deduce obscure characters.",
+        "type": "info"
+      },
+      {
+        "heading": "Model Size Options (Light vs Smart)",
+        "body": "• Light (Qwen 0.5B • ~490 MB): Low memory footprint (~450 MB RAM), ideal for older laptops and CPUs.\n• Smart (Qwen 1.5B • ~1.04 GB): Higher intelligence and deeper anime & pop culture knowledge, recommended for systems with modern GPUs or CPUs.",
+        "type": "tip"
+      },
+      {
+        "heading": "Hardware Acceleration & In-App Setup",
+        "body": "AI models can be downloaded with 1-click directly in Settings → Storage & File Processing. The engine automatically detects and activates NVIDIA GPU (CUDA / TensorRT), AMD/Intel GPU (DirectML), or multi-threaded CPU. Model downloads feature live speed, percentage indicators, and cancellation.",
+        "type": "info"
+      },
+      {
+        "heading": "Live AI Test Sandbox",
+        "body": "Before downloading, you can test how the AI categorizes messy post titles using the interactive sandbox in Settings. Enter any raw post title and click 'Test Match' to see heuristic and AI predictions in real time.",
         "type": "tip"
       }
     ]
@@ -479,6 +526,11 @@
         "heading": "Post Selector & Archive Verifier Controls",
         "body": "• 🖼️ Select Posts: Opens the interactive catalog browser to handpick posts and attachments before downloading.\n• 🔍 Verify Archive: Scans local storage to check whether archived files still exist on disk.\n• ⚠️ Missing Badges: Red and amber indicators highlighting missing files and incomplete downloads.\n• 🏷️ Filename Template: Interactive tag chip designer with live preview and custom formatting.",
         "type": "tip"
+      },
+      {
+        "heading": "AI Recognition & Hardware Controls",
+        "body": "• 🧠 AI Toggle: Enables offline vector embeddings and SLM reasoning for messy post titles.\n• ⚡ GPU Badge: Displays active hardware acceleration (NVIDIA CUDA, DirectML, or CPU).\n• 🪶 Model Size: Switches between Light (0.5B potato-friendly) and Smart (1.5B deep intelligence) SLMs.\n• 🧪 AI Sandbox: Interactive test bench in Settings to preview folder sorting on raw titles in real time.",
+        "type": "info"
       }
     ]
   }

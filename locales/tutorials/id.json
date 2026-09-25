@@ -89,6 +89,11 @@
         "heading": "Melewati Kuota Mega Bandwidth (VPN & Proxy)",
         "body": "Mega membatasi akun gratis hingga ~5 GB transfer setiap 6 jam per alamat IP. Ketika batas kuota tercapai:\n• VPN Bypass: Alihkan server VPN Anda ke kota atau negara lain untuk mendapatkan alamat IP baru, lalu lanjutkan pengunduhan Anda.\n• Pengaturan Proxy: Buka Pengaturan -> Jaringan & Proxy, dan masukkan URL proxy HTTP atau SOCKS5 Anda (mis. Socks5://127.0.0.1:1080). Pawchive akan merutekan permintaan potongan melalui proxy, langsung melewati blok kuota.",
         "type": "warning"
+      },
+      {
+        "heading": "Penyaringan Tautan Cloud & Penyortiran Karakter",
+        "body": "File di dalam folder bersama Mega, Google Drive, Dropbox, dan GoFile secara otomatis diperiksa terhadap kata lewati dan batas ukuran file Anda. Selain itu, saat penyortiran karakter aktif, file cloud yang diunduh akan diatur ke dalam subfolder waralaba dan karakter persis seperti unduhan langsung.",
+        "type": "tip"
       }
     ]
   },
@@ -110,6 +115,48 @@
       {
         "heading": "Sistem Pembelajaran Karakter Cerdas",
         "body": "Jika nama karakter muncul berulang kali di judul atau tag postingan, aplikasi akan mempelajarinya secara dinamis dan membuat folder yang cocok meskipun karakter tersebut belum ada di Known.txt.",
+        "type": "tip"
+      },
+      {
+        "heading": "Pengenalan Multibahasa & Database Utama",
+        "body": "Mesin pengenalan mencakup kamus bawaan berisi lebih dari 100.000 karakter anime dan game dengan pengurutan hierarki otomatis (Waralaba / Karakter / Postingan). Mendukung bahasa Jepang, Mandarin, Korea, Rusia, dan bahasa Eropa tanpa konfigurasi manual.",
+        "type": "info"
+      },
+      {
+        "heading": "Pencocokan Konteks Arsip Kreator",
+        "body": "Saat mengidentifikasi karakter dari judul yang ambigu, Pawchive memeriksa silang tag postingan, nama lampiran, dan riwayat unduhan artis di database arsip untuk menentukan waralaba yang paling tepat.",
+        "type": "tip"
+      }
+    ]
+  },
+  {
+    "title": "Asisten Semantik AI & Penalaran Offline",
+    "icon": "🧠",
+    "summary": "Penyematan vektor offline, penalaran model SLM, akselerasi perangkat keras, dan pengelola model.",
+    "content": [
+      {
+        "heading": "Apa itu Pengenalan Karakter AI?",
+        "body": "Pawchive menyertakan asisten AI opsional 100% offline untuk PC modern. Fitur ini menganalisis judul postingan yang berantakan, tanpa spasi, atau samar yang tidak dapat diuraikan oleh aturan biasa, menebak waralaba dan karakter tanpa mengirim data ke internet.",
+        "type": "intro"
+      },
+      {
+        "heading": "Arsitektur AI Dua Tingkat",
+        "body": "• Tingkat 1 (Pencocok Semantik Cepat): Model vektor ringan (~127 MB) yang mencocokkan kemiripan judul dalam 1–3 ms pada CPU atau GPU.\n• Tingkat 2 (Penalar Konteks Mendalam): Model bahasa kecil (SLM) offline yang membaca petunjuk postingan dan membandingkannya dengan riwayat unduhan kreator untuk menyimpulkan karakter langka.",
+        "type": "info"
+      },
+      {
+        "heading": "Pilihan Ukuran Model (Light vs Smart)",
+        "body": "• Light (Qwen 0.5B • ~490 MB): Penggunaan memori sangat rendah (~450 MB RAM), ideal untuk laptop lama dan CPU standar.\n• Smart (Qwen 1.5B • ~1.04 GB): Kecerdasan lebih tinggi dan pengetahuan anime luas, direkomendasikan untuk GPU modern atau CPU kencang.",
+        "type": "tip"
+      },
+      {
+        "heading": "Akselerasi Perangkat Keras & Pemasangan Mudah",
+        "body": "Unduh model dengan 1 klik di Pengaturan → Penyimpanan & Pemrosesan File. Mendeteksi dan mengaktifkan GPU NVIDIA (CUDA/TensorRT), AMD/Intel (DirectML), atau CPU multi-core secara otomatis. Dilengkapi kecepatan unduh langsung, persentase, dan pembatalan.",
+        "type": "info"
+      },
+      {
+        "heading": "Sandbox Pengujian AI Langsung",
+        "body": "Sebelum mengunduh, Anda dapat menguji kategorisasi AI di kotak uji interaktif pada Pengaturan. Masukkan judul mentah dan klik 'Uji Kecocokan' untuk melihat hasil heuristik dan AI secara instan.",
         "type": "tip"
       }
     ]
@@ -479,6 +526,11 @@
         "heading": "Kontrol Pemilih Pos & Pemverifikasi Arsip",
         "body": "• 🖼️ Pilih Postingan: Membuka browser katalog interaktif untuk memilih sendiri postingan dan lampiran sebelum mengunduh.\n• 🔍 Verifikasi Arsip: Memindai penyimpanan lokal untuk memeriksa apakah file yang diarsipkan masih ada di disk.\n• ⚠️ Lencana Hilang: Indikator merah dan kuning menyoroti file yang hilang dan unduhan yang belum selesai.\n• 🏷️ Templat Nama File: Perancang chip tag interaktif dengan pratinjau langsung dan format khusus.",
         "type": "tip"
+      },
+      {
+        "heading": "Kontrol AI & Akselerasi",
+        "body": "• 🧠 Sakelar AI: Mengaktifkan penyematan vektor dan penalaran SLM offline untuk judul rumit.\n• ⚡ Lencana GPU: Menampilkan akselerasi perangkat keras aktif (NVIDIA CUDA, DirectML, atau CPU).\n• 🪶 Ukuran Model: Beralih antara Light (0.5B hemat daya) dan Smart (1.5B penalaran mendalam).\n• 🧪 Sandbox AI: Pratinjau interaktif penyortiran folder secara langsung.",
+        "type": "info"
       }
     ]
   }

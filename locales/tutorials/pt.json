@@ -89,6 +89,11 @@
         "heading": "Ignorando cotas de mega largura de banda (VPN e proxy)",
         "body": "Mega limita contas gratuitas a aproximadamente 5 GB de transferência a cada 6 horas por endereço IP. Quando um limite de cota é atingido:\n• VPN Bypass: mude seu servidor VPN para uma cidade ou país diferente para obter um novo endereço IP e depois retome seus downloads.\n• Configuração de proxy: Abra Configurações -> Rede e Proxy e insira seu URL de proxy HTTP ou SOCKS5 (por exemplo, Socks5://127.0.0.1:1080). O Pawchive encaminhará solicitações de blocos através do proxy, ignorando instantaneamente o bloco de cota.",
         "type": "warning"
+      },
+      {
+        "heading": "Filtragem de links na nuvem e organização por personagem",
+        "body": "Arquivos descobertos em pastas compartilhadas do Mega, Google Drive, Dropbox e GoFile são verificados automaticamente contra suas palavras ignoradas e limites de tamanho. Quando a organização por personagem está ativa, os arquivos da nuvem são organizados em subpastas de franquia e personagem, assim como downloads diretos.",
+        "type": "tip"
       }
     ]
   },
@@ -110,6 +115,48 @@
       {
         "heading": "Sistema inteligente de aprendizagem de personagens",
         "body": "Se o nome de um personagem aparecer repetidamente nos títulos ou tags das postagens, o aplicativo o aprenderá dinamicamente e criará pastas correspondentes, mesmo que o personagem ainda não esteja em Known.txt.",
+        "type": "tip"
+      },
+      {
+        "heading": "Reconhecimento multilíngue e banco de dados mestre",
+        "body": "O motor de reconhecimento possui um banco de dados integrado com mais de 100.000 personagens de animes e jogos, organizando hierarquicamente (Franquia / Personagem / Post). Suporta japonês, chinês, coreano, russo e línguas europeias com acentuação sem necessidade de configuração manual.",
+        "type": "info"
+      },
+      {
+        "heading": "Correspondência contextual com o histórico do criador",
+        "body": "Ao identificar personagens em títulos ambíguos, o Pawchive cruza tags, nomes de anexos e o histórico de downloads anteriores do artista no banco de dados do arquivo para determinar a franquia mais provável.",
+        "type": "tip"
+      }
+    ]
+  },
+  {
+    "title": "Assistente semântico IA e dedução offline",
+    "icon": "🧠",
+    "summary": "Incorporações vetoriais offline, raciocínio SLM, aceleração por hardware e gerenciador de modelos.",
+    "content": [
+      {
+        "heading": "O que é o reconhecimento de personagens por IA?",
+        "body": "O Pawchive inclui um assistente de IA opcional, 100% offline, projetado para PCs modernos. Ele analisa títulos confusos, sem espaços ou crípticos que as regras normais não identificam, prevendo a franquia e o personagem exatos sem enviar dados pela internet.",
+        "type": "intro"
+      },
+      {
+        "heading": "Arquitetura de IA em dois níveis",
+        "body": "• Nível 1 (Correspondência semântica rápida): Modelo vetorial leve (~127 MB) que converte títulos em vetores e reconhece personagens em 1–3 ms na CPU ou GPU.\n• Nível 2 (Raciocínio de contexto profundo): Pequeno modelo de linguagem (SLM) offline que analisa sutilezas do post e cruza com o histórico do criador para deduzir personagens difíceis.",
+        "type": "info"
+      },
+      {
+        "heading": "Opções de tamanho do modelo (Light vs Smart)",
+        "body": "• Light (Qwen 0.5B • ~490 MB): Consumo mínimo de memória (~450 MB RAM), ideal para notebooks antigos e CPUs básicas.\n• Smart (Qwen 1.5B • ~1.04 GB): Maior inteligência e conhecimento aprofundado de anime e cultura pop, recomendado para GPUs modernas ou CPUs potentes.",
+        "type": "tip"
+      },
+      {
+        "heading": "Aceleração por hardware e instalação simples",
+        "body": "Baixe modelos com um clique em Configurações → Armazenamento e processamento de arquivos. Detecta e ativa automaticamente GPUs NVIDIA (CUDA/TensorRT), AMD/Intel (DirectML) ou CPUs multi-core. Com velocidade ao vivo, porcentagem e botão de cancelamento.",
+        "type": "info"
+      },
+      {
+        "heading": "Área de testes interativa da IA",
+        "body": "Antes de iniciar os downloads, teste a categorização da IA no painel interativo em Configurações. Digite qualquer título e clique em 'Testar' para ver os resultados heurísticos e da IA em tempo real.",
         "type": "tip"
       }
     ]
@@ -479,6 +526,11 @@
         "heading": "Controles de pós-seletor e verificador de arquivo",
         "body": "• 🖼️ Selecionar postagens: abre o navegador do catálogo interativo para escolher postagens e anexos antes de fazer o download.\n• 🔍 Verificar arquivo: verifica o armazenamento local para verificar se os arquivos arquivados ainda existem no disco.\n• ⚠️ Selos ausentes: indicadores vermelhos e âmbar destacando arquivos ausentes e downloads incompletos.\n• 🏷️ Modelo de nome de arquivo: designer de chip de tag interativo com visualização ao vivo e formatação personalizada.",
         "type": "tip"
+      },
+      {
+        "heading": "Controles de IA e aceleração",
+        "body": "• 🧠 Chave IA: Ativa incorporações vetoriais e raciocínio SLM offline para títulos difíceis.\n• ⚡ Selo GPU: Exibe a aceleração por hardware ativa (NVIDIA CUDA, DirectML ou CPU).\n• 🪶 Tamanho do modelo: Alterna entre Light (0.5B econômico) e Smart (1.5B alta precisão).\n• 🧪 Sandbox IA: Demonstração interativa da organização de pastas em tempo real.",
+        "type": "info"
       }
     ]
   }

@@ -11,7 +11,7 @@ import subprocess
 import threading
 import json
 import re
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from PySide6.QtCore import QObject, Signal, Property, Slot, Qt, QUrl, QCoreApplication
 from PySide6.QtGui import QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import QFileDialog, QApplication
@@ -50,6 +50,9 @@ from services.cloud_downloader import (
 )
 from core.text_utils import clean_text, sanitize_filesystem_name
 from core.archive_manager import ArchiveManager
+from services.model_manager import ModelManager, MODEL_CATALOG
+from core.hardware_detector import HardwareDetector
+
 
 
 class AppBridge(QObject):
@@ -126,6 +129,10 @@ class AppBridge(QObject):
     consoleWidthChanged = Signal()
     postDownloadActionChanged = Signal()
     knownRecognitionModeChanged = Signal()
+    aiRecognitionEnabledChanged = Signal()
+    aiEngineModeChanged = Signal()
+    aiModelProgressChanged = Signal(str, str, float, str, str)  # (model_key, status, percent, speed_str, error)
+    aiHardwareInfoChanged = Signal()
     languageChanged = Signal()
     postActionCountdownStarted = Signal(str)  # carries human label e.g. "Shutdown"
     exportCompleted = Signal(str, bool)       # (filePath, wasDownloading)
@@ -272,6 +279,28 @@ class AppBridge(QObject):
         self._post_download_action = "none" # Always default to 'none' (Do Nothing) on startup
         self._known_recognition_mode = str(saved_settings.get("known_recognition_mode", "hybrid"))
         self.known_manager.set_mode(self._known_recognition_mode)
+        self._ai_recognition_enabled = bool(saved_settings.get("ai_recognition_enabled", False))
+        self._ai_engine_mode = str(saved_settings.get("ai_engine_mode", "hybrid"))
+        self.model_manager = ModelManager()
+        self.known_manager.enable_ai(self._ai_recognition_enabled, model_manager=self.model_manager)
+        self.known_manager.set_ai_engine_mode(self._ai_engine_mode)
+
+        def _on_model_progress(data: dict):
+            key = data.get("model_key", "")
+            st = data.get("status", "")
+            pct = float(data.get("percent", 0.0))
+            spd = f"{data.get('speed_mbps', 0.0):.1f} MB/s" if st == "downloading" else ""
+            err = str(data.get("error", ""))
+            self.aiModelProgressChanged.emit(key, st, pct, spd, err)
+            if st in ("ready", "not_downloaded", "error"):
+                self.aiRecognitionEnabledChanged.emit()
+
+        self._ai_deep_reasoner_variant = str(saved_settings.get("ai_deep_reasoner_variant", "light"))
+        self.model_manager.register_callback("fast_semantic", _on_model_progress)
+        self.model_manager.register_callback("deep_reasoner_light", _on_model_progress)
+        self.model_manager.register_callback("deep_reasoner_heavy", _on_model_progress)
+        self.model_manager.register_callback("deep_reasoner", _on_model_progress)
+
         self._language = str(saved_settings.get("language", "auto"))
         self._console_width = int(saved_settings.get("console_width", 620))
         self._current_fps = 0
@@ -286,6 +315,7 @@ class AppBridge(QObject):
         self._watchlist_manager = WatchlistManager(self.session_manager.config_dir)
         self._watchlist_manager.load()
         self._watchlist_model = WatchlistModel(self._watchlist_manager, self)
+        self._watchlist_pending_updates: Dict[Tuple[str, str], Tuple[str, str]] = {}
         self._watchlist_result_signal_connected = False
         self._watchlistResultSignal.connect(self._handle_watchlist_result, Qt.QueuedConnection)
 
@@ -1292,7 +1322,125 @@ class AppBridge(QObject):
             self.knownRecognitionModeChanged.emit()
             self.saveSettings()
 
+    @Property(bool, notify=aiRecognitionEnabledChanged)
+    def aiRecognitionEnabled(self) -> bool:
+        return self._ai_recognition_enabled
+
+    @aiRecognitionEnabled.setter
+    def aiRecognitionEnabled(self, val: bool):
+        val = bool(val)
+        if self._ai_recognition_enabled != val:
+            self._ai_recognition_enabled = val
+            self.known_manager.enable_ai(val, model_manager=self.model_manager)
+            self.aiRecognitionEnabledChanged.emit()
+            self.saveSettings()
+
+    @Property(str, notify=aiEngineModeChanged)
+    def aiEngineMode(self) -> str:
+        return self._ai_engine_mode
+
+    @aiEngineMode.setter
+    def aiEngineMode(self, val: str):
+        allowed = {"semantic_only", "hybrid"}
+        if val in allowed and self._ai_engine_mode != val:
+            self._ai_engine_mode = val
+            self.known_manager.set_ai_engine_mode(val)
+            self.aiEngineModeChanged.emit()
+            self.saveSettings()
+
+    @Property(str, notify=aiHardwareInfoChanged)
+    def aiHardwareBadge(self) -> str:
+        info = HardwareDetector.get_hardware_info()
+        return str(info.get("provider_name", "CPU Mode"))
+
+    @Property(bool, notify=aiRecognitionEnabledChanged)
+    def aiFastSemanticReady(self) -> bool:
+        return self.model_manager.is_model_ready("fast_semantic")
+
+    @Property(bool, notify=aiRecognitionEnabledChanged)
+    def aiDeepReasonerReady(self) -> bool:
+        return (
+            self.model_manager.is_model_ready("deep_reasoner_heavy")
+            or self.model_manager.is_model_ready("deep_reasoner_light")
+            or self.model_manager.is_model_ready("deep_reasoner")
+        )
+
+    @Property(str, notify=aiRecognitionEnabledChanged)
+    def aiDeepReasonerVariant(self) -> str:
+        return self._ai_deep_reasoner_variant
+
+    @aiDeepReasonerVariant.setter
+    def aiDeepReasonerVariant(self, val: str):
+        allowed = {"light", "heavy"}
+        if val in allowed and self._ai_deep_reasoner_variant != val:
+            self._ai_deep_reasoner_variant = val
+            self.aiRecognitionEnabledChanged.emit()
+            self.saveSettings()
+
+    @Property(bool, notify=aiRecognitionEnabledChanged)
+    def aiDeepReasonerLightReady(self) -> bool:
+        return self.model_manager.is_model_ready("deep_reasoner_light")
+
+    @Property(bool, notify=aiRecognitionEnabledChanged)
+    def aiDeepReasonerHeavyReady(self) -> bool:
+        return self.model_manager.is_model_ready("deep_reasoner_heavy")
+
+
+    @Slot(str, result="QVariant")
+    def getAiModelStatus(self, model_key: str):
+        return self.model_manager.get_status(model_key)
+
+    @Slot(str)
+    def startAiModelDownload(self, model_key: str):
+        self.model_manager.start_download(model_key)
+
+    @Slot(str)
+    def cancelAiModelDownload(self, model_key: str):
+        self.model_manager.cancel_download(model_key)
+
+    @Slot(str, result=bool)
+    def deleteAiModel(self, model_key: str) -> bool:
+        res = self.model_manager.delete_model(model_key)
+        self.aiRecognitionEnabledChanged.emit()
+        return res
+
+    @Slot(str, result="QVariant")
+    def testAiRecognition(self, test_title: str):
+        """Runs test inference across Tier 0, Tier 1, and Tier 2 for interactive sandbox."""
+        clean_t = (test_title or "").strip()
+        if not clean_t:
+            return {"error": "Empty test title"}
+
+        # Tier 0 (Fast heuristic)
+        t0_res = self.known_manager._find_matching_hierarchy_fast(clean_t, [], [])
+        t0_str = f"{t0_res[1]} ({t0_res[0]})" if (t0_res and t0_res[1]) else (t0_res[0] if t0_res else "None")
+
+        # Tier 1 (Semantic matcher)
+        t1_str = "Not available (model not downloaded)"
+        if self.model_manager.is_model_ready("fast_semantic"):
+            if self.known_manager.semantic_matcher:
+                if self.known_manager.semantic_matcher._cached_vectors is None:
+                    self.known_manager.semantic_matcher.build_known_index(self.known_manager)
+                m = self.known_manager.semantic_matcher.find_match(clean_t, threshold=0.70)
+                if m:
+                    t1_str = f"{m[1]} ({m[0]}) [score={m[2]:.2f}]"
+                else:
+                    t1_str = "No match above threshold"
+
+        # Final resolved hierarchy using standard engine
+        final = self.known_manager.find_matching_hierarchy(clean_t)
+        final_str = f"{final[1]} ({final[0]})" if (final and final[1]) else (final[0] if final else "Uncategorized")
+
+        return {
+            "title": clean_t,
+            "tier0": t0_str,
+            "tier1": t1_str,
+            "final": final_str,
+            "hardware": HardwareDetector.get_hardware_info().get("provider_name", "CPU")
+        }
+
     # Model Properties
+
     @Property(QObject, constant=True)
     def logModel(self) -> LogModel:
         return self._log_model
@@ -3062,8 +3210,8 @@ class AppBridge(QObject):
             logger.warning("No links selected for cloud download.", category="downloader")
             return
 
-        target_dir = dest_folder.strip() or self._download_dir
-        os.makedirs(target_dir, exist_ok=True)
+        base_dir = dest_folder.strip() or self._download_dir
+        os.makedirs(base_dir, exist_ok=True)
 
         self._is_cloud_downloading = True
         self._is_downloading = True
@@ -3074,9 +3222,17 @@ class AppBridge(QObject):
         def _worker():
             total = len(selected_links)
             concurrency = min(total, max(1, self._threads_count))
-            logger.info(f"☁️ Starting concurrent cloud downloads for {total} link(s) ({concurrency} parallel streams) to: {target_dir}", category="downloader")
+            logger.info(f"☁️ Starting concurrent cloud downloads for {total} link(s) ({concurrency} parallel streams) to: {base_dir}", category="downloader")
             self._status_text = f"Cloud Download: 0/{total} completed"
             self.statusTextChanged.emit()
+
+            filter_opts = self._get_filter_options()
+
+            # Index harvested records by URL to recover any post metadata (tags, service, creator, title, post_id)
+            harvested_map = {}
+            for r in getattr(self.downloader, "harvested_links_records", []):
+                if isinstance(r, dict) and r.get("url"):
+                    harvested_map[r["url"]] = r
 
             success_count = 0
             start_time = time.time()
@@ -3092,8 +3248,14 @@ class AppBridge(QObject):
                     return False
 
                 url = item.get("url", "") if isinstance(item, dict) else str(item)
-                title = item.get("title", "File") if isinstance(item, dict) else "Cloud File"
-                platform = item.get("platform", "other").lower() if isinstance(item, dict) else "other"
+                record = harvested_map.get(url, {})
+                title = (item.get("title") if isinstance(item, dict) else None) or record.get("title") or "Cloud File"
+                platform = (item.get("platform") if isinstance(item, dict) else None) or record.get("platform") or "other"
+                creator = (item.get("creator") if isinstance(item, dict) else None) or record.get("creator") or ""
+                service = (item.get("service") if isinstance(item, dict) else None) or record.get("service") or ""
+                tags = (item.get("tags") if isinstance(item, dict) else None) or record.get("tags") or []
+                post_id = (item.get("post_id") if isinstance(item, dict) else None) or record.get("post_id") or ""
+                content = (item.get("content") if isinstance(item, dict) else None) or record.get("content") or ""
 
                 if "mega.nz" in url or "mega.co.nz" in url or "mega.io" in url:
                     platform = "mega"
@@ -3104,7 +3266,58 @@ class AppBridge(QObject):
                 elif "gofile.io" in url:
                     platform = "gofile"
 
-                logger.info(f"☁️ [{platform.upper()}] Starting ({idx}/{total}): {url}", category="downloader")
+                # Check post-level filters (character whitelist & skip words)
+                if filter_opts.characters or (filter_opts.skip_words and filter_opts.skip_scope in ("posts", "both")):
+                    fake_post = {"title": title, "tags": tags, "id": post_id, "content": content}
+                    keep_post, reason = FilterEngine.should_keep_post(fake_post, filter_opts)
+                    if not keep_post:
+                        logger.info(f"☁️ Skipping cloud link for '{title}': {reason}", category="filter")
+                        return True
+
+                # Determine target folder hierarchy
+                folder_parts = [base_dir]
+
+                # Franchise -> Character hierarchy if Character Sorting is enabled
+                if self._separate_folders_by_known:
+                    cloud_filenames = [os.path.basename(url.split("?")[0])] if url else []
+                    creator_prof = None
+                    if getattr(self, "archive_manager", None) and self.archive_manager.is_enabled:
+                        creator_prof = self.archive_manager.get_creator_character_profile(
+                            service=service,
+                            creator_id=creator,
+                            creator_name=creator
+                        )
+                    matched_hierarchy = self.known_manager.find_matching_hierarchy(
+                        title, tags=tags, filenames=cloud_filenames, content=content, creator_profile=creator_prof
+                    )
+                    if matched_hierarchy:
+                        franchise, char_name = matched_hierarchy
+                        if franchise and franchise.strip() and franchise != "Other":
+                            clean_fr = FilterEngine.clean_filesystem_text(franchise, max_len=60, fallback="Franchise")
+                            folder_parts.append(clean_fr)
+                        if char_name and char_name.strip() and char_name.lower() != (franchise or "").lower():
+                            clean_ch = FilterEngine.clean_filesystem_text(char_name, max_len=60, fallback="Character")
+                            folder_parts.append(clean_ch)
+                    else:
+                        folder_parts.append("Other")
+
+                # Creator subfolder
+                creator_clean = FilterEngine.clean_filesystem_text(creator, max_len=80, fallback="") if creator else ""
+                if creator_clean:
+                    if service:
+                        folder_parts.append(f"{creator_clean} [{service}]")
+                    else:
+                        folder_parts.append(creator_clean)
+
+                # Post subfolder
+                if self._subfolder_per_post and title and title not in ("Cloud File", "Untitled"):
+                    clean_title = FilterEngine.clean_filesystem_text(title, max_len=100, fallback="Untitled")
+                    folder_parts.append(clean_title)
+
+                target_dir = os.path.join(*folder_parts)
+                os.makedirs(target_dir, exist_ok=True)
+
+                logger.info(f"☁️ [{platform.upper()}] Starting ({idx}/{total}) -> {target_dir}: {url}", category="downloader")
 
                 def _prog(fname, dl, tot, file_idx=1, file_tot=1):
                     nonlocal last_calc_time, last_calc_bytes
@@ -3178,13 +3391,13 @@ class AppBridge(QObject):
                 ok = False
                 try:
                     if platform == "mega":
-                        ok = download_mega_link(url, target_dir, log_func=lambda msg: logger.info(msg, category="downloader"), progress_callback=_prog, cancel_event=self._cloud_cancel_event, pause_event=self._cloud_pause_event, max_workers=workers_per_link)
+                        ok = download_mega_link(url, target_dir, log_func=lambda msg: logger.info(msg, category="downloader"), progress_callback=_prog, cancel_event=self._cloud_cancel_event, pause_event=self._cloud_pause_event, max_workers=workers_per_link, skip_words=filter_opts.skip_words, options=filter_opts)
                     elif platform in ("gdrive", "google drive"):
-                        ok = download_gdrive_link(url, target_dir, log_func=lambda msg: logger.info(msg, category="downloader"), progress_callback=_prog, cancel_event=self._cloud_cancel_event, pause_event=self._cloud_pause_event)
+                        ok = download_gdrive_link(url, target_dir, log_func=lambda msg: logger.info(msg, category="downloader"), progress_callback=_prog, cancel_event=self._cloud_cancel_event, pause_event=self._cloud_pause_event, skip_words=filter_opts.skip_words, options=filter_opts)
                     elif platform == "dropbox":
-                        ok = download_dropbox_link(url, target_dir, log_func=lambda msg: logger.info(msg, category="downloader"), progress_callback=_prog, cancel_event=self._cloud_cancel_event, pause_event=self._cloud_pause_event)
+                        ok = download_dropbox_link(url, target_dir, log_func=lambda msg: logger.info(msg, category="downloader"), progress_callback=_prog, cancel_event=self._cloud_cancel_event, pause_event=self._cloud_pause_event, skip_words=filter_opts.skip_words, options=filter_opts)
                     elif platform == "gofile":
-                        ok = download_gofile_link(url, target_dir, log_func=lambda msg: logger.info(msg, category="downloader"), progress_callback=_prog, cancel_event=self._cloud_cancel_event, pause_event=self._cloud_pause_event, max_workers=workers_per_link)
+                        ok = download_gofile_link(url, target_dir, log_func=lambda msg: logger.info(msg, category="downloader"), progress_callback=_prog, cancel_event=self._cloud_cancel_event, pause_event=self._cloud_pause_event, max_workers=workers_per_link, skip_words=filter_opts.skip_words, options=filter_opts)
                     else:
                         logger.warning(f"Platform '{platform}' cannot be directly auto-downloaded (URL: {url}).", category="downloader")
                 except Exception as ex:
@@ -3522,6 +3735,9 @@ class AppBridge(QObject):
             "generate_desktop_report": self._generate_desktop_report,
             "post_download_action": "none",
             "known_recognition_mode": self._known_recognition_mode,
+            "ai_recognition_enabled": self._ai_recognition_enabled,
+            "ai_engine_mode": self._ai_engine_mode,
+            "ai_deep_reasoner_variant": self._ai_deep_reasoner_variant,
             "language": self._language,
             "console_width": self._console_width,
             "tag_folder_mode": self._tag_folder_mode,
@@ -3936,6 +4152,7 @@ class AppBridge(QObject):
         self.overallProgressChanged.emit()
         self.statusTextChanged.emit()
         if not success:
+            self._watchlist_pending_updates.clear()
             if message == "Download cancelled by user." or self._scan_cancel_event.is_set():
                 self._has_error = False
                 self._last_error_message = ""
@@ -4016,6 +4233,15 @@ class AppBridge(QObject):
                             existing = next((e for e in self._watchlist_manager.entries if e.service.lower() == svc and (e.creator_name.lower() == t0.creator_name.lower() or e.user_id.lower() == t0.creator_name.lower())), None)
 
                         if existing:
+                            pending = self._watchlist_pending_updates.pop((existing.service.lower(), existing.user_id.lower()), None)
+                            if pending:
+                                p_pid, p_date = pending
+                                if p_date and (not c_latest_date or p_date >= c_latest_date):
+                                    c_latest_date = p_date
+                                    c_latest_pid = p_pid
+                                elif p_date == c_latest_date and p_pid:
+                                    c_latest_pid = p_pid or c_latest_pid
+
                             if c_latest_date or c_latest_pid:
                                 self._watchlist_manager.update_last_download(
                                     existing.user_id, existing.service,
@@ -4055,9 +4281,11 @@ class AppBridge(QObject):
                             options=self._get_filter_options().to_dict(),
                         )
 
+                    self._watchlist_pending_updates.clear()
                     self._watchlist_model.refresh()
                     self.watchlistChanged.emit()
             except Exception as e:
+                self._watchlist_pending_updates.clear()
                 logger.debug(f"Watchlist update error on finish: {e}", category="watchlist")
 
 
@@ -4248,6 +4476,13 @@ class AppBridge(QObject):
             new_posts = self._watchlist_manager.get_posts_since(entry, self.api_client)
             if not new_posts:
                 logger.info(f"No new posts found for {entry.creator_name!r}.", category="watchlist")
+                if entry.new_post_count > 0:
+                    entry.new_post_count = 0
+                    entry.cached_new_posts = []
+                    self._watchlist_manager.save()
+                    self._watchlist_model.update_new_counts()
+                    self._watchlist_model.refresh()
+                    self.watchlistChanged.emit()
                 return
 
             # If specific postIds were requested (selective download), filter to only those
@@ -4256,7 +4491,25 @@ class AppBridge(QObject):
                 new_posts = [p for p in new_posts if str(p.get("id")) in p_set]
                 if not new_posts:
                     logger.info(f"None of the requested posts for {entry.creator_name!r} were available.", category="watchlist")
+                    self._watchlist_manager.resolve_posts(entry.user_id, entry.service, post_ids=list(p_set))
+                    self._watchlist_model.update_new_counts()
+                    self._watchlist_model.refresh()
+                    self.watchlistChanged.emit()
                     return
+
+            # Extract latest post id and date evaluated in this batch
+            latest_p = new_posts[-1]
+            latest_pid = str(latest_p.get("id", ""))
+            pub = latest_p.get("published") or latest_p.get("added") or ""
+            if isinstance(pub, (int, float)):
+                try:
+                    import datetime
+                    latest_pdate = datetime.datetime.fromtimestamp(pub).strftime("%Y-%m-%d")
+                except Exception:
+                    latest_pdate = ""
+            else:
+                p_str = str(pub)
+                latest_pdate = p_str.split("T")[0] if "T" in p_str else (p_str[:10] if p_str else "")
 
             # Reuse saved settings if present, otherwise fallback to current UI settings
             from core.filter_engine import FilterOptions
@@ -4297,6 +4550,8 @@ class AppBridge(QObject):
                 user_id=entry.user_id
             )
             if tasks:
+                if not postIds and (latest_pdate or latest_pid):
+                    self._watchlist_pending_updates[(entry.service.lower(), entry.user_id.lower())] = (latest_pid, latest_pdate)
                 self._appendTasksSignal.emit(tasks)
                 self.downloader.append_tasks(tasks, options=options, cookie_str=self._cookie_string)
                 if not self._is_downloading and self.downloader._is_running:
@@ -4308,6 +4563,30 @@ class AppBridge(QObject):
                     f"Watchlist: queued {len(tasks)} new file(s) for {entry.creator_name!r} at {artist_folder}.",
                     category="watchlist"
                 )
+            else:
+                # All files across new_posts were already archived, already exist on disk, or were filtered out.
+                # Mark them as resolved so the artist doesn't get stuck with permanent update notifications.
+                req_pids = [str(pid) for pid in postIds] if postIds else None
+                self._watchlist_manager.resolve_posts(
+                    entry.user_id,
+                    entry.service,
+                    post_ids=req_pids,
+                    latest_post_id=latest_pid,
+                    latest_post_date=latest_pdate
+                )
+                self._watchlist_model.update_new_counts()
+                self._watchlist_model.refresh()
+                self.watchlistChanged.emit()
+                if req_pids:
+                    logger.info(
+                        f"Watchlist: selected post(s) for {entry.creator_name!r} are already archived or downloaded. Review drawer updated.",
+                        category="watchlist"
+                    )
+                else:
+                    logger.info(
+                        f"Watchlist: all {len(new_posts)} new post(s) for {entry.creator_name!r} are already archived or downloaded. Marked as up to date.",
+                        category="watchlist"
+                    )
 
         threading.Thread(target=_run, daemon=True).start()
 

@@ -13,6 +13,69 @@ SmoothFlickable {
     property string cookieStatusText: ""
     property string cookieStatusColor: "#94A3B8"
 
+    // AI Model download states
+    property string aiT1Status: (root.bridge && root.bridge.aiFastSemanticReady) ? "ready" : "not_downloaded"
+    property real aiT1Percent: (root.bridge && root.bridge.aiFastSemanticReady) ? 100 : 0
+    property string aiT1Speed: ""
+    property string aiT1Error: ""
+
+    property string aiT2LightStatus: (root.bridge && root.bridge.aiDeepReasonerLightReady) ? "ready" : "not_downloaded"
+    property real aiT2LightPercent: (root.bridge && root.bridge.aiDeepReasonerLightReady) ? 100 : 0
+    property string aiT2LightSpeed: ""
+    property string aiT2LightError: ""
+
+    property string aiT2HeavyStatus: (root.bridge && root.bridge.aiDeepReasonerHeavyReady) ? "ready" : "not_downloaded"
+    property real aiT2HeavyPercent: (root.bridge && root.bridge.aiDeepReasonerHeavyReady) ? 100 : 0
+    property string aiT2HeavySpeed: ""
+    property string aiT2HeavyError: ""
+
+    function syncAiModelStatuses() {
+        if (!root.bridge) return
+        var s1 = root.bridge.getAiModelStatus("fast_semantic")
+        if (s1) {
+            aiT1Status = s1.status || (root.bridge.aiFastSemanticReady ? "ready" : "not_downloaded")
+            aiT1Percent = (s1.percent !== undefined) ? s1.percent : (aiT1Status === "ready" ? 100 : 0)
+            aiT1Speed = s1.speed_mbps ? (s1.speed_mbps.toFixed(1) + " MB/s") : ""
+            aiT1Error = s1.error || ""
+        }
+        var s2l = root.bridge.getAiModelStatus("deep_reasoner_light")
+        if (s2l) {
+            aiT2LightStatus = s2l.status || (root.bridge.aiDeepReasonerLightReady ? "ready" : "not_downloaded")
+            aiT2LightPercent = (s2l.percent !== undefined) ? s2l.percent : (aiT2LightStatus === "ready" ? 100 : 0)
+            aiT2LightSpeed = s2l.speed_mbps ? (s2l.speed_mbps.toFixed(1) + " MB/s") : ""
+            aiT2LightError = s2l.error || ""
+        }
+        var s2h = root.bridge.getAiModelStatus("deep_reasoner_heavy")
+        if (s2h) {
+            aiT2HeavyStatus = s2h.status || (root.bridge.aiDeepReasonerHeavyReady ? "ready" : "not_downloaded")
+            aiT2HeavyPercent = (s2h.percent !== undefined) ? s2h.percent : (aiT2HeavyStatus === "ready" ? 100 : 0)
+            aiT2HeavySpeed = s2h.speed_mbps ? (s2h.speed_mbps.toFixed(1) + " MB/s") : ""
+            aiT2HeavyError = s2h.error || ""
+        }
+    }
+
+    Connections {
+        target: root.bridge
+        function onAiModelProgressChanged(modelKey, status, percent, speedStr, error) {
+            if (modelKey === "fast_semantic") {
+                root.aiT1Status = status
+                root.aiT1Percent = percent
+                root.aiT1Speed = speedStr
+                root.aiT1Error = error
+            } else if (modelKey === "deep_reasoner_light") {
+                root.aiT2LightStatus = status
+                root.aiT2LightPercent = percent
+                root.aiT2LightSpeed = speedStr
+                root.aiT2LightError = error
+            } else if (modelKey === "deep_reasoner_heavy") {
+                root.aiT2HeavyStatus = status
+                root.aiT2HeavyPercent = percent
+                root.aiT2HeavySpeed = speedStr
+                root.aiT2HeavyError = error
+            }
+        }
+    }
+
     function tr(key, fallback) {
         if (!Lang) return fallback !== undefined ? fallback : key
         var _ = Lang.activeLanguage
@@ -42,8 +105,16 @@ SmoothFlickable {
         }
     }
 
-    Component.onCompleted: triggerEntrance()
-    onVisibleChanged: if (visible) triggerEntrance()
+    Component.onCompleted: {
+        triggerEntrance()
+        syncAiModelStatuses()
+    }
+    onVisibleChanged: {
+        if (visible) {
+            triggerEntrance()
+            syncAiModelStatuses()
+        }
+    }
 
     ColumnLayout {
         id: settingsCol
@@ -1546,6 +1617,677 @@ SmoothFlickable {
                     Layout.fillWidth: true
                     wrapMode: Text.WordWrap
                 }
+
+                // AI-Assisted Recognition & Archive Reasoning Sub-Card
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    implicitHeight: aiCol.implicitHeight + 28
+                    radius: 8
+                    color: "#141A26"
+                    border.color: aiBoxHover.hovered ? "#38BDF8" : "#233147"
+                    border.width: 1
+                    clip: true
+
+                    HoverHandler { id: aiBoxHover }
+
+                    transform: Translate {
+                        y: aiBoxHover.hovered ? -1.5 : 0
+                        Behavior on y {
+                            SpringAnimation { spring: 4.2; damping: 0.38; mass: 0.9; epsilon: 0.25 }
+                        }
+                    }
+
+                    Behavior on border.color { ColorAnimation { duration: 160 } }
+
+                    ColumnLayout {
+                        id: aiCol
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: 14
+                        spacing: 12
+
+                        // Header Row: Title, Hardware Badge, Switch
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
+                            spacing: 8
+
+                            Text {
+                                text: "🧠"
+                                font.pixelSize: 15
+                                Layout.alignment: Qt.AlignVCenter
+                            }
+
+                            Text {
+                                text: tr("opt_ai_recognition_title", "AI Semantic Assistant & Archive Reasoning")
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 12
+                                font.weight: 600
+                                color: "#F1F5F9"
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                elide: Text.ElideRight
+                            }
+
+                            // Hardware Acceleration Badge
+                            Rectangle {
+                                implicitHeight: 20
+                                implicitWidth: hwBadgeText.implicitWidth + 12
+                                radius: 10
+                                color: (root.bridge && root.bridge.aiHardwareBadge.indexOf("GPU") !== -1) ? "#064E3B" : "#1E293B"
+                                border.color: (root.bridge && root.bridge.aiHardwareBadge.indexOf("GPU") !== -1) ? "#10B981" : "#475569"
+                                border.width: 1
+
+                                Text {
+                                    id: hwBadgeText
+                                    anchors.centerIn: parent
+                                    text: (root.bridge && root.bridge.aiHardwareBadge.indexOf("GPU") !== -1) ? ("⚡ " + root.bridge.aiHardwareBadge) : ("💻 " + (root.bridge ? root.bridge.aiHardwareBadge : "CPU"))
+                                    font.pixelSize: 9
+                                    font.weight: 600
+                                    color: (root.bridge && root.bridge.aiHardwareBadge.indexOf("GPU") !== -1) ? "#34D399" : "#94A3B8"
+                                }
+                            }
+
+                            StyledSwitch {
+                                checked: root.bridge ? root.bridge.aiRecognitionEnabled : false
+                                accentColor: "#38BDF8"
+                                onToggled: function(isChecked) {
+                                    if (root.bridge) root.bridge.aiRecognitionEnabled = isChecked
+                                }
+                            }
+                        }
+
+                        Text {
+                            text: tr("desc_ai_recognition", "Uses vector semantic embeddings and creator archive patterns to identify obscure, unspaced, and misspelled character titles without manual rules. 100% offline, zero-handholding.")
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 11
+                            color: "#94A3B8"
+                            wrapMode: Text.WordWrap
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
+                        }
+
+                        // Collapsible Drawer when enabled
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
+                            spacing: 12
+                            visible: root.bridge ? root.bridge.aiRecognitionEnabled : false
+
+                            // Engine Mode Selection: Semantic Matcher Only vs Full Hybrid
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                spacing: 6
+
+                                Text {
+                                    text: tr("lbl_ai_engine_mode", "Recognition Engine Mode:")
+                                    font.family: "Segoe UI, sans-serif"
+                                    font.pixelSize: 11
+                                    font.weight: 600
+                                    color: "#E2E8F0"
+                                }
+
+                                Flow {
+                                    width: parent.width
+                                    Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
+                                    spacing: 8
+
+                                    FilterCheckbox {
+                                        label: tr("ai_mode_minilm_only", "Semantic Only (MiniLM • Fast)")
+                                        iconText: "⚡"
+                                        activeColor: "#38BDF8"
+                                        tooltip: tr("ai_mode_minilm_only_tip", "Runs fast vector embeddings only (~127 MB). Instant 1–3 ms inference on CPU with zero LLM RAM overhead. Best for potato PCs and pure speed.")
+                                        checked: root.bridge ? (root.bridge.aiEngineMode === "semantic_only") : false
+                                        onClicked: if (root.bridge) root.bridge.aiEngineMode = "semantic_only"
+                                    }
+
+                                    FilterCheckbox {
+                                        label: tr("ai_mode_hybrid", "Full Hybrid (MiniLM + Reasoner)")
+                                        iconText: "🧠"
+                                        activeColor: "#818CF8"
+                                        tooltip: tr("ai_mode_hybrid_tip", "Combines MiniLM vector search with offline SLM reasoning. Analyzes creator archive history to deduce obscure, unspaced, and cryptic titles.")
+                                        checked: root.bridge ? (root.bridge.aiEngineMode === "hybrid" || root.bridge.aiEngineMode === "") : true
+                                        onClicked: if (root.bridge) root.bridge.aiEngineMode = "hybrid"
+                                    }
+                                }
+
+                                Text {
+                                    text: (root.bridge && root.bridge.aiEngineMode === "semantic_only")
+                                        ? tr("desc_ai_mode_minilm", "⚡ MiniLM-only mode active: Only the Fast Multilingual Matcher is needed. Deep Context Reasoner SLM will be completely bypassed.")
+                                        : tr("desc_ai_mode_hybrid", "🧠 Full Hybrid mode active: Fast heuristics run first, followed by MiniLM embeddings, and finally Deep Reasoner SLM for ambiguous titles.")
+                                    font.family: "Segoe UI, sans-serif"
+                                    font.pixelSize: 10
+                                    color: (root.bridge && root.bridge.aiEngineMode === "semantic_only") ? "#38BDF8" : "#818CF8"
+                                    wrapMode: Text.WordWrap
+                                    Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
+                                }
+                            }
+
+                            // Tier 1 Model Card: Fast Multilingual Semantic Matcher
+                            Rectangle {
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                implicitHeight: t1Col.implicitHeight + 24
+                                radius: 6
+                                color: "#0B111E"
+                                border.color: root.aiT1Status === "downloading" ? "#0284C7" : "#1E293B"
+                                border.width: 1
+                                clip: true
+
+                                ColumnLayout {
+                                    id: t1Col
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.top: parent.top
+                                    anchors.margins: 12
+                                    spacing: 8
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        Layout.minimumWidth: 0
+                                        spacing: 8
+
+                                        Text {
+                                            text: "⚡"
+                                            font.pixelSize: 13
+                                        }
+
+                                        Text {
+                                            text: tr("model_t1_title", "Fast Multilingual Matcher (MiniLM INT8 • ~127 MB)")
+                                            font.family: "Segoe UI, sans-serif"
+                                            font.pixelSize: 11
+                                            font.weight: 600
+                                            color: "#E2E8F0"
+                                            Layout.fillWidth: true
+                                            Layout.minimumWidth: 0
+                                            elide: Text.ElideRight
+                                        }
+
+                                        // Status Pill
+                                        Rectangle {
+                                            implicitHeight: 20
+                                            implicitWidth: t1StatusText.implicitWidth + 12
+                                            radius: 10
+                                            color: root.aiT1Status === "downloading" ? "#082F49" : (root.aiT1Status === "error" ? "#450A0A" : ((root.bridge && root.bridge.aiFastSemanticReady) ? "#064E3B" : "#1E293B"))
+                                            border.color: root.aiT1Status === "downloading" ? "#0284C7" : (root.aiT1Status === "error" ? "#EF4444" : ((root.bridge && root.bridge.aiFastSemanticReady) ? "#059669" : "#334155"))
+                                            border.width: 1
+
+                                            Text {
+                                                id: t1StatusText
+                                                anchors.centerIn: parent
+                                                text: root.aiT1Status === "downloading" ? (root.aiT1Percent.toFixed(1) + "%") : (root.aiT1Status === "error" ? "Error" : ((root.bridge && root.bridge.aiFastSemanticReady) ? "Ready" : "Not Downloaded"))
+                                                font.pixelSize: 9
+                                                font.weight: 600
+                                                color: root.aiT1Status === "downloading" ? "#38BDF8" : (root.aiT1Status === "error" ? "#F87171" : ((root.bridge && root.bridge.aiFastSemanticReady) ? "#34D399" : "#94A3B8"))
+                                            }
+                                        }
+
+                                        // Action Button
+                                        StyledButton {
+                                            variant: root.aiT1Status === "downloading" ? "secondary" : ((root.bridge && root.bridge.aiFastSemanticReady) ? "danger" : "primary")
+                                            text: root.aiT1Status === "downloading" ? tr("btn_cancel", "Cancel") : ((root.bridge && root.bridge.aiFastSemanticReady) ? tr("btn_remove_model", "Remove") : (root.aiT1Status === "error" ? tr("btn_retry", "Retry") : tr("btn_download_t1", "Download 127 MB")))
+                                            implicitHeight: 26
+                                            font.pixelSize: 10
+                                            onClicked: {
+                                                if (!root.bridge) return
+                                                if (root.aiT1Status === "downloading") {
+                                                    root.bridge.cancelAiModelDownload("fast_semantic")
+                                                } else if (root.bridge.aiFastSemanticReady) {
+                                                    root.bridge.deleteAiModel("fast_semantic")
+                                                } else {
+                                                    root.bridge.startAiModelDownload("fast_semantic")
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // Dedicated Download Progress Bar
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        Layout.minimumWidth: 0
+                                        spacing: 4
+                                        visible: root.aiT1Status === "downloading"
+
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            Layout.minimumWidth: 0
+
+                                            Text {
+                                                text: tr("lbl_downloading_t1", "Downloading model & multilingual tokenizer...")
+                                                font.family: "Segoe UI, sans-serif"
+                                                font.pixelSize: 10
+                                                font.weight: 600
+                                                color: "#38BDF8"
+                                                Layout.fillWidth: true
+                                                Layout.minimumWidth: 0
+                                                elide: Text.ElideRight
+                                            }
+
+                                            Text {
+                                                text: root.aiT1Speed
+                                                font.family: "Cascadia Code, Consolas, monospace"
+                                                font.pixelSize: 10
+                                                color: "#A78BFA"
+                                                visible: root.aiT1Speed !== ""
+                                            }
+
+                                            Text {
+                                                text: root.aiT1Percent.toFixed(1) + "%"
+                                                font.family: "Cascadia Code, Consolas, monospace"
+                                                font.pixelSize: 10
+                                                font.weight: Font.DemiBold
+                                                color: "#E2E8F0"
+                                            }
+                                        }
+
+                                        Rectangle {
+                                            Layout.fillWidth: true
+                                            Layout.minimumWidth: 0
+                                            height: 6
+                                            radius: 3
+                                            color: "#161E2E"
+                                            border.color: "#1E293B"
+                                            border.width: 1
+                                            clip: true
+
+                                            Rectangle {
+                                                height: parent.height
+                                                width: Math.max(0, Math.min(parent.width, parent.width * (root.aiT1Percent / 100.0)))
+                                                radius: 3
+                                                gradient: Gradient {
+                                                    orientation: Gradient.Horizontal
+                                                    GradientStop { position: 0.0; color: "#0284C7" }
+                                                    GradientStop { position: 1.0; color: "#38BDF8" }
+                                                }
+                                                Behavior on width {
+                                                    NumberAnimation { duration: 160; easing.type: Easing.OutQuad }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // Error Notification Banner
+                                    Rectangle {
+                                        Layout.fillWidth: true
+                                        Layout.minimumWidth: 0
+                                        implicitHeight: 28
+                                        radius: 4
+                                        color: "#450A0A"
+                                        border.color: "#EF4444"
+                                        border.width: 1
+                                        visible: root.aiT1Status === "error"
+
+                                        RowLayout {
+                                            anchors.fill: parent
+                                            anchors.margins: 6
+                                            spacing: 6
+                                            Text { text: "⚠️"; font.pixelSize: 11 }
+                                            Text {
+                                                text: root.aiT1Error !== "" ? root.aiT1Error : tr("err_download_failed", "Download failed. Please check your internet connection.")
+                                                font.pixelSize: 10
+                                                color: "#FCA5A5"
+                                                Layout.fillWidth: true
+                                                Layout.minimumWidth: 0
+                                                elide: Text.ElideRight
+                                            }
+                                        }
+                                    }
+
+                                    Text {
+                                        text: tr("desc_model_t1", "Embeds title tokens into multi-dimensional vectors to recognize anime/game characters across Chinese, Japanese, Korean, Russian, and European languages in 1–3 ms.")
+                                        font.family: "Segoe UI, sans-serif"
+                                        font.pixelSize: 10
+                                        color: "#64748B"
+                                        wrapMode: Text.WordWrap
+                                        Layout.fillWidth: true
+                                        Layout.minimumWidth: 0
+                                    }
+                                }
+                            }
+
+                            // Tier 2 Model Card: Deep Context Reasoner (SLM + Archive)
+                            Rectangle {
+                                id: t2Card
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                implicitHeight: t2Col.implicitHeight + 24
+                                radius: 6
+                                color: "#0B111E"
+                                border.color: currentT2Status === "downloading" ? "#6366F1" : "#1E293B"
+                                border.width: 1
+                                clip: true
+
+                                readonly property string activeT2Key: (root.bridge && root.bridge.aiDeepReasonerVariant === "heavy") ? "deep_reasoner_heavy" : "deep_reasoner_light"
+                                readonly property bool isCurrentT2Ready: (root.bridge && root.bridge.aiDeepReasonerVariant === "heavy") ? root.bridge.aiDeepReasonerHeavyReady : root.bridge.aiDeepReasonerLightReady
+                                readonly property string currentT2Status: activeT2Key === "deep_reasoner_heavy" ? root.aiT2HeavyStatus : root.aiT2LightStatus
+                                readonly property real currentT2Percent: activeT2Key === "deep_reasoner_heavy" ? root.aiT2HeavyPercent : root.aiT2LightPercent
+                                readonly property string currentT2Speed: activeT2Key === "deep_reasoner_heavy" ? root.aiT2HeavySpeed : root.aiT2LightSpeed
+                                readonly property string currentT2Error: activeT2Key === "deep_reasoner_heavy" ? root.aiT2HeavyError : root.aiT2LightError
+
+                                ColumnLayout {
+                                    id: t2Col
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.top: parent.top
+                                    anchors.margins: 12
+                                    spacing: 8
+
+                                    // Optional Notice when in Semantic Matcher Only mode
+                                    Rectangle {
+                                        Layout.fillWidth: true
+                                        Layout.minimumWidth: 0
+                                        implicitHeight: 26
+                                        radius: 4
+                                        color: "#161E2E"
+                                        border.color: "#1E293B"
+                                        border.width: 1
+                                        visible: root.bridge ? (root.bridge.aiEngineMode === "semantic_only") : false
+
+                                        RowLayout {
+                                            anchors.fill: parent
+                                            anchors.margins: 6
+                                            spacing: 6
+                                            Text { text: "💡"; font.pixelSize: 11 }
+                                            Text {
+                                                text: tr("tip_t2_optional", "Optional in 'Semantic Matcher Only' mode. Deep Context Reasoner SLM is only used when 'Full Hybrid' mode is active.")
+                                                font.pixelSize: 10
+                                                color: "#94A3B8"
+                                                font.italic: true
+                                                Layout.fillWidth: true
+                                                Layout.minimumWidth: 0
+                                                elide: Text.ElideRight
+                                            }
+                                        }
+                                    }
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        Layout.minimumWidth: 0
+                                        spacing: 8
+
+                                        Text {
+                                            text: "🧠"
+                                            font.pixelSize: 13
+                                        }
+
+                                        Text {
+                                            text: tr("model_t2_title", "Deep Context Reasoner (SLM + Archive)")
+                                            font.family: "Segoe UI, sans-serif"
+                                            font.pixelSize: 11
+                                            font.weight: 600
+                                            color: "#E2E8F0"
+                                            Layout.fillWidth: true
+                                            Layout.minimumWidth: 0
+                                            elide: Text.ElideRight
+                                        }
+
+                                        // Status Pill
+                                        Rectangle {
+                                            implicitHeight: 20
+                                            implicitWidth: t2StatusText.implicitWidth + 12
+                                            radius: 10
+                                            color: t2Card.currentT2Status === "downloading" ? "#312E81" : (t2Card.currentT2Status === "error" ? "#450A0A" : (t2Card.isCurrentT2Ready ? "#064E3B" : "#1E293B"))
+                                            border.color: t2Card.currentT2Status === "downloading" ? "#6366F1" : (t2Card.currentT2Status === "error" ? "#EF4444" : (t2Card.isCurrentT2Ready ? "#059669" : "#334155"))
+                                            border.width: 1
+
+                                            Text {
+                                                id: t2StatusText
+                                                anchors.centerIn: parent
+                                                text: t2Card.currentT2Status === "downloading" ? (t2Card.currentT2Percent.toFixed(1) + "%") : (t2Card.currentT2Status === "error" ? "Error" : (t2Card.isCurrentT2Ready ? "Ready" : "Not Downloaded"))
+                                                font.pixelSize: 9
+                                                font.weight: 600
+                                                color: t2Card.currentT2Status === "downloading" ? "#A5B4FC" : (t2Card.currentT2Status === "error" ? "#F87171" : (t2Card.isCurrentT2Ready ? "#34D399" : "#94A3B8"))
+                                            }
+                                        }
+
+                                        // Action Button
+                                        StyledButton {
+                                            variant: t2Card.currentT2Status === "downloading" ? "secondary" : (t2Card.isCurrentT2Ready ? "danger" : "primary")
+                                            text: t2Card.currentT2Status === "downloading" ? tr("btn_cancel", "Cancel") : (t2Card.isCurrentT2Ready ? tr("btn_remove_model", "Remove") : (t2Card.currentT2Status === "error" ? tr("btn_retry", "Retry") : (root.bridge && root.bridge.aiDeepReasonerVariant === "heavy" ? tr("btn_download_t2_smart", "Download 1.0 GB") : tr("btn_download_t2_light", "Download 490 MB"))))
+                                            implicitHeight: 26
+                                            font.pixelSize: 10
+                                            onClicked: {
+                                                if (!root.bridge) return
+                                                var key = t2Card.activeT2Key
+                                                if (t2Card.currentT2Status === "downloading") {
+                                                    root.bridge.cancelAiModelDownload(key)
+                                                } else if (t2Card.isCurrentT2Ready) {
+                                                    root.bridge.deleteAiModel(key)
+                                                } else {
+                                                    root.bridge.startAiModelDownload(key)
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // Dedicated Download Progress Bar
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        Layout.minimumWidth: 0
+                                        spacing: 4
+                                        visible: t2Card.currentT2Status === "downloading"
+
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            Layout.minimumWidth: 0
+
+                                            Text {
+                                                text: tr("lbl_downloading_t2", "Downloading reasoning SLM weights...")
+                                                font.family: "Segoe UI, sans-serif"
+                                                font.pixelSize: 10
+                                                font.weight: 600
+                                                color: "#818CF8"
+                                                Layout.fillWidth: true
+                                                Layout.minimumWidth: 0
+                                                elide: Text.ElideRight
+                                            }
+
+                                            Text {
+                                                text: t2Card.currentT2Speed
+                                                font.family: "Cascadia Code, Consolas, monospace"
+                                                font.pixelSize: 10
+                                                color: "#A78BFA"
+                                                visible: t2Card.currentT2Speed !== ""
+                                            }
+
+                                            Text {
+                                                text: t2Card.currentT2Percent.toFixed(1) + "%"
+                                                font.family: "Cascadia Code, Consolas, monospace"
+                                                font.pixelSize: 10
+                                                font.weight: Font.DemiBold
+                                                color: "#E2E8F0"
+                                            }
+                                        }
+
+                                        Rectangle {
+                                            Layout.fillWidth: true
+                                            Layout.minimumWidth: 0
+                                            height: 6
+                                            radius: 3
+                                            color: "#161E2E"
+                                            border.color: "#1E293B"
+                                            border.width: 1
+                                            clip: true
+
+                                            Rectangle {
+                                                height: parent.height
+                                                width: Math.max(0, Math.min(parent.width, parent.width * (t2Card.currentT2Percent / 100.0)))
+                                                radius: 3
+                                                gradient: Gradient {
+                                                    orientation: Gradient.Horizontal
+                                                    GradientStop { position: 0.0; color: "#4F46E5" }
+                                                    GradientStop { position: 1.0; color: "#818CF8" }
+                                                }
+                                                Behavior on width {
+                                                    NumberAnimation { duration: 160; easing.type: Easing.OutQuad }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // Error Notification Banner
+                                    Rectangle {
+                                        Layout.fillWidth: true
+                                        Layout.minimumWidth: 0
+                                        implicitHeight: 28
+                                        radius: 4
+                                        color: "#450A0A"
+                                        border.color: "#EF4444"
+                                        border.width: 1
+                                        visible: t2Card.currentT2Status === "error"
+
+                                        RowLayout {
+                                            anchors.fill: parent
+                                            anchors.margins: 6
+                                            spacing: 6
+                                            Text { text: "⚠️"; font.pixelSize: 11 }
+                                            Text {
+                                                text: t2Card.currentT2Error !== "" ? t2Card.currentT2Error : tr("err_download_failed", "Download failed. Please check your internet connection.")
+                                                font.pixelSize: 10
+                                                color: "#FCA5A5"
+                                                Layout.fillWidth: true
+                                                Layout.minimumWidth: 0
+                                                elide: Text.ElideRight
+                                            }
+                                        }
+                                    }
+
+                                    // Variant Selector: Light vs Smart
+                                    Text {
+                                        text: tr("lbl_llm_tier", "Model Size:")
+                                        font.family: "Segoe UI, sans-serif"
+                                        font.pixelSize: 11
+                                        font.weight: 600
+                                        color: "#E2E8F0"
+                                    }
+
+                                    Flow {
+                                        width: parent.width
+                                        Layout.fillWidth: true
+                                        Layout.minimumWidth: 0
+                                        spacing: 8
+
+                                        FilterCheckbox {
+                                            label: tr("llm_opt_light", "Light (Qwen 0.5B • ~490 MB)")
+                                            iconText: "🪶"
+                                            activeColor: "#34D399"
+                                            tooltip: tr("llm_opt_light_tip", "Potato-friendly 0.5B model. Low memory (~450 MB RAM), quick deductions on CPU.")
+                                            checked: root.bridge ? root.bridge.aiDeepReasonerVariant === "light" : true
+                                            onClicked: if (root.bridge) root.bridge.aiDeepReasonerVariant = "light"
+                                        }
+
+                                        FilterCheckbox {
+                                            label: tr("llm_opt_smart", "Smart (Qwen 1.5B • ~1.04 GB)")
+                                            iconText: "✨"
+                                            activeColor: "#818CF8"
+                                            tooltip: tr("llm_opt_smart_tip", "Higher intelligence and deeper anime & pop culture knowledge. Best for modern GPUs/CPUs.")
+                                            checked: root.bridge ? root.bridge.aiDeepReasonerVariant === "heavy" : false
+                                            onClicked: if (root.bridge) root.bridge.aiDeepReasonerVariant = "heavy"
+                                        }
+                                    }
+
+                                    Text {
+                                        text: tr("desc_model_t2", "Deduces character and series names by cross-referencing subtle post tokens against the creator's historical download patterns from download_archive.db.")
+                                        font.family: "Segoe UI, sans-serif"
+                                        font.pixelSize: 10
+                                        color: "#64748B"
+                                        wrapMode: Text.WordWrap
+                                        Layout.fillWidth: true
+                                        Layout.minimumWidth: 0
+                                    }
+                                }
+                            }
+
+                            // Interactive Testing Sandbox Card
+                            Rectangle {
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                implicitHeight: sandboxCol.implicitHeight + 24
+                                radius: 6
+                                color: "#0B111E"
+                                border.color: "#1E293B"
+                                border.width: 1
+                                clip: true
+
+                                ColumnLayout {
+                                    id: sandboxCol
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.top: parent.top
+                                    anchors.margins: 12
+                                    spacing: 8
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        Layout.minimumWidth: 0
+                                        spacing: 6
+
+                                        Text {
+                                            text: "🧪"
+                                            font.pixelSize: 12
+                                        }
+
+                                        Text {
+                                            text: tr("sandbox_title", "Live AI Recognition Test Sandbox")
+                                            font.family: "Segoe UI, sans-serif"
+                                            font.pixelSize: 11
+                                            font.weight: 600
+                                            color: "#E2E8F0"
+                                            Layout.fillWidth: true
+                                            Layout.minimumWidth: 0
+                                            elide: Text.ElideRight
+                                        }
+                                    }
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        Layout.minimumWidth: 0
+                                        spacing: 8
+
+                                        StyledTextField {
+                                            id: aiTestInput
+                                            Layout.fillWidth: true
+                                            Layout.minimumWidth: 0
+                                            placeholderText: tr("sandbox_placeholder", "Enter a messy title, e.g. 【五等分】水着 4K, 乃木坂, or Nino Nakano...")
+                                            onAccepted: testAiBtn.clicked()
+                                        }
+
+                                        StyledButton {
+                                            id: testAiBtn
+                                            variant: "primary"
+                                            text: tr("btn_test_ai", "Test Match")
+                                            iconText: "🔍"
+                                            implicitHeight: 34
+                                            onClicked: {
+                                                if (root.bridge && aiTestInput.text.trim().length > 0) {
+                                                    var res = root.bridge.testAiRecognition(aiTestInput.text.trim())
+                                                    aiResultText.text = "Heuristic: " + res.tier0 + "  |  AI Semantic: " + res.tier1 + "  ➔  Final Folder: " + res.final
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    Text {
+                                        id: aiResultText
+                                        text: tr("sandbox_hint", "Type a post title above and click 'Test Match' to preview how Pawchive categorizes it in real time.")
+                                        font.family: "Consolas, monospace"
+                                        font.pixelSize: 10
+                                        color: "#38BDF8"
+                                        wrapMode: Text.WordWrap
+                                        Layout.fillWidth: true
+                                        Layout.minimumWidth: 0
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
             }
         }
 

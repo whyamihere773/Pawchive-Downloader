@@ -89,6 +89,11 @@
         "heading": "Umgehen von Mega-Bandbreitenkontingenten (VPN und Proxy)",
         "body": "Mega begrenzt die Übertragung kostenloser Konten auf ca. 5 GB alle 6 Stunden pro IP-Adresse. Wenn ein Kontingentlimit erreicht ist:\n• VPN-Umgehung: Wechseln Sie Ihren VPN-Server zu einer anderen Stadt oder einem anderen Land, um eine neue IP-Adresse zu erhalten, und setzen Sie dann Ihre Downloads fort.\n• Proxy-Einstellung: Öffnen Sie Einstellungen -> Netzwerk & Proxy und geben Sie Ihre HTTP- oder SOCKS5-Proxy-URL ein (z. B. sock5://127.0.0.1:1080). Pawchive leitet Chunk-Anfragen über den Proxy weiter und umgeht dabei sofort den Kontingentblock.",
         "type": "warning"
+      },
+      {
+        "heading": "Cloud-Link-Filterung & Charakter-Sortierung",
+        "body": "Dateien in geteilten Mega-, Google Drive-, Dropbox- und GoFile-Ordnern werden automatisch anhand Ihrer Ausschluss-Schlüsselwörter und Dateigrößenlimits geprüft. Bei aktiver Charakter-Organisation werden Cloud-Dateien genau wie direkte Downloads in Franchise- und Charakter-Unterordner sortiert.",
+        "type": "tip"
       }
     ]
   },
@@ -110,6 +115,48 @@
       {
         "heading": "Intelligentes Charakterlernsystem",
         "body": "Wenn ein Charaktername wiederholt in Beitragstiteln oder Tags vorkommt, lernt die App ihn dynamisch und erstellt passende Ordner, auch wenn der Charakter noch nicht in Known.txt enthalten ist.",
+        "type": "tip"
+      },
+      {
+        "heading": "Mehrsprachige Erkennung & Master-Datenbank",
+        "body": "Die Erkennungs-Engine verfügt über eine integrierte Datenbank mit über 100.000 Anime- und Spielcharakteren und sortiert hierarchisch (Franchise / Charakter / Post). Japanisch, Chinesisch, Koreanisch, Russisch und europäische Sprachen mit Sonderzeichen werden ohne manuelle Konfiguration erkannt.",
+        "type": "info"
+      },
+      {
+        "heading": "Kontextabgleich mit dem Ersteller-Archiv",
+        "body": "Bei mehrdeutigen Titeln analysiert Pawchive Post-Tags, Dateinamen von Anhängen und die bisherigen Download-Muster des Künstlers aus der Archiv-Datenbank, um das wahrscheinlichste Franchise zu bestimmen.",
+        "type": "tip"
+      }
+    ]
+  },
+  {
+    "title": "KI-Semantik-Assistent & Offline-Deduktion",
+    "icon": "🧠",
+    "summary": "Lokale Vektor-Embeddings, SLM-Sprachmodell-Deduktion, Hardware-Beschleunigung und Modell-Manager.",
+    "content": [
+      {
+        "heading": "Was ist die KI-Charaktererkennung?",
+        "body": "Pawchive enthält einen optionalen, 100% lokalen KI-Assistenten für moderne PCs. Er analysiert unleserliche, ungetrennte oder kryptische Beitragstitel, die herkömmliche Regeln nicht erfassen können, und ordnet sie präzise zu – ganz ohne Internetverbindung.",
+        "type": "intro"
+      },
+      {
+        "heading": "Zweistufige KI-Architektur",
+        "body": "• Stufe 1 (Schneller semantischer Matcher): Leichtgewichtiges Vektormodell (~127 MB), das Titel in mathematische Vektoren umwandelt und in 1–3 ms auf CPU oder GPU abgleicht.\n• Stufe 2 (Deep Context Reasoner): Ein lokales Sprachmodell (SLM), das subtile Hinweise liest und mit der Archivhistorie des Erstellers abgleicht, um obskure Charaktere zu deduzieren.",
+        "type": "info"
+      },
+      {
+        "heading": "Modellgrößen (Light vs Smart)",
+        "body": "• Light (Qwen 0.5B • ~490 MB): Sehr geringer RAM-Bedarf (~450 MB), ideal für ältere Laptops und CPUs.\n• Smart (Qwen 1.5B • ~1.04 GB): Höhere Intelligenz und tiefere Anime- und Popkulturkenntnisse, empfohlen für Systeme mit moderner GPU oder schnellen CPUs.",
+        "type": "tip"
+      },
+      {
+        "heading": "Hardware-Beschleunigung & 1-Klick-Setup",
+        "body": "Modelle können mit einem Klick unter Einstellungen → Speicher & Dateiverarbeitung heruntergeladen werden. Die Engine erkennt und aktiviert NVIDIA (CUDA/TensorRT), AMD/Intel (DirectML) oder Multi-Core-CPUs automatisch. Mit Live-Geschwindigkeit, Fortschrittsanzeige und Abbruchfunktion.",
+        "type": "info"
+      },
+      {
+        "heading": "Live-KI-Test-Sandbox",
+        "body": "Vor dem Herunterladen können Sie die Erkennung in der interaktiven Sandbox in den Einstellungen ausprobieren. Geben Sie einen beliebigen Rohtitel ein und klicken Sie auf 'Abgleich testen', um die Heuristik- und KI-Vorhersagen sofort zu sehen.",
         "type": "tip"
       }
     ]
@@ -479,6 +526,11 @@
         "heading": "Post-Selector- und Archiv-Verifier-Steuerelemente",
         "body": "• 🖼️ Beiträge auswählen: Öffnet den interaktiven Katalogbrowser, um Beiträge und Anhänge vor dem Herunterladen manuell auszuwählen.\n• 🔍 Archiv überprüfen: Durchsucht den lokalen Speicher, um zu überprüfen, ob archivierte Dateien noch auf der Festplatte vorhanden sind.\n• ⚠️ Fehlende Abzeichen: Rote und gelbe Indikatoren weisen auf fehlende Dateien und unvollständige Downloads hin.\n• 🏷️ Dateinamenvorlage: Interaktiver Tag-Chip-Designer mit Live-Vorschau und benutzerdefinierter Formatierung.",
         "type": "tip"
+      },
+      {
+        "heading": "KI-Erkennung & Hardware-Steuerung",
+        "body": "• 🧠 KI-Schalter: Aktiviert lokale Vektor-Embeddings und SLM-Deduktion für schwierige Titel.\n• ⚡ GPU-Abzeichen: Zeigt aktive Hardware-Beschleunigung an (NVIDIA CUDA, DirectML oder CPU).\n• 🪶 Modellgröße: Wechselt zwischen Light (0.5B ressourcenschonend) und Smart (1.5B Tiefenlogik).\n• 🧪 KI-Sandbox: Interaktiver Testbereich in den Einstellungen zur Vorschau der Ordnerzuordnung.",
+        "type": "info"
       }
     ]
   }

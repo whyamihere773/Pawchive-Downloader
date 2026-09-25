@@ -29,9 +29,17 @@ GENERIC_TITLE_WORDS: Set[str] = {
     "pack", "set", "reward", "rewards", "bundle", "complete", "wip", "sketch",
     "wallpaper", "illustration", "preview", "commission", "render", "animation",
     "audio", "voice", "variant", "variants", "bonus", "fanart", "version",
+    "daily", "weekly", "monthly",
     "january", "february", "march", "april", "may", "june", "july", "august",
     "september", "october", "november", "december", "vol", "volume", "part",
-    "update", "release", "full", "hd", "4k", "8k", "nsfw", "sfw", "r18"
+    "update", "release", "full", "hd", "4k", "8k", "nsfw", "sfw", "r18",
+    # Multi-lingual title generic words
+    "イラスト", "壁紙", "差分", "まとめ", "セット", "パック", "特典", "支援", "先行公開",
+    "插画", "插图", "壁纸", "差分", "合集", "图集", "套图", "整合", "特典", "赞助", "画集", "全彩",
+    "일러스트", "배경화면", "월페이퍼", "차분", "세트", "특전", "후원",
+    "иллюстрация", "обои", "набор", "пак", "скетч", "бонус",
+    "hintergrundbild", "fond d'écran", "fondo de pantalla", "papel de parede",
+    "hình nền", "duvar kağıdı", "วอลเปเปอร์",
 }
 
 # Tags that look like character names but are workflow/meta noise
@@ -50,6 +58,41 @@ _NOISE_TAGS: Set[str] = {
     "art", "artwork", "aniamation", "shotstory", "sudden", "attack",
     "ory", "fi", "oufit", "final", "polling", "results", "voting", "helmet",
     "embedded", "vimeo", "halloween", "amputee", "happy", "month", "next", "broken",
+    # Japanese honorifics & titles
+    "chan", "san", "sama", "kun", "senpai", "sensei", "tan", "dono", "chama",
+    "ちゃん", "さん", "さま", "様", "くん", "君", "せんぱい", "先輩", "せんせい", "先生", "殿",
+    # Outfits, variants & styles (English & European)
+    "swimsuit", "bikini", "bunny", "maid", "nurse", "bride", "wedding", "casual",
+    "kimono", "yukata", "cheerleader", "gym", "schoolgirl", "uniform", "lingerie",
+    "underwear", "undies", "costume", "cosplay", "alter", "dress", "latex", "goth",
+    "armor", "armour",
+    "badeanzug", "maillot", "bañador", "conejita", "sirvienta", "novia", "boda",
+    "maiô", "coelhinha", "empregada", "noiva", "casamento",
+    "áo tắm", "hầu gái", "cô dâu", "đồng phục",
+    "baju renang", "pelayan", "pengantin", "seragam",
+    "hizmetçi", "gelin", "üniforma", "ชุดว่ายน้ำ", "บิกินี่", "เมด", "เจ้าสาว", "เครื่องแบบ",
+    # Chinese (zh) outfits, variants & honorifics
+    "泳装", "泳衣", "比基尼", "兔女郎", "女仆", "护士", "花嫁", "婚纱", "新娘",
+    "便服", "私服", "旗袍", "制服", "水手服", "校服", "内衣", "情趣", "黑丝", "白丝", "同人", "同人志",
+    "草稿", "涂鸦", "高清", "原画", "立绘", "表情包", "模型", "渲染", "无修", "无遮", "步兵", "骑兵", "汉化", "翻译",
+    "酱", "桑", "大人", "君", "学姐", "学长", "前辈", "老师", "殿下", "小姐", "女士", "太太", "娘",
+    # Japanese (ja) outfits & terms
+    "水着", "ビキニ", "バニー", "バニーガール", "メイド", "ナース", "花嫁", "ウェディング",
+    "私服", "セーラー服", "制服", "下着", "ランジェリー", "コスプレ", "着物", "浴衣",
+    "落書き", "ラクガキ", "ファンアート", "高画質", "原画", "立ち絵", "同人",
+    # Korean (ko) outfits, variants & honorifics
+    "수영복", "비키니", "바니걸", "메이드", "간호사", "웨딩", "신부", "사복", "교복", "제복",
+    "속옷", "코스프레", "스케치", "낙서", "팬아트", "고화질", "원화",
+    "양", "군", "씨", "님", "선배", "선생님", "짱",
+    # Russian (ru) outfits & terms
+    "купальник", "бикини", "зайка", "кролик", "горничная", "медсестра", "невеста", "свадьба",
+    "форма", "косплей", "набор", "скетч", "фанарт", "рендер", "версия", "вариант", "арт",
+    # Seasons & events
+    "summer", "winter", "spring", "autumn", "fall", "christmas", "valentine",
+    # Media formats & platforms
+    "4k", "8k", "hd", "psd", "clip", "patreon", "fanbox", "fantia", "subscribestar",
+    "gumroad", "discord", "mesh", "blend", "fbx", "obj", "render",
+    "v1", "v2", "v3", "ver1", "ver2", "part1", "part2", "pt1", "pt2",
     # Generic entities (but keep races like elf, demon, dragon as valid)
     "monster", "creature", "entity", "slaanesh", "khorne", "nurgle", "tzeentch",
 }
@@ -121,6 +164,10 @@ class KnownManager:
         self._master_franchise_map: Dict[Tuple[str, ...], str] = {}
 
         # Custom Known.txt fast lookup indexes
+        self.franchise_aliases: Dict[str, List[str]] = {}
+        self._custom_franchise_map: Dict[Tuple[str, ...], str] = {}
+        self._custom_cjk_names: Set[str] = set()
+        self._custom_cjk_franchises: Set[str] = set()
         self._custom_exact_map: Dict[Tuple[str, ...], Tuple[str, str]] = {}
         self._custom_first_token_map: Dict[str, List[Tuple[str, Tuple[str, ...]]]] = {}
         self._custom_last_token_map: Dict[str, List[Tuple[str, Tuple[str, ...]]]] = {}
@@ -128,12 +175,43 @@ class KnownManager:
         self._custom_indexed: List[Tuple[str, Tuple[str, ...]]] = []
 
         # In-memory query cache for instant hits
-        self._lru_cache: Dict[Tuple[str, Tuple[str, ...], str], Optional[Tuple[str, str]]] = {}
+        self._lru_cache: Dict[Tuple[str, Tuple[str, ...], Tuple[str, ...], str, str], Optional[Tuple[str, str]]] = {}
+
+        # AI-assisted recognition subsystem (Tier 1 Embeddings & Tier 2 Reasoner)
+        self.model_manager: Optional[Any] = None
+        self.semantic_matcher: Optional[Any] = None
+        self.contextual_reasoner: Optional[Any] = None
+        self._ai_enabled: bool = False
+        self._ai_engine_mode: str = "hybrid"
 
         self._load_master_db()
 
         self.on_entries_changed: Optional[Callable[[], None]] = None
         self.load()
+
+    def enable_ai(self, enabled: bool = True, model_manager: Optional[Any] = None) -> None:
+        """Enables or disables AI-assisted character recognition (Tier 1 & Tier 2)."""
+        self._ai_enabled = bool(enabled)
+        if self._ai_enabled:
+            if not self.model_manager:
+                try:
+                    from services.model_manager import ModelManager
+                    from core.ai_semantic_matcher import SemanticMatcher
+                    from core.ai_reasoner import ContextualReasoner
+                    self.model_manager = model_manager or ModelManager()
+                    self.semantic_matcher = SemanticMatcher(self.model_manager)
+                    self.contextual_reasoner = ContextualReasoner(self.model_manager)
+                    logger.info("AI-assisted character recognition engine activated.", category="known")
+                except Exception as e:
+                    logger.debug(f"AI engine initialization notice: {e}", category="known")
+        self._lru_cache.clear()
+
+    def set_ai_engine_mode(self, mode: str) -> None:
+        """Sets the AI engine mode ('semantic_only' or 'hybrid')."""
+        if mode in ("semantic_only", "hybrid"):
+            self._ai_engine_mode = mode
+            self._lru_cache.clear()
+
 
     def _load_master_db(self):
         """Loads the pre-compiled master game and anime characters database using fast binary caching."""
@@ -229,6 +307,7 @@ class KnownManager:
         self.entry_franchise_map.clear()
         self.franchise_sections.clear()
         self.standalone_entries.clear()
+        self.franchise_aliases.clear()
 
         if not os.path.exists(self.file_path):
             os.makedirs(os.path.dirname(self.file_path), exist_ok=True)
@@ -276,11 +355,19 @@ Katarin
                     cleaned = line.strip()
                     if not cleaned or cleaned.startswith("#"):
                         continue
-                    # Check for section header [Franchise Name]
+                    # Check for section header [Franchise Name | Alias1 | Alias2]
                     section_match = re.match(r'^\[([^\]]+)\]$', cleaned)
                     if section_match:
-                        current_franchise = section_match.group(1).strip()
+                        raw_header = section_match.group(1).strip()
+                        parts = [p.strip() for p in raw_header.split("|") if p.strip()]
+                        primary_fr = parts[0] if parts else raw_header
+                        current_franchise = primary_fr
                         self.franchise_sections.setdefault(current_franchise, [])
+                        if current_franchise not in self.franchise_aliases:
+                            self.franchise_aliases[current_franchise] = []
+                        for al in parts[1:]:
+                            if al not in self.franchise_aliases[current_franchise]:
+                                self.franchise_aliases[current_franchise].append(al)
                         continue
 
                     if cleaned not in self.entries:
@@ -288,6 +375,10 @@ Katarin
                     
                     if current_franchise:
                         self.entry_franchise_map[cleaned.lower()] = current_franchise
+                        canon = self._canonical_entry(cleaned)
+                        self.entry_franchise_map[canon.lower()] = current_franchise
+                        for al in self._entry_aliases(cleaned):
+                            self.entry_franchise_map[al.lower()] = current_franchise
                         if cleaned not in self.franchise_sections[current_franchise]:
                             self.franchise_sections[current_franchise].append(cleaned)
                     else:
@@ -300,6 +391,7 @@ Katarin
             self._custom_last_token_map = {}
             self._custom_single_names = []
             self._custom_indexed = []
+            self._custom_words: Set[str] = set()
 
             for entry in self.entries:
                 canonical = self._canonical_entry(entry)
@@ -312,14 +404,131 @@ Katarin
                         continue
                     self._custom_exact_map[ntoks] = (fr, canonical)
                     self._custom_indexed.append((canonical, ntoks))
+                    for tok in ntoks:
+                        self._custom_words.add(tok)
+
                     if len(ntoks) == 1:
                         self._custom_single_names.append(canonical)
                     else:
                         first, last = ntoks[0], ntoks[-1]
-                        if len(first) >= 4 and first not in _NOISE_TAGS and first not in GENERIC_TITLE_WORDS:
+                        if len(first) >= 3 and first not in _NOISE_TAGS and first not in GENERIC_TITLE_WORDS:
                             self._custom_first_token_map.setdefault(first, []).append((canonical, ntoks))
-                        if last != first and len(last) >= 4 and last not in _NOISE_TAGS and last not in GENERIC_TITLE_WORDS:
+                        if last != first and len(last) >= 3 and last not in _NOISE_TAGS and last not in GENERIC_TITLE_WORDS:
                             self._custom_last_token_map.setdefault(last, []).append((canonical, ntoks))
+
+            # Build custom franchise map with auto-generated and explicit aliases
+            self._custom_franchise_map = {}
+
+            # Built-in multi-lingual franchise synonyms across supported tutorial languages (ZH, JA, KO, RU, EN)
+            MULTILINGUAL_FRANCHISE_MAP = {
+                "genshin": ["原神", "げんしん", "원신", "геншин", "геншин импакт"],
+                "quintuplet": [
+                    "五等分的新娘", "五等分", "五等分の花嫁", "ごとうぶんのはなよめ",
+                    "ごとうぶん", "5등분의 신부", "5등분", "5toubun", "gotoubun"
+                ],
+                "star rail": [
+                    "崩坏：星穹铁道", "崩坏星穹铁道", "星穹铁道", "星铁", "崩壊：スターレイル",
+                    "スターレイル", "붕괴: 스타레일", "스타레일", "хонкай стар рейл", "стар рейл"
+                ],
+                "fate": [
+                    "命运-冠位指定", "命运冠位指定", "フェイト・グランドオーダー",
+                    "フェイト", "페이트 그랜드 오더", "페그오", "fgo"
+                ],
+                "final fantasy": [
+                    "最终幻想", "最终幻想7", "ファイナルファンタジー", "파이널 판타지", "финалка"
+                ],
+                "witcher": [
+                    "巫师", "巫师3", "ウィッチャー", "위쳐", "ведьмак"
+                ],
+                "overwatch": [
+                    "守望先锋", "守望先锋2", "オーバーウォッチ", "오버워치", "овервотч", "ow", "ow2"
+                ],
+                "blue archive": [
+                    "碧蓝档案", "蔚蓝档案", "ブルーアーカイブ", "ブルアカ", "블루 아카이브", "블아"
+                ],
+                "zenless": [
+                    "绝区零", "ゼンレスゾーンゼロ", "ゼンゼロ", "젠레스 존 제로", "젠존제"
+                ],
+                "azur lane": [
+                    "碧蓝航线", "アズールレーン", "アズレン", "벽람항로"
+                ],
+                "arknights": [
+                    "明日方舟", "アークナイツ", "명일방주"
+                ]
+            }
+
+            for fr in self.franchise_sections:
+                fr_toks = tuple(self._tokenize(fr))
+                if fr_toks:
+                    self._custom_franchise_map[fr_toks] = fr
+                for al in self.franchise_aliases.get(fr, []):
+                    al_toks = tuple(self._tokenize(al))
+                    if al_toks:
+                        self._custom_franchise_map[al_toks] = fr
+
+                # 1. Stripping "The "
+                if fr.lower().startswith("the "):
+                    stripped_toks = tuple(self._tokenize(fr[4:]))
+                    if stripped_toks:
+                        self._custom_franchise_map[stripped_toks] = fr
+
+                # 2. Acronyms for >= 3 words (e.g. Fate Grand Order -> FGO)
+                words = fr.split()
+                if len(words) >= 3:
+                    acro = "".join(w[0] for w in words if w.lower() not in {"the", "of", "and", "in", "no", "to"}).lower()
+                    if len(acro) >= 2:
+                        self._custom_franchise_map[(acro,)] = fr
+
+                # 3. Roman numerals <-> numbers (e.g. VII <-> 7)
+                roman_map = {
+                    "vii": "7", "viii": "8", "ix": "9", "iv": "4", "vi": "6",
+                    "iii": "3", "ii": "2", "x": "10", "v": "5"
+                }
+                for r_tok, d_tok in roman_map.items():
+                    if r_tok in fr_toks:
+                        sub_toks = tuple(d_tok if t == r_tok else t for t in fr_toks)
+                        self._custom_franchise_map[sub_toks] = fr
+                        if len(fr_toks) >= 2:
+                            ff_acro = f"{fr_toks[0][0]}{fr_toks[1][0]}{d_tok}"
+                            self._custom_franchise_map[(ff_acro,)] = fr
+                            self._custom_franchise_map[(f"{fr_toks[0][0]}{fr_toks[1][0]}{r_tok}",)] = fr
+
+                # 4. Distinctive single-word franchise keywords (len >= 6)
+                for w in fr_toks:
+                    if len(w) >= 6 and w not in _NOISE_TAGS and w not in GENERIC_TITLE_WORDS and w not in IGNORED_TAGS:
+                        if (w,) not in self._custom_franchise_map:
+                            self._custom_franchise_map[(w,)] = fr
+
+                # 5. Multi-lingual franchise aliases (ZH, JA, KO, RU, EN)
+                fr_lower = fr.lower()
+                for key, trans_list in MULTILINGUAL_FRANCHISE_MAP.items():
+                    if key in fr_lower or any(t.lower() in fr_lower for t in trans_list):
+                        for trans in trans_list:
+                            t_toks = tuple(self._tokenize(trans))
+                            if t_toks and t_toks not in self._custom_franchise_map:
+                                self._custom_franchise_map[t_toks] = fr
+
+            # Track CJK character names and franchise names for unspaced Asian title scanning
+            self._custom_cjk_names.clear()
+            self._custom_cjk_franchises.clear()
+            for entry in self.entries:
+                if self._has_cjk(entry):
+                    self._custom_cjk_names.add(entry.strip())
+                for alias in self._entry_aliases(entry):
+                    if self._has_cjk(alias):
+                        self._custom_cjk_names.add(alias.strip())
+
+            for fr in self.franchise_sections:
+                if self._has_cjk(fr):
+                    self._custom_cjk_franchises.add(fr.strip())
+                for al in self.franchise_aliases.get(fr, []):
+                    if self._has_cjk(al):
+                        self._custom_cjk_franchises.add(al.strip())
+
+            for t_toks, mapped_fr in self._custom_franchise_map.items():
+                phrase = "".join(t_toks)
+                if self._has_cjk(phrase) and len(phrase) >= 2:
+                    self._custom_cjk_franchises.add(phrase)
 
             self._lru_cache.clear()
             logger.info(f"Loaded {len(self.entries)} known characters/series from Known.txt ({len(self.franchise_sections)} franchises)", category="known")
@@ -337,8 +546,10 @@ Katarin
                     f.write("\n")
 
                 for franchise, chars in self.franchise_sections.items():
-                    if chars:
-                        f.write(f"[{franchise}]\n")
+                    if chars or franchise in self.franchise_aliases:
+                        aliases = self.franchise_aliases.get(franchise, [])
+                        header_str = f"[{franchise} | {' | '.join(aliases)}]" if aliases else f"[{franchise}]"
+                        f.write(f"{header_str}\n")
                         for c in chars:
                             f.write(f"{c}\n")
                         f.write("\n")
@@ -484,8 +695,14 @@ Katarin
     # Underscores/hyphens are word chars for \b, so "katarin_story" never matched "Katarin".
     # Tokenize the same way Danbooru/gallery-dl treat tags: separators are equivalent to spaces.
     _TOKEN_SPLIT = re.compile(
-        r"[\s_\-,;:|/\\~～+&'’\"“”‘`()\[\]{}<>【】《》「」『』（）!?]+"
+        r"[\s_\-,;:|/\\~～+&'’\"“”‘`()\[\]{}<>【】《》「」『』（）〔〕〈〉［］〖〗〘〙〚〛«»!?·・•、。，；：]+"
     )
+
+    @staticmethod
+    def _has_cjk(s: str) -> bool:
+        if not s:
+            return False
+        return bool(re.search(r'[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]', s))
 
     @classmethod
     def _tokenize(cls, text: str) -> List[str]:
@@ -509,7 +726,16 @@ Katarin
     @staticmethod
     def _entry_aliases(entry: str) -> List[str]:
         parts = [p.strip() for p in entry.split("|") if p.strip()]
-        return parts or [entry.strip()]
+        aliases = list(parts) if parts else [entry.strip()]
+        # Automatically generate reversed name permutations for 2-word names (e.g. "Nino Nakano" <-> "Nakano Nino")
+        extra_permutations = []
+        for a in aliases:
+            words = a.split()
+            if len(words) == 2:
+                reversed_name = f"{words[1]} {words[0]}"
+                if reversed_name.lower() != a.lower() and reversed_name not in aliases:
+                    extra_permutations.append(reversed_name)
+        return aliases + extra_permutations
 
     def _find_token_sequence(self, hay_tokens: List[str], needle: Tuple[str, ...]) -> Optional[int]:
         n = len(needle)
@@ -614,58 +840,247 @@ Katarin
 
         return best_name
 
-    def find_matching_hierarchy(self, title: str, tags: Optional[Any] = None) -> Optional[Tuple[str, str]]:
+    @classmethod
+    def _split_camel_case(cls, s: str) -> str:
+        s = re.sub(r'([a-z0-9])([A-Z])', r'\1 \2', s)
+        s = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1 \2', s)
+        return s
+
+    @classmethod
+    def _extract_filename_tokens(cls, filename: str) -> List[Tuple[str, ...]]:
+        if not filename:
+            return []
+        base = os.path.basename(filename.split("?")[0])
+        stem, _ = os.path.splitext(base)
+        stem = cls._split_camel_case(stem)
+        raw_tokens = cls._tokenize(stem)
+        if not raw_tokens:
+            return []
+
+        clean_tokens = [
+            t for t in raw_tokens
+            if t not in _NOISE_TAGS
+            and t not in GENERIC_TITLE_WORDS
+            and t not in IGNORED_TAGS
+            and not t.isdigit()
+            and not _ONLY_JUNK.match(t)
+        ]
+
+        res: List[Tuple[str, ...]] = []
+        if clean_tokens:
+            res.append(tuple(clean_tokens))
+            c_len = len(clean_tokens)
+            for k in range(min(4, c_len), 0, -1):
+                for i in range(c_len - k + 1):
+                    ngram = tuple(clean_tokens[i:i + k])
+                    if ngram not in res:
+                        res.append(ngram)
+
+        r_len = len(raw_tokens)
+        for k in range(min(4, r_len), 0, -1):
+            for i in range(r_len - k + 1):
+                ngram = tuple(raw_tokens[i:i + k])
+                if ngram not in res:
+                    res.append(ngram)
+
+        return res
+
+    @classmethod
+    def _clean_content_text(cls, content: Optional[str]) -> str:
+        if not content or not isinstance(content, str):
+            return ""
+        snippet = content[:1500]
+        snippet = re.sub(r'<[^>]+>', ' ', snippet)
+        snippet = snippet.replace("&nbsp;", " ").replace("&amp;", "&").replace("&quot;", '"').replace("&#39;", "'")
+        return snippet
+
+    def _fuzzy_match_custom(self, query_tokens: List[str]) -> Optional[Tuple[str, str]]:
+        """
+        High-confidence typo and romanization tolerance for custom characters.
+        Guarded: only compares candidate phrases with length >= 5.
+        Uses similarity ratio >= 0.88.
+        """
+        import difflib
+
+        candidates: List[str] = []
+        n = len(query_tokens)
+        for k in range(min(3, n), 0, -1):
+            for i in range(n - k + 1):
+                phrase = " ".join(query_tokens[i:i + k])
+                if len(phrase) >= 5 and phrase not in _NOISE_TAGS and phrase not in GENERIC_TITLE_WORDS and phrase not in IGNORED_TAGS:
+                    candidates.append(phrase)
+
+        if not candidates:
+            return None
+
+        for cand in candidates:
+            for entry_tokens, (fr, canonical) in self._custom_exact_map.items():
+                entry_phrase = " ".join(entry_tokens)
+                if abs(len(cand) - len(entry_phrase)) > 2:
+                    continue
+                if len(entry_phrase) < 5:
+                    continue
+                ratio = difflib.SequenceMatcher(None, cand, entry_phrase).quick_ratio()
+                if ratio >= 0.88:
+                    ratio = difflib.SequenceMatcher(None, cand, entry_phrase).ratio()
+                    if ratio >= 0.88:
+                        return (fr, canonical)
+
+        return None
+
+    def _detect_custom_franchise(
+        self,
+        tag_tokens: List[Tuple[str, ...]],
+        title_tokens: List[str],
+        file_tokens: List[Tuple[str, ...]],
+        content_tokens: Optional[List[str]] = None
+    ) -> Optional[str]:
+        if not self._custom_franchise_map:
+            return None
+
+        # 1. Tags
+        for t_toks in tag_tokens:
+            if t_toks in self._custom_franchise_map:
+                return self._custom_franchise_map[t_toks]
+
+        # 2. Title N-grams (from 4-grams down to 1-gram)
+        t_len = len(title_tokens)
+        for k in range(min(4, t_len), 0, -1):
+            for i in range(t_len - k + 1):
+                ngram = tuple(title_tokens[i:i + k])
+                if ngram in self._custom_franchise_map:
+                    return self._custom_franchise_map[ngram]
+
+        # 3. Filename tokens
+        for f_toks in file_tokens:
+            if f_toks in self._custom_franchise_map:
+                return self._custom_franchise_map[f_toks]
+
+        # 4. Content tokens
+        if content_tokens:
+            c_len = len(content_tokens)
+            for k in range(min(4, c_len), 0, -1):
+                for i in range(c_len - k + 1):
+                    ngram = tuple(content_tokens[i:i + k])
+                    if ngram in self._custom_franchise_map:
+                        return self._custom_franchise_map[ngram]
+
+        # 5. Unspaced CJK franchise substring search in title/tags
+        combined_text = " ".join(title_tokens)
+        if self._has_cjk(combined_text):
+            for cf in getattr(self, "_custom_cjk_franchises", set()):
+                if len(cf) >= 2 and cf in combined_text:
+                    cf_toks = tuple(self._tokenize(cf))
+                    if cf_toks in self._custom_franchise_map:
+                        return self._custom_franchise_map[cf_toks]
+
+        return None
+
+    def find_matching_hierarchy(
+        self,
+        title: str,
+        tags: Optional[Any] = None,
+        filenames: Optional[List[str]] = None,
+        content: Optional[str] = None,
+        creator_profile: Optional[Dict[str, Any]] = None
+    ) -> Optional[Tuple[str, str]]:
         """
         Picks the (Franchise, Character) hierarchical pair for a post.
         Returns Tuple of (franchise_name, character_name), or None if uncataloged.
-        Uses Tags-First O(1) lookups, Title N-Gram Hashing, and an LRU query cache.
+        Uses Tags, Title N-Grams, Filenames (with CamelCase de-munging), Post Content,
+        optional AI Semantic Matching (Tier 1), Creator Archive Reasoning (Tier 2),
+        and an LRU query cache.
+        Custom Known.txt entries strictly take precedence over the Master Database.
         """
         tag_list = self._parse_tags(tags)
-        if not title and not tag_list:
+        file_list = [str(f) for f in filenames if f] if filenames else []
+        if not title and not tag_list and not file_list and not content:
             return None
 
+        creator_key = str(creator_profile.get("creator_id") or "") if creator_profile else ""
         # Check in-memory LRU query cache
-        cache_key = (title or "", tuple(tag_list), self.mode)
+        cache_key = (
+            title or "",
+            tuple(tag_list),
+            tuple(file_list),
+            content[:200] if content else "",
+            self.mode,
+            creator_key,
+            self._ai_enabled,
+            getattr(self, "_ai_engine_mode", "hybrid")
+        )
         if cache_key in self._lru_cache:
             return self._lru_cache[cache_key]
 
-        res = self._find_matching_hierarchy_fast(title, tag_list)
+        res = self._find_matching_hierarchy_fast(title, tag_list, file_list, content)
+
+        # Tier 1 & Tier 2 AI-assisted fallback when fast heuristics return None or missing character
+        if self._ai_enabled and (not res or not res[1]):
+            # Tier 1: Fast Multilingual Semantic Embeddings Matcher
+            if self.semantic_matcher and self.semantic_matcher.is_available():
+                try:
+                    if self.semantic_matcher._cached_vectors is None:
+                        self.semantic_matcher.build_known_index(self)
+                    sem_match = self.semantic_matcher.find_match(title, threshold=0.82)
+                    if sem_match:
+                        fr, ch, score = sem_match
+                        logger.info(f"AI Tier 1 Semantic Match: '{ch}' ({fr}) [similarity={score:.2f}]", category="known")
+                        res = (fr, ch)
+                except Exception as ex:
+                    logger.debug(f"AI Tier 1 matching error: {ex}", category="known")
+
+            # Tier 2: Creator Archive Prior Reasoning & SLM Deduction (only in hybrid mode)
+            if getattr(self, "_ai_engine_mode", "hybrid") != "semantic_only" and self.contextual_reasoner and (not res or not res[1]):
+                try:
+                    reasoned = self.contextual_reasoner.reason_match(
+                        post_title=title,
+                        filenames=file_list,
+                        content=content,
+                        creator_profile=creator_profile,
+                        known_manager=self
+                    )
+                    if reasoned:
+                        fr, ch, conf = reasoned
+                        logger.info(f"AI Tier 2 Reasoned Match: '{ch}' ({fr}) [confidence={conf:.2f}]", category="known")
+                        res = (fr, ch)
+                except Exception as ex:
+                    logger.debug(f"AI Tier 2 reasoning error: {ex}", category="known")
+
         if len(self._lru_cache) > 10000:
             self._lru_cache.clear()
         self._lru_cache[cache_key] = res
         return res
 
-    def _find_matching_hierarchy_fast(self, title: str, tag_list: List[str]) -> Optional[Tuple[str, str]]:
-        # ── Step 1: Tags-First Fast Path (O(1) Direct Hash Lookups) ──────────
-        for tag in tag_list:
-            t_toks = tuple(self._tokenize(tag))
-            if not t_toks:
-                continue
-
-            # Check Custom Known.txt
-            if self.mode in ("hybrid", "learning_only"):
-                if t_toks in self._custom_exact_map:
-                    fr, canonical = self._custom_exact_map[t_toks]
-                    if not fr and self.master_characters:
-                        char_info = self.master_characters.get(canonical.lower())
-                        if char_info:
-                            fr = char_info.get("franchise")
-                    return (fr or canonical, canonical)
-
-            # Check Master Database
-            if self.mode in ("hybrid", "database_only"):
-                if t_toks in self._master_char_map:
-                    return self._master_char_map[t_toks]
-                if t_toks in self._master_franchise_map:
-                    f = self._master_franchise_map[t_toks]
-                    return (f, f)
-
-        # ── Step 2: Title N-Gram Fast Hash Lookups (O(1) Direct Dict Checks) ─
+    def _find_matching_hierarchy_fast(
+        self,
+        title: str,
+        tag_list: List[str],
+        filenames: Optional[List[str]] = None,
+        content: Optional[str] = None
+    ) -> Optional[Tuple[str, str]]:
         hay_tokens = self._tokenize(title) if title else []
-        if not hay_tokens:
-            return None
-
         num_toks = len(hay_tokens)
+
+        # Collect tag tokens
+        tag_token_list: List[Tuple[str, ...]] = []
+        all_flat_tag_tokens: List[str] = []
+        for tag in tag_list:
+            toks = tuple(self._tokenize(tag))
+            if toks:
+                tag_token_list.append(toks)
+                all_flat_tag_tokens.extend(toks)
+
+        # Collect smart filename tokens (CamelCase split & noise stripped)
+        file_token_tuples: List[Tuple[str, ...]] = []
+        if filenames:
+            for fn in filenames:
+                file_token_tuples.extend(self._extract_filename_tokens(fn))
+
+        # Collect post content tokens if provided
+        content_tokens: List[str] = []
+        if content:
+            clean_body = self._clean_content_text(content)
+            content_tokens = self._tokenize(clean_body)
 
         def _is_filler_tok(tok: str) -> bool:
             return (
@@ -675,59 +1090,180 @@ Katarin
                 or bool(_ONLY_JUNK.match(tok))
             )
 
-        # Priority 1: Check Custom Known.txt exact phrases (5-grams down to 1-gram)
+        # Multi-lingual honorific & affix expansion (JA, ZH, KO, EN)
+        MULTILINGUAL_HONORIFIC_SUFFIXES = (
+            "chan", "san", "sama", "kun", "senpai", "sensei", "tan", "dono", "chama",
+            "ちゃん", "さん", "さま", "様", "くん", "君", "せんぱい", "先輩", "せんせい", "先生", "殿",
+            "酱", "桑", "大人", "君", "学姐", "学长", "前辈", "老师", "殿下", "小姐", "女士", "太太", "娘",
+            "양", "군", "씨", "님", "선배", "선생님", "짱"
+        )
+        DIMINUTIVE_PREFIXES = ("小", "阿")
+        expanded_title_tokens = list(hay_tokens)
+        custom_words = getattr(self, "_custom_words", set())
+        cjk_names = getattr(self, "_custom_cjk_names", set())
+
+        for t in hay_tokens:
+            for sfx in MULTILINGUAL_HONORIFIC_SUFFIXES:
+                if t.endswith(sfx) and len(t) > len(sfx) + 1:
+                    stem = t[:-len(sfx)]
+                    if (stem in custom_words or stem in cjk_names) and stem not in expanded_title_tokens:
+                        expanded_title_tokens.append(stem)
+            for pfx in DIMINUTIVE_PREFIXES:
+                if t.startswith(pfx) and len(t) >= 2:
+                    stem = t[len(pfx):]
+                    if (stem in custom_words or stem in cjk_names) and stem not in expanded_title_tokens:
+                        expanded_title_tokens.append(stem)
+
+        # CJK unspaced character substring extraction:
+        raw_title_str = title or ""
+        if self._has_cjk(raw_title_str):
+            for c_name in cjk_names:
+                if len(c_name) >= 2 and c_name in raw_title_str:
+                    c_toks = tuple(self._tokenize(c_name))
+                    if c_toks and c_toks[0] not in expanded_title_tokens:
+                        expanded_title_tokens.append(c_toks[0])
+
+        # ═════════════════════════════════════════════════════════════════════
+        # ── CONTEXT DISAMBIGUATION & FRANCHISE BOOSTING ──────────────────────
+        # ═════════════════════════════════════════════════════════════════════
+        detected_franchise = self._detect_custom_franchise(
+            tag_token_list, hay_tokens, file_token_tuples, content_tokens
+        )
+
+        if detected_franchise and self.mode in ("hybrid", "learning_only"):
+            chars_in_franchise = self.franchise_sections.get(detected_franchise, [])
+            if chars_in_franchise:
+                all_context_tokens = list(expanded_title_tokens) + all_flat_tag_tokens
+                for ft in file_token_tuples:
+                    all_context_tokens.extend(ft)
+                if content_tokens:
+                    all_context_tokens.extend(content_tokens[:150])
+
+                context_set = set(all_context_tokens)
+
+                # 1. Match full character aliases / n-grams in context
+                for c in chars_in_franchise:
+                    canonical = self._canonical_entry(c)
+                    for alias in self._entry_aliases(c):
+                        a_toks = tuple(self._tokenize(alias))
+                        if not a_toks:
+                            continue
+                        if a_toks in tag_token_list or a_toks in file_token_tuples:
+                            return (detected_franchise, canonical)
+                        if self._find_token_sequence(hay_tokens, a_toks) is not None:
+                            return (detected_franchise, canonical)
+                        if content_tokens and self._find_token_sequence(content_tokens[:200], a_toks) is not None:
+                            return (detected_franchise, canonical)
+
+                # 2. Match single distinctive character tokens (e.g. first or last name)
+                for c in chars_in_franchise:
+                    canonical = self._canonical_entry(c)
+                    for alias in self._entry_aliases(c):
+                        a_toks = self._tokenize(alias)
+                        for tok in a_toks:
+                            min_len = 2 if self._has_cjk(tok) else 3
+                            if len(tok) >= min_len and tok in context_set and not _is_filler_tok(tok):
+                                return (detected_franchise, canonical)
+
+            # Franchise matched, but no specific character matched -> Series-Only Fallback!
+            return (detected_franchise, "")
+
+        # ═════════════════════════════════════════════════════════════════════
+        # ── PHASE 1: Custom Known.txt Checks (Highest Priority Always) ────────
+        # ═════════════════════════════════════════════════════════════════════
         if self.mode in ("hybrid", "learning_only") and self._custom_exact_map:
-            for k in range(min(5, num_toks), 0, -1):
-                for i in range(num_toks - k + 1):
-                    ngram = tuple(hay_tokens[i:i + k])
-                    if ngram in self._custom_exact_map:
-                        # If 1-gram matches a base name, check if a longer custom multi-word name matches this first token and remainder is filler
-                        if k == 1 and self._custom_first_token_map:
-                            first_word = ngram[0]
-                            hits = self._custom_first_token_map.get(first_word)
-                            if hits:
-                                rest = hay_tokens[i + 1:]
-                                if not rest or all(_is_filler_tok(t) for t in rest):
-                                    pick = max(hits, key=lambda item: (len(item[1]), len(item[0])))[0]
+            # 1A. Exact tag match in Custom Known
+            for t_toks in tag_token_list:
+                if t_toks in self._custom_exact_map:
+                    fr, canonical = self._custom_exact_map[t_toks]
+                    return (fr or canonical, canonical)
+
+            # 1B. Combined tags match in Custom Known (e.g. tag 'nakano' + tag 'nino')
+            if len(all_flat_tag_tokens) >= 2:
+                for k in range(min(4, len(all_flat_tag_tokens)), 1, -1):
+                    for i in range(len(all_flat_tag_tokens) - k + 1):
+                        ngram = tuple(all_flat_tag_tokens[i:i + k])
+                        if ngram in self._custom_exact_map:
+                            fr, canonical = self._custom_exact_map[ngram]
+                            return (fr or canonical, canonical)
+
+            # 1C. Title N-Gram matches in Custom Known (5-grams down to 1-gram)
+            # (Matches direct and reversed name permutations like 'Nakano Nino' <-> 'Nino Nakano')
+            if hay_tokens:
+                for k in range(min(5, num_toks), 0, -1):
+                    for i in range(num_toks - k + 1):
+                        ngram = tuple(hay_tokens[i:i + k])
+                        if ngram in self._custom_exact_map:
+                            if k == 1 and self._custom_first_token_map:
+                                first_word = ngram[0]
+                                hits = self._custom_first_token_map.get(first_word)
+                                if hits:
+                                    rest = hay_tokens[i + 1:]
+                                    if not rest or all(_is_filler_tok(t) for t in rest):
+                                        pick = max(hits, key=lambda item: (len(item[1]), len(item[0])))[0]
+                                        fr = self.entry_franchise_map.get(pick.lower()) or pick
+                                        return (fr, pick)
+
+                            fr, canonical = self._custom_exact_map[ngram]
+                            return (fr or canonical, canonical)
+
+            # 1C-alt: Expanded title tokens for honorific stems (e.g. Ninochan -> Nino)
+            if len(expanded_title_tokens) > len(hay_tokens):
+                for tok in expanded_title_tokens[num_toks:]:
+                    if (tok,) in self._custom_exact_map:
+                        fr, canonical = self._custom_exact_map[(tok,)]
+                        return (fr or canonical, canonical)
+                    if self._custom_first_token_map and tok in self._custom_first_token_map:
+                        hits = self._custom_first_token_map[tok]
+                        pick = max(hits, key=lambda item: (len(item[1]), len(item[0])))[0]
+                        fr = self.entry_franchise_map.get(pick.lower()) or pick
+                        return (fr, pick)
+
+            # 1D. Filename exact N-Grams in Custom Known (e.g. nino.zip, NakanoNino.zip)
+            for f_toks in file_token_tuples:
+                if f_toks in self._custom_exact_map:
+                    fr, canonical = self._custom_exact_map[f_toks]
+                    return (fr or canonical, canonical)
+
+            # 1E. High-Confidence Fuzzy Matching for Custom Known (Typo & romanization tolerance)
+            fuzzy_res = self._fuzzy_match_custom(hay_tokens)
+            if fuzzy_res:
+                return fuzzy_res
+
+            # 1F. Smart Token Fallback for Custom Known (Unique token hits from title, tags, files)
+            candidate_tokens = list(expanded_title_tokens) + all_flat_tag_tokens
+            for ft in file_token_tuples:
+                candidate_tokens.extend(ft)
+
+            if self._custom_first_token_map or self._custom_last_token_map:
+                for tok in candidate_tokens:
+                    if len(tok) < 3 or _is_filler_tok(tok):
+                        continue
+                    hits1 = self._custom_first_token_map.get(tok) or []
+                    hits2 = self._custom_last_token_map.get(tok) or []
+                    all_hits = list({item[0]: item for item in (hits1 + hits2)}.values())
+                    if len(all_hits) == 1:
+                        pick = all_hits[0][0]
+                        fr = self.entry_franchise_map.get(pick.lower()) or pick
+                        return (fr, pick)
+                    elif len(all_hits) > 1:
+                        # Try disambiguating with another token in candidates
+                        for other_tok in candidate_tokens:
+                            if other_tok != tok and len(other_tok) >= 3 and not _is_filler_tok(other_tok):
+                                subhits = [h for h in all_hits if other_tok in h[1]]
+                                if len(subhits) == 1:
+                                    pick = subhits[0][0]
                                     fr = self.entry_franchise_map.get(pick.lower()) or pick
                                     return (fr, pick)
 
-                        fr, canonical = self._custom_exact_map[ngram]
-                        if not fr and self.master_characters:
-                            char_info = self.master_characters.get(canonical.lower())
-                            if char_info:
-                                fr = char_info.get("franchise")
-                        return (fr or canonical, canonical)
-
-
-        # Priority 2: Check Master Database (5-grams down to 1-gram)
-        if self.mode in ("hybrid", "database_only") and self._master_char_map:
-            for k in range(min(5, num_toks), 0, -1):
-                for i in range(num_toks - k + 1):
-                    ngram = tuple(hay_tokens[i:i + k])
-                    # In master DB, single words must not be noise or short generic words
-                    if k == 1:
-                        tok0 = ngram[0]
-                        if len(tok0) < 4 or tok0 in _NOISE_TAGS or tok0 in GENERIC_TITLE_WORDS:
-                            continue
-                    if ngram in self._master_char_map:
-                        return self._master_char_map[ngram]
-                    if ngram in self._master_franchise_map:
-                        f = self._master_franchise_map[ngram]
-                        return (f, f)
-
-        # ── Step 3: Custom Known.txt Smart Prefix / First-Name Fallback ──────
-        # Only runs on user's small personal list (e.g. "Miao story" -> "Miao Ying")
-        if self.mode in ("hybrid", "learning_only") and self._custom_first_token_map:
-            for pos, tok in enumerate(hay_tokens):
-                hits = self._custom_first_token_map.get(tok)
-                if hits:
-                    pick = max(hits, key=lambda item: (len(item[1]), len(item[0])))[0]
-                    fr = self.entry_franchise_map.get(pick.lower()) or pick
-                    return (fr, pick)
+                        # If all hits belong to the exact same franchise, return that franchise!
+                        shared_franchises = {self.entry_franchise_map.get(h[0].lower()) or h[0] for h in all_hits}
+                        if len(shared_franchises) == 1:
+                            fr = next(iter(shared_franchises))
+                            return (fr, fr)
 
             if self._custom_single_names:
-                for pos, tok in enumerate(hay_tokens):
+                for tok in candidate_tokens:
                     if 3 <= len(tok) <= 5:
                         p_hits = [
                             n for n in self._custom_single_names
@@ -739,8 +1275,73 @@ Katarin
                             fr = self.entry_franchise_map.get(pick.lower()) or pick
                             return (fr, pick)
 
-        return None
+            # 1G. Post Content Scanning for Custom Known
+            if content_tokens:
+                c_len = len(content_tokens)
+                for k in range(min(4, c_len), 0, -1):
+                    for i in range(min(200, c_len - k + 1)):
+                        ngram = tuple(content_tokens[i:i + k])
+                        if ngram in self._custom_exact_map:
+                            fr, canonical = self._custom_exact_map[ngram]
+                            return (fr or canonical, canonical)
 
+        # ═════════════════════════════════════════════════════════════════════
+        # ── PHASE 2: Master Database Fallback (Only if Custom Known had no match)
+        # ═════════════════════════════════════════════════════════════════════
+        if self.mode in ("hybrid", "database_only") and self._master_char_map:
+            # 2A. Multi-token tags in Master DB
+            for t_toks in tag_token_list:
+                if len(t_toks) >= 2 and t_toks in self._master_char_map:
+                    fr, c_name = self._master_char_map[t_toks]
+                    if fr not in ("General", "Other"):
+                        return (fr, c_name)
+                if len(t_toks) >= 2 and t_toks in self._master_franchise_map:
+                    f = self._master_franchise_map[t_toks]
+                    return (f, f)
+
+            # 2B. Title N-Grams in Master DB
+            if hay_tokens:
+                for k in range(min(5, num_toks), 0, -1):
+                    for i in range(num_toks - k + 1):
+                        ngram = tuple(hay_tokens[i:i + k])
+                        # Guard single-word entries in Master DB
+                        if k == 1:
+                            tok0 = ngram[0]
+                            if len(tok0) < 4 or tok0 in _NOISE_TAGS or tok0 in GENERIC_TITLE_WORDS:
+                                continue
+                            # Crucial: if word appears in any custom Known.txt entry, don't let Master DB steal it!
+                            if tok0 in custom_words:
+                                continue
+                        if ngram in self._master_char_map:
+                            return self._master_char_map[ngram]
+                        if ngram in self._master_franchise_map:
+                            f = self._master_franchise_map[ngram]
+                            return (f, f)
+
+            # 2C. Single-token tags in Master DB (guarded)
+            for t_toks in tag_token_list:
+                if len(t_toks) == 1:
+                    tok0 = t_toks[0]
+                    if len(tok0) < 4 or tok0 in _NOISE_TAGS or tok0 in GENERIC_TITLE_WORDS:
+                        continue
+                    if tok0 in custom_words:
+                        continue
+                    if t_toks in self._master_char_map:
+                        fr, c_name = self._master_char_map[t_toks]
+                        if fr not in ("General", "Other"):
+                            return (fr, c_name)
+                    if t_toks in self._master_franchise_map:
+                        f = self._master_franchise_map[t_toks]
+                        return (f, f)
+
+            # 2D. Filename tuples in Master DB (guarded)
+            for f_toks in file_token_tuples:
+                if len(f_toks) >= 2 and f_toks in self._master_char_map:
+                    fr, c_name = self._master_char_map[f_toks]
+                    if fr not in ("General", "Other"):
+                        return (fr, c_name)
+
+        return None
 
     def find_matching_category(self, title: str, tags: Optional[Any] = None) -> Optional[str]:
         """Pick the Known.txt category for a post. Returns the character or series name."""

@@ -49,6 +49,8 @@ Rectangle {
                 var url = item.url || ""
                 var platform = (item.platform || "other").toLowerCase()
                 var creator = item.creator || ""
+                var service = item.service || ""
+                var post_id = item.post_id || ""
 
                 if (q.length > 0) {
                     if (title.toLowerCase().indexOf(q) === -1 &&
@@ -64,6 +66,8 @@ Rectangle {
                     url: url,
                     platform: platform,
                     creator: creator,
+                    service: service,
+                    post_id: post_id,
                     isSelected: true
                 })
             }
@@ -78,7 +82,9 @@ Rectangle {
                         title: item.title,
                         url: item.url,
                         platform: item.platform,
-                        creator: item.creator
+                        creator: item.creator,
+                        service: item.service || "",
+                        post_id: item.post_id || ""
                     })
                 }
             }

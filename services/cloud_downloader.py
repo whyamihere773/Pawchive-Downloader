@@ -12,7 +12,7 @@ import time
 import zipfile
 import struct
 import hashlib
-from typing import List, Dict, Any, Optional, Callable
+from typing import List, Dict, Any, Optional, Callable, Union, Tuple
 from urllib.parse import urlparse, parse_qs
 from threading import Lock, Event
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -48,6 +48,61 @@ def cancel_all_cloud_downloads():
             except Exception:
                 pass
         _active_cloud_resps.clear()
+
+
+def should_skip_cloud_file(
+    file_name_or_path: str,
+    skip_words: Optional[Union[str, List[str]]] = None,
+    file_size: Optional[int] = None,
+    options: Optional[Any] = None
+) -> Tuple[bool, str]:
+    """
+    Checks if a cloud file or folder path contains any skipped keywords or fails FilterOptions.
+    Returns (True, reason) if it should be skipped, or (False, "") if kept.
+    """
+    if not file_name_or_path:
+        return False, ""
+
+    # 1. Check with FilterOptions if available
+    if options is not None:
+        try:
+            from core.filter_engine import FilterEngine
+            base_name = os.path.basename(file_name_or_path)
+            keep, reason = FilterEngine.should_keep_file(base_name, options, file_size=file_size)
+            if not keep:
+                return True, reason
+        except Exception:
+            pass
+
+    # 2. Check skip_words (can be str or list)
+    if skip_words:
+        try:
+            from core.filter_engine import FilterEngine
+            if isinstance(skip_words, str):
+                words = FilterEngine._parse_comma_list(skip_words)
+            elif isinstance(skip_words, (list, tuple, set)):
+                words = [str(w).strip() for w in skip_words if str(w).strip()]
+            else:
+                words = []
+
+            base_name = os.path.basename(file_name_or_path)
+            stem_base = os.path.splitext(base_name)[0]
+            path_parts = [p for p in re.split(r'[\\/]', file_name_or_path) if p]
+
+            for word in words:
+                if word.startswith("[") and word.endswith("]"):
+                    continue
+                pattern = r"(?:^|[_\-\s\./\\])" + re.escape(word) + r"(?:[_\-\s\./\\]|$)"
+                if re.search(pattern, stem_base, re.IGNORECASE) or re.search(r"\b" + re.escape(word) + r"\b", base_name, re.IGNORECASE):
+                    return True, f"File name matches skip keyword: '{word}'"
+                for part in path_parts[:-1]:
+                    part_stem = os.path.splitext(part)[0]
+                    if re.search(pattern, part_stem, re.IGNORECASE) or re.search(r"\b" + re.escape(word) + r"\b", part, re.IGNORECASE):
+                        return True, f"Parent folder matches skip keyword: '{word}'"
+        except Exception:
+            pass
+
+    return False, ""
 
 
 def _urlb64_to_b64(s: str) -> str:
@@ -282,7 +337,9 @@ def download_mega_link(
     progress_callback: Optional[Callable[[str, int, int, int, int], None]] = None,
     cancel_event: Optional[Event] = None,
     pause_event: Optional[Event] = None,
-    max_workers: int = 6
+    max_workers: int = 6,
+    skip_words: Optional[Union[str, List[str]]] = None,
+    options: Optional[Any] = None
 ):
     if not PYCRYPTODOME_AVAILABLE:
         log_func("❌ Mega download failed: 'pycryptodome' library is not available.")
@@ -301,6 +358,21 @@ def download_mega_link(
         if not files:
             log_func(f"   [Mega] No files found in folder {folder_id}.")
             return False
+
+        if skip_words or options:
+            filtered_files = []
+            for f in files:
+                rel = f.get('relative_path', '')
+                fsize = f.get('s', 0)
+                skip, reason = should_skip_cloud_file(rel, skip_words=skip_words, file_size=fsize, options=options)
+                if skip:
+                    log_func(f"   [Mega] ⏭️ Skipping '{rel}': {reason}")
+                else:
+                    filtered_files.append(f)
+            files = filtered_files
+            if not files:
+                log_func(f"   [Mega] All files in folder '{root_name}' matched skip filters.")
+                return True
 
         workers = max(1, min(max_workers, 16))
         log_func(f"   [Mega] Found {len(files)} file(s) in folder '{root_name}'. Starting parallel downloads ({workers} threads)...")
@@ -383,6 +455,12 @@ def download_mega_link(
         attrs_key, _, _ = _parse_mega_key(_urlb64_to_b64(file_key))
         file_attrs = _decrypt_mega_attribute(data['at'], attrs_key)
         file_name = file_attrs.get('n', f"mega_{file_id}.bin")
+
+        if skip_words or options:
+            skip, reason = should_skip_cloud_file(file_name, skip_words=skip_words, file_size=file_size, options=options)
+            if skip:
+                log_func(f"   [Mega] ⏭️ Skipping '{file_name}': {reason}")
+                return True
 
         file_info = {
             'file_name': file_name,
@@ -487,7 +565,9 @@ def download_gdrive_link(
     log_func: Callable[[str], None] = print,
     progress_callback: Optional[Callable[[str, int, int, int, int], None]] = None,
     cancel_event: Optional[Event] = None,
-    pause_event: Optional[Event] = None
+    pause_event: Optional[Event] = None,
+    skip_words: Optional[Union[str, List[str]]] = None,
+    options: Optional[Any] = None
 ) -> bool:
     if not GDRIVE_AVAILABLE:
         log_func("❌ Google Drive download failed: 'gdown' is not installed.")
@@ -541,7 +621,7 @@ def download_gdrive_link(
                     quiet=True,
                 )
             if res_list:
-                # Filter out any quota-error HTML pages that snuck through
+                # Filter out any quota-error HTML pages or files matching skip filters
                 good = []
                 for p in res_list:
                     if isinstance(p, str) and os.path.isfile(p):
@@ -549,7 +629,17 @@ def download_gdrive_link(
                             os.remove(p)
                             log_func(f"   [Google Drive] ⚠️ Quota exceeded for one file in folder.")
                         else:
-                            good.append(p)
+                            rel_p = os.path.relpath(p, target_folder)
+                            fsize = os.path.getsize(p) if os.path.exists(p) else 0
+                            skip, reason = should_skip_cloud_file(rel_p, skip_words=skip_words, file_size=fsize, options=options)
+                            if skip:
+                                try:
+                                    os.remove(p)
+                                except OSError:
+                                    pass
+                                log_func(f"   [Google Drive] ⏭️ Skipped '{rel_p}': {reason}")
+                            else:
+                                good.append(p)
                 log_func(
                     f"   [Google Drive] ✅ Folder download finished: "
                     f"{len(good)} file(s) saved to {target_folder}"
@@ -605,6 +695,13 @@ def download_gdrive_link(
             resolved_name = f"gdrive_{item_id or 'file'}"
 
         output_path = os.path.join(target_folder, resolved_name)
+
+        if skip_words or options:
+            skip, reason = should_skip_cloud_file(resolved_name, skip_words=skip_words, options=options)
+            if skip:
+                log_func(f"   [Google Drive] ⏭️ Skipping '{resolved_name}': {reason}")
+                return True
+
         log_func(f"   [Google Drive] 🔽 Downloading as '{resolved_name}'...")
 
         # Build progress wrapper if caller provided a callback
@@ -686,7 +783,9 @@ def download_dropbox_link(
     log_func: Callable[[str], None] = print,
     progress_callback: Optional[Callable[[str, int, int], None]] = None,
     cancel_event: Optional[Event] = None,
-    pause_event: Optional[Event] = None
+    pause_event: Optional[Event] = None,
+    skip_words: Optional[Union[str, List[str]]] = None,
+    options: Optional[Any] = None
 ) -> bool:
     os.makedirs(target_folder, exist_ok=True)
     parsed = urlparse(url)
@@ -708,8 +807,14 @@ def download_dropbox_link(
                 if not os.path.splitext(filename)[1]:
                     filename += ".zip"
 
-                full_path = os.path.join(target_folder, filename)
                 total_size = int(r.headers.get('content-length', 0))
+                if skip_words or options:
+                    skip, reason = should_skip_cloud_file(filename, skip_words=skip_words, file_size=total_size, options=options)
+                    if skip:
+                        log_func(f"   [Dropbox] ⏭️ Skipping '{filename}': {reason}")
+                        return True
+
+                full_path = os.path.join(target_folder, filename)
                 downloaded = 0
                 last_log = time.time()
 
@@ -756,6 +861,19 @@ def download_dropbox_link(
                     os.remove(full_path)
                 except Exception:
                     pass
+                if skip_words or options:
+                    for root, _, fnames in os.walk(extract_dir, topdown=False):
+                        for fn in fnames:
+                            fpath = os.path.join(root, fn)
+                            rel = os.path.relpath(fpath, extract_dir)
+                            fsize = os.path.getsize(fpath) if os.path.exists(fpath) else 0
+                            skip, reason = should_skip_cloud_file(rel, skip_words=skip_words, file_size=fsize, options=options)
+                            if skip:
+                                try:
+                                    os.remove(fpath)
+                                    log_func(f"   [Dropbox] ⏭️ Pruned extracted '{rel}': {reason}")
+                                except OSError:
+                                    pass
         return True
     except Exception as e:
         log_func(f"   [Dropbox] ❌ Download error: {e}")
@@ -769,7 +887,9 @@ def download_gofile_link(
     progress_callback: Optional[Callable[[str, int, int, int, int], None]] = None,
     cancel_event: Optional[Event] = None,
     pause_event: Optional[Event] = None,
-    max_workers: int = 6
+    max_workers: int = 6,
+    skip_words: Optional[Union[str, List[str]]] = None,
+    options: Optional[Any] = None
 ) -> bool:
     match = re.search(r"gofile\.io/d/([^/?#]+)", url)
     if not match:
@@ -815,6 +935,21 @@ def download_gofile_link(
         if not files:
             log_func("   [GoFile] ℹ️ No files in folder.")
             return False
+
+        if skip_words or options:
+            filtered_files = []
+            for f in files:
+                fname = f.get("name", "")
+                fsize = f.get("size", 0)
+                skip, reason = should_skip_cloud_file(fname, skip_words=skip_words, file_size=fsize, options=options)
+                if skip:
+                    log_func(f"   [GoFile] ⏭️ Skipping '{fname}': {reason}")
+                else:
+                    filtered_files.append(f)
+            files = filtered_files
+            if not files:
+                log_func(f"   [GoFile] All files in folder matched skip filters.")
+                return True
 
         workers = max(1, min(max_workers, 16))
         folder_name = folder_info.get("name", f"gofile_{content_id}")

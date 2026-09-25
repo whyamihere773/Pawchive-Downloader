@@ -89,6 +89,11 @@
         "heading": "Mega Bant Genişliği Kotalarını Atlamak (VPN ve Proxy)",
         "body": "Mega, ücretsiz hesapları IP adresi başına her 6 saatte bir ~5 GB aktarımla sınırlar. Kota sınırına ulaşıldığında:\n• VPN Baypası: Yeni bir IP adresi almak için VPN sunucunuzu farklı bir şehre veya ülkeye değiştirin, ardından indirme işleminize devam edin.\n• Proxy Ayarı: Ayarlar -> Ağ ve Proxy'yi açın ve HTTP veya SOCKS5 proxy URL'nizi girin (örn. çorap5://127.0.0.1:1080). Pawchive, yığın isteklerini proxy üzerinden yönlendirerek kota bloğunu anında atlayacaktır.",
         "type": "warning"
+      },
+      {
+        "heading": "Bulut Bağlantı Filtreleme ve Karakter Sıralama",
+        "body": "Mega, Google Drive, Dropbox ve GoFile paylaşılan klasörlerindeki dosyalar, atlama anahtar kelimelerinize ve dosya boyutu limitlerinize göre otomatik taranır. Ayrıca karakter organizasyonu etkinken, indirilen bulut dosyaları tıpkı doğrudan indirmeler gibi seri ve karakter alt klasörlerine ayrılır.",
+        "type": "tip"
       }
     ]
   },
@@ -110,6 +115,48 @@
       {
         "heading": "Akıllı Karakter Öğrenme Sistemi",
         "body": "Bir karakter adı gönderi başlıklarında veya etiketlerinde tekrar tekrar görünüyorsa uygulama onu dinamik olarak öğrenir ve karakter henüz Bilinen.txt dosyasında olmasa bile eşleşen klasörler oluşturur.",
+        "type": "tip"
+      },
+      {
+        "heading": "Çok Dilli Tanıma ve Ana Veritabanı",
+        "body": "Karakter tanıma motoru, hiyerarşik otomatik sıralama (Seri / Karakter / Gönderi) özelliğine sahip 100.000'den fazla anime ve oyun karakterini içeren yerleşik bir sözlüğe sahiptir. Japonca, Çince, Korece, Rusça ve Avrupa dillerini sıfır manuel ayarla tanır.",
+        "type": "info"
+      },
+      {
+        "heading": "İçerik Üretici Arşiv Geçmişi Eşleştirmesi",
+        "body": "Belirsiz başlıklarda karakterleri tanımlarken Pawchive, etiketleri, ek dosya adlarını ve sanatçının arşiv veritabanındaki geçmiş indirme modellerini karşılaştırarak en olası seriyi saptar.",
+        "type": "tip"
+      }
+    ]
+  },
+  {
+    "title": "AI Anlamsal Asistan ve Çevrimdışı Akıl Yürütme",
+    "icon": "🧠",
+    "summary": "Çevrimdışı vektör gömme, SLM dil modeli akıl yürütme, donanım hızlandırma ve model yöneticisi.",
+    "content": [
+      {
+        "heading": "AI Karakter Tanıma Nedir?",
+        "body": "Pawchive, modern bilgisayarlar için tasarlanmış isteğe bağlı, %100 çevrimdışı bir AI asistanı içerir. Geleneksel kuralların çözemediği karmaşık, boşluksuz veya şifreli başlıkları analiz ederek internete veri göndermeden doğru seriyi ve karakteri tahmin eder.",
+        "type": "intro"
+      },
+      {
+        "heading": "İki Aşamalı AI Mimarisi",
+        "body": "• Aşama 1 (Hızlı Anlamsal Eşleştirici): Başlıkları vektörlere dönüştüren ve CPU veya GPU üzerinde 1–3 ms içinde anlamsal benzerliği bulan hafif bir model (~127 MB).\n• Aşama 2 (Derin Bağlam Akıl Yürütücü): Gönderideki ipuçlarını okuyan ve nadir karakterleri bulmak için üreticinin arşiv geçmişiyle karşılaştıran çevrimdışı küçük dil modeli (SLM).",
+        "type": "info"
+      },
+      {
+        "heading": "Model Boyutu Seçenekleri (Light vs Smart)",
+        "body": "• Light (Qwen 0.5B • ~490 MB): Düşük bellek tüketimi (~450 MB RAM), eski dizüstü bilgisayarlar ve CPU'lar için idealdir.\n• Smart (Qwen 1.5B • ~1.04 GB): Yüksek akıl yürütme ve zengin anime/popüler kültür bilgisi, modern GPU veya güçlü CPU'lu sistemler için önerilir.",
+        "type": "tip"
+      },
+      {
+        "heading": "Donanım Hızlandırma ve Kolay Kurulum",
+        "body": "Modelleri Ayarlar → Depolama ve Dosya İşleme bölümünden tek tıkla indirebilirsiniz. NVIDIA GPU (CUDA/TensorRT), AMD/Intel GPU (DirectML) veya çok çekirdekli CPU'yu otomatik algılar ve etkinleştirir. Canlı indirme hızı, yüzde ve iptal desteği sunar.",
+        "type": "info"
+      },
+      {
+        "heading": "Canlı AI Test Alanı (Sandbox)",
+        "body": "İndirmeye başlamadan önce Ayarlar'daki etkileşimli test alanında AI sınıflandırmasını deneyebilirsiniz. Ham bir başlık girip 'Eşleşmeyi Test Et'e tıklayarak sezgisel ve AI tahmin sonuçlarını anında görebilirsiniz.",
         "type": "tip"
       }
     ]
@@ -479,6 +526,11 @@
         "heading": "Gönderi Seçici ve Arşiv Doğrulayıcı Kontrolleri",
         "body": "• 🖼️ Gönderileri Seç: İndirmeden önce gönderileri ve ekleri tek tek seçmek için etkileşimli katalog tarayıcısını açar.\n• 🔍 Arşivi Doğrula: Arşivlenmiş dosyaların hala diskte bulunup bulunmadığını kontrol etmek için yerel depolamayı tarar.\n• ⚠️ Eksik Rozetler: Eksik dosyaları ve tamamlanmamış indirmeleri vurgulayan kırmızı ve sarı göstergeler.\n• 🏷️ Dosya Adı Şablonu: Canlı önizleme ve özel biçimlendirmeye sahip etkileşimli etiket çipi tasarımcısı.",
         "type": "tip"
+      },
+      {
+        "heading": "AI Tanıma ve Donanım Kontrolleri",
+        "body": "• 🧠 AI Anahtarı: Zorlu başlıklar için çevrimdışı vektör ve SLM akıl yürütmeyi etkinleştirir.\n• ⚡ GPU Rozeti: Etkin donanım hızlandırmayı gösterir (NVIDIA CUDA, DirectML veya CPU).\n• 🪶 Model Boyutu: Light (0.5B hafif) ve Smart (1.5B derin analiz) arasında geçiş yapar.\n• 🧪 AI Sandbox: Ayarlar bölümünde klasör sıralamasını canlı önizleme test alanı.",
+        "type": "info"
       }
     ]
   }

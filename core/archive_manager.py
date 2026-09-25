@@ -151,6 +151,65 @@ class ArchiveManager:
                 CREATE INDEX IF NOT EXISTS idx_archive_downloaded_at
                 ON downloaded_files(downloaded_at);
             """)
+
+            # Data repair and migration for legacy, imported, or partially-populated databases
+            try:
+                # 1. Backfill file_ext from filename if missing or empty
+                cursor.execute(
+                    "SELECT id, filename FROM downloaded_files "
+                    "WHERE (file_ext IS NULL OR file_ext = '') "
+                    "  AND filename IS NOT NULL AND filename != '';"
+                )
+                rows_to_fix = cursor.fetchall()
+                if rows_to_fix:
+                    ext_updates = []
+                    for r_id, r_fn in rows_to_fix:
+                        _, ext = os.path.splitext(r_fn)
+                        ext_updates.append((ext.lower(), r_id))
+                    cursor.executemany("UPDATE downloaded_files SET file_ext = ? WHERE id = ?;", ext_updates)
+
+                # 2. Repair empty/NULL service
+                self._conn.execute("""
+                    UPDATE downloaded_files
+                    SET service = 'unknown'
+                    WHERE service IS NULL OR TRIM(service) = '';
+                """)
+
+                # 3. Synchronize / repair creator_name and creator_id
+                self._conn.execute("""
+                    UPDATE downloaded_files
+                    SET creator_name = creator_id
+                    WHERE (creator_name IS NULL OR TRIM(creator_name) = '')
+                      AND creator_id IS NOT NULL AND TRIM(creator_id) != '';
+                """)
+                self._conn.execute("""
+                    UPDATE downloaded_files
+                    SET creator_id = creator_name
+                    WHERE (creator_id IS NULL OR TRIM(creator_id) = '')
+                      AND creator_name IS NOT NULL AND TRIM(creator_name) != '';
+                """)
+                self._conn.execute("""
+                    UPDATE downloaded_files
+                    SET creator_id = 'unknown', creator_name = 'Unknown Creator'
+                    WHERE (creator_id IS NULL OR TRIM(creator_id) = '')
+                      AND (creator_name IS NULL OR TRIM(creator_name) = '');
+                """)
+
+                # 4. Repair empty/NULL post_id and post_title
+                self._conn.execute("""
+                    UPDATE downloaded_files
+                    SET post_id = COALESCE(NULLIF(TRIM(file_id), ''), CAST(id AS TEXT), 'unknown')
+                    WHERE post_id IS NULL OR TRIM(post_id) = '';
+                """)
+                self._conn.execute("""
+                    UPDATE downloaded_files
+                    SET post_title = 'Archived Files'
+                    WHERE (post_title IS NULL OR TRIM(post_title) = '')
+                      AND (post_id = 'unknown' OR post_id = '0');
+                """)
+            except Exception as e_repair:
+                logger.debug(f"Archive repair migration notice: {e_repair}", category="archive")
+
             self._conn.commit()
         except Exception as e:
             logger.error(f"Failed to initialize download archive database: {e}", category="archive")
@@ -195,7 +254,7 @@ class ArchiveManager:
                 # Fast path: check by service + post_id + file_id
                 cursor.execute(
                     "SELECT 1 FROM downloaded_files WHERE service = ? AND post_id = ? AND file_id = ? LIMIT 1;",
-                    (service, str(post_id), str(file_id))
+                    (str(service or "").lower(), str(post_id or ""), str(file_id or ""))
                 )
                 if cursor.fetchone() is not None:
                     return True
@@ -428,14 +487,17 @@ class ArchiveManager:
                      r_fid, r_fhash, r_fname, r_fsize, r_fext, r_down_at,
                      r_fpath, r_is_missing, r_last_ver) = row
 
-                    display_creator = r_cname.strip() if (r_cname and r_cname.strip()) else (r_cid.strip() or "Unknown")
-                    creator_key = (r_svc.lower(), display_creator.lower())
+                    clean_svc = str(r_svc or "unknown").strip().lower() or "unknown"
+                    clean_cname = str(r_cname or "").strip()
+                    clean_cid = str(r_cid or "").strip()
+                    display_creator = clean_cname if clean_cname else (clean_cid if clean_cid else "Unknown Creator")
+                    creator_key = (clean_svc, display_creator.lower())
 
                     if creator_key not in creators_map:
                         creators_map[creator_key] = {
                             "creator_name": display_creator,
-                            "creator_id": r_cid,
-                            "service": r_svc.lower(),
+                            "creator_id": clean_cid or clean_cname or "unknown",
+                            "service": clean_svc,
                             "total_files": 0,
                             "missing_count": 0,
                             "verified_count": 0,
@@ -459,16 +521,18 @@ class ArchiveManager:
                         c_entry["unverified_count"] += 1
 
                     # Post level
-                    display_post_title = r_ptitle.strip() if (r_ptitle and r_ptitle.strip()) else f"Post #{r_pid}"
-                    p_key = str(r_pid)
+                    clean_pid = str(r_pid or "").strip()
+                    clean_ptitle = str(r_ptitle or "").strip()
+                    display_post_title = clean_ptitle if clean_ptitle else (f"Post #{clean_pid}" if clean_pid else "General / Archived Files")
+                    p_key = clean_pid if clean_pid else (clean_ptitle if clean_ptitle else f"general_{clean_svc}")
 
                     if p_key not in c_entry["posts_map"]:
                         c_entry["posts_map"][p_key] = {
-                            "post_id": str(r_pid),
+                            "post_id": clean_pid or p_key,
                             "post_title": display_post_title,
-                            "service": r_svc.lower(),
+                            "service": clean_svc,
                             "creator_name": display_creator,
-                            "creator_id": r_cid,
+                            "creator_id": clean_cid or clean_cname or "unknown",
                             "files": []
                         }
 
@@ -486,35 +550,38 @@ class ArchiveManager:
                         size_str = ""
 
                     # Format downloaded_at string
-                    date_display = r_down_at
-                    try:
-                        dt = datetime.datetime.fromisoformat(r_down_at)
-                        date_display = dt.strftime("%Y-%m-%d %H:%M")
-                    except Exception:
-                        pass
+                    date_display = str(r_down_at or "")
+                    if date_display:
+                        try:
+                            dt = datetime.datetime.fromisoformat(date_display)
+                            date_display = dt.strftime("%Y-%m-%d %H:%M")
+                        except Exception:
+                            pass
 
                     # Determine clean extension
-                    ext_display = (r_fext or "").replace(".", "").upper()
-                    if not ext_display and r_fname:
-                        _, ext = os.path.splitext(r_fname)
+                    clean_fname = str(r_fname or "").strip()
+                    clean_fid = str(r_fid or "").strip()
+                    ext_display = (str(r_fext or "")).replace(".", "").upper()
+                    if not ext_display and clean_fname:
+                        _, ext = os.path.splitext(clean_fname)
                         ext_display = ext.replace(".", "").upper()
 
                     c_entry["posts_map"][p_key]["files"].append({
                         "id": r_id,
-                        "filename": r_fname or f"file_{r_fid}",
-                        "file_id": str(r_fid),
-                        "file_hash": r_fhash or "",
+                        "filename": clean_fname or f"file_{clean_fid or r_id}",
+                        "file_id": clean_fid or str(r_id),
+                        "file_hash": str(r_fhash or ""),
                         "file_size": fsize_int,
                         "file_size_str": size_str,
                         "file_ext": ext_display,
-                        "downloaded_at": r_down_at,
+                        "downloaded_at": str(r_down_at or ""),
                         "downloaded_at_str": date_display,
-                        "post_id": str(r_pid),
-                        "service": r_svc.lower(),
-                        "creator_id": r_cid,
-                        "file_path": r_fpath or "",
+                        "post_id": clean_pid or p_key,
+                        "service": clean_svc,
+                        "creator_id": clean_cid or clean_cname or "unknown",
+                        "file_path": str(r_fpath or ""),
                         "is_missing": r_missing_int,
-                        "last_verified_at": r_last_ver or ""
+                        "last_verified_at": str(r_last_ver or "")
                     })
 
                 # Assemble sorted list
@@ -532,22 +599,22 @@ class ArchiveManager:
                 # Sorting creators
                 clean_sort = (sort_by or "creator_az").lower()
                 if clean_sort == "creator_az":
-                    result.sort(key=lambda x: x["creator_name"].lower())
+                    result.sort(key=lambda x: str(x.get("creator_name") or "").lower())
                 elif clean_sort == "creator_za":
-                    result.sort(key=lambda x: x["creator_name"].lower(), reverse=True)
+                    result.sort(key=lambda x: str(x.get("creator_name") or "").lower(), reverse=True)
                 elif clean_sort == "files_desc":
-                    result.sort(key=lambda x: x["total_files"], reverse=True)
+                    result.sort(key=lambda x: int(x.get("total_files") or 0), reverse=True)
                 elif clean_sort == "newest":
                     result.sort(
-                        key=lambda x: x.get("newest_downloaded_at", ""),
+                        key=lambda x: str(x.get("newest_downloaded_at") or ""),
                         reverse=True
                     )
                 elif clean_sort == "oldest":
                     result.sort(
-                        key=lambda x: x.get("oldest_downloaded_at", "")
+                        key=lambda x: str(x.get("oldest_downloaded_at") or "")
                     )
                 else:
-                    result.sort(key=lambda x: x["creator_name"].lower())
+                    result.sort(key=lambda x: str(x.get("creator_name") or "").lower())
 
                 return result
             except Exception as e:
@@ -605,21 +672,35 @@ class ArchiveManager:
                 cursor.execute("SELECT COUNT(*) FROM downloaded_files;")
                 stats["total_files"] = int(cursor.fetchone()[0] or 0)
 
-                # Total creators
-                cursor.execute("SELECT COUNT(DISTINCT service || ':' || creator_id) FROM downloaded_files;")
+                # Total creators (null-safe concatenation and fallback)
+                cursor.execute("""
+                    SELECT COUNT(DISTINCT 
+                        COALESCE(NULLIF(TRIM(service), ''), 'unknown') || ':' || 
+                        COALESCE(NULLIF(TRIM(creator_name), ''), NULLIF(TRIM(creator_id), ''), 'Unknown Creator')
+                    ) FROM downloaded_files;
+                """)
                 stats["total_creators"] = int(cursor.fetchone()[0] or 0)
 
-                # Total posts
-                cursor.execute("SELECT COUNT(DISTINCT service || ':' || post_id) FROM downloaded_files;")
+                # Total posts (null-safe concatenation and fallback)
+                cursor.execute("""
+                    SELECT COUNT(DISTINCT 
+                        COALESCE(NULLIF(TRIM(service), ''), 'unknown') || ':' || 
+                        COALESCE(NULLIF(TRIM(post_id), ''), NULLIF(TRIM(post_title), ''), CAST(id AS TEXT))
+                    ) FROM downloaded_files;
+                """)
                 stats["total_posts"] = int(cursor.fetchone()[0] or 0)
 
                 # Service breakdown
-                cursor.execute("SELECT service, COUNT(*) FROM downloaded_files GROUP BY service;")
+                cursor.execute("""
+                    SELECT COALESCE(NULLIF(TRIM(LOWER(service)), ''), 'unknown'), COUNT(*)
+                    FROM downloaded_files
+                    GROUP BY COALESCE(NULLIF(TRIM(LOWER(service)), ''), 'unknown');
+                """)
                 for s_row in cursor.fetchall():
                     stats["service_counts"][str(s_row[0]).lower()] = int(s_row[1])
 
                 # Extension / Category breakdown
-                cursor.execute("SELECT LOWER(file_ext), COUNT(*) FROM downloaded_files GROUP BY LOWER(file_ext);")
+                cursor.execute("SELECT LOWER(COALESCE(file_ext, '')), COUNT(*) FROM downloaded_files GROUP BY LOWER(COALESCE(file_ext, ''));")
                 for ext_row in cursor.fetchall():
                     ext_str = str(ext_row[0] or "").lower()
                     cnt = int(ext_row[1])
@@ -679,7 +760,7 @@ class ArchiveManager:
                 cursor = self._conn.cursor()
                 cursor.execute(
                     "DELETE FROM downloaded_files WHERE service = ? AND post_id = ?;",
-                    (service.lower(), str(post_id))
+                    (str(service or "").lower(), str(post_id or ""))
                 )
                 affected = cursor.rowcount
                 self._conn.commit()
@@ -700,15 +781,17 @@ class ArchiveManager:
 
             try:
                 cursor = self._conn.cursor()
-                if service:
+                clean_cid = str(creator_id or "")
+                clean_svc = str(service or "").lower()
+                if clean_svc:
                     cursor.execute(
-                        "DELETE FROM downloaded_files WHERE creator_id = ? AND service = ?;",
-                        (str(creator_id), service.lower())
+                        "DELETE FROM downloaded_files WHERE (creator_id = ? OR creator_name = ?) AND service = ?;",
+                        (clean_cid, clean_cid, clean_svc)
                     )
                 else:
                     cursor.execute(
-                        "DELETE FROM downloaded_files WHERE creator_id = ?;",
-                        (str(creator_id),)
+                        "DELETE FROM downloaded_files WHERE (creator_id = ? OR creator_name = ?);",
+                        (clean_cid, clean_cid)
                     )
                 affected = cursor.rowcount
                 self._conn.commit()
@@ -1061,4 +1144,125 @@ class ArchiveManager:
             except Exception as e:
                 logger.error(f"Failed to remove missing records for creator {creator_id}: {e}", category="archive")
                 return 0
+
+    def get_creator_character_profile(
+        self,
+        service: str,
+        creator_id: str,
+        creator_name: Optional[str] = None,
+        limit: int = 5
+    ) -> Dict[str, Any]:
+        """
+        Extracts recurring series, characters, folder hierarchies, and recent post titles
+        for a given creator from past records in download_archive.db.
+        Provides high-value contextual priors for AI reasoning and disambiguation.
+        """
+        clean_svc = str(service or "").strip().lower()
+        clean_cid = str(creator_id or "").strip()
+        clean_cname = str(creator_name or "").strip()
+
+        result: Dict[str, Any] = {
+            "creator_id": clean_cid,
+            "creator_name": clean_cname,
+            "total_posts": 0,
+            "top_franchises": [],
+            "top_characters": [],
+            "sample_titles": [],
+        }
+
+        with self._lock:
+            if self._conn is None:
+                if not os.path.exists(self.db_path):
+                    return result
+                self._init_db_unlocked()
+            if self._conn is None:
+                return result
+
+            try:
+                cursor = self._conn.cursor()
+                query = """
+                    SELECT DISTINCT post_id, post_title, file_path
+                    FROM downloaded_files
+                    WHERE service = ?
+                      AND (
+                          creator_id = ?
+                          OR (? != '' AND creator_name = ?)
+                          OR (? != '' AND creator_id = ?)
+                      )
+                    ORDER BY id DESC
+                    LIMIT 200;
+                """
+                cursor.execute(
+                    query,
+                    (clean_svc, clean_cid, clean_cname, clean_cname, clean_cname, clean_cname)
+                )
+                rows = cursor.fetchall()
+
+                if not rows:
+                    return result
+
+                seen_posts = set()
+                sample_titles = []
+                franchise_counts: Dict[str, int] = {}
+                character_counts: Dict[Tuple[str, str], int] = {}
+
+                creator_folder_marker = f"[{clean_svc}]".lower()
+
+                for post_id, post_title, file_path in rows:
+                    if post_id not in seen_posts:
+                        seen_posts.add(post_id)
+                        if post_title and post_title.strip() and len(sample_titles) < 15:
+                            sample_titles.append(post_title.strip())
+
+                    # Parse file_path to extract franchise/character folder structure
+                    if file_path:
+                        normalized_path = os.path.normpath(file_path).replace("\\", "/")
+                        parts = [p for p in normalized_path.split("/") if p]
+                        # Look for creator folder marker like "Creator [service]"
+                        creator_idx = -1
+                        for idx, part in enumerate(parts):
+                            if creator_folder_marker in part.lower():
+                                creator_idx = idx
+                                break
+
+                        # If creator folder was found and preceding folders exist:
+                        # [base_dir, Franchise, Character, Creator [service], ...]
+                        # or [base_dir, Franchise, Creator [service], ...]
+                        if creator_idx >= 1:
+                            hierarchy = parts[:creator_idx]
+                            # Exclude drive letters or generic roots
+                            valid_hierarchy = [
+                                h for h in hierarchy
+                                if not re.match(r"^[a-zA-Z]:$", h)
+                                and h.lower() not in {"downloads", "kemono", "pawchive", "other", "content"}
+                            ]
+                            if len(valid_hierarchy) >= 2:
+                                fr = valid_hierarchy[-2]
+                                ch = valid_hierarchy[-1]
+                                franchise_counts[fr] = franchise_counts.get(fr, 0) + 1
+                                character_counts[(fr, ch)] = character_counts.get((fr, ch), 0) + 1
+                            elif len(valid_hierarchy) == 1:
+                                fr = valid_hierarchy[-1]
+                                franchise_counts[fr] = franchise_counts.get(fr, 0) + 1
+
+                result["total_posts"] = len(seen_posts)
+                result["sample_titles"] = sample_titles
+
+                # Sort top franchises
+                sorted_fr = sorted(franchise_counts.items(), key=lambda x: x[1], reverse=True)[:limit]
+                result["top_franchises"] = [{"name": name, "count": count} for name, count in sorted_fr]
+
+                # Sort top characters
+                sorted_ch = sorted(character_counts.items(), key=lambda x: x[1], reverse=True)[:limit]
+                result["top_characters"] = [
+                    {"franchise": fr, "character": ch, "count": count}
+                    for (fr, ch), count in sorted_ch
+                ]
+
+                return result
+
+            except Exception as e:
+                logger.error(f"Failed to generate creator character profile: {e}", category="archive")
+                return result
+
 

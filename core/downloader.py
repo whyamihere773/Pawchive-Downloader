@@ -517,6 +517,12 @@ class KemonoDownloader:
             else:
                 task_post_url = ""
 
+            # Apply post filter (date range, skip words, character whitelist)
+            keep_post, reason = FilterEngine.should_keep_post(post, options)
+            if not keep_post:
+                logger.debug(f"Skipped post [{post_id}] '{post_title}': {reason}", category="filter")
+                continue
+
             # ── Link extraction in "Only Links" mode ───────────────────────────
             if options.file_type == MediaTypes.LINKS:
                 found_links = LinkExtractor.extract_links_from_post(post)
@@ -534,7 +540,9 @@ class KemonoDownloader:
                                 "url": u,
                                 "platform": platform,
                                 "service": service,
-                                "creator": creator_name
+                                "creator": creator_name,
+                                "post_id": post_id,
+                                "tags": post.get("tags") or []
                             })
                         extracted_links_all.setdefault(platform, []).extend(urls)
                 else:
@@ -545,12 +553,6 @@ class KemonoDownloader:
                 # Skip all media downloads for this post
                 continue
 
-            # Apply post filter
-            keep_post, reason = FilterEngine.should_keep_post(post, options)
-            if not keep_post:
-                logger.debug(f"Skipped post [{post_id}] '{post_title}': {reason}", category="filter")
-                continue
-
             # Determine parent directory for this post
             if artist_dir:
                 folder_parts = [artist_dir]
@@ -559,8 +561,28 @@ class KemonoDownloader:
 
                 # Separate by Known.txt if requested (Franchise -> Character hierarchy)
                 if options.separate_by_known:
+                    cand_filenames = []
+                    _mf = post.get("file")
+                    if isinstance(_mf, dict) and _mf.get("name"):
+                        cand_filenames.append(_mf["name"])
+                    for _att in post.get("attachments") or []:
+                        if isinstance(_att, dict) and _att.get("name"):
+                            cand_filenames.append(_att["name"])
+
+                    creator_prof = None
+                    if getattr(self, "archive_manager", None) and self.archive_manager.is_enabled:
+                        creator_prof = self.archive_manager.get_creator_character_profile(
+                            service=service,
+                            creator_id=creator_clean,
+                            creator_name=creator_clean
+                        )
+
                     matched_hierarchy = self.known_manager.find_matching_hierarchy(
-                        post_title, tags=post.get("tags")
+                        post_title,
+                        tags=post.get("tags"),
+                        filenames=cand_filenames,
+                        content=post.get("content"),
+                        creator_profile=creator_prof
                     )
                     if matched_hierarchy:
                         franchise, char_name = matched_hierarchy
@@ -1217,11 +1239,11 @@ class KemonoDownloader:
                     try:
                         self.archive_manager.record_link(
                             service=r.get("service", ""),
-                            creator_id=r.get("creator_id", ""),
+                            creator_id=r.get("creator_id", "") or user_id,
                             post_id=r.get("post_id", ""),
                             url=r.get("url", ""),
-                            creator_name=r.get("creator_name", ""),
-                            post_title=r.get("post_title", ""),
+                            creator_name=r.get("creator_name", "") or r.get("creator", ""),
+                            post_title=r.get("post_title", "") or r.get("title", ""),
                             link_title=r.get("title", "")
                         )
                     except Exception as _ar_rec_err:
