@@ -13,6 +13,22 @@ from core.logger import logger
 from services.model_manager import ModelManager
 
 
+_LLAMA_CPP_AVAILABLE: Optional[bool] = None
+
+
+def has_llama_cpp() -> bool:
+    """Checks whether the llama-cpp-python engine is installed and functional."""
+    global _LLAMA_CPP_AVAILABLE
+    if _LLAMA_CPP_AVAILABLE is not None:
+        return _LLAMA_CPP_AVAILABLE
+    try:
+        import llama_cpp  # noqa: F401
+        _LLAMA_CPP_AVAILABLE = True
+    except (ImportError, Exception):
+        _LLAMA_CPP_AVAILABLE = False
+    return _LLAMA_CPP_AVAILABLE
+
+
 class ContextualReasoner:
     """Performs deep contextual reasoning combining creator history priors and post metadata."""
 
@@ -20,9 +36,21 @@ class ContextualReasoner:
         self.model_manager = model_manager
         self._llm_instance = None
         self._is_loaded = False
+        self._engine_failed = False
+        self._missing_dep_logged = False
 
     def is_available(self) -> bool:
-        """Returns True if either light (0.5B) or heavy (1.5B) model is ready."""
+        """Returns True if either light (0.5B) or heavy (1.5B) model is ready and llama_cpp is installed."""
+        if not has_llama_cpp() or self._engine_failed:
+            if not has_llama_cpp() and not self._missing_dep_logged:
+                self._missing_dep_logged = True
+                logger.info(
+                    "Deep Context Reasoner (Tier 2 SLM) inactive: 'llama-cpp-python' library is not available. "
+                    "Running high-speed Multilingual Semantic Matcher (Tier 1 ONNX) instead.",
+                    category="ai"
+                )
+            return False
+
         return (
             self.model_manager.is_model_ready("deep_reasoner_heavy")
             or self.model_manager.is_model_ready("deep_reasoner_light")
@@ -144,7 +172,10 @@ class ContextualReasoner:
         creator_profile: Optional[Dict[str, Any]]
     ) -> Optional[Tuple[str, str, float]]:
         """Runs local SLM inference with strict timeout and JSON extraction."""
-        # Check for llama-cpp-python or onnxruntime-genai availability
+        if not has_llama_cpp() or self._engine_failed:
+            return None
+
+        # Check for llama-cpp-python availability
         try:
             from llama_cpp import Llama
             from core.hardware_detector import HardwareDetector
@@ -162,13 +193,18 @@ class ContextualReasoner:
             if self._llm_instance is None:
                 # GPU offloading if GPU detected, otherwise 2 CPU threads max
                 gpu_layers = -1 if hw.get("has_gpu") else 0
-                self._llm_instance = Llama(
-                    model_path=model_path,
-                    n_ctx=512,
-                    n_threads=2,
-                    n_gpu_layers=gpu_layers,
-                    verbose=False
-                )
+                try:
+                    self._llm_instance = Llama(
+                        model_path=model_path,
+                        n_ctx=512,
+                        n_threads=2,
+                        n_gpu_layers=gpu_layers,
+                        verbose=False
+                    )
+                except Exception as init_err:
+                    self._engine_failed = True
+                    logger.warning(f"Failed to initialize SLM engine with model {model_path}: {init_err}", category="ai")
+                    return None
 
             history_str = self._format_archive_context(creator_profile)
             prompt = (

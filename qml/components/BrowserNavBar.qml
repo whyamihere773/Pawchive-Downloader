@@ -157,7 +157,10 @@ Rectangle {
                         anchors.centerIn: parent
                         text: {
                             var u = (root.bridge ? root.bridge.currentUrl : "").toLowerCase()
-                            if (!u || u.trim().length === 0) return "API URL"
+                            if (!u || u.trim().length === 0) {
+                                if (root.bridge && root.bridge.favoriteMode) return "⭐ Favorites"
+                                return "API URL"
+                            }
                             if (u.indexOf("cum.st") >= 0 || u.indexOf("cum.") >= 0) return "cum.st"
                             if (u.indexOf("pawchive") >= 0) return "pawchive.pw"
                             if (u.indexOf("kemono") >= 0) return "kemono.su"
@@ -196,6 +199,16 @@ Rectangle {
                         }
                     }
                     onAccepted: root.startRequested()
+
+                    Text {
+                        text: (root.bridge && root.bridge.favoriteMode)
+                              ? root.tr("ph_nav_favorite_mode", "Enter creator URL (or leave blank to download all Favorites ⭐)...")
+                              : root.tr("ph_nav_default", "Enter creator or post URL (Kemono, Coomer, Telegram, Bunkr, Erome, nHentai)...")
+                        color: (root.bridge && root.bridge.favoriteMode) ? "#FBBF24" : "#64748B"
+                        font: parent.font
+                        visible: !parent.text && !parent.activeFocus
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
                 }
 
                 // Clear button
@@ -212,7 +225,15 @@ Rectangle {
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
                         ToolTip.text: tr("nav_clear_url", "Clear address bar")
-                        onClicked: urlInput.text = ""
+                        onClicked: {
+                            urlInput.text = ""
+                            pStartInput.text = ""
+                            pEndInput.text = ""
+                            if (root.bridge) {
+                                root.bridge.pageStart = 1
+                                root.bridge.pageEnd = 999999
+                            }
+                        }
                     }
                 }
             }

@@ -29,6 +29,57 @@ SmoothFlickable {
     property string aiT2HeavySpeed: ""
     property string aiT2HeavyError: ""
 
+    // Provider vault state
+    property var providersList: []
+    property var validationResults: ({})
+    property string highlightedProviderId: ""
+    property bool highlightAccountsSection: false
+
+    NumberAnimation {
+        id: scrollAnim
+        target: root
+        property: "contentY"
+        duration: 380
+        easing.type: Easing.OutCubic
+    }
+
+    Timer {
+        id: highlightResetTimer
+        interval: 7000
+        repeat: false
+        onTriggered: {
+            root.highlightedProviderId = ""
+            root.highlightAccountsSection = false
+        }
+    }
+
+    function highlightProvider(provName) {
+        root.currentSubTab = 0
+        var raw = (provName || "").trim().toLowerCase()
+        var pId = ""
+        if (raw.indexOf("kemono") >= 0) pId = "kemono"
+        else if (raw.indexOf("coomer") >= 0) pId = "coomer"
+        else if (raw.indexOf("pawchive") >= 0) pId = "pawchive"
+        else if (raw.indexOf("cumst") >= 0 || raw.indexOf("cum.st") >= 0) pId = "cumst"
+        else pId = raw
+
+        root.highlightedProviderId = pId
+        root.highlightAccountsSection = true
+        highlightResetTimer.restart()
+
+        if (typeof accountsSection !== "undefined" && accountsSection) {
+            var targetY = Math.max(0, Math.min(root.contentHeight - root.height, (subTab0Content ? subTab0Content.y : 0) + accountsSection.y - 10))
+            scrollAnim.to = targetY
+            scrollAnim.restart()
+        }
+    }
+
+    function reloadProviders() {
+        if (root.bridge && root.bridge.getProvidersList) {
+            providersList = root.bridge.getProvidersList()
+        }
+    }
+
     function syncAiModelStatuses() {
         if (!root.bridge) return
         var s1 = root.bridge.getAiModelStatus("fast_semantic")
@@ -74,6 +125,19 @@ SmoothFlickable {
                 root.aiT2HeavyError = error
             }
         }
+        function onProvidersChanged() {
+            root.reloadProviders()
+        }
+        function onProviderValidationFinished(providerId, success, message) {
+            var res = Object.assign({}, root.validationResults)
+            res[providerId] = { "success": success, "message": message }
+            root.validationResults = res
+        }
+        function onProviderLoginFinished(providerId, success, message) {
+            var res = Object.assign({}, root.validationResults)
+            res[providerId] = { "success": success, "message": message }
+            root.validationResults = res
+        }
     }
 
     function tr(key, fallback) {
@@ -81,6 +145,70 @@ SmoothFlickable {
         var _ = Lang.activeLanguage
         var res = Lang.t(key)
         return (res && res !== key) ? res : (fallback !== undefined ? fallback : res)
+    }
+
+
+    property int currentSubTab: 0
+
+    // Fluid Newtonian Entrance parameters triggered on sub-tab switch
+    property real tabEntranceOffsetY: 0
+    property real tabEntranceOpacity: 1.0
+
+    onCurrentSubTabChanged: {
+        root.contentY = 0
+        tabEntranceOffsetY = 14.0
+        tabEntranceOpacity = 0.45
+        tabEntranceTimer.restart()
+    }
+
+    Timer {
+        id: tabEntranceTimer
+        interval: 16
+        repeat: false
+        onTriggered: {
+            root.tabEntranceOffsetY = 0.0
+            root.tabEntranceOpacity = 1.0
+        }
+    }
+
+    Behavior on tabEntranceOffsetY {
+        SpringAnimation {
+            spring: 4.2
+            damping: 0.38
+            mass: 1.15
+            epsilon: 0.1
+        }
+    }
+
+    Behavior on tabEntranceOpacity {
+        NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
+    }
+
+    // Reactive badges for sub-tabs
+    readonly property int connectedAccountsCount: {
+        var count = 0
+        if (root.providersList) {
+            for (var i = 0; i < root.providersList.length; i++) {
+                if (root.providersList[i].has_session || root.providersList[i].logged_in) count++
+            }
+        }
+        if (typeof telegramBridge !== "undefined" && telegramBridge && telegramBridge.isLoggedIn) count++
+        return count
+    }
+
+    readonly property bool proxyActive: {
+        return (root.bridge && root.bridge.proxyEnabled) ? true : false
+    }
+
+    readonly property int storagePoolDriveCount: {
+        if (root.bridge && root.bridge.storagePoolEnabled && root.bridge.storagePoolDrives) {
+            return root.bridge.storagePoolDrives.length
+        }
+        return 0
+    }
+
+    readonly property bool aiModelsReady: {
+        return (root.bridge && (root.bridge.aiFastSemanticReady || root.bridge.aiDeepReasonerLightReady || root.bridge.aiDeepReasonerHeavyReady)) ? true : false
     }
 
     contentWidth: width
@@ -108,11 +236,13 @@ SmoothFlickable {
     Component.onCompleted: {
         triggerEntrance()
         syncAiModelStatuses()
+        reloadProviders()
     }
     onVisibleChanged: {
         if (visible) {
             triggerEntrance()
             syncAiModelStatuses()
+            reloadProviders()
         }
     }
 
@@ -121,14 +251,418 @@ SmoothFlickable {
         width: root.width - (root.verticalScrollBar && root.verticalScrollBar.visible ? 10 : 0)
         spacing: 12
 
+        // ====================================================================
+        // SEGMENTED MODE SWITCHER BAR WITH NEWTONIAN FLUID GLIDER
+        // ====================================================================
+        Rectangle {
+            id: subTabDock
+            Layout.fillWidth: true
+            implicitHeight: 46
+            radius: 10
+            color: "#0F131C"
+            border.color: "#1E2536"
+            border.width: 1
+
+            readonly property bool isCompact: width < 660
+
+            readonly property var activeBtn: {
+                if (root.currentSubTab === 0) return tabBtn0
+                if (root.currentSubTab === 1) return tabBtn1
+                if (root.currentSubTab === 2) return tabBtn2
+                return tabBtn3
+            }
+
+            // Liquid Gliding Active Indicator Pill
+            Rectangle {
+                id: tabGlider
+                y: 5
+                height: 36
+                radius: 8
+                color: "#1B2232"
+                border.color: "#38BDF8"
+                border.width: 1
+                x: subTabDock.activeBtn ? (subTabDock.activeBtn.x + 4) : 4
+                width: subTabDock.activeBtn ? subTabDock.activeBtn.width : 100
+
+                // Liquid soft cyan aura
+                Rectangle {
+                    anchors.fill: parent
+                    radius: 7
+                    color: Qt.rgba(56/255, 189/255, 248/255, 0.08)
+                }
+
+                // Newtonian Fluid Spring Physics for gliding between tabs
+                Behavior on x {
+                    SpringAnimation {
+                        spring: 4.8
+                        damping: 0.35
+                        mass: 0.85
+                        epsilon: 0.2
+                    }
+                }
+                Behavior on width {
+                    SpringAnimation {
+                        spring: 5.0
+                        damping: 0.36
+                        mass: 0.85
+                        epsilon: 0.2
+                    }
+                }
+            }
+
+            RowLayout {
+                id: tabRow
+                anchors.fill: parent
+                anchors.margins: 4
+                spacing: 4
+
+                // Tab 0: Accounts & Services
+                Item {
+                    id: tabBtn0
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+
+                    scale: tabMouse0.pressed ? 0.93 : (tabMouse0.containsMouse ? 1.025 : 1.0)
+                    transformOrigin: Item.Center
+                    Behavior on scale {
+                        SpringAnimation { spring: 5.2; damping: 0.32; mass: 0.70; epsilon: 0.005 }
+                    }
+
+                    transform: Translate {
+                        y: tabMouse0.containsMouse ? -1.0 : 0.0
+                        Behavior on y {
+                            SpringAnimation { spring: 4.8; damping: 0.35; mass: 0.75; epsilon: 0.1 }
+                        }
+                    }
+
+                    Row {
+                        anchors.centerIn: parent
+                        spacing: subTabDock.isCompact ? 4 : 6
+
+                        Text {
+                            text: "🔐"
+                            font.pixelSize: subTabDock.isCompact ? 12 : 13
+                            anchors.verticalCenter: parent.verticalCenter
+                            scale: (root.currentSubTab === 0 || tabMouse0.containsMouse) ? 1.15 : 1.0
+                            Behavior on scale {
+                                SpringAnimation { spring: 5.0; damping: 0.35; mass: 0.7; epsilon: 0.01 }
+                            }
+                        }
+
+                        Text {
+                            text: subTabDock.isCompact ? root.tr("tab_settings_accounts_short", "Accounts") : root.tr("tab_settings_accounts", "Accounts & Services")
+                            font.family: "Segoe UI, Inter, sans-serif"
+                            font.pixelSize: subTabDock.isCompact ? 11 : 12
+                            font.weight: root.currentSubTab === 0 ? 600 : Font.Medium
+                            color: root.currentSubTab === 0 ? "#F8FAFC" : (tabMouse0.containsMouse ? "#CBD5E1" : "#94A3B8")
+                            elide: Text.ElideRight
+                            width: Math.min(implicitWidth, tabBtn0.width - (root.connectedAccountsCount > 0 ? (subTabDock.isCompact ? 36 : 44) : (subTabDock.isCompact ? 24 : 32)))
+                            anchors.verticalCenter: parent.verticalCenter
+                            Behavior on color { ColorAnimation { duration: 150 } }
+                        }
+
+                        // Connected Accounts Badge
+                        Rectangle {
+                            id: accountsBadge
+                            visible: root.connectedAccountsCount > 0
+                            width: visible ? 18 : 0
+                            height: 16
+                            radius: 8
+                            color: "#065F46"
+                            border.color: "#10B981"
+                            border.width: 1
+                            anchors.verticalCenter: parent.verticalCenter
+
+                            scale: visible ? 1.0 : 0.0
+                            Behavior on scale {
+                                SpringAnimation { spring: 5.5; damping: 0.32; mass: 0.75; epsilon: 0.01 }
+                            }
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: root.connectedAccountsCount.toString()
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 9
+                                font.bold: true
+                                color: "#ECFDF5"
+                            }
+                        }
+                    }
+
+                    MouseArea {
+                        id: tabMouse0
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.currentSubTab = 0
+                    }
+                }
+
+                // Tab 1: Network & Connection
+                Item {
+                    id: tabBtn1
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+
+                    scale: tabMouse1.pressed ? 0.93 : (tabMouse1.containsMouse ? 1.025 : 1.0)
+                    transformOrigin: Item.Center
+                    Behavior on scale {
+                        SpringAnimation { spring: 5.2; damping: 0.32; mass: 0.70; epsilon: 0.005 }
+                    }
+
+                    transform: Translate {
+                        y: tabMouse1.containsMouse ? -1.0 : 0.0
+                        Behavior on y {
+                            SpringAnimation { spring: 4.8; damping: 0.35; mass: 0.75; epsilon: 0.1 }
+                        }
+                    }
+
+                    Row {
+                        anchors.centerIn: parent
+                        spacing: subTabDock.isCompact ? 4 : 5
+
+                        Text {
+                            text: "🌐"
+                            font.pixelSize: subTabDock.isCompact ? 12 : 13
+                            anchors.verticalCenter: parent.verticalCenter
+                            scale: (root.currentSubTab === 1 || tabMouse1.containsMouse) ? 1.15 : 1.0
+                            Behavior on scale {
+                                SpringAnimation { spring: 5.0; damping: 0.35; mass: 0.7; epsilon: 0.01 }
+                            }
+                        }
+
+                        Text {
+                            text: subTabDock.isCompact ? root.tr("tab_settings_network_short", "Network") : root.tr("tab_settings_network", "Network & Connection")
+                            font.family: "Segoe UI, Inter, sans-serif"
+                            font.pixelSize: subTabDock.isCompact ? 11 : 12
+                            font.weight: root.currentSubTab === 1 ? 600 : Font.Medium
+                            color: root.currentSubTab === 1 ? "#F8FAFC" : (tabMouse1.containsMouse ? "#CBD5E1" : "#94A3B8")
+                            elide: Text.ElideRight
+                            width: Math.min(implicitWidth, tabBtn1.width - (root.proxyActive ? (subTabDock.isCompact ? 36 : 44) : (subTabDock.isCompact ? 24 : 32)))
+                            anchors.verticalCenter: parent.verticalCenter
+                            Behavior on color { ColorAnimation { duration: 150 } }
+                        }
+
+                        // Proxy Active Badge
+                        Rectangle {
+                            id: proxyBadge
+                            visible: root.proxyActive
+                            width: visible ? 24 : 0
+                            height: 16
+                            radius: 8
+                            color: "#1E3A8A"
+                            border.color: "#3B82F6"
+                            border.width: 1
+                            anchors.verticalCenter: parent.verticalCenter
+
+                            scale: visible ? 1.0 : 0.0
+                            Behavior on scale {
+                                SpringAnimation { spring: 5.5; damping: 0.32; mass: 0.75; epsilon: 0.01 }
+                            }
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: "ON"
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 8
+                                font.bold: true
+                                color: "#EFF6FF"
+                            }
+                        }
+                    }
+
+                    MouseArea {
+                        id: tabMouse1
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.currentSubTab = 1
+                    }
+                }
+
+                // Tab 2: Storage & System
+                Item {
+                    id: tabBtn2
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+
+                    scale: tabMouse2.pressed ? 0.93 : (tabMouse2.containsMouse ? 1.025 : 1.0)
+                    transformOrigin: Item.Center
+                    Behavior on scale {
+                        SpringAnimation { spring: 5.2; damping: 0.32; mass: 0.70; epsilon: 0.005 }
+                    }
+
+                    transform: Translate {
+                        y: tabMouse2.containsMouse ? -1.0 : 0.0
+                        Behavior on y {
+                            SpringAnimation { spring: 4.8; damping: 0.35; mass: 0.75; epsilon: 0.1 }
+                        }
+                    }
+
+                    Row {
+                        anchors.centerIn: parent
+                        spacing: subTabDock.isCompact ? 4 : 6
+
+                        Text {
+                            text: "💾"
+                            font.pixelSize: subTabDock.isCompact ? 12 : 13
+                            anchors.verticalCenter: parent.verticalCenter
+                            scale: (root.currentSubTab === 2 || tabMouse2.containsMouse) ? 1.15 : 1.0
+                            Behavior on scale {
+                                SpringAnimation { spring: 5.0; damping: 0.35; mass: 0.7; epsilon: 0.01 }
+                            }
+                        }
+
+                        Text {
+                            text: subTabDock.isCompact ? root.tr("tab_settings_storage_short", "Storage") : root.tr("tab_settings_storage", "Storage & System")
+                            font.family: "Segoe UI, Inter, sans-serif"
+                            font.pixelSize: subTabDock.isCompact ? 11 : 12
+                            font.weight: root.currentSubTab === 2 ? 600 : Font.Medium
+                            color: root.currentSubTab === 2 ? "#F8FAFC" : (tabMouse2.containsMouse ? "#CBD5E1" : "#94A3B8")
+                            elide: Text.ElideRight
+                            width: Math.min(implicitWidth, tabBtn2.width - (root.storagePoolDriveCount > 0 ? (subTabDock.isCompact ? 36 : 44) : (subTabDock.isCompact ? 24 : 32)))
+                            anchors.verticalCenter: parent.verticalCenter
+                            Behavior on color { ColorAnimation { duration: 150 } }
+                        }
+
+                        // Storage Pool Badge
+                        Rectangle {
+                            id: storageBadge
+                            visible: root.storagePoolDriveCount > 0
+                            width: visible ? 24 : 0
+                            height: 16
+                            radius: 8
+                            color: "#701A75"
+                            border.color: "#D946EF"
+                            border.width: 1
+                            anchors.verticalCenter: parent.verticalCenter
+
+                            scale: visible ? 1.0 : 0.0
+                            Behavior on scale {
+                                SpringAnimation { spring: 5.5; damping: 0.32; mass: 0.75; epsilon: 0.01 }
+                            }
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: root.storagePoolDriveCount.toString() + "D"
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 8
+                                font.bold: true
+                                color: "#FDF4FF"
+                            }
+                        }
+                    }
+
+                    MouseArea {
+                        id: tabMouse2
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.currentSubTab = 2
+                    }
+                }
+
+                // Tab 3: AI & Recognition
+                Item {
+                    id: tabBtn3
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+
+                    scale: tabMouse3.pressed ? 0.93 : (tabMouse3.containsMouse ? 1.025 : 1.0)
+                    transformOrigin: Item.Center
+                    Behavior on scale {
+                        SpringAnimation { spring: 5.2; damping: 0.32; mass: 0.70; epsilon: 0.005 }
+                    }
+
+                    transform: Translate {
+                        y: tabMouse3.containsMouse ? -1.0 : 0.0
+                        Behavior on y {
+                            SpringAnimation { spring: 4.8; damping: 0.35; mass: 0.75; epsilon: 0.1 }
+                        }
+                    }
+
+                    Row {
+                        anchors.centerIn: parent
+                        spacing: subTabDock.isCompact ? 4 : 5
+
+                        Text {
+                            text: "🧠"
+                            font.pixelSize: subTabDock.isCompact ? 12 : 13
+                            anchors.verticalCenter: parent.verticalCenter
+                            scale: (root.currentSubTab === 3 || tabMouse3.containsMouse) ? 1.15 : 1.0
+                            Behavior on scale {
+                                SpringAnimation { spring: 5.0; damping: 0.35; mass: 0.7; epsilon: 0.01 }
+                            }
+                        }
+
+                        Text {
+                            text: subTabDock.isCompact ? root.tr("tab_settings_ai_short", "AI Engine") : root.tr("tab_settings_ai", "AI & Recognition")
+                            font.family: "Segoe UI, Inter, sans-serif"
+                            font.pixelSize: subTabDock.isCompact ? 11 : 12
+                            font.weight: root.currentSubTab === 3 ? 600 : Font.Medium
+                            color: root.currentSubTab === 3 ? "#F8FAFC" : (tabMouse3.containsMouse ? "#CBD5E1" : "#94A3B8")
+                            elide: Text.ElideRight
+                            width: Math.min(implicitWidth, tabBtn3.width - (root.aiModelsReady ? (subTabDock.isCompact ? 32 : 38) : (subTabDock.isCompact ? 24 : 32)))
+                            anchors.verticalCenter: parent.verticalCenter
+                            Behavior on color { ColorAnimation { duration: 150 } }
+                        }
+
+                        // AI Ready Badge
+                        Rectangle {
+                            id: aiBadge
+                            visible: root.aiModelsReady
+                            width: visible ? 18 : 0
+                            height: 16
+                            radius: 8
+                            color: "#065F46"
+                            border.color: "#10B981"
+                            border.width: 1
+                            anchors.verticalCenter: parent.verticalCenter
+
+                            scale: visible ? 1.0 : 0.0
+                            Behavior on scale {
+                                SpringAnimation { spring: 5.5; damping: 0.32; mass: 0.75; epsilon: 0.01 }
+                            }
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: "✓"
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 9
+                                font.bold: true
+                                color: "#ECFDF5"
+                            }
+                        }
+                    }
+
+                    MouseArea {
+                        id: tabMouse3
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.currentSubTab = 3
+                    }
+                }
+            }
+        }
+
+        // ====================================================================
+        // SUB-TAB 0: ACCOUNTS & SERVICES (Language, Vault, Telegram)
+        // ====================================================================
+        ColumnLayout {
+            id: subTab0Content
+            visible: root.currentSubTab === 0
+            Layout.fillWidth: true
+            spacing: 12
+
         // Section 0: Language & Internationalization
         CardSection {
             Layout.fillWidth: true
             interactive: !root.isScrolling
             title: tr("section_language", "Language & Display")
             iconText: "🌐"
-            entranceOffsetY: root.entranceStage >= 1 ? 0 : 24
-            entranceOpacity: root.entranceStage >= 1 ? 1.0 : 0.0
+            entranceOffsetY: root.tabEntranceOffsetY
+            entranceOpacity: root.tabEntranceOpacity
 
             ColumnLayout {
                 width: parent.width
@@ -267,14 +801,928 @@ SmoothFlickable {
             }
         }
 
+
+        // Section: Accounts & Connected Providers (Hardware-Encrypted Vault)
+        CardSection {
+            id: accountsSection
+            Layout.fillWidth: true
+            interactive: !root.isScrolling
+            title: tr("section_accounts", "Accounts & Connected Providers")
+            iconText: "🔐"
+            customBorderColor: root.highlightAccountsSection ? "#F59E0B" : "transparent"
+            customBorderWidth: root.highlightAccountsSection ? 2 : 0
+            entranceOffsetY: root.tabEntranceOffsetY
+            entranceOpacity: root.tabEntranceOpacity
+
+            ColumnLayout {
+                width: parent.width
+                Layout.fillWidth: true
+                spacing: 12
+
+                // ── Hardware Encryption Security Banner ──
+                Rectangle {
+                    Layout.fillWidth: true
+                    implicitHeight: vaultBannerRow.implicitHeight + 18
+                    radius: 8
+                    color: "#0B1D16"
+                    border.color: "#059669"
+                    border.width: 1
+
+                    RowLayout {
+                        id: vaultBannerRow
+                        anchors.fill: parent
+                        anchors.margins: 10
+                        spacing: 10
+
+                        Text {
+                            text: "🛡️"
+                            font.pixelSize: 22
+                            Layout.alignment: Qt.AlignVCenter
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 2
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 8
+                                Text {
+                                    text: tr("vault_banner_title", "Hardware-Bound DPAPI Credential Vault")
+                                    font.family: "Segoe UI, sans-serif"
+                                    font.pixelSize: 12
+                                    font.weight: Font.DemiBold
+                                    color: "#34D399"
+                                    Layout.fillWidth: true
+                                    Layout.preferredWidth: 0
+                                    elide: Text.ElideRight
+                                }
+                                Rectangle {
+                                    implicitWidth: encBadgeText.implicitWidth + 10
+                                    implicitHeight: 18
+                                    radius: 4
+                                    color: "#064E3B"
+                                    border.color: "#10B981"
+                                    border.width: 1
+                                    Layout.alignment: Qt.AlignVCenter
+                                    Text {
+                                        id: encBadgeText
+                                        anchors.centerIn: parent
+                                        text: "🔒 DPAPI / AES-256-GCM"
+                                        font.pixelSize: 9
+                                        font.bold: true
+                                        color: "#A7F3D0"
+                                    }
+                                }
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.preferredWidth: 0
+                                text: tr("vault_banner_desc", "Session cookies, tokens, and credentials are encrypted directly with Windows CryptProtectData and hardware-derived keys. Credentials are never written to disk in plaintext.")
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 10
+                                color: "#94A3B8"
+                                wrapMode: Text.WordWrap
+                            }
+                        }
+                    }
+                }
+
+                // ── Providers List ──
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    Repeater {
+                        model: root.providersList
+
+                        delegate: Rectangle {
+                            id: providerCard
+                            readonly property bool isTargetProvider: root.highlightedProviderId === modelData.id
+                            readonly property bool isHighlighted: isTargetProvider || (root.highlightedProviderId === "" && root.highlightAccountsSection)
+
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
+                            width: parent ? parent.width : 0
+                            implicitHeight: cardInnerCol.implicitHeight + 20
+                            radius: 8
+                            color: providerCard.isHighlighted ? "#1C170E" : "#121722"
+                            border.color: providerCard.isHighlighted ? "#F59E0B" : (cardHover.hovered ? "#38BDF8" : (modelData.is_logged_in ? "#1B3A30" : "#202838"))
+                            border.width: providerCard.isHighlighted ? 2 : 1
+
+                            Behavior on color { ColorAnimation { duration: 180 } }
+                            Behavior on border.color { ColorAnimation { duration: 180 } }
+
+                            SequentialAnimation on border.color {
+                                running: providerCard.isHighlighted
+                                loops: 6
+                                ColorAnimation { to: "#FDE68A"; duration: 400; easing.type: Easing.InOutQuad }
+                                ColorAnimation { to: "#F59E0B"; duration: 400; easing.type: Easing.InOutQuad }
+                            }
+
+                            Connections {
+                                target: root
+                                function onHighlightedProviderIdChanged() {
+                                    if (providerCard.isTargetProvider && !modelData.is_logged_in) {
+                                        if (modelData.supports_credentials_login) {
+                                            loginDrawer.visible = true
+                                            cardEditor.visible = false
+                                        } else {
+                                            cardEditor.visible = true
+                                            loginDrawer.visible = false
+                                        }
+                                    }
+                                }
+                            }
+
+                            Component.onCompleted: {
+                                if (providerCard.isTargetProvider && !modelData.is_logged_in) {
+                                    if (modelData.supports_credentials_login) {
+                                        loginDrawer.visible = true
+                                    } else {
+                                        cardEditor.visible = true
+                                    }
+                                }
+                            }
+
+                            HoverHandler { id: cardHover }
+
+                            ColumnLayout {
+                                id: cardInnerCol
+                                anchors.fill: parent
+                                anchors.margins: 10
+                                spacing: 8
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+
+                                // Row 1: Header
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
+                                    spacing: 8
+
+                                    Text {
+                                        text: modelData.icon || "🔑"
+                                        font.pixelSize: 16
+                                        Layout.alignment: Qt.AlignVCenter
+                                    }
+
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        Layout.minimumWidth: 0
+                                        spacing: 1
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            Layout.minimumWidth: 0
+                                            spacing: 6
+                                            Text {
+                                                text: modelData.name || modelData.id
+                                                font.family: "Segoe UI, sans-serif"
+                                                font.pixelSize: 12
+                                                font.weight: Font.DemiBold
+                                                color: "#F8FAFC"
+                                            }
+                                            Rectangle {
+                                                implicitWidth: catText.implicitWidth + 8
+                                                implicitHeight: 16
+                                                radius: 3
+                                                color: "#1A2234"
+                                                border.color: "#2C394F"
+                                                border.width: 1
+                                                Text {
+                                                    id: catText
+                                                    anchors.centerIn: parent
+                                                    text: modelData.category || "Platform"
+                                                    font.pixelSize: 9
+                                                    color: "#94A3B8"
+                                                }
+                                            }
+                                            Item { Layout.fillWidth: true }
+                                        }
+                                        Text {
+                                            text: modelData.domain || ""
+                                            font.pixelSize: 9
+                                            color: "#64748B"
+                                            visible: text.length > 0
+                                        }
+                                    }
+
+                                    // Status Badge Pill
+                                    Rectangle {
+                                        implicitWidth: statusPillRow.implicitWidth + 14
+                                        implicitHeight: 22
+                                        radius: 11
+                                        color: modelData.is_logged_in ? "#0B2B20" : "#1A202C"
+                                        border.color: modelData.is_logged_in ? "#10B981" : "#475569"
+                                        border.width: 1
+
+                                        Row {
+                                            id: statusPillRow
+                                            anchors.centerIn: parent
+                                            spacing: 5
+                                            Rectangle {
+                                                width: 6; height: 6; radius: 3
+                                                color: modelData.is_logged_in ? "#10B981" : "#64748B"
+                                                anchors.verticalCenter: parent.verticalCenter
+                                            }
+                                            Text {
+                                                text: modelData.status_text || (modelData.is_logged_in ? tr("status_connected", "Connected") : tr("status_not_connected", "Not Connected"))
+                                                font.pixelSize: 10
+                                                font.weight: Font.Medium
+                                                color: modelData.is_logged_in ? "#34D399" : "#94A3B8"
+                                                anchors.verticalCenter: parent.verticalCenter
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Row 2: Feature tags (wrapping Flow bounded by card width)
+                                Flow {
+                                    Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
+                                    width: cardInnerCol.width
+                                    spacing: 4
+                                    visible: modelData.features && modelData.features.length > 0
+
+                                    Repeater {
+                                        model: modelData.features
+                                        delegate: Rectangle {
+                                            implicitWidth: featText.implicitWidth + 8
+                                            implicitHeight: 18
+                                            radius: 3
+                                            color: "#161E2E"
+                                            border.color: "#243044"
+                                            border.width: 1
+                                            Text {
+                                                id: featText
+                                                anchors.centerIn: parent
+                                                text: "✓ " + modelData
+                                                font.pixelSize: 9
+                                                color: "#94A3B8"
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Row 3: Account preview / info
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
+                                    spacing: 6
+                                    visible: modelData.is_logged_in
+
+                                    Text {
+                                        text: tr("lbl_active_key", "Active Key:")
+                                        font.pixelSize: 10
+                                        color: "#64748B"
+                                    }
+                                    Rectangle {
+                                        implicitWidth: maskedText.implicitWidth + 10
+                                        implicitHeight: 20
+                                        radius: 4
+                                        color: "#090D15"
+                                        border.color: "#1E293B"
+                                        border.width: 1
+                                        Text {
+                                            id: maskedText
+                                            anchors.centerIn: parent
+                                            text: modelData.masked_value || "••••••••"
+                                            font.family: "Consolas, Segoe UI, monospace"
+                                            font.pixelSize: 10
+                                            color: "#38BDF8"
+                                        }
+                                    }
+                                    Item { Layout.fillWidth: true }
+                                }
+
+                                Text {
+                                    text: modelData.help_tip || ""
+                                    font.pixelSize: 10
+                                    color: "#94A3B8"
+                                    wrapMode: Text.WordWrap
+                                    Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
+                                    visible: !modelData.is_logged_in
+                                }
+
+                                // Row 4: Action Buttons (Flow-wrapped to seamlessly adapt to any card width)
+                                Flow {
+                                    id: cardButtonsFlow
+                                    Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
+                                    width: cardInnerCol.width
+                                    spacing: 6
+
+                                    // Direct Username/Password Login
+                                    StyledButton {
+                                        text: modelData.is_logged_in ? tr("btn_relogin", "Re-login") : tr("btn_login_account", "Log In")
+                                        iconText: "🔑"
+                                        variant: modelData.is_logged_in ? "outline" : "primary"
+                                        Layout.preferredHeight: 26
+                                        visible: Boolean(modelData.supports_credentials_login)
+                                        onClicked: {
+                                            cardEditor.visible = false
+                                            loginDrawer.visible = !loginDrawer.visible
+                                        }
+                                    }
+
+                                    // 1-Click Browser Import
+                                    StyledButton {
+                                        text: modelData.is_logged_in ? tr("btn_reimport", "Re-import") : tr("btn_import_browser", "1-Click Import")
+                                        iconText: "⚡"
+                                        variant: "outline"
+                                        Layout.preferredHeight: 26
+                                        visible: Boolean(modelData.supports_browser_import)
+                                        onClicked: {
+                                            if (root.bridge) root.bridge.importBrowserCookiesToProvider(modelData.id, "")
+                                        }
+                                    }
+
+                                    // Paste Cookie
+                                    StyledButton {
+                                        text: tr("btn_paste_cookie", "Paste Cookie")
+                                        iconText: "🍪"
+                                        variant: (!modelData.supports_credentials_login && !modelData.is_logged_in) ? "primary" : "outline"
+                                        Layout.preferredHeight: 26
+                                        onClicked: {
+                                            loginDrawer.visible = false
+                                            cardEditor.visible = !cardEditor.visible
+                                        }
+                                    }
+
+                                    // Test Connection
+                                    StyledButton {
+                                        text: tr("btn_test_conn", "Test Live")
+                                        iconText: "🔄"
+                                        variant: "outline"
+                                        Layout.preferredHeight: 26
+                                        visible: modelData.is_logged_in && modelData.supports_test_connection
+                                        onClicked: {
+                                            if (root.bridge) root.bridge.validateProviderSession(modelData.id)
+                                        }
+                                    }
+
+                                    // Log Out
+                                    StyledButton {
+                                        text: tr("btn_logout", "Log Out")
+                                        iconText: "🚪"
+                                        variant: "danger"
+                                        Layout.preferredHeight: 26
+                                        visible: modelData.is_logged_in
+                                        onClicked: {
+                                            if (root.bridge) root.bridge.clearProviderCredential(modelData.id)
+                                        }
+                                    }
+                                }
+
+                                // Live Validation / Login Result Banner
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
+                                    width: cardInnerCol.width
+                                    implicitHeight: valText.implicitHeight + 12
+                                    radius: 4
+                                    color: (root.validationResults[modelData.id] && root.validationResults[modelData.id].success) ? "#0A241B" : "#281216"
+                                    border.color: (root.validationResults[modelData.id] && root.validationResults[modelData.id].success) ? "#10B981" : "#EF4444"
+                                    border.width: 1
+                                    visible: Boolean(root.validationResults[modelData.id])
+
+                                    RowLayout {
+                                        anchors.fill: parent
+                                        anchors.margins: 6
+                                        spacing: 6
+                                        Text {
+                                            text: (root.validationResults[modelData.id] && root.validationResults[modelData.id].success) ? "✔" : "✘"
+                                            color: (root.validationResults[modelData.id] && root.validationResults[modelData.id].success) ? "#34D399" : "#F87171"
+                                            font.bold: true
+                                            font.pixelSize: 11
+                                        }
+                                        Text {
+                                            id: valText
+                                            Layout.fillWidth: true
+                                            Layout.minimumWidth: 0
+                                            text: root.validationResults[modelData.id] ? root.validationResults[modelData.id].message : ""
+                                            color: (root.validationResults[modelData.id] && root.validationResults[modelData.id].success) ? "#A7F3D0" : "#FCA5A5"
+                                            font.pixelSize: 10
+                                            wrapMode: Text.WordWrap
+                                        }
+                                    }
+                                }
+
+                                // Inline Account Login Drawer
+                                ColumnLayout {
+                                    id: loginDrawer
+                                    Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
+                                    width: cardInnerCol.width
+                                    spacing: 8
+                                    visible: false
+
+                                    Rectangle {
+                                        Layout.fillWidth: true
+                                        height: 1
+                                        color: "#242E42"
+                                    }
+
+                                    Text {
+                                        text: "🔑 " + tr("lbl_account_login", "Account Login") + " — " + modelData.name
+                                        font.bold: true
+                                        font.pixelSize: 11
+                                        color: "#38BDF8"
+                                    }
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        Layout.minimumWidth: 0
+                                        spacing: 8
+
+                                        StyledTextField {
+                                            id: loginUserField
+                                            Layout.fillWidth: true
+                                            Layout.minimumWidth: 80
+                                            placeholderText: tr("ph_username", "Username or email...")
+                                            text: modelData.username || ""
+                                        }
+
+                                        StyledTextField {
+                                            id: loginPassField
+                                            Layout.fillWidth: true
+                                            Layout.minimumWidth: 80
+                                            echoMode: TextInput.Password
+                                            placeholderText: tr("ph_password", "Password...")
+                                        }
+                                    }
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        Layout.minimumWidth: 0
+                                        spacing: 8
+
+                                        Item { Layout.fillWidth: true }
+
+                                        StyledButton {
+                                            text: tr("btn_cancel", "Cancel")
+                                            Layout.preferredHeight: 28
+                                            Layout.preferredWidth: 70
+                                            variant: "outline"
+                                            onClicked: loginDrawer.visible = false
+                                        }
+
+                                        StyledButton {
+                                            text: tr("btn_do_login", "Log In")
+                                            iconText: "🔓"
+                                            Layout.preferredHeight: 28
+                                            Layout.preferredWidth: 95
+                                            variant: "primary"
+                                            onClicked: {
+                                                if (root.bridge) {
+                                                    root.bridge.loginProviderWithCredentials(modelData.id, loginUserField.text, loginPassField.text)
+                                                    loginDrawer.visible = false
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    Text {
+                                        text: "💡 " + tr("tip_login_hint", "Direct password login securely stores your authenticated session in the DPAPI vault. If Cloudflare blocks direct login, use 1-Click Import.")
+                                        font.pixelSize: 10
+                                        color: "#64748B"
+                                        wrapMode: Text.WordWrap
+                                        Layout.fillWidth: true
+                                        Layout.minimumWidth: 0
+                                    }
+                                }
+
+                                // Inline Manual Cookie Editor
+                                ColumnLayout {
+                                    id: cardEditor
+                                    Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
+                                    width: cardInnerCol.width
+                                    spacing: 8
+                                    visible: false
+
+                                    Rectangle {
+                                        Layout.fillWidth: true
+                                        height: 1
+                                        color: "#242E42"
+                                    }
+
+                                    Text {
+                                        text: "🍪 " + tr("lbl_cookie_login", "Session Cookie / JWT") + " — " + modelData.name
+                                        font.bold: true
+                                        font.pixelSize: 11
+                                        color: "#F59E0B"
+                                    }
+
+                                    StyledTextField {
+                                        id: editField
+                                        Layout.fillWidth: true
+                                        Layout.minimumWidth: 0
+                                        placeholderText: tr("ph_enter_cookie", "Paste session cookie (session=...)...")
+                                        text: modelData.raw_cookie || ""
+                                    }
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        Layout.minimumWidth: 0
+                                        spacing: 8
+
+                                        StyledButton {
+                                            text: tr("btn_paste", "Paste")
+                                            iconText: "📋"
+                                            Layout.preferredHeight: 28
+                                            Layout.preferredWidth: 80
+                                            variant: "outline"
+                                            onClicked: editField.paste()
+                                        }
+
+                                        Item { Layout.fillWidth: true }
+
+                                        StyledButton {
+                                            text: tr("btn_cancel", "Cancel")
+                                            Layout.preferredHeight: 28
+                                            Layout.preferredWidth: 70
+                                            variant: "outline"
+                                            onClicked: cardEditor.visible = false
+                                        }
+
+                                        StyledButton {
+                                            text: tr("btn_save_encrypt", "Save & Encrypt")
+                                            iconText: "🔒"
+                                            Layout.preferredHeight: 28
+                                            Layout.preferredWidth: 125
+                                            variant: "primary"
+                                            onClicked: {
+                                                if (root.bridge) {
+                                                    root.bridge.saveProviderCredential(modelData.id, editField.text.trim())
+                                                    cardEditor.visible = false
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    Text {
+                                        text: "💡 " + (modelData.help_tip || "")
+                                        font.pixelSize: 10
+                                        color: "#64748B"
+                                        wrapMode: Text.WordWrap
+                                        Layout.fillWidth: true
+                                        Layout.minimumWidth: 0
+                                        visible: modelData.help_tip && modelData.help_tip.length > 0
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+
+        // Section: Telegram Integration
+        CardSection {
+            Layout.fillWidth: true
+            interactive: !root.isScrolling
+            title: tr("section_telegram", "Telegram Integration & Account Settings")
+            iconText: "✈️"
+            entranceOffsetY: root.tabEntranceOffsetY
+            entranceOpacity: root.tabEntranceOpacity
+
+            ColumnLayout {
+                width: parent.width
+                Layout.fillWidth: true
+                Layout.minimumWidth: 0
+                spacing: 12
+
+                // Status & Quick Connect Row
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    spacing: 12
+
+                    Item {
+                        width: 14
+                        height: 14
+                        Layout.alignment: Qt.AlignVCenter
+
+                        // Liquid droplet core
+                        Rectangle {
+                            id: tgStatusDot
+                            anchors.centerIn: parent
+                            width: 10
+                            height: 10
+                            radius: 5
+                            color: (telegramBridge && telegramBridge.isLoggedIn) ? "#10B981" : "#64748B"
+
+                            Behavior on color { ColorAnimation { duration: 250 } }
+                        }
+
+                        // Surface tension breathing aura
+                        Rectangle {
+                            anchors.centerIn: parent
+                            width: 16
+                            height: 16
+                            radius: 8
+                            color: "transparent"
+                            border.color: (telegramBridge && telegramBridge.isLoggedIn) ? "#10B981" : "#64748B"
+                            border.width: 1
+                            visible: telegramBridge && telegramBridge.isLoggedIn
+                            opacity: 0.3
+
+                            SequentialAnimation on opacity {
+                                loops: Animation.Infinite
+                                running: telegramBridge && telegramBridge.isLoggedIn
+                                NumberAnimation { to: 0.85; duration: 1600; easing.type: Easing.InOutSine }
+                                NumberAnimation { to: 0.15; duration: 1600; easing.type: Easing.InOutSine }
+                            }
+                            SequentialAnimation on scale {
+                                loops: Animation.Infinite
+                                running: telegramBridge && telegramBridge.isLoggedIn
+                                NumberAnimation { to: 1.25; duration: 1600; easing.type: Easing.InOutSine }
+                                NumberAnimation { to: 0.95; duration: 1600; easing.type: Easing.InOutSine }
+                            }
+                        }
+                    }
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        Layout.preferredWidth: 0
+                        Layout.minimumWidth: 0
+                        spacing: 2
+
+                        Text {
+                            Layout.fillWidth: true
+                            Layout.preferredWidth: 0
+                            text: (telegramBridge && telegramBridge.isLoggedIn)
+                                  ? (tr("tg_connected_as", "Connected as @") + telegramBridge.currentUsername + (telegramBridge.currentPhone ? " (" + telegramBridge.currentPhone + ")" : ""))
+                                  : tr("tg_not_connected", "Telegram Account Not Connected")
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 12
+                            font.weight: Font.DemiBold
+                            color: (telegramBridge && telegramBridge.isLoggedIn) ? "#34D399" : "#94A3B8"
+                            elide: Text.ElideRight
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            Layout.preferredWidth: 0
+                            text: (telegramBridge && telegramBridge.isLoggedIn)
+                                  ? tr("tg_ready_desc", "Ready to download media from public and private Telegram channels.")
+                                  : tr("tg_connect_desc", "Connect via QR code, phone number, or bot token to enable downloads.")
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 10
+                            color: "#64748B"
+                            wrapMode: Text.WordWrap
+                        }
+                    }
+
+                    StyledButton {
+                        text: (telegramBridge && telegramBridge.isLoggedIn) ? tr("tg_btn_manage", "Manage / Switch") : tr("tg_btn_connect", "Connect Telegram")
+                        implicitWidth: 140
+                        implicitHeight: 32
+                        variant: (telegramBridge && telegramBridge.isLoggedIn) ? "outline" : "primary"
+                        onClicked: {
+                            appWindow.openTelegramAuthModal(false)
+                        }
+                    }
+                }
+
+                // Reset Login Row (shown when logged in — fixes corrupted session / re-login)
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    visible: telegramBridge && telegramBridge.isLoggedIn
+                    spacing: 8
+
+                    Text {
+                        text: "🔄"
+                        font.pixelSize: 12
+                    }
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        Layout.preferredWidth: 0
+                        Layout.minimumWidth: 0
+                        spacing: 2
+
+                        Text {
+                            Layout.fillWidth: true
+                            Layout.preferredWidth: 0
+                            text: tr("tg_reset_title", "Reset Telegram Session")
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 11
+                            font.weight: Font.DemiBold
+                            color: "#F87171"
+                            elide: Text.ElideRight
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            Layout.preferredWidth: 0
+                            text: tr("tg_reset_desc", "Wipes the saved session and forces a clean re-login. Use this if you see auth errors or the account is acting unexpectedly.")
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 10
+                            color: "#64748B"
+                            wrapMode: Text.WordWrap
+                        }
+                    }
+
+                    StyledButton {
+                        text: tr("tg_btn_reset_login", "Reset Login")
+                        implicitWidth: 110
+                        implicitHeight: 30
+                        variant: "danger"
+                        onClicked: {
+                            if (telegramBridge) telegramBridge.resetSession()
+                        }
+                    }
+                }
+
+                // Mini Red Disclaimer Notice
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    implicitHeight: tgMiniNotice.implicitHeight + 16
+                    radius: 6
+                    color: "#251214"
+                    border.color: "#EF4444"
+                    border.width: 1
+
+                    RowLayout {
+                        id: tgMiniNotice
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: 8
+                        spacing: 8
+
+                        Text {
+                            text: "⚠️"
+                            font.pixelSize: 13
+                            Layout.alignment: Qt.AlignTop
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            Layout.preferredWidth: 0
+                            Layout.minimumWidth: 0
+                            text: tr("tg_settings_notice", "Developer Notice: Use a dedicated secondary Telegram account for mass downloading to protect your primary personal account from automated bans or restrictions.")
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 10
+                            font.weight: Font.DemiBold
+                            color: "#FCA5A5"
+                            wrapMode: Text.WordWrap
+                        }
+                    }
+                }
+
+                // Reset Warning Modals button if acknowledged
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    visible: bridge ? (bridge.telegramSafetyAcknowledged || bridge.telegramLiabilityAcknowledged) : false
+                    spacing: 8
+
+                    Text {
+                        text: tr("tg_warnings_dismissed", "⚠️ Telegram safety advisory / liability disclaimer has been dismissed.")
+                        font.family: "Segoe UI, sans-serif"
+                        font.pixelSize: 11
+                        color: "#94A3B8"
+                        Layout.fillWidth: true
+                        Layout.preferredWidth: 0
+                        Layout.minimumWidth: 0
+                        wrapMode: Text.WordWrap
+                    }
+
+                    StyledButton {
+                        text: tr("tg_btn_reset_warnings", "Reset Warning Prompts")
+                        variant: "outline"
+                        Layout.preferredHeight: 28
+                        Layout.preferredWidth: 160
+                        onClicked: {
+                            if (bridge) bridge.resetTelegramWarnings()
+                        }
+                    }
+                }
+
+                // Advanced Custom Credentials Collapsible
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    spacing: 8
+
+                    MouseArea {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 22
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: tgAdvancedCol.visible = !tgAdvancedCol.visible
+
+                        RowLayout {
+                            anchors.fill: parent
+                            spacing: 6
+
+                            Text {
+                                text: "⚙️"
+                                font.pixelSize: 12
+                            }
+
+                            Text {
+                                text: tr("tg_custom_api_title", "Advanced: Custom Telegram API Credentials (Optional)")
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 11
+                                font.weight: Font.Medium
+                                color: "#94A3B8"
+                                Layout.fillWidth: true
+                                Layout.preferredWidth: 0
+                                elide: Text.ElideRight
+                            }
+
+                            Text {
+                                text: tgAdvancedCol.visible ? "▲" : "▼"
+                                font.pixelSize: 9
+                                color: "#64748B"
+                            }
+                        }
+                    }
+
+                    ColumnLayout {
+                        id: tgAdvancedCol
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: 0
+                        spacing: 8
+                        visible: false
+
+                        Text {
+                            Layout.fillWidth: true
+                            Layout.preferredWidth: 0
+                            Layout.minimumWidth: 0
+                            text: tr("tg_custom_api_desc", "By default, Pawchive uses standard built-in credentials. If you experience connection limits, obtain your free api_id & api_hash from my.telegram.org and save them below:")
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 10
+                            color: "#64748B"
+                            wrapMode: Text.WordWrap
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
+                            spacing: 10
+
+                            StyledTextField {
+                                id: customApiIdInput
+                                Layout.preferredWidth: 130
+                                Layout.minimumWidth: 70
+                                placeholderText: "API ID (e.g. 123456)"
+                            }
+
+                            StyledTextField {
+                                id: customApiHashInput
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 70
+                                Layout.preferredWidth: 0
+                                placeholderText: "API Hash (32 characters)"
+                            }
+
+                            StyledButton {
+                                text: tr("btn_save", "Save Keys")
+                                implicitWidth: 85
+                                implicitHeight: 30
+                                variant: "outline"
+                                onClicked: {
+                                    var idVal = parseInt(customApiIdInput.text.trim()) || 0
+                                    var hashVal = customApiHashInput.text.trim()
+                                    if (telegramBridge && idVal > 0 && hashVal.length > 0) {
+                                        telegramBridge.setCustomCredentials(idVal, hashVal)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        }
+
+        // ====================================================================
+        // SUB-TAB 1: NETWORK & CONNECTION (Cloudflare, Proxy, Headers)
+        // ====================================================================
+        ColumnLayout {
+            id: subTab1Content
+            visible: root.currentSubTab === 1
+            Layout.fillWidth: true
+            spacing: 12
+
         // Network & Authentication
         CardSection {
             Layout.fillWidth: true
             interactive: !root.isScrolling
             title: tr("section_network", "Network & Authentication (Cloudflare / Cookies)")
             iconText: "🌐"
-            entranceOffsetY: root.entranceStage >= 2 ? 0 : 24
-            entranceOpacity: root.entranceStage >= 2 ? 1.0 : 0.0
+            entranceOffsetY: root.tabEntranceOffsetY
+            entranceOpacity: root.tabEntranceOpacity
 
             ColumnLayout {
                 width: parent.width
@@ -559,14 +2007,25 @@ SmoothFlickable {
             }
         }
 
+        }
+
+        // ====================================================================
+        // SUB-TAB 2: STORAGE & SYSTEM (File processing, Pools, Post-actions)
+        // ====================================================================
+        ColumnLayout {
+            id: subTab2Content
+            visible: root.currentSubTab === 2
+            Layout.fillWidth: true
+            spacing: 12
+
         // Storage & Naming Options
         CardSection {
             Layout.fillWidth: true
             interactive: !root.isScrolling
             title: tr("section_storage", "Storage & File Processing")
             iconText: "💾"
-            entranceOffsetY: root.entranceStage >= 3 ? 0 : 24
-            entranceOpacity: root.entranceStage >= 3 ? 1.0 : 0.0
+            entranceOffsetY: root.tabEntranceOffsetY
+            entranceOpacity: root.tabEntranceOpacity
 
             ColumnLayout {
                 width: parent.width
@@ -813,12 +2272,16 @@ SmoothFlickable {
 
                     ColumnLayout {
                         id: filenameCol
-                        anchors.fill: parent
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
                         anchors.margins: 12
                         spacing: 10
 
+                        // Title Row
                         RowLayout {
                             Layout.fillWidth: true
+                            Layout.minimumWidth: 0
                             spacing: 8
 
                             Text {
@@ -834,16 +2297,22 @@ SmoothFlickable {
                                 font.weight: 600
                                 color: "#F1F5F9"
                                 Layout.fillWidth: true
+                                Layout.preferredWidth: 0
+                                Layout.minimumWidth: 0
+                                elide: Text.ElideRight
                             }
+                        }
 
-                            ComboBox {
-                                id: filenameStyleCombo
-                                Layout.preferredWidth: 320
-                                Layout.preferredHeight: 36
+                        // Pattern Selector ComboBox (Full Width)
+                        ComboBox {
+                            id: filenameStyleCombo
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
+                            Layout.preferredHeight: 36
 
-                                ToolTip.visible: filenameStyleCombo.hovered && !filenameStyleCombo.popup.visible
-                                ToolTip.text: root.tr("tip_filename_pattern", "Choose how downloaded files are named and organized on your disk")
-                                ToolTip.delay: 450
+                            ToolTip.visible: filenameStyleCombo.hovered && !filenameStyleCombo.popup.visible
+                            ToolTip.text: root.tr("tip_filename_pattern", "Choose how downloaded files are named and organized on your disk")
+                            ToolTip.delay: 450
 
                                 model: [
                                     {
@@ -971,7 +2440,7 @@ SmoothFlickable {
 
                                 popup: Popup {
                                     y: filenameStyleCombo.height + 4
-                                    width: 370
+                                    width: filenameStyleCombo.width
                                     implicitHeight: Math.min(contentItem.implicitHeight + 12, 330)
                                     padding: 5
                                     transformOrigin: Popup.Top
@@ -1124,12 +2593,13 @@ SmoothFlickable {
                                     }
                                 }
                             }
-                        }
 
                         // Newtonian Expanding Custom Template Editor
                         Item {
                             id: customTemplateExpand
                             Layout.fillWidth: true
+                            Layout.minimumWidth: 0
+                            width: parent.width
                             readonly property bool isCustom: root.bridge ? root.bridge.filenameStyle === "custom" : false
                             implicitHeight: isCustom ? (templateInnerCol.implicitHeight + 8) : 0
                             clip: true
@@ -1148,15 +2618,20 @@ SmoothFlickable {
                             ColumnLayout {
                                 id: templateInnerCol
                                 width: parent.width
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
                                 spacing: 8
 
                                 RowLayout {
                                     Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
                                     spacing: 8
 
                                     StyledTextField {
                                         id: templateInput
                                         Layout.fillWidth: true
+                                        Layout.preferredWidth: 0
+                                        Layout.minimumWidth: 0
                                         placeholderText: "{artist} - [{date}] - {title} - {orig_name}"
                                         tooltip: root.tr("tip_template_input", "Enter custom pattern using tags below. Preview updates in real-time.")
                                         text: root.bridge ? root.bridge.filenameTemplate : ""
@@ -1171,7 +2646,7 @@ SmoothFlickable {
                                         text: root.tr("btn_reset_template", "Reset")
                                         tooltip: root.tr("tip_reset_template", "Reset filename template to: {title} - {orig_name}")
                                         variant: "ghost"
-                                        implicitWidth: 70
+                                        implicitWidth: 65
                                         implicitHeight: 32
                                         onClicked: {
                                             if (root.bridge) {
@@ -1184,7 +2659,9 @@ SmoothFlickable {
 
                                 // Clickable Tag Chips with Newtonian Press Bounce
                                 Flow {
+                                    width: templateInnerCol.width
                                     Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
                                     spacing: 6
 
                                     Repeater {
@@ -1248,6 +2725,7 @@ SmoothFlickable {
                                 // Live Preview Row
                                 RowLayout {
                                     Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
                                     spacing: 6
 
                                     Text {
@@ -1260,11 +2738,13 @@ SmoothFlickable {
 
                                     Text {
                                         Layout.fillWidth: true
+                                        Layout.preferredWidth: 0
+                                        Layout.minimumWidth: 0
                                         text: root.bridge ? root.bridge.previewCustomFilename(templateInput.text) : ""
                                         font.family: "Segoe UI, monospace"
                                         font.pixelSize: 11
                                         color: "#38BDF8"
-                                        elide: Text.ElideRight
+                                        elide: Text.ElideMiddle
                                     }
                                 }
                             }
@@ -1274,14 +2754,15 @@ SmoothFlickable {
             }
         }
 
+
         // Multi-Drive Overflow & Auto-Spanning (Storage Pools)
         CardSection {
             Layout.fillWidth: true
             interactive: !root.isScrolling
             title: tr("section_storage_pools", "Multi-Drive Overflow & Auto-Spanning (Storage Pools)")
             iconText: "💽"
-            entranceOffsetY: root.entranceStage >= 4 ? 0 : 24
-            entranceOpacity: root.entranceStage >= 4 ? 1.0 : 0.0
+            entranceOffsetY: root.tabEntranceOffsetY
+            entranceOpacity: root.tabEntranceOpacity
 
             ColumnLayout {
                 id: storagePoolCol
@@ -1326,6 +2807,8 @@ SmoothFlickable {
                     color: "#94A3B8"
                     wrapMode: Text.WordWrap
                     Layout.fillWidth: true
+                    Layout.preferredWidth: 0
+                    Layout.minimumWidth: 0
                 }
 
                 // Safety Margin Row
@@ -1550,14 +3033,159 @@ SmoothFlickable {
             }
         }
 
+
+        // Post-Download & System Actions (What to do after done)
+        CardSection {
+            Layout.fillWidth: true
+            interactive: !root.isScrolling
+            title: tr("section_post_actions", "Post-Download & System Actions")
+            iconText: "⚡"
+            entranceOffsetY: root.tabEntranceOffsetY
+            entranceOpacity: root.tabEntranceOpacity
+
+            ColumnLayout {
+                width: parent.width
+                Layout.fillWidth: true
+                Layout.minimumWidth: 0
+                spacing: 12
+
+                // Convenient checkboxes for notifications / folders
+                Flow {
+                    width: parent.width
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    spacing: 16
+
+                    StyledCheckBox {
+                        text: tr("opt_open_complete", "Open download directory when complete")
+                        tooltip: tr("opt_open_complete_tip", "Automatically open Windows File Explorer to the downloaded creator folder")
+                        checked: root.bridge ? root.bridge.openFolderOnComplete : false
+                        onCheckedChanged: if (root.bridge) root.bridge.openFolderOnComplete = checked
+                    }
+
+                    StyledCheckBox {
+                        text: tr("opt_chime_complete", "Play chime sound when complete")
+                        tooltip: tr("opt_chime_complete_tip", "Play an audible notification chime when all download tasks finish")
+                        checked: root.bridge ? root.bridge.playCompletionSound : false
+                        onCheckedChanged: if (root.bridge) root.bridge.playCompletionSound = checked
+                    }
+                }
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    height: 1
+                    color: "#1E293B"
+                }
+
+                // Power/App Action Selector
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 3
+                        Text {
+                            text: tr("label_what_to_do", "What to do after download finishes (one-time action):")
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 11
+                            font.weight: 600
+                            color: "#94A3B8"
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                        }
+                        Text {
+                            text: tr("note_what_to_do", "• Resets to 'Do Nothing' after each task. Can also be set directly in the bottom action bar.")
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 10
+                            color: "#64748B"
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                        }
+                    }
+
+                    Flow {
+                        width: parent.width
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: 0
+                        spacing: 8
+
+                        FilterCheckbox {
+                            label: tr("action_none", "Do Nothing")
+                            iconText: "⏸️"
+                            tooltip: tr("action_none_tip", "Keep application open and system running normally")
+                            checked: root.bridge ? (root.bridge.postDownloadAction === "none" || root.bridge.postDownloadAction === "") : true
+                            onClicked: if (root.bridge) root.bridge.postDownloadAction = "none"
+                        }
+
+                        FilterCheckbox {
+                            label: tr("action_close", "Close App")
+                            iconText: "🚪"
+                            activeColor: "#38BDF8"
+                            tooltip: tr("action_close_tip", "Automatically exit Pawchive Downloader when all files finish downloading")
+                            checked: root.bridge ? root.bridge.postDownloadAction === "close_app" : false
+                            onClicked: if (root.bridge) root.bridge.postDownloadAction = "close_app"
+                        }
+
+                        FilterCheckbox {
+                            label: tr("action_sleep", "Sleep System")
+                            iconText: "🌙"
+                            activeColor: "#A78BFA"
+                            tooltip: tr("action_sleep_tip", "Put the computer into sleep / suspend mode after download completes")
+                            checked: root.bridge ? root.bridge.postDownloadAction === "sleep" : false
+                            onClicked: if (root.bridge) root.bridge.postDownloadAction = "sleep"
+                        }
+
+                        FilterCheckbox {
+                            label: tr("action_hibernate", "Hibernate (-F Force)")
+                            iconText: "💤"
+                            activeColor: "#818CF8"
+                            tooltip: tr("action_hibernate_tip", "Force save memory to disk and turn off power (Hibernate -F)")
+                            checked: root.bridge ? root.bridge.postDownloadAction === "hibernate" : false
+                            onClicked: if (root.bridge) root.bridge.postDownloadAction = "hibernate"
+                        }
+
+                        FilterCheckbox {
+                            label: tr("action_shutdown", "Shut Down (-F Force)")
+                            iconText: "🔌"
+                            activeColor: "#F43F5E"
+                            tooltip: tr("action_shutdown_tip", "Force close running applications and safely shut down the computer (includes 10s cancel buffer)")
+                            checked: root.bridge ? root.bridge.postDownloadAction === "shutdown" : false
+                            onClicked: if (root.bridge) root.bridge.postDownloadAction = "shutdown"
+                        }
+
+                        FilterCheckbox {
+                            label: tr("action_restart", "Restart (-F Force)")
+                            iconText: "🔄"
+                            activeColor: "#F59E0B"
+                            tooltip: tr("action_restart_tip", "Force close running applications and restart the operating system")
+                            checked: root.bridge ? root.bridge.postDownloadAction === "restart" : false
+                            onClicked: if (root.bridge) root.bridge.postDownloadAction = "restart"
+                        }
+                    }
+                }
+            }
+        }
+
+        }
+
+        // ====================================================================
+        // SUB-TAB 3: AI & RECOGNITION (Known Engine & Local AI Models)
+        // ====================================================================
+        ColumnLayout {
+            id: subTab3Content
+            visible: root.currentSubTab === 3
+            Layout.fillWidth: true
+            spacing: 12
+
         // Character & Franchise Recognition Engine (Master Database vs Auto-Learning)
         CardSection {
             Layout.fillWidth: true
             interactive: !root.isScrolling
             title: tr("section_known_engine", "Character & Franchise Recognition (Known Engine)")
             iconText: "🏷️"
-            entranceOffsetY: root.entranceStage >= 5 ? 0 : 24
-            entranceOpacity: root.entranceStage >= 5 ? 1.0 : 0.0
+            entranceOffsetY: root.tabEntranceOffsetY
+            entranceOpacity: root.tabEntranceOpacity
 
             ColumnLayout {
                 width: parent.width
@@ -2291,426 +3919,11 @@ SmoothFlickable {
             }
         }
 
-        // Post-Download & System Actions (What to do after done)
-        CardSection {
-            Layout.fillWidth: true
-            interactive: !root.isScrolling
-            title: tr("section_post_actions", "Post-Download & System Actions")
-            iconText: "⚡"
-            entranceOffsetY: root.entranceStage >= 6 ? 0 : 24
-            entranceOpacity: root.entranceStage >= 6 ? 1.0 : 0.0
-
-            ColumnLayout {
-                width: parent.width
-                Layout.fillWidth: true
-                Layout.minimumWidth: 0
-                spacing: 12
-
-                // Convenient checkboxes for notifications / folders
-                Flow {
-                    width: parent.width
-                    Layout.fillWidth: true
-                    Layout.minimumWidth: 0
-                    spacing: 16
-
-                    StyledCheckBox {
-                        text: tr("opt_open_complete", "Open download directory when complete")
-                        tooltip: tr("opt_open_complete_tip", "Automatically open Windows File Explorer to the downloaded creator folder")
-                        checked: root.bridge ? root.bridge.openFolderOnComplete : false
-                        onCheckedChanged: if (root.bridge) root.bridge.openFolderOnComplete = checked
-                    }
-
-                    StyledCheckBox {
-                        text: tr("opt_chime_complete", "Play chime sound when complete")
-                        tooltip: tr("opt_chime_complete_tip", "Play an audible notification chime when all download tasks finish")
-                        checked: root.bridge ? root.bridge.playCompletionSound : false
-                        onCheckedChanged: if (root.bridge) root.bridge.playCompletionSound = checked
-                    }
-                }
-
-                Rectangle {
-                    Layout.fillWidth: true
-                    height: 1
-                    color: "#1E293B"
-                }
-
-                // Power/App Action Selector
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    spacing: 6
-
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: 3
-                        Text {
-                            text: tr("label_what_to_do", "What to do after download finishes (one-time action):")
-                            font.family: "Segoe UI, sans-serif"
-                            font.pixelSize: 11
-                            font.weight: 600
-                            color: "#94A3B8"
-                            Layout.fillWidth: true
-                            wrapMode: Text.WordWrap
-                        }
-                        Text {
-                            text: tr("note_what_to_do", "• Resets to 'Do Nothing' after each task. Can also be set directly in the bottom action bar.")
-                            font.family: "Segoe UI, sans-serif"
-                            font.pixelSize: 10
-                            color: "#64748B"
-                            Layout.fillWidth: true
-                            wrapMode: Text.WordWrap
-                        }
-                    }
-
-                    Flow {
-                        width: parent.width
-                        Layout.fillWidth: true
-                        Layout.minimumWidth: 0
-                        spacing: 8
-
-                        FilterCheckbox {
-                            label: tr("action_none", "Do Nothing")
-                            iconText: "⏸️"
-                            tooltip: tr("action_none_tip", "Keep application open and system running normally")
-                            checked: root.bridge ? (root.bridge.postDownloadAction === "none" || root.bridge.postDownloadAction === "") : true
-                            onClicked: if (root.bridge) root.bridge.postDownloadAction = "none"
-                        }
-
-                        FilterCheckbox {
-                            label: tr("action_close", "Close App")
-                            iconText: "🚪"
-                            activeColor: "#38BDF8"
-                            tooltip: tr("action_close_tip", "Automatically exit Pawchive Downloader when all files finish downloading")
-                            checked: root.bridge ? root.bridge.postDownloadAction === "close_app" : false
-                            onClicked: if (root.bridge) root.bridge.postDownloadAction = "close_app"
-                        }
-
-                        FilterCheckbox {
-                            label: tr("action_sleep", "Sleep System")
-                            iconText: "🌙"
-                            activeColor: "#A78BFA"
-                            tooltip: tr("action_sleep_tip", "Put the computer into sleep / suspend mode after download completes")
-                            checked: root.bridge ? root.bridge.postDownloadAction === "sleep" : false
-                            onClicked: if (root.bridge) root.bridge.postDownloadAction = "sleep"
-                        }
-
-                        FilterCheckbox {
-                            label: tr("action_hibernate", "Hibernate (-F Force)")
-                            iconText: "💤"
-                            activeColor: "#818CF8"
-                            tooltip: tr("action_hibernate_tip", "Force save memory to disk and turn off power (Hibernate -F)")
-                            checked: root.bridge ? root.bridge.postDownloadAction === "hibernate" : false
-                            onClicked: if (root.bridge) root.bridge.postDownloadAction = "hibernate"
-                        }
-
-                        FilterCheckbox {
-                            label: tr("action_shutdown", "Shut Down (-F Force)")
-                            iconText: "🔌"
-                            activeColor: "#F43F5E"
-                            tooltip: tr("action_shutdown_tip", "Force close running applications and safely shut down the computer (includes 10s cancel buffer)")
-                            checked: root.bridge ? root.bridge.postDownloadAction === "shutdown" : false
-                            onClicked: if (root.bridge) root.bridge.postDownloadAction = "shutdown"
-                        }
-
-                        FilterCheckbox {
-                            label: tr("action_restart", "Restart (-F Force)")
-                            iconText: "🔄"
-                            activeColor: "#F59E0B"
-                            tooltip: tr("action_restart_tip", "Force close running applications and restart the operating system")
-                            checked: root.bridge ? root.bridge.postDownloadAction === "restart" : false
-                            onClicked: if (root.bridge) root.bridge.postDownloadAction = "restart"
-                        }
-                    }
-                }
-            }
-        }
-
-        // Section: Telegram Integration
-        CardSection {
-            Layout.fillWidth: true
-            interactive: !root.isScrolling
-            title: tr("section_telegram", "Telegram Integration & Account Settings")
-            iconText: "✈️"
-            entranceOffsetY: root.entranceStage >= 6 ? 0 : 24
-            entranceOpacity: root.entranceStage >= 6 ? 1.0 : 0.0
-
-            ColumnLayout {
-                width: parent.width
-                spacing: 12
-
-                // Status & Quick Connect Row
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 12
-
-                    Item {
-                        width: 14
-                        height: 14
-                        Layout.alignment: Qt.AlignVCenter
-
-                        // Liquid droplet core
-                        Rectangle {
-                            id: tgStatusDot
-                            anchors.centerIn: parent
-                            width: 10
-                            height: 10
-                            radius: 5
-                            color: (telegramBridge && telegramBridge.isLoggedIn) ? "#10B981" : "#64748B"
-
-                            Behavior on color { ColorAnimation { duration: 250 } }
-                        }
-
-                        // Surface tension breathing aura
-                        Rectangle {
-                            anchors.centerIn: parent
-                            width: 16
-                            height: 16
-                            radius: 8
-                            color: "transparent"
-                            border.color: (telegramBridge && telegramBridge.isLoggedIn) ? "#10B981" : "#64748B"
-                            border.width: 1
-                            visible: telegramBridge && telegramBridge.isLoggedIn
-                            opacity: 0.3
-
-                            SequentialAnimation on opacity {
-                                loops: Animation.Infinite
-                                running: telegramBridge && telegramBridge.isLoggedIn
-                                NumberAnimation { to: 0.85; duration: 1600; easing.type: Easing.InOutSine }
-                                NumberAnimation { to: 0.15; duration: 1600; easing.type: Easing.InOutSine }
-                            }
-                            SequentialAnimation on scale {
-                                loops: Animation.Infinite
-                                running: telegramBridge && telegramBridge.isLoggedIn
-                                NumberAnimation { to: 1.25; duration: 1600; easing.type: Easing.InOutSine }
-                                NumberAnimation { to: 0.95; duration: 1600; easing.type: Easing.InOutSine }
-                            }
-                        }
-                    }
-
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: 2
-
-                        Text {
-                            text: (telegramBridge && telegramBridge.isLoggedIn)
-                                  ? (tr("tg_connected_as", "Connected as @") + telegramBridge.currentUsername + (telegramBridge.currentPhone ? " (" + telegramBridge.currentPhone + ")" : ""))
-                                  : tr("tg_not_connected", "Telegram Account Not Connected")
-                            font.family: "Segoe UI, sans-serif"
-                            font.pixelSize: 12
-                            font.weight: Font.DemiBold
-                            color: (telegramBridge && telegramBridge.isLoggedIn) ? "#34D399" : "#94A3B8"
-                        }
-
-                        Text {
-                            text: (telegramBridge && telegramBridge.isLoggedIn)
-                                  ? tr("tg_ready_desc", "Ready to download media from public and private Telegram channels.")
-                                  : tr("tg_connect_desc", "Connect via QR code, phone number, or bot token to enable downloads.")
-                            font.family: "Segoe UI, sans-serif"
-                            font.pixelSize: 10
-                            color: "#64748B"
-                        }
-                    }
-
-                    StyledButton {
-                        text: (telegramBridge && telegramBridge.isLoggedIn) ? tr("tg_btn_manage", "Manage / Switch") : tr("tg_btn_connect", "Connect Telegram")
-                        implicitWidth: 150
-                        implicitHeight: 32
-                        variant: (telegramBridge && telegramBridge.isLoggedIn) ? "outline" : "primary"
-                        onClicked: {
-                            appWindow.openTelegramAuthModal(false)
-                        }
-                    }
-                }
-
-                // Reset Login Row (shown when logged in — fixes corrupted session / re-login)
-                RowLayout {
-                    Layout.fillWidth: true
-                    visible: telegramBridge && telegramBridge.isLoggedIn
-                    spacing: 8
-
-                    Text {
-                        text: "🔄"
-                        font.pixelSize: 12
-                    }
-
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: 2
-
-                        Text {
-                            text: tr("tg_reset_title", "Reset Telegram Session")
-                            font.family: "Segoe UI, sans-serif"
-                            font.pixelSize: 11
-                            font.weight: Font.DemiBold
-                            color: "#F87171"
-                        }
-
-                        Text {
-                            Layout.fillWidth: true
-                            text: tr("tg_reset_desc", "Wipes the saved session and forces a clean re-login. Use this if you see auth errors or the account is acting unexpectedly.")
-                            font.family: "Segoe UI, sans-serif"
-                            font.pixelSize: 10
-                            color: "#64748B"
-                            wrapMode: Text.WordWrap
-                        }
-                    }
-
-                    StyledButton {
-                        text: tr("tg_btn_reset_login", "Reset Login")
-                        implicitWidth: 110
-                        implicitHeight: 30
-                        variant: "danger"
-                        onClicked: {
-                            if (telegramBridge) telegramBridge.resetSession()
-                        }
-                    }
-                }
-
-                // Mini Red Disclaimer Notice
-                Rectangle {
-                    Layout.fillWidth: true
-                    implicitHeight: tgMiniNotice.implicitHeight + 12
-                    radius: 6
-                    color: "#251214"
-                    border.color: "#EF4444"
-                    border.width: 1
-
-                    RowLayout {
-                        id: tgMiniNotice
-                        anchors.fill: parent
-                        anchors.margins: 8
-                        spacing: 8
-
-                        Text {
-                            text: "⚠️"
-                            font.pixelSize: 13
-                        }
-
-                        Text {
-                            Layout.fillWidth: true
-                            text: tr("tg_settings_notice", "Developer Notice: Use a dedicated secondary Telegram account for mass downloading to protect your primary personal account from automated bans or restrictions.")
-                            font.family: "Segoe UI, sans-serif"
-                            font.pixelSize: 10
-                            font.weight: Font.DemiBold
-                            color: "#FCA5A5"
-                            wrapMode: Text.WordWrap
-                        }
-                    }
-                }
-
-                // Reset Warning Modals button if acknowledged
-                RowLayout {
-                    Layout.fillWidth: true
-                    visible: bridge ? (bridge.telegramSafetyAcknowledged || bridge.telegramLiabilityAcknowledged) : false
-                    spacing: 8
-
-                    Text {
-                        text: tr("tg_warnings_dismissed", "⚠️ Telegram safety advisory / liability disclaimer has been dismissed.")
-                        font.family: "Segoe UI, sans-serif"
-                        font.pixelSize: 11
-                        color: "#94A3B8"
-                        Layout.fillWidth: true
-                    }
-
-                    StyledButton {
-                        text: tr("tg_btn_reset_warnings", "Reset Warning Prompts")
-                        variant: "outline"
-                        Layout.preferredHeight: 28
-                        Layout.preferredWidth: 160
-                        onClicked: {
-                            if (bridge) bridge.resetTelegramWarnings()
-                        }
-                    }
-                }
-
-                // Advanced Custom Credentials Collapsible
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    spacing: 8
-
-                    MouseArea {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 22
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: tgAdvancedCol.visible = !tgAdvancedCol.visible
-
-                        RowLayout {
-                            anchors.fill: parent
-                            spacing: 6
-
-                            Text {
-                                text: "⚙️"
-                                font.pixelSize: 12
-                            }
-
-                            Text {
-                                text: tr("tg_custom_api_title", "Advanced: Custom Telegram API Credentials (Optional)")
-                                font.family: "Segoe UI, sans-serif"
-                                font.pixelSize: 11
-                                font.weight: Font.Medium
-                                color: "#94A3B8"
-                            }
-
-                            Text {
-                                text: tgAdvancedCol.visible ? "▲" : "▼"
-                                font.pixelSize: 9
-                                color: "#64748B"
-                            }
-                        }
-                    }
-
-                    ColumnLayout {
-                        id: tgAdvancedCol
-                        Layout.fillWidth: true
-                        spacing: 8
-                        visible: false
-
-                        Text {
-                            Layout.fillWidth: true
-                            text: tr("tg_custom_api_desc", "By default, Pawchive uses standard built-in credentials. If you experience connection limits, obtain your free api_id & api_hash from my.telegram.org and save them below:")
-                            font.family: "Segoe UI, sans-serif"
-                            font.pixelSize: 10
-                            color: "#64748B"
-                            wrapMode: Text.WordWrap
-                        }
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: 10
-
-                            StyledTextField {
-                                id: customApiIdInput
-                                Layout.preferredWidth: 160
-                                placeholderText: "API ID (e.g. 123456)"
-                            }
-
-                            StyledTextField {
-                                id: customApiHashInput
-                                Layout.fillWidth: true
-                                placeholderText: "API Hash (32 characters)"
-                            }
-
-                            StyledButton {
-                                text: tr("btn_save", "Save Keys")
-                                implicitWidth: 90
-                                implicitHeight: 30
-                                variant: "outline"
-                                onClicked: {
-                                    var idVal = parseInt(customApiIdInput.text.trim()) || 0
-                                    var hashVal = customApiHashInput.text.trim()
-                                    if (telegramBridge && idVal > 0 && hashVal.length > 0) {
-                                        telegramBridge.setCustomCredentials(idVal, hashVal)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
         }
 
         // Action Buttons & About
         Flow {
-            width: parent.width
+            width: settingsCol.width
             Layout.fillWidth: true
             Layout.minimumWidth: 0
             spacing: 8

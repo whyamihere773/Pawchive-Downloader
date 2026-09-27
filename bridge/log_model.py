@@ -59,12 +59,12 @@ class LogModel(QAbstractListModel):
         if not index.isValid() or index.row() >= len(self._filtered_entries):
             return None
         entry = self._filtered_entries[index.row()]
-        if role == self.TimestampRole:    return entry.timestamp
-        if role == self.MessageRole:      return entry.message
-        if role == self.LevelRole:        return entry.level
-        if role == self.CategoryRole:     return entry.category
-        if role == self.LevelColorRole:   return self._level_color(entry)
-        if role == self.IconRole:         return self._level_icon(entry)
+        if role == self.TimestampRole:    return entry.timestamp or ""
+        if role == self.MessageRole:      return entry.message or ""
+        if role == self.LevelRole:        return entry.level or "INFO"
+        if role == self.CategoryRole:     return entry.category or "general"
+        if role == self.LevelColorRole:   return self._level_color(entry) or "#CBD5E1"
+        if role == self.IconRole:         return self._level_icon(entry) or "•"
         return None
 
     def roleNames(self):
@@ -84,6 +84,9 @@ class LogModel(QAbstractListModel):
             return "#FF1493"  # Vibrant Electric Hot Pink for Memory Collector
         if cat_lower == "adaptive" or "adaptive threading" in msg_lower or "[adaptive" in msg_lower or "⚡ adaptive" in msg_lower:
             return "#C084FC"  # Vibrant Neon Purple / Violet for Adaptive Threading
+        # Filter skip messages get distinct warm amber so they stand out from normal downloads
+        if cat_lower == "filter" or "⏭️" in entry.message or "skipping" in msg_lower or "skipped" in msg_lower:
+            return "#F59E0B"  # Warm amber-gold for filtered & skipped files
         # Link scan results get a distinct warm amber/teal so they pop in the log
         if "🔗" in entry.message and ("link" in msg_lower or "extract" in msg_lower):
             return "#F59E0B"  # Warm amber-gold for all link-related messages
@@ -104,6 +107,8 @@ class LogModel(QAbstractListModel):
             return "🧹"
         if cat_lower == "adaptive" or "adaptive threading" in msg_lower or "[adaptive" in msg_lower or "⚡ adaptive" in msg_lower:
             return "⚡"
+        if cat_lower == "filter" or "⏭️" in entry.message or "skipping" in msg_lower or "skipped" in msg_lower:
+            return "⏭️"
         # Link scan messages get a chain-link icon
         if "🔗" in entry.message and ("link" in msg_lower or "extract" in msg_lower):
             return "🔗"

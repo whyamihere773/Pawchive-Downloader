@@ -52,6 +52,19 @@ ApplicationWindow {
         tutorialModal.isOpen = true;
     }
 
+    function openSettingsTab(subTabIndex) {
+        appWindow.currentTab = 9;
+        if (typeof settingsViewTab !== "undefined" && settingsViewTab) {
+            settingsViewTab.currentSubTab = (subTabIndex !== undefined ? subTabIndex : 0);
+        }
+    }
+
+    function showToast(msg, callback) {
+        if (typeof discardWarningToast !== "undefined" && discardWarningToast && typeof discardWarningToast.showMessage === "function") {
+            discardWarningToast.showMessage(msg, callback)
+        }
+    }
+
 
     ColumnLayout {
         anchors.fill: parent
@@ -1123,11 +1136,12 @@ ApplicationWindow {
                 Rectangle {
                     id: mainStartBtn
                     property bool isLinksMode: appBridge ? appBridge.filterType === "links" : false
+                    property bool isFavoritesMode: (appBridge && appBridge.favoriteMode && (!appBridge.currentUrl || appBridge.currentUrl.trim().length === 0))
                     property bool isDownloading: appBridge ? appBridge.isDownloading : false
                     property bool hasPendingQueue: (appBridge && appBridge.queueModel) ? (appBridge.queueModel.pendingCount > 0 || appBridge.queueModel.count > 0) : false
                     property bool isTelegramBlocked: (appBridge ? appBridge.isTelegramUrl : false) && !hasPendingQueue
 
-                    Layout.preferredWidth: Math.max(isLinksMode ? 162 : 148, startBtnRow.implicitWidth + 28)
+                    Layout.preferredWidth: Math.max(isFavoritesMode ? 175 : (isLinksMode ? 162 : 148), startBtnRow.implicitWidth + 28)
                     Layout.preferredHeight: 34
                     radius: 7
 
@@ -1136,11 +1150,13 @@ ApplicationWindow {
                         : (mainStartBtn.isDownloading
                             ? "#0F2A1A"
                             : (startBtnMouse.containsMouse
-                                ? (mainStartBtn.isLinksMode ? "#0D3330" : "#1a3a52")
-                                : (mainStartBtn.isLinksMode ? "#0A2825" : "#0D2137")))
+                                ? (mainStartBtn.isFavoritesMode ? "#2E2008" : (mainStartBtn.isLinksMode ? "#0D3330" : "#1a3a52"))
+                                : (mainStartBtn.isFavoritesMode ? "#241905" : (mainStartBtn.isLinksMode ? "#0A2825" : "#0D2137"))))
                     border.color: mainStartBtn.isTelegramBlocked
                         ? "#334155"
-                        : (mainStartBtn.isDownloading ? "#10B981" : (mainStartBtn.isLinksMode ? "#2DD4BF" : "#38BDF8"))
+                        : (mainStartBtn.isDownloading
+                            ? "#10B981"
+                            : (mainStartBtn.isFavoritesMode ? "#F59E0B" : (mainStartBtn.isLinksMode ? "#2DD4BF" : "#38BDF8")))
                     border.width: 1
                     opacity: mainStartBtn.isTelegramBlocked ? 0.45 : (mainStartBtn.isDownloading ? 0.7 : 1.0)
 
@@ -1157,18 +1173,19 @@ ApplicationWindow {
                         anchors.centerIn: parent
                         spacing: 6
                         Text {
-                            text: mainStartBtn.isTelegramBlocked ? "🚫" : (mainStartBtn.isDownloading ? "⏳" : (mainStartBtn.isLinksMode ? "🔗" : "⚡"))
+                            text: mainStartBtn.isTelegramBlocked ? "🚫" : (mainStartBtn.isDownloading ? "⏳" : (mainStartBtn.isFavoritesMode ? "⭐" : (mainStartBtn.isLinksMode ? "🔗" : "⚡")))
                             font.pixelSize: 13
                             anchors.verticalCenter: parent.verticalCenter
                         }
                         Text {
                             text: mainStartBtn.isTelegramBlocked ? appWindow.tr("action_select_required", "Use 'Select Posts'")
                                 : (mainStartBtn.isDownloading ? appWindow.tr("action_downloading", "Downloading…")
-                                : (mainStartBtn.isLinksMode ? appWindow.tr("action_extract_links", "Extract Links") : appWindow.tr("action_start_download", "Start Download")))
+                                : (mainStartBtn.isFavoritesMode ? appWindow.tr("action_download_favorites", "Download Favorites")
+                                : (mainStartBtn.isLinksMode ? appWindow.tr("action_extract_links", "Extract Links") : appWindow.tr("action_start_download", "Start Download"))))
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
                             font.weight: 600
-                            color: mainStartBtn.isTelegramBlocked ? "#64748B" : (mainStartBtn.isDownloading ? "#34D399" : (mainStartBtn.isLinksMode ? "#2DD4BF" : "#38BDF8"))
+                            color: mainStartBtn.isTelegramBlocked ? "#64748B" : (mainStartBtn.isDownloading ? "#34D399" : (mainStartBtn.isFavoritesMode ? "#FBBF24" : (mainStartBtn.isLinksMode ? "#2DD4BF" : "#38BDF8")))
                             anchors.verticalCenter: parent.verticalCenter
                         }
                     }
@@ -1183,9 +1200,11 @@ ApplicationWindow {
                         ToolTip.delay: 300
                         ToolTip.text: mainStartBtn.isTelegramBlocked
                             ? appWindow.tr("tip_tg_disabled", "Direct download is disabled for Telegram links. Please click 'Select Posts…' to configure download scope and media filters.")
-                            : (mainStartBtn.isLinksMode
-                                ? appWindow.tr("tip_extract_links", "Scan posts for external cloud links (Mega.nz, Drive, Dropbox, etc.) — no files downloaded")
-                                : appWindow.tr("tip_start_download", "Fetch posts from the URL and start downloading immediately"))
+                            : (mainStartBtn.isFavoritesMode
+                                ? appWindow.tr("tip_download_favorites", "Fetch and download all favorited posts from your connected account")
+                                : (mainStartBtn.isLinksMode
+                                    ? appWindow.tr("tip_extract_links", "Scan posts for external cloud links (Mega.nz, Drive, Dropbox, etc.) — no files downloaded")
+                                    : appWindow.tr("tip_start_download", "Fetch posts from the URL and start downloading immediately")))
                         onClicked: if (appBridge) appBridge.startDownload()
                     }
                 }
@@ -1248,11 +1267,11 @@ ApplicationWindow {
                         Text {
                             text: selectPostsBtn.isLoading
                                 ? appWindow.tr("action_fetching_posts", "Fetching…")
-                                : appWindow.tr("action_select_posts", "Select Posts…")
+                                : (mainStartBtn.isFavoritesMode ? appWindow.tr("action_browse_favorites", "Browse Favorites…") : appWindow.tr("action_select_posts", "Select Posts…"))
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
                             font.weight: 600
-                            color: selectPostsBtn.isLoading ? "#38BDF8" : "#E2E8F0"
+                            color: selectPostsBtn.isLoading ? "#38BDF8" : (mainStartBtn.isFavoritesMode ? "#FBBF24" : "#E2E8F0")
                             anchors.verticalCenter: parent.verticalCenter
                         }
                     }
@@ -2084,7 +2103,7 @@ ApplicationWindow {
                             Behavior on y { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
                             Behavior on scale { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
 
-                            SettingsView { objectName: "settingsViewTab"; anchors.fill: parent; bridge: appBridge }
+                            SettingsView { id: settingsViewTab; objectName: "settingsViewTab"; anchors.fill: parent; bridge: appBridge }
                         }
                     }
                 }
@@ -2354,11 +2373,22 @@ ApplicationWindow {
         function onSessionDiscardedWarning(oldDesc) {
             discardWarningToast.show(oldDesc)
         }
+        function onFavoriteAuthRequired(provName) {
+            appWindow.currentTab = 9
+            var cleanName = (provName || "").trim()
+            var msg = cleanName.length > 0
+                ? ("⭐ " + appWindow.tr("msg_fav_auth_required", "Favorite Mode requires account login for " + cleanName + ". Please connect below."))
+                : ("⭐ " + appWindow.tr("msg_fav_login_hint", "Favorite Mode requires a connected account. Please log in below."))
+            appWindow.showToast(msg)
+            if (typeof settingsViewTab !== "undefined" && settingsViewTab && typeof settingsViewTab.highlightProvider === "function") {
+                settingsViewTab.highlightProvider(cleanName)
+            }
+        }
     }
 
     // ── Global session-discard warning toast ──────────────────────────────────
     // Shown briefly (amber) when a new download URL auto-discards a leftover
-    // interrupted session, so the user knows it happened.
+    // interrupted session, or to notify about required authentication.
     Item {
         id: discardWarningToast
         anchors.bottom: parent.bottom
@@ -2370,10 +2400,20 @@ ApplicationWindow {
         visible: opacity > 0
         opacity: 0
 
+        property var actionCallback: null
+
         function show(oldArtist) {
+            actionCallback = null
             var msg = oldArtist && oldArtist !== "previous"
                 ? "⚠️  Previous session (" + oldArtist + ") discarded — starting fresh"
                 : "⚠️  Previous interrupted session discarded — starting fresh"
+            discardToastText.text = msg
+            opacity = 1.0
+            discardToastTimer.restart()
+        }
+
+        function showMessage(msg, callback) {
+            actionCallback = callback || null
             discardToastText.text = msg
             opacity = 1.0
             discardToastTimer.restart()
@@ -2393,6 +2433,19 @@ ApplicationWindow {
             color: "#2A1A00"
             border.color: "#F59E0B"
             border.width: 1.5
+
+            MouseArea {
+                anchors.fill: parent
+                cursorShape: discardWarningToast.actionCallback ? Qt.PointingHandCursor : Qt.ArrowCursor
+                onClicked: {
+                    if (discardWarningToast.actionCallback) {
+                        var cb = discardWarningToast.actionCallback
+                        discardWarningToast.actionCallback = null
+                        cb()
+                    }
+                    discardWarningToast.opacity = 0
+                }
+            }
 
             Text {
                 id: discardToastText

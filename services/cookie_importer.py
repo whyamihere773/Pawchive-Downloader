@@ -42,6 +42,8 @@ class BrowserCookieImporter:
         "kemono",
         "coomer",
         "pawchive",
+        "cum.st",
+        "cum",
         "patreon",
         "fanbox",
         "fantia"
@@ -49,6 +51,9 @@ class BrowserCookieImporter:
 
     TARGET_COOKIE_NAMES = [
         "session",
+        "better-auth.session_token",
+        "better-auth.session_data",
+        "session_token",
         "cf_clearance",
         "__cf_bm",
         "session_id",

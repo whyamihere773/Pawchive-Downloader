@@ -132,6 +132,61 @@ _TRAIL_JUNK = re.compile(
 )
 _LEAD_JUNK = re.compile(r"(?i)^(broken|updated?|fixed|new|old|the)\s+")
 
+# Generic tags to strip from segments
+_GENERIC_SEGMENT_TAGS: Set[str] = {
+    "nsfw", "sfw", "nsfw 🔞", "sfw pack", "nsfw pack", "pack", "pics", "4k", "8k", "hd",
+    "extras", "preview", "standar pack", "standard pack", "cosplay", "collab", "special",
+    "bunny special", "christmas special", "valentine special", "halloween special", "spooky special",
+    "summer special", "pussy spreading", "pussy", "nude", "lewd", "leaks", "raw"
+}
+
+# Single words that should never match as standalone character names
+_STOP_CHAR_WORDS: Set[str] = {
+    "change", "feedback", "poll", "survey", "sunday", "monday", "tuesday",
+    "wednesday", "thursday", "friday", "saturday", "post", "eden", "help",
+    "style", "waifu", "collab", "catalog", "winner", "reward", "request",
+    "announcement", "special", "preview", "extras", "sfw", "nsfw", "pack"
+}
+
+from core.franchise_resolver import FranchiseResolver
+
+
+
+_BLOCKED_FRANCHISES: Set[str] = {
+    "landscape", "scenery", "background", "wallpaper", "female", "male",
+    "solo", "pair", "group", "comic", "manga", "anime", "game", "random",
+    "art", "artwork", "render", "illustration", "photo", "cosplay", "leak",
+    "dl", "sample", "preview", "news", "poll", "general", "other", "unknown",
+    "untitled", "test", "wip", "pack", "set", "reward", "rewards", "bundle",
+    "complete", "video", "audio", "original", "3d", "2d", "cg", "r18", "nsfw",
+    "artist", "character", "style", "help!!!", "help", "cat", "seal", "slime",
+    "marshbreeze", "yuki anno", "yukinosora1126", "unkrk55", "morbidlycutecrunch",
+    "iskra", "wffl", "panalee", "sirbrownbear", "solopipb", "pcrx7327", "godbardtsubasa",
+    "roughplus", "remanedur", "innocentenough", "silveredge", "denyfake", "neoneet",
+    "snowweaver", "kayla-na", "khimera", "hnumkt", "hokawazu", "anzu15", "kame 3",
+    "fii-tan the figure", "green patio", "gym pals", "hardtones", "harukanaru 5",
+    "idolomantises", "legion beast", "pklucario", "puppy in space", "rikka331",
+    "woadedfox", "yatogami fuma", "zanamaoria"
+}
+
+def _is_invalid_franchise(f: str) -> bool:
+    if not f or len(f) < 2:
+        return True
+    fl = f.lower().strip()
+    if fl in _BLOCKED_FRANCHISES:
+        return True
+    if fl.isdigit():
+        return True
+    if any(fl.endswith(ext) for ext in ('.log', '.png', '.jpg', '.jpeg', '.txt', '.zip', '.rar', '.7z', '.psd', '.mp4')):
+        return True
+    if fl.startswith((')', ']', '}', '"', "'")) or fl.endswith(('(', '[', '{')):
+        return True
+    if fl.count('(') != fl.count(')'):
+        return True
+    if ')' in fl and '(' in fl and fl.find(')') < fl.find('('):
+        return True
+    return False
+
 # Regex: reject "Adjective + Generic Creature" patterns (e.g., "Corrupted Dryad", "Fallen Angel")
 _CREATURE_PATTERN = re.compile(
     r'^(?:corrupted|fallen|dark|light|shadow|blood|bone|fire|ice|frost|death|undead|ancient|elder|young)\s+(?:dryad|elf|demon|angel|spirit|dragon|beast|goddess|god|deity)$',
@@ -162,6 +217,9 @@ class KnownManager:
         self.master_franchises: List[str] = []
         self._master_char_map: Dict[Tuple[str, ...], Tuple[str, str]] = {}
         self._master_franchise_map: Dict[Tuple[str, ...], str] = {}
+
+        # Automated Franchise & Series Resolver (Seed Catalog, Local Cache, Fuzzy, AniList Auto-discovery)
+        self.franchise_resolver = FranchiseResolver()
 
         # Custom Known.txt fast lookup indexes
         self.franchise_aliases: Dict[str, List[str]] = {}
@@ -223,21 +281,22 @@ class KnownManager:
         master_path = os.path.join(base_dir, "data", "master_characters.json")
         bin_path = os.path.join(base_dir, "data", "master_characters.bin")
 
-        # 1. Fast binary load if cache is fresh
+        # 1. Fast binary load if cache is fresh and valid
         if os.path.exists(bin_path) and os.path.exists(master_path):
             if os.path.getmtime(bin_path) >= os.path.getmtime(master_path):
                 try:
                     with open(bin_path, "rb") as f:
                         cached_data = pickle.load(f)
-                        self.master_characters = cached_data["characters"]
-                        self.master_franchises = cached_data["franchises"]
-                        self._master_char_map = cached_data["char_map"]
-                        self._master_franchise_map = cached_data["franchise_map"]
-                    logger.info(
-                        f"Loaded Master Database (fast binary cache): {len(self.master_characters)} characters across {len(self.master_franchises)} franchises.",
-                        category="known"
-                    )
-                    return
+                        if cached_data.get("version") == 2:
+                            self.master_characters = cached_data["characters"]
+                            self.master_franchises = cached_data["franchises"]
+                            self._master_char_map = cached_data["char_map"]
+                            self._master_franchise_map = cached_data["franchise_map"]
+                            logger.info(
+                                f"Loaded Master Database (fast binary cache): {len(self.master_characters)} characters across {len(self.master_franchises)} franchises.",
+                                category="known"
+                            )
+                            return
                 except Exception as e:
                     logger.debug(f"Could not load master_characters.bin: {e}, falling back to json")
 
@@ -249,26 +308,25 @@ class KnownManager:
                     chars = data.get("characters", {})
                     raw_franchises = data.get("franchises", [])
                     
-                    blocked_f = {
-                        "landscape", "scenery", "background", "wallpaper", "female", "male",
-                        "solo", "pair", "group", "comic", "manga", "anime", "game", "random",
-                        "art", "artwork", "render", "illustration", "photo", "cosplay", "leak",
-                        "dl", "sample", "preview", "news", "poll", "general", "other", "unknown",
-                        "untitled", "test", "wip", "pack", "set", "reward", "rewards", "bundle",
-                        "complete", "video", "audio", "original", "3d", "2d", "cg", "r18", "nsfw"
-                    }
-                    self.master_characters = {k: v for k, v in chars.items() if k not in blocked_f}
-                    self.master_franchises = [f for f in raw_franchises if f.lower() not in blocked_f and len(f) >= 3]
+                    self.master_characters = {k: v for k, v in chars.items() if not _is_invalid_franchise(k)}
+                    self.master_franchises = [f for f in raw_franchises if not _is_invalid_franchise(f)]
 
                     self._master_char_map = {}
                     for k, info in self.master_characters.items():
                         c_name = info.get("name", k.strip())
                         fr = info.get("franchise", "General")
+                        if _is_invalid_franchise(fr):
+                            fr = "General"
                         toks = tuple(self._tokenize(k))
                         if toks:
+                            if len(toks) == 1 and toks[0] in _STOP_CHAR_WORDS:
+                                continue
                             if toks not in self._master_char_map or (self._master_char_map[toks][0] in ("General", "Other") and fr not in ("General", "Other")):
                                 self._master_char_map[toks] = (fr, c_name)
-
+                            if len(toks) == 2:
+                                rev_toks = (toks[1], toks[0])
+                                if rev_toks not in self._master_char_map:
+                                    self._master_char_map[rev_toks] = (fr, c_name)
 
                     self._master_franchise_map = {}
                     for f in self.master_franchises:
@@ -276,10 +334,11 @@ class KnownManager:
                         if f_toks:
                             self._master_franchise_map[f_toks] = f
 
-                # Write pre-compiled binary cache
+                # Write pre-compiled binary cache (version 2)
                 try:
                     with open(bin_path, "wb") as bf:
                         pickle.dump({
+                            "version": 2,
                             "characters": self.master_characters,
                             "franchises": self.master_franchises,
                             "char_map": self._master_char_map,
@@ -368,6 +427,7 @@ Katarin
                         for al in parts[1:]:
                             if al not in self.franchise_aliases[current_franchise]:
                                 self.franchise_aliases[current_franchise].append(al)
+                            self.franchise_resolver.register_alias(al, current_franchise, persist=False)
                         continue
 
                     if cleaned not in self.entries:
@@ -507,6 +567,13 @@ Katarin
                             t_toks = tuple(self._tokenize(trans))
                             if t_toks and t_toks not in self._custom_franchise_map:
                                 self._custom_franchise_map[t_toks] = fr
+
+                # 6. Automated Franchise Resolver Aliases (Seed catalog + persistent learned cache)
+                if hasattr(self, "franchise_resolver") and self.franchise_resolver:
+                    for r_al in self.franchise_resolver.get_aliases(fr):
+                        r_toks = tuple(self._tokenize(r_al))
+                        if r_toks and r_toks not in self._custom_franchise_map:
+                            self._custom_franchise_map[r_toks] = fr
 
             # Track CJK character names and franchise names for unspaced Asian title scanning
             self._custom_cjk_names.clear()
@@ -714,9 +781,14 @@ Katarin
     def _parse_tags(tags: Optional[Any]) -> List[str]:
         if not tags:
             return []
-        if isinstance(tags, str):
-            return [t.strip() for t in tags.split(",") if t.strip()]
-        return [str(t).strip() for t in tags if t]
+        try:
+            from core.filter_engine import FilterEngine
+            return FilterEngine.normalize_tags(tags)
+        except Exception:
+            if isinstance(tags, str):
+                return [t.strip().strip("{}'\"") for t in tags.split(",") if t.strip().strip("{}'\"")]
+            return [str(t).strip().strip("{}'\"") for t in tags if t]
+
 
     @staticmethod
     def _canonical_entry(entry: str) -> str:
@@ -976,6 +1048,254 @@ Katarin
 
         return None
 
+    def get_franchise_for_character(self, char_name: str) -> Optional[str]:
+        """Returns known franchise for character by inverting custom and master database mappings."""
+        if not char_name or len(char_name) < 2:
+            return None
+        c_low = char_name.strip().lower()
+
+        # 1. Custom Known.txt mapping
+        canon = self._canonical_entry(char_name).lower()
+        if canon in self.entry_franchise_map:
+            fr = self.entry_franchise_map[canon]
+            if not _is_invalid_franchise(fr):
+                return fr
+        if c_low in self.entry_franchise_map:
+            fr = self.entry_franchise_map[c_low]
+            if not _is_invalid_franchise(fr):
+                return fr
+
+        # 2. Master DB exact mapping
+        toks = tuple(self._tokenize(char_name))
+        if hasattr(self, "_master_char_map") and toks in self._master_char_map:
+            fr, _ = self._master_char_map[toks]
+            if not _is_invalid_franchise(fr):
+                return fr
+
+        # 3. Two-word reverse tokens (Western <-> Eastern order)
+        if len(toks) == 2:
+            rev_toks = (toks[1], toks[0])
+            if hasattr(self, "_master_char_map") and rev_toks in self._master_char_map:
+                fr, _ = self._master_char_map[rev_toks]
+                if not _is_invalid_franchise(fr):
+                    return fr
+
+        return None
+
+    def _resolve_franchise_text(self, text: str, allow_online: bool = False) -> Optional[str]:
+        if not text:
+            return None
+        cleaned = text.strip("【】[]() _|-").strip()
+        if not cleaned:
+            return None
+
+        # 1. Custom franchise map from Known.txt
+        toks = tuple(self._tokenize(cleaned))
+        if hasattr(self, "_custom_franchise_map") and toks in self._custom_franchise_map:
+            return self._custom_franchise_map[toks]
+
+        # 2. Automated FranchiseResolver (Seed catalog, Local cache, Substring, Fuzzy matching)
+        if hasattr(self, "franchise_resolver") and self.franchise_resolver:
+            resolved = self.franchise_resolver.resolve(cleaned, allow_online=allow_online)
+            if resolved:
+                return resolved
+
+        # 3. Master database franchise map
+        if hasattr(self, "_master_franchise_map") and toks in self._master_franchise_map:
+            if len(toks) == 1:
+                tok0 = toks[0]
+                if (tok0 in getattr(self, "_custom_words", set()) 
+                    or toks in getattr(self, "_custom_exact_map", {})
+                    or (hasattr(self, "_master_char_map") and toks in self._master_char_map)):
+                    return None
+            f = self._master_franchise_map[toks]
+            if not _is_invalid_franchise(f):
+                return f
+
+        return None
+
+    def _match_delimited_title(self, title: str) -> Optional[Tuple[str, str]]:
+        if not title:
+            return None
+
+        # Only process titles containing structural delimiters |, _ , or —
+        if not re.search(r'\s*[|]\s*|\s+_\s+|\s+[—–]\s+', title):
+            return None
+
+        clean_t = re.sub(r'^[【\[][^】\]]+[】\]]\s*:?\s*', '', title)
+        clean_t = re.sub(r'^(?:Request|Commission)\s*[-—:]\s*', '', clean_t, flags=re.I)
+
+        raw_segs = [s.strip() for s in re.split(r'\s*[|]\s*|\s+_\s+|\s+[—–]\s+', clean_t) if s.strip()]
+        if not raw_segs:
+            return None
+
+        segs = []
+        for s in raw_segs:
+            cs = re.sub(r'[\U00010000-\U0010ffff]', '', s)
+            cs = re.sub(r'^[\[(]?\d{4}[-/.]\d{2}[-/.]\d{2}[\])]?\s*', '', cs)
+            cs = cs.strip("【】[]() _|-+=~～?!¿¡\"\'`").strip()
+            cs = re.sub(r'^(?:Request|Commission|Preview|Extras|SFW|NSFW)\s*[-—:]\s*', '', cs, flags=re.I)
+            cs = cs.strip("【】[]() _|-+=~～?!¿¡\"\'`").strip()
+            if (cs and 
+                cs.lower() not in _GENERIC_SEGMENT_TAGS and 
+                not re.match(r'^(?:Request|Commission|Preview|Extras|SFW|NSFW|\d+\s*pics?|\d+k|standar|standard)$', cs, flags=re.I)):
+                segs.append(cs)
+
+        if not segs:
+            return None
+
+        def _canonicalize_char(fr: str, ch: str) -> str:
+            if not ch:
+                return ""
+            chars = self.franchise_sections.get(fr, [])
+            if chars:
+                toks = set(self._tokenize(ch))
+                for c in chars:
+                    canon = self._canonical_entry(c)
+                    for alias in self._entry_aliases(c):
+                        a_toks = set(self._tokenize(alias))
+                        if a_toks and (toks.issubset(a_toks) or a_toks.issubset(toks)):
+                            return canon
+            c_toks = tuple(self._tokenize(ch))
+            if hasattr(self, "_master_char_map") and c_toks in self._master_char_map:
+                m_fr, m_char = self._master_char_map[c_toks]
+                if m_fr.lower() == fr.lower() or m_fr in ("General", "Other"):
+                    return m_char
+            return ch
+
+        # If exactly 1 meaningful segment remains (e.g. "Classroom of the Elite _ NSFW" -> ["Classroom of the Elite"])
+        if len(segs) == 1:
+            matched_fr = self._resolve_franchise_text(segs[0])
+            if matched_fr:
+                return (matched_fr, "")
+            known_fr = self.get_franchise_for_character(segs[0])
+            if known_fr:
+                return (known_fr, _canonicalize_char(known_fr, segs[0]))
+            return None
+
+        # If 2 or more segments: evaluate every candidate pair (franchise, character)
+        candidates = []
+        for i in range(len(segs)):
+            fr_cand_raw = segs[i]
+            other_segs = [segs[j] for j in range(len(segs)) if j != i]
+            ch_cand_raw = other_segs[0] if len(other_segs) == 1 else " ".join(other_segs)
+            fr_is_right = (i == len(segs) - 1)
+
+            cand_fr_clean = fr_cand_raw.strip("【】[]() _|-+=~～?!¿¡\"\'`").strip()
+            fr_toks = tuple(self._tokenize(cand_fr_clean))
+            resolved_fr = None
+            fr_score = 0
+
+            # 1A. Custom franchise map from Known.txt section or alias
+            if hasattr(self, "_custom_franchise_map") and fr_toks in self._custom_franchise_map:
+                resolved_fr = self._custom_franchise_map[fr_toks]
+                fr_score = 10000
+            # 1B. Automated FranchiseResolver (Seed catalog + persistent cache + fuzzy typo healing)
+            elif hasattr(self, "franchise_resolver") and self.franchise_resolver:
+                res = self.franchise_resolver.resolve(cand_fr_clean, allow_online=False)
+                if res:
+                    c_norm = self.franchise_resolver._normalize(res)
+                    matched_custom_sec = None
+                    for sec in self.franchise_sections:
+                        if self.franchise_resolver._normalize(sec) == c_norm:
+                            matched_custom_sec = sec
+                            break
+                    resolved_fr = matched_custom_sec or res
+                    fr_score = 8000 if matched_custom_sec else 5000
+
+            # 1C. Master database franchise map
+            if not resolved_fr and hasattr(self, "_master_franchise_map") and fr_toks in self._master_franchise_map:
+                f = self._master_franchise_map[fr_toks]
+                if not _is_invalid_franchise(f):
+                    if len(fr_toks) >= 2:
+                        resolved_fr = f
+                        fr_score = 2000
+                    else:
+                        is_known_char = (
+                            cand_fr_clean.lower() in self.entry_franchise_map
+                            or fr_toks[0] in getattr(self, "_custom_words", set())
+                            or (hasattr(self, "_master_char_map") and fr_toks in self._master_char_map)
+                        )
+                        if not is_known_char:
+                            resolved_fr = f
+                            fr_score = 300
+
+            if not resolved_fr:
+                inverted_fr = self.get_franchise_for_character(cand_fr_clean)
+                if inverted_fr:
+                    candidates.append((-10000, None, ""))
+                    continue
+                candidates.append((-1000, None, ""))
+                continue
+
+            # 2. Score candidate character
+            ch_score = 0
+            clean_ch = re.sub(r'\s*\([^)]*\)|\s*\[[^\]]*\]', '', ch_cand_raw).strip()
+            clean_ch = re.sub(r'(?i)\b(nsfw|sfw|pack|pics|standar|standard|extra|preview|request|commission)\b', '', clean_ch).strip(" |_-")
+            ch_toks = tuple(self._tokenize(clean_ch))
+
+            if hasattr(self, "_custom_franchise_map") and ch_toks in self._custom_franchise_map:
+                ch_score -= 5000
+
+            chars_in_sec = self.franchise_sections.get(resolved_fr, [])
+            if chars_in_sec and ch_toks:
+                for c in chars_in_sec:
+                    c_entry_toks = set(self._tokenize(c))
+                    cand_tok_set = set(ch_toks)
+                    if cand_tok_set.issubset(c_entry_toks) or c_entry_toks.issubset(cand_tok_set):
+                        ch_score += 20000
+                        break
+
+            if hasattr(self, "_master_char_map") and ch_toks in self._master_char_map:
+                m_fr, m_char = self._master_char_map[ch_toks]
+                if m_fr.lower() == resolved_fr.lower():
+                    ch_score += 15000
+                else:
+                    ch_score += 1000
+            elif clean_ch.lower() in self.entry_franchise_map:
+                ch_score += 2000
+
+            if len(ch_toks) >= 2:
+                ch_score += 500
+            elif len(clean_ch) >= 3:
+                ch_score += 100
+
+            pos_bonus = 50 if fr_is_right else 0
+            total_score = fr_score + ch_score + pos_bonus
+            canon_ch = _canonicalize_char(resolved_fr, clean_ch)
+            candidates.append((total_score, resolved_fr, canon_ch))
+
+        if candidates:
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            best_candidate = candidates[0]
+            if best_candidate[0] > 0 and best_candidate[1]:
+                return (best_candidate[1], best_candidate[2])
+
+        # Inversion: check if any segment is a known character whose franchise can be inverted
+        for s in segs:
+            cs = re.sub(r'^[【\[][^】\]]+[】\]]\s*:?\s*', '', s)
+            cs = re.sub(r'^(?:Request|Commission|Preview|Extras|SFW|NSFW)\s*[-—:]\s*', '', cs, flags=re.I).strip("【】[]() _|-")
+            cs = re.sub(r'(?i)\b(nsfw|sfw|pack|pics|standar|standard|extra|preview|request|commission)\b', '', cs).strip(" |_-")
+            clean_cand = re.sub(r'\s*\([^)]*\)|\s*\[[^\]]*\]', '', cs).strip()
+            if clean_cand and len(clean_cand) >= 3 and clean_cand.lower() not in _GENERIC_SEGMENT_TAGS:
+                known_fr = self.get_franchise_for_character(clean_cand)
+                if known_fr:
+                    return (known_fr, _canonicalize_char(known_fr, clean_cand))
+
+        # Fallback for 2 segments where right segment looks like a franchise
+        right_seg = segs[-1]
+        left_seg = segs[0]
+        if (len(right_seg) >= 3 and 
+            not _is_invalid_franchise(right_seg) and 
+            right_seg.lower() not in _GENERIC_SEGMENT_TAGS):
+            
+            clean_char = re.sub(r'\s*\([^)]*\)|\s*\[[^\]]*\]', '', left_seg).strip()
+            clean_char = re.sub(r'(?i)\b(nsfw|sfw|pack|pics|standar|standard|extra|preview)\b', '', clean_char).strip(" |_-")
+            if clean_char:
+                return (right_seg, clean_char)
+
+        return None
+
     def find_matching_hierarchy(
         self,
         title: str,
@@ -1012,7 +1332,19 @@ Katarin
         if cache_key in self._lru_cache:
             return self._lru_cache[cache_key]
 
-        res = self._find_matching_hierarchy_fast(title, tag_list, file_list, content)
+        # Ignore polls / announcement posts so they never match as anime characters
+        if title:
+            t_lower = title.lower()
+            if any(w in t_lower for w in ("survey", "waifu poll", "feedback", "which waifu", "what character would you like", "next big collab", "character catalog", "what's coming next", "new generation style", "image style", "winner of the latest post")):
+                self._lru_cache[cache_key] = None
+                return None
+
+        # Structural delimited title parsing ("Character | Series" or "[Extras] | Character | Series")
+        delim_res = self._match_delimited_title(title) if title else None
+        if delim_res:
+            res = delim_res
+        else:
+            res = self._find_matching_hierarchy_fast(title, tag_list, file_list, content)
 
         # Tier 1 & Tier 2 AI-assisted fallback when fast heuristics return None or missing character
         if self._ai_enabled and (not res or not res[1]):
@@ -1443,9 +1775,14 @@ Katarin
         candidates: List[str] = []
 
         # ── 1. Tags (high-confidence source) ─────────────────────────────────
-        tags = post.get("tags") or []
-        if isinstance(tags, str):
-            tags = [t.strip() for t in tags.split(",") if t.strip()]
+        try:
+            from core.filter_engine import FilterEngine
+            tags = FilterEngine.normalize_tags(post.get("tags"))
+        except Exception:
+            tags = post.get("tags") or []
+            if isinstance(tags, str):
+                tags = [t.strip().strip("{}'\"") for t in tags.split(",") if t.strip().strip("{}'\"")]
+
 
         for tag in tags:
             if not isinstance(tag, str):

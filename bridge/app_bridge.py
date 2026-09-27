@@ -74,8 +74,12 @@ class AppBridge(QObject):
     currentFpsChanged = Signal()
     screenHzChanged = Signal()
     filterTypeChanged = Signal()
+    exactExtensionsChanged = Signal()
+    savedCustomExtensionsChanged = Signal()
     skipArchivesChanged = Signal()
     downloadThumbnailsOnlyChanged = Signal()
+    fallbackToThumbnailsChanged = Signal()
+    redownloadSmallFilesChanged = Signal()
     skipPostCoversChanged = Signal()
     scanContentImagesChanged = Signal()
     downloadPawchiveTemporaryFilesChanged = Signal()
@@ -179,6 +183,12 @@ class AppBridge(QObject):
     cookieWatchdogChanged     = Signal()
     cookieImportCompleted     = Signal(bool, str)
 
+    # Provider & Credential Vault signals
+    providersChanged          = Signal()
+    providerValidationFinished = Signal(str, bool, str)
+    providerLoginFinished     = Signal(str, bool, str)
+    favoriteAuthRequired      = Signal(str)
+
     # Task Scheduler signals
     schedulerChanged          = Signal()
 
@@ -223,8 +233,8 @@ class AppBridge(QObject):
 
         # Settings defaults
         self._current_url = ""
-        self._page_start = int(saved_settings.get("page_start", 1))
-        self._page_end = int(saved_settings.get("page_end", 999))
+        self._page_start = 1
+        self._page_end = 999999
         self._download_dir = saved_settings.get("download_dir", os.path.join(os.path.expanduser("~"), "Downloads", "KemonoDownloads"))
         self._filter_characters = ""
         self._character_scope = saved_settings.get("character_scope", "title")
@@ -237,8 +247,15 @@ class AppBridge(QObject):
         self._min_file_size = str(saved_settings.get("min_file_size", ""))
         self._max_file_size = str(saved_settings.get("max_file_size", ""))
         self._filter_type = "all"
+        self._exact_extensions = str(saved_settings.get("exact_extensions", "")).strip()
+        self._saved_custom_extensions = [
+            ext.strip().lower() for ext in saved_settings.get("saved_custom_extensions", [])
+            if isinstance(ext, str) and ext.strip()
+        ]
         self._skip_archives = False
         self._download_thumbnails_only = bool(saved_settings.get("download_thumbnails_only", False))
+        self._fallback_to_thumbnails = bool(saved_settings.get("fallback_to_thumbnails", True))
+        self._redownload_small_files = bool(saved_settings.get("redownload_small_files", False))
         self._skip_post_covers = bool(saved_settings.get("skip_post_covers", False))
         self._scan_content_images = saved_settings.get("scan_content_images", True)
         self._download_pawchive_temporary_files = saved_settings.get("download_pawchive_temporary_files", True)
@@ -268,7 +285,12 @@ class AppBridge(QObject):
         self._max_cpu_threads = max(4, os.cpu_count() or 16)
         self._threads_count = int(saved_settings.get("threads", min(8, self._max_cpu_threads)))
         self.downloader.max_workers = self._threads_count
-        self._cookie_string = saved_settings.get("cookie", "")
+        try:
+            from core.auth_manager import auth_manager
+            vault_cookie = auth_manager.get_credential("kemono", "cookie")
+        except Exception:
+            vault_cookie = ""
+        self._cookie_string = vault_cookie or saved_settings.get("cookie", "")
         self._user_agent = saved_settings.get("user_agent", "")
         self._download_delay = float(saved_settings.get("download_delay", 2.0))
         self._save_post_metadata = bool(saved_settings.get("save_post_metadata", True))
@@ -455,6 +477,8 @@ class AppBridge(QObject):
                         args=(parsed,),
                         daemon=True
                     ).start()
+                    if self._favorite_mode:
+                        self.checkFavoriteModeAuth()
                 else:
                     self._creator_name = ""
                     self.creatorNameChanged.emit()
@@ -648,6 +672,99 @@ class AppBridge(QObject):
             self._filter_type = val
             self.filterTypeChanged.emit()
 
+    @Property(str, notify=exactExtensionsChanged)
+    def exactExtensions(self) -> str:
+        return self._exact_extensions
+
+    @exactExtensions.setter
+    def exactExtensions(self, val: str):
+        val_clean = str(val or "").strip()
+        if self._exact_extensions != val_clean:
+            self._exact_extensions = val_clean
+            self.exactExtensionsChanged.emit()
+            self.saveSettings()
+
+    @Slot(str)
+    def toggleExactExtension(self, ext: str):
+        """Toggles an extension (e.g. '.zip' or 'zip' or '*.zip') in the active comma-separated list."""
+        ext = ext.strip().lower().lstrip("*")
+        if not ext.startswith("."):
+            ext = "." + ext
+        tokens = [t.strip().lower().lstrip("*") for t in re.split(r'[,;\s]+', self._exact_extensions) if t.strip()]
+        norm_tokens = [(t if t.startswith(".") else "." + t) for t in tokens if t]
+        unique_tokens = []
+        for t in norm_tokens:
+            if t not in unique_tokens:
+                unique_tokens.append(t)
+        if ext in unique_tokens:
+            unique_tokens = [t for t in unique_tokens if t != ext]
+        else:
+            unique_tokens.append(ext)
+        self.exactExtensions = ", ".join(unique_tokens)
+
+    @Slot(str, result=bool)
+    def isExactExtensionActive(self, ext: str) -> bool:
+        """Returns True if the specified extension is in the current exact extensions list."""
+        if not self._exact_extensions:
+            return False
+        ext = ext.strip().lower()
+        if not ext.startswith("."):
+            ext = "." + ext
+        allowed = FilterEngine.parse_extensions_list(self._exact_extensions)
+        return ext in allowed
+
+    @Slot()
+    def clearExactExtensions(self):
+        """Clears all exact extension filters."""
+        self.exactExtensions = ""
+
+    @Property('QVariantList', notify=exactExtensionsChanged)
+    def activeExtensionsList(self) -> list:
+        """Returns the list of currently active extensions in sorted order."""
+        if not self._exact_extensions:
+            return []
+        parsed = FilterEngine.parse_extensions_list(self._exact_extensions)
+        return sorted(list(parsed))
+
+    @Property('QVariantList', notify=savedCustomExtensionsChanged)
+    def savedCustomExtensions(self) -> list:
+        """Returns the list of saved custom extensions."""
+        return self._saved_custom_extensions
+
+    @Slot(str)
+    def addSavedCustomExtension(self, ext: str):
+        """Adds one or more custom extensions (comma/space separated) to the permanent saved list and activates them."""
+        if not ext:
+            return
+        tokens = FilterEngine.parse_extensions_list(ext)
+        if not tokens:
+            return
+        changed = False
+        for t in sorted(tokens):
+            if t not in self._saved_custom_extensions:
+                self._saved_custom_extensions.append(t)
+                changed = True
+            if not self.isExactExtensionActive(t):
+                self.toggleExactExtension(t)
+        if changed:
+            self.savedCustomExtensionsChanged.emit()
+            self.saveSettings()
+
+    @Slot(str)
+    def removeSavedCustomExtension(self, ext: str):
+        """Removes a custom extension from the permanent saved list."""
+        if not ext:
+            return
+        ext = ext.strip().lower().lstrip("*")
+        if not ext.startswith("."):
+            ext = "." + ext
+        if ext in self._saved_custom_extensions:
+            self._saved_custom_extensions.remove(ext)
+            self.savedCustomExtensionsChanged.emit()
+            self.saveSettings()
+        if self.isExactExtensionActive(ext):
+            self.toggleExactExtension(ext)
+
     @Property(bool, notify=skipArchivesChanged)
     def skipArchives(self) -> bool:
         return self._skip_archives
@@ -667,6 +784,28 @@ class AppBridge(QObject):
         if self._download_thumbnails_only != val:
             self._download_thumbnails_only = val
             self.downloadThumbnailsOnlyChanged.emit()
+            self.saveSettings()
+
+    @Property(bool, notify=fallbackToThumbnailsChanged)
+    def fallbackToThumbnails(self) -> bool:
+        return self._fallback_to_thumbnails
+
+    @fallbackToThumbnails.setter
+    def fallbackToThumbnails(self, val: bool):
+        if self._fallback_to_thumbnails != val:
+            self._fallback_to_thumbnails = val
+            self.fallbackToThumbnailsChanged.emit()
+            self.saveSettings()
+
+    @Property(bool, notify=redownloadSmallFilesChanged)
+    def redownloadSmallFiles(self) -> bool:
+        return self._redownload_small_files
+
+    @redownloadSmallFiles.setter
+    def redownloadSmallFiles(self, val: bool):
+        if self._redownload_small_files != val:
+            self._redownload_small_files = val
+            self.redownloadSmallFilesChanged.emit()
             self.saveSettings()
 
     @Property(bool, notify=skipPostCoversChanged)
@@ -741,6 +880,52 @@ class AppBridge(QObject):
         if self._favorite_mode != val:
             self._favorite_mode = val
             self.favoriteModeChanged.emit()
+            if self._favorite_mode:
+                self.checkFavoriteModeAuth()
+
+    def get_provider_for_domain(self, domain_or_url: str) -> str:
+        d = (domain_or_url or "").lower()
+        if "coomer" in d:
+            return "coomer"
+        if "pawchive" in d:
+            return "pawchive"
+        if "cum.st" in d or "cumst" in d:
+            return "cumst"
+        return "kemono"
+
+    @Slot(result=bool)
+    def checkFavoriteModeAuth(self) -> bool:
+        """
+        Validates whether the user has a valid account connected for the current URL
+        (or at least one account connected if no URL is entered) when Favorite Mode is active.
+        If not authenticated, emits favoriteAuthRequired with the provider name.
+        Returns True if authenticated, False if auth is required.
+        """
+        if not self._favorite_mode:
+            return True
+
+        from core.auth_manager import auth_manager
+        url_input = (self._current_url or "").strip()
+        if url_input:
+            from core.parser import KemonoURLParser
+            parsed = KemonoURLParser.parse(url_input)
+            if parsed.is_valid:
+                prov_id = self.get_provider_for_domain(parsed.domain)
+                if not auth_manager.is_logged_in(prov_id):
+                    meta = auth_manager.get_provider_summary(prov_id)
+                    pname = meta.get("name", prov_id.capitalize())
+                    logger.warning(f"⭐ Favorite Mode active but no account connected for {pname}.", category="auth")
+                    self.favoriteAuthRequired.emit(pname)
+                    return False
+                return True
+
+        # No URL or invalid URL: check if ANY provider is logged in
+        if not any(auth_manager.is_logged_in(p) for p in ("kemono", "coomer", "pawchive", "cumst")):
+            logger.warning("⭐ Favorite Mode requires a connected account.", category="auth")
+            self.favoriteAuthRequired.emit("Kemono")
+            return False
+
+        return True
 
     @Property(bool, notify=subfolderPerPostChanged)
     def subfolderPerPost(self) -> bool:
@@ -964,6 +1149,12 @@ class AppBridge(QObject):
         if self._cookie_string != val:
             self._cookie_string = val
             self.api_client.set_cookie(val)
+            try:
+                from core.auth_manager import auth_manager
+                auth_manager.set_credential("kemono", {"cookie": val})
+                self.providersChanged.emit()
+            except Exception:
+                pass
             self.cookieStringChanged.emit()
 
     @Property(str, notify=userAgentChanged)
@@ -1359,6 +1550,9 @@ class AppBridge(QObject):
 
     @Property(bool, notify=aiRecognitionEnabledChanged)
     def aiDeepReasonerReady(self) -> bool:
+        from core.ai_reasoner import has_llama_cpp
+        if not has_llama_cpp():
+            return False
         return (
             self.model_manager.is_model_ready("deep_reasoner_heavy")
             or self.model_manager.is_model_ready("deep_reasoner_light")
@@ -1662,8 +1856,11 @@ class AppBridge(QObject):
             skip_scope=self._skip_scope,
             remove_words=self._remove_words,
             file_type=self._filter_type,
+            exact_extensions=self._exact_extensions,
             skip_archives=self._skip_archives,
             download_thumbnails_only=self._download_thumbnails_only,
+            fallback_to_thumbnails=self._fallback_to_thumbnails,
+            redownload_small_files=self._redownload_small_files,
             scan_content_images=self._scan_content_images,
             compress_to_webp=self._compress_webp,
             keep_duplicates=self._keep_duplicates,
@@ -1804,6 +2001,14 @@ class AppBridge(QObject):
 
         # Case 2: No pending tasks and no URL provided
         if not url_input:
+            if self._favorite_mode:
+                if not self.checkFavoriteModeAuth():
+                    self._status_text = "Favorite Mode: Please connect account in Settings → Accounts"
+                    self.statusTextChanged.emit()
+                    return
+                self._start_favorites_download_worker()
+                return
+
             if self._queue_model.rowCount() > 0:
                 logger.info("All tasks in queue are already completed. Use 'Retry Failed' to re-download failed items.", category="downloader")
             else:
@@ -1838,6 +2043,10 @@ class AppBridge(QObject):
                 return
 
         # Case 4: Valid new URL -> mark queued, fetch and start
+        if self._favorite_mode:
+            if not self.checkFavoriteModeAuth():
+                return
+
         has_leftover = (len(self.downloader.tasks) > 0) or (self._queue_model.rowCount() > 0) or self._has_recovery_session
         if has_leftover:
             old_creators = set()
@@ -1957,6 +2166,12 @@ class AppBridge(QObject):
 
         url_input = (self._current_url or "").strip()
         if not url_input:
+            if self._favorite_mode:
+                if not self.checkFavoriteModeAuth():
+                    self.postSelectionError.emit("Favorite Mode requires an account login in Settings → Accounts.")
+                    return
+                self._start_favorites_post_selection_worker()
+                return
             self.postSelectionError.emit("Please enter a creator or post URL first.")
             return
 
@@ -1964,6 +2179,12 @@ class AppBridge(QObject):
         if not parsed.is_valid:
             self.postSelectionError.emit(parsed.error_msg or "Invalid URL")
             return
+
+        if self._favorite_mode:
+            if not self.checkFavoriteModeAuth():
+                prov_id = self.get_provider_for_domain(parsed.domain)
+                self.postSelectionError.emit(f"Favorite Mode requires an account login for {prov_id.capitalize()} in Settings → Accounts.")
+                return
 
         self._is_post_selection_loading = True
         self.postSelectionLoadingChanged.emit()
@@ -2158,6 +2379,101 @@ class AppBridge(QObject):
                 self.postSelectionError.emit(str(ex))
 
         threading.Thread(target=_worker, daemon=True).start()
+
+    def _start_favorites_post_selection_worker(self):
+        """Fetches account favorites for display in the interactive post selector modal."""
+        self._is_post_selection_loading = True
+        self.postSelectionLoadingChanged.emit()
+
+        def _worker():
+            try:
+                from core.auth_manager import auth_manager
+                domain = "kemono.su"
+                prov_id = "kemono"
+                if not auth_manager.is_logged_in("kemono"):
+                    if auth_manager.is_logged_in("coomer"):
+                        domain = "coomer.su"
+                        prov_id = "coomer"
+                    elif auth_manager.is_logged_in("pawchive"):
+                        domain = "pawchive.pw"
+                        prov_id = "pawchive"
+                    elif auth_manager.is_logged_in("cumst"):
+                        domain = "cum.st"
+                        prov_id = "cumst"
+
+                saved_cookie = auth_manager.get_credential(prov_id, "cookie")
+                if saved_cookie:
+                    self._cookie_string = saved_cookie
+                    self.api_client.set_cookie(saved_cookie)
+
+                creator_name = "Account Favorites"
+                posts = self.api_client.fetch_user_favorites(
+                    domain=domain,
+                    fav_type="post",
+                    cancel_event=self._scan_cancel_event
+                )
+
+                if not posts:
+                    self._is_post_selection_loading = False
+                    self.postSelectionLoadingChanged.emit()
+                    self.postSelectionError.emit("No favorited posts found on your account.")
+                    return
+
+                self._selection_cached_posts = list(posts)
+                self._selection_parsed = KemonoURLParser.parse(f"https://{domain}/favorites")
+                self._selection_creator_name = creator_name
+
+                # Build cards list for UI
+                cards = []
+                image_exts = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".avif")
+                for p in posts:
+                    pid = str(p.get("id", ""))
+                    raw_title = p.get("title") or p.get("caption") or "Untitled Post"
+                    title = re.sub(r'<[^>]+>', '', str(raw_title)).strip() or "Untitled Post"
+                    published = str(p.get("published") or "")[:10]
+
+                    thumb_url = ""
+                    f = p.get("file")
+                    if f and isinstance(f, dict):
+                        fpath = f.get("path") or ""
+                        fname = f.get("name") or ""
+                        if any((fpath or fname).lower().split("?")[0].endswith(ext) for ext in image_exts):
+                            thumb_url = fpath if fpath.startswith("http") else f"https://{domain}/data{fpath}"
+
+                    if not thumb_url:
+                        for att in (p.get("attachments") or []):
+                            if isinstance(att, dict):
+                                apath = att.get("path") or ""
+                                aname = att.get("name") or ""
+                                if any((apath or aname).lower().split("?")[0].endswith(ext) for ext in image_exts):
+                                    thumb_url = apath if apath.startswith("http") else f"https://{domain}/data{apath}"
+                                    break
+
+                    p_service = p.get("service") or "post"
+                    p_user = p.get("username") or p.get("user") or ""
+                    post_files_count = (1 if p.get("file") else 0) + len(p.get("attachments") or [])
+                    cards.append({
+                        "id": pid,
+                        "title": f"[{p_user}] {title}" if p_user else title,
+                        "published": published,
+                        "service": p_service,
+                        "userId": p_user,
+                        "thumbnailUrl": thumb_url,
+                        "filesCount": post_files_count,
+                        "selected": True,
+                        "files": []
+                    })
+
+                self._is_post_selection_loading = False
+                self.postSelectionLoadingChanged.emit()
+                self.postSelectionReady.emit(cards, creator_name, len(cards))
+            except Exception as ex:
+                logger.error(f"Error fetching favorites for selection: {ex}", category="api")
+                self._is_post_selection_loading = False
+                self.postSelectionLoadingChanged.emit()
+                self.postSelectionError.emit(str(ex))
+
+        threading.Thread(target=_worker, daemon=True, name="FavSelectionWorker").start()
 
     @Slot()
     def resumeTelegramAction(self):
@@ -2638,6 +2954,22 @@ class AppBridge(QObject):
                         cancel_event=self._scan_cancel_event
                     )
 
+                    if options.favorite_mode and posts:
+                        from core.auth_manager import auth_manager
+                        prov_id = self.get_provider_for_domain(parsed.domain)
+                        if not auth_manager.is_logged_in(prov_id):
+                            meta = auth_manager.get_provider_summary(prov_id)
+                            pname = meta.get("name", prov_id.capitalize())
+                            logger.warning(f"⭐ Favorite Mode active but not logged into {pname}. Showing auth prompt.", category="auth")
+                            self.favoriteAuthRequired.emit(pname)
+                        else:
+                            logger.info(f"⭐ Favorite Mode active: Filtering {len(posts)} post(s) against account favorites...", category="downloader")
+                            fav_posts = self.api_client.fetch_user_favorites(domain=parsed.domain, fav_type="post", cancel_event=self._scan_cancel_event)
+                            fav_ids = {str(f.get("id")) for f in fav_posts if f.get("id")}
+                            before_cnt = len(posts)
+                            posts = [p for p in posts if str(p.get("id")) in fav_ids]
+                            logger.info(f"⭐ Favorite Mode filter: {len(posts)} of {before_cnt} post(s) matched user favorites.", category="downloader")
+
                 if self._scan_cancel_event.is_set():
                     self._is_downloading = False
                     self._status_text = "Progress: Cancelled"
@@ -2774,7 +3106,7 @@ class AppBridge(QObject):
                     target_download_dir = ""
                     if artist_dir:
                         target_download_dir = artist_dir
-                    elif tasks:
+                    elif tasks and not self._separate_folders_by_known:
                         target_download_dir = self.extract_artist_folder_from_path(
                             tasks[0].target_path,
                             creator_name or parsed.user_id,
@@ -2784,8 +3116,7 @@ class AppBridge(QObject):
                     else:
                         from core.filter_engine import FilterEngine
                         clean_c = FilterEngine.clean_filesystem_text(creator_name or parsed.user_id, max_len=80, fallback="creator")
-                        cand = os.path.join(self._download_dir, f"{clean_c} [{parsed.service}]")
-                        target_download_dir = cand if os.path.exists(cand) else self._download_dir
+                        target_download_dir = os.path.join(self._download_dir, f"{clean_c} [{parsed.service}]")
 
                     self._watchlist_manager.add_entry(
                         url=canonical_url,
@@ -2815,6 +3146,9 @@ class AppBridge(QObject):
                         options=options,
                         cookie_str=self._cookie_string
                     )
+                    if not self._is_downloading:
+                        self._is_downloading = True
+                        self.isDownloadingChanged.emit()
             else:
                 self._appendTasksSignal.emit(tasks)
                 self.downloader.append_tasks(tasks)
@@ -2829,6 +3163,106 @@ class AppBridge(QObject):
             self.isDownloadingChanged.emit()
             self.hasErrorChanged.emit()
             self.lastErrorMessageChanged.emit()
+
+    def _on_scan_progress(self, page: int, count: int):
+        """Callback from api_client during favorites scanning."""
+        self._status_text = f"Fetching favorites: Page {page} ({count} posts)..."
+        self.statusTextChanged.emit()
+
+    def _start_favorites_download_worker(self):
+        """Worker thread to fetch all user favorites from Kemono/Coomer/Pawchive and build tasks."""
+        self._scan_cancel_event.clear()
+        self._has_error = False
+        self.hasErrorChanged.emit()
+        self._is_downloading = True
+        self.isDownloadingChanged.emit()
+        self.isPausedChanged.emit()
+        self._status_text = "Fetching account favorites..."
+        self.statusTextChanged.emit()
+
+        def _worker():
+            try:
+                from core.auth_manager import auth_manager
+                domain = "kemono.su"
+                prov_id = "kemono"
+                if not auth_manager.is_logged_in("kemono"):
+                    if auth_manager.is_logged_in("coomer"):
+                        domain = "coomer.su"
+                        prov_id = "coomer"
+                    elif auth_manager.is_logged_in("pawchive"):
+                        domain = "pawchive.pw"
+                        prov_id = "pawchive"
+                    elif auth_manager.is_logged_in("cumst"):
+                        domain = "cum.st"
+                        prov_id = "cumst"
+
+                saved_cookie = auth_manager.get_credential(prov_id, "cookie")
+                if saved_cookie:
+                    self._cookie_string = saved_cookie
+                    self.api_client.set_cookie(saved_cookie)
+
+                self._creator_name = "Account Favorites"
+                self.creatorNameChanged.emit()
+
+                fav_posts = self.api_client.fetch_user_favorites(
+                    domain=domain,
+                    fav_type="post",
+                    cancel_event=self._scan_cancel_event,
+                    progress_callback=self._on_scan_progress
+                )
+
+                if self._scan_cancel_event.is_set():
+                    self._is_downloading = False
+                    self._status_text = "Progress: Cancelled"
+                    self.isDownloadingChanged.emit()
+                    self.statusTextChanged.emit()
+                    return
+
+                if not fav_posts:
+                    self._is_downloading = False
+                    self._status_text = "Progress: Idle (0 favorites found)"
+                    self.isDownloadingChanged.emit()
+                    self.statusTextChanged.emit()
+                    logger.warning("No favorited posts found on your account.", category="api")
+                    return
+
+                options = self._get_filter_options()
+                batch_id = "favorites_sync"
+                tasks = self.downloader.build_tasks_from_posts(
+                    posts=fav_posts,
+                    creator_name="Favorites",
+                    service="favorites",
+                    domain=domain,
+                    base_dir=self._download_dir,
+                    options=options,
+                    batch_id=batch_id
+                )
+
+                if not tasks:
+                    self._is_downloading = False
+                    self._status_text = "Progress: Idle (All favorites filtered out)"
+                    self.isDownloadingChanged.emit()
+                    self.statusTextChanged.emit()
+                    return
+
+                self._queue_model.clear()
+                self._queue_model.setTasks(tasks)
+                if hasattr(self, "_active_queue_model") and self._active_queue_model:
+                    self._active_queue_model.setTasks(tasks)
+                self.downloader.tasks = list(tasks)
+                self.downloader.start_download_queue(
+                    tasks=self.downloader.tasks,
+                    options=options,
+                    cookie_str=self._cookie_string
+                )
+            except Exception as e:
+                logger.error(f"Favorites download failed: {e}", category="downloader")
+                self._is_downloading = False
+                self._status_text = f"Error: {e}"
+                self.isDownloadingChanged.emit()
+                self.statusTextChanged.emit()
+
+        threading.Thread(target=_worker, daemon=True, name="FavoritesDownloadWorker").start()
 
     @Slot()
     def checkRecoverySession(self):
@@ -2959,7 +3393,10 @@ class AppBridge(QObject):
                 )
             self.downloader.cancel()
         if self.recovery_manager:
-            self.recovery_manager.clear_retries()
+            tasks = self._queue_model.getTasks() if self._queue_model else (self.downloader.tasks if self.downloader else [])
+            failed_or_cancelled = [t for t in tasks if t.status in ("failed", "cancelled")]
+            if failed_or_cancelled:
+                self.recovery_manager.dump_retries(failed_or_cancelled, async_write=False)
 
     @Slot()
     def retryFailed(self):
@@ -2972,7 +3409,7 @@ class AppBridge(QObject):
             self.downloader.tasks = self._queue_model.getTasks()
 
         # If no failed tasks are in memory, check if they were spilled to disk
-        if not any(t.status == "failed" for t in self.downloader.tasks):
+        if not any(t.status in ("failed", "cancelled") for t in self.downloader.tasks):
             spilled = self.recovery_manager.load_retries()
             if spilled:
                 from core.downloader import DownloadTask
@@ -3000,6 +3437,18 @@ class AppBridge(QObject):
         if not self.downloader.tasks and self._queue_model.tasks:
             self.downloader.tasks = self._queue_model.getTasks()
 
+        existing_ids = {t.file_id for t in self.downloader.tasks} | {t.url for t in self.downloader.tasks} | {t.filename for t in self.downloader.tasks}
+        if any(sid not in existing_ids for sid in selected_ids):
+            spilled = self.recovery_manager.load_retries()
+            if spilled:
+                from core.downloader import DownloadTask
+                restored = [DownloadTask.from_dict(d) if isinstance(d, dict) else d for d in spilled]
+                new_tasks = [t for t in restored if (t.file_id not in existing_ids and t.url not in existing_ids and t.filename not in existing_ids)]
+                if new_tasks:
+                    self.downloader.tasks.extend(new_tasks)
+                    if self._queue_model:
+                        self._queue_model.addTasks(new_tasks)
+
         count = self.downloader.retry_selected_tasks(selected_ids, options, self._cookie_string)
         if count == 0 and not self.downloader.is_running:
             self._is_downloading = False
@@ -3021,6 +3470,18 @@ class AppBridge(QObject):
         if not self.downloader.tasks and self._queue_model.tasks:
             self.downloader.tasks = self._queue_model.getTasks()
 
+        existing_ids = {t.file_id for t in self.downloader.tasks} | {t.url for t in self.downloader.tasks} | {t.filename for t in self.downloader.tasks}
+        if file_id not in existing_ids:
+            spilled = self.recovery_manager.load_retries()
+            if spilled:
+                from core.downloader import DownloadTask
+                restored = [DownloadTask.from_dict(d) if isinstance(d, dict) else d for d in spilled]
+                matching = [t for t in restored if (t.file_id == file_id or t.url == file_id or t.filename == file_id)]
+                if matching:
+                    self.downloader.tasks.extend(matching)
+                    if self._queue_model:
+                        self._queue_model.addTasks(matching)
+
         count = self.downloader.retry_selected_tasks([file_id], options, self._cookie_string)
         if count == 0 and not self.downloader.is_running:
             self._is_downloading = False
@@ -3033,7 +3494,7 @@ class AppBridge(QObject):
     @Slot()
     @Slot("QVariantList")
     def clearFailedTasks(self, selected_ids: Optional[list] = None):
-        """Removes failed tasks from both queue models and downloader."""
+        """Removes failed and cancelled tasks from both queue models, downloader, and disk."""
         if self._queue_model:
             self._queue_model.clearFailedTasks(selected_ids)
         if self._active_queue_model:
@@ -3043,12 +3504,27 @@ class AppBridge(QObject):
                 s_set = set(selected_ids)
                 self.downloader.tasks = [
                     t for t in self.downloader.tasks
-                    if not (t.status == "failed" and (t.file_id in s_set or t.url in s_set or t.filename in s_set))
+                    if not (t.status in ("failed", "cancelled") and (t.file_id in s_set or t.url in s_set or t.filename in s_set))
                 ]
             else:
-                self.downloader.tasks = [t for t in self.downloader.tasks if t.status != "failed"]
+                self.downloader.tasks = [t for t in self.downloader.tasks if t.status not in ("failed", "cancelled")]
         if self.recovery_manager:
-            self.recovery_manager.clear_retries()
+            if selected_ids:
+                spilled = self.recovery_manager.load_retries()
+                if spilled:
+                    s_set = set(selected_ids)
+                    remaining = [
+                        item for item in spilled
+                        if not ((item.get("file_id") if isinstance(item, dict) else getattr(item, "file_id", "")) in s_set
+                                or (item.get("url") if isinstance(item, dict) else getattr(item, "url", "")) in s_set
+                                or (item.get("filename") if isinstance(item, dict) else getattr(item, "filename", "")) in s_set)
+                    ]
+                    if remaining:
+                        self.recovery_manager.dump_retries(remaining)
+                    else:
+                        self.recovery_manager.clear_retries()
+            else:
+                self.recovery_manager.clear_retries()
         logger.info("Cleared failed tasks from queue.", category="queue")
 
     @Slot()
@@ -3073,21 +3549,57 @@ class AppBridge(QObject):
         except Exception:
             pass
 
-        # Full session reset — clear all queue state so the next download starts fresh
         self._queued_links.clear()
-        self._queue_model.setTasks([])
-        self._active_queue_model.clear()
-        self.downloader.reset_state()
+
+        # Update downloading and pending tasks to "cancelled", but preserve completed, skipped, and failed
+        if self._queue_model:
+            self._queue_model.cancel_all_pending()
+
+        for t in self.downloader.tasks:
+            if t.status in ("pending", "downloading", "retrying"):
+                t.status = "cancelled"
+                t.error_msg = "Download cancelled by user"
+                t.progress_pct = 0
+                t.speed_bps = 0
+                t.speed_str = "0 KB/s"
+                t.eta_str = "--"
+
+        if self._active_queue_model:
+            self._active_queue_model.clear()
+
+        # Update downloader internal state without dropping tasks.
+        # DO NOT call self.downloader._cancel_event.clear() here: the worker thread in
+        # _run_download_loop is concurrently shutting down and must observe is_set() == True.
+        # _cancel_event will be cleared cleanly whenever a new download session begins.
+        self.downloader._pause_event.clear()
+        self.downloader._is_running = False
+        self.downloader._speed_samples.clear()
+        self.downloader._smoothed_speed = 0.0
+        self.downloader._medium_speed = 0.0
+        self.downloader._smoothed_eta = None
+        self.downloader.downloaded_bytes = 0
+        if self.downloader.on_pause_changed:
+            try:
+                self.downloader.on_pause_changed(False)
+            except Exception:
+                pass
 
         # Discard recovery journal and saved session so restart doesn't prompt for cancelled download
         self.recovery_manager.discard_recovery()
-        self.recovery_manager.clear_retries()
         self.session_manager.discard_session()
         self._has_recovery_session = False
         self._has_saved_session = False
         self._recovery_summary = {}
         self.hasRecoverySessionChanged.emit()
         self.hasSavedSessionChanged.emit()
+
+        # Dump any genuine failed tasks to retries file (in background thread) so they are preserved
+        all_tasks = self._queue_model.getTasks() if self._queue_model else list(self.downloader.tasks)
+        failed_tasks = [t for t in all_tasks if t.status == "failed"]
+        if failed_tasks:
+            self.recovery_manager.dump_retries(failed_tasks, async_write=True)
+        else:
+            self.recovery_manager.clear_retries()
 
         # Reset errors
         self._has_error = False
@@ -3114,6 +3626,9 @@ class AppBridge(QObject):
         self.isPausedChanged.emit()
         self._status_text = "Progress: Cancelled"
         self.statusTextChanged.emit()
+
+        if self._queue_model:
+            self._queue_model.failedCountChanged.emit()
 
     @Slot()
     def pauseDownload(self):
@@ -3292,7 +3807,7 @@ class AppBridge(QObject):
                     )
                     if matched_hierarchy:
                         franchise, char_name = matched_hierarchy
-                        if franchise and franchise.strip() and franchise != "Other":
+                        if franchise and franchise.strip() and franchise not in ("Other", "General"):
                             clean_fr = FilterEngine.clean_filesystem_text(franchise, max_len=60, fallback="Franchise")
                             folder_parts.append(clean_fr)
                         if char_name and char_name.strip() and char_name.lower() != (franchise or "").lower():
@@ -3708,8 +4223,8 @@ class AppBridge(QObject):
             "threads": self._threads_count,
             "cookie": self._cookie_string,
             "user_agent": self._user_agent,
-            "page_start": self._page_start,
-            "page_end": self._page_end,
+            "page_start": 1,
+            "page_end": 999999,
             "character_scope": self._character_scope,
             "skip_scope": self._skip_scope,
             "subfolder_per_post": self._subfolder_per_post,
@@ -3743,6 +4258,8 @@ class AppBridge(QObject):
             "tag_folder_mode": self._tag_folder_mode,
             "skip_post_covers": self._skip_post_covers,
             "download_thumbnails_only": self._download_thumbnails_only,
+            "fallback_to_thumbnails": self._fallback_to_thumbnails,
+            "redownload_small_files": self._redownload_small_files,
             "date_after": self._date_after,
             "date_before": self._date_before,
             "date_auto_scan_pages": self._date_auto_scan_pages,
@@ -3750,6 +4267,8 @@ class AppBridge(QObject):
             "download_pawchive_temporary_files": self._download_pawchive_temporary_files,
             "min_file_size": self._min_file_size,
             "max_file_size": self._max_file_size,
+            "exact_extensions": self._exact_extensions,
+            "saved_custom_extensions": self._saved_custom_extensions,
             "write_audio_metadata": self._write_audio_metadata,
             "telegram_safety_acknowledged": self._telegram_safety_acknowledged,
             "telegram_liability_acknowledged": self._telegram_liability_acknowledged
@@ -3762,6 +4281,10 @@ class AppBridge(QObject):
 
     @Slot(dict)
     def _handle_progress(self, info: Dict[str, Any]):
+        if self.downloader._is_running and not self._is_downloading:
+            self._is_downloading = True
+            self.isDownloadingChanged.emit()
+
         completed = info.get("completed", 0)
         total     = info.get("total", 0)
         failed    = info.get("failed", 0)
@@ -3792,6 +4315,10 @@ class AppBridge(QObject):
 
     @Slot(object)
     def _handle_task_status(self, task: DownloadTask):
+        if self.downloader._is_running and not self._is_downloading:
+            self._is_downloading = True
+            self.isDownloadingChanged.emit()
+
         self._queue_model.updateTask(task)
         self._active_queue_model.updateTask(task)
         if task.status == "completed" and self._enable_download_archive:
@@ -3909,7 +4436,7 @@ class AppBridge(QObject):
             snapshot = {
                 "_summary": {
                     "title": "Pawchive Downloader Queue State Backup",
-                    "app_version": "1.0.6",
+                    "app_version": "1.2.0",
                     "exported_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "creators": unique_creators,
                     "total_batches": len(self._queue_model.groups),
@@ -4122,6 +4649,9 @@ class AppBridge(QObject):
 
     @Slot(bool, str)
     def _handle_finished(self, success: bool, message: str):
+        if self.downloader.is_running:
+            logger.debug(f"Ignoring _handle_finished ('{message}') because downloader is actively running a new session.", category="downloader")
+            return
         self._is_downloading = False
         self._active_queue_model.clear()
         
@@ -4129,9 +4659,9 @@ class AppBridge(QObject):
         tasks = self._queue_model.getTasks()
         if tasks:
             completed_c = sum(1 for t in tasks if t.status == "completed")
-            failed_c = sum(1 for t in tasks if t.status == "failed")
+            failed_c = sum(1 for t in tasks if t.status in ("failed", "cancelled"))
             if failed_c > 0:
-                failed_tasks = [t for t in tasks if t.status == "failed"]
+                failed_tasks = [t for t in tasks if t.status in ("failed", "cancelled")]
                 self.recovery_manager.dump_retries(failed_tasks, async_write=True)
             self._overall_progress = int(completed_c / len(tasks) * 100)
             if failed_c > 0:
@@ -5233,6 +5763,7 @@ class AppBridge(QObject):
         self.storagePoolChanged.emit()
 
     # ── Cookie Importer Slots ────────────────────────────────────────────────
+    @Slot(result=bool)
     @Slot(str, result=bool)
     def importBrowserCookies(self, browserId: str = "") -> bool:
         from services.cookie_importer import browser_cookie_importer
@@ -5253,6 +5784,86 @@ class AppBridge(QObject):
     @Slot()
     def refreshCookieWatchdog(self):
         self.cookieWatchdogChanged.emit()
+
+    # ── Providers & Credential Vault Slots ──────────────────────────────────
+    @Slot(result=list)
+    def getProvidersList(self) -> list:
+        from core.auth_manager import auth_manager
+        return auth_manager.get_all_providers_summary()
+
+    @Slot(str, str, result=bool)
+    def saveProviderCredential(self, providerId: str, credVal: str) -> bool:
+        from core.auth_manager import auth_manager, SUPPORTED_PROVIDERS
+        meta = SUPPORTED_PROVIDERS.get(providerId, {})
+        auth_type = meta.get("auth_type", "cookie")
+        key = "cookie" if auth_type == "cookie" else ("token" if auth_type == "token" else ("api_key" if auth_type == "api_key" else "cookie"))
+
+        ok = auth_manager.set_credential(providerId, {key: credVal.strip()})
+        if providerId == "kemono":
+            self.cookieString = credVal.strip()
+            self.saveSettings()
+            self.cookieWatchdogChanged.emit()
+        self.providersChanged.emit()
+        return ok
+
+    @Slot(str, result=bool)
+    def clearProviderCredential(self, providerId: str) -> bool:
+        from core.auth_manager import auth_manager
+        ok = auth_manager.clear_credential(providerId)
+        if providerId == "kemono":
+            self.cookieString = ""
+            self.saveSettings()
+            self.cookieWatchdogChanged.emit()
+        self.providersChanged.emit()
+        return ok
+
+    @Slot(str)
+    def validateProviderSession(self, providerId: str):
+        def _val_worker():
+            from core.auth_manager import auth_manager
+            ok, msg, _ = auth_manager.validate_session(providerId)
+            self.providerValidationFinished.emit(providerId, ok, msg)
+            self.providersChanged.emit()
+
+        threading.Thread(target=_val_worker, daemon=True, name=f"ValWorker_{providerId}").start()
+
+    @Slot(str, result=bool)
+    @Slot(str, str, result=bool)
+    def importBrowserCookiesToProvider(self, providerId: str, browserId: str = "") -> bool:
+        from services.cookie_importer import browser_cookie_importer
+        from core.auth_manager import auth_manager
+        try:
+            res = browser_cookie_importer.import_auto_detect(preferred_browser=browserId or None)
+            c_str = res.get("cookie_string", "")
+            if c_str:
+                auth_manager.set_credential(providerId, {"cookie": c_str})
+                if providerId == "kemono":
+                    self.cookieString = c_str
+                    self.saveSettings()
+                self.providersChanged.emit()
+                self.cookieWatchdogChanged.emit()
+                self.cookieImportCompleted.emit(True, res.get("browser_name", "Browser"))
+                return True
+        except Exception as e:
+            logger.error(f"Browser cookie import to {providerId} failed: {e}", category="cookie")
+            self.cookieImportCompleted.emit(False, str(e))
+        return False
+
+    @Slot(str, str, str)
+    def loginProviderWithCredentials(self, providerId: str, username: str, password: str):
+        def _worker():
+            from core.auth_manager import auth_manager
+            ok, msg, details = auth_manager.login_with_credentials(providerId, username, password)
+            self.providerLoginFinished.emit(providerId, ok, msg)
+            if ok:
+                if providerId == "kemono":
+                    c = auth_manager.get_credential("kemono", "cookie")
+                    if c:
+                        self.cookieString = c
+                        self.saveSettings()
+                self.providersChanged.emit()
+
+        threading.Thread(target=_worker, daemon=True, name=f"Login_{providerId}").start()
 
     # ── Task Scheduler Slots ─────────────────────────────────────────────────
     @Slot(str, str, str, str, int, str, result=str)

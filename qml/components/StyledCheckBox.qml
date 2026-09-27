@@ -19,6 +19,7 @@ CheckBox {
     font.pixelSize: 12
     spacing: 8
     Layout.fillWidth: true
+    Layout.preferredWidth: 0
     Layout.minimumWidth: 0
 
     indicator: Rectangle {
@@ -35,7 +36,12 @@ CheckBox {
         transformOrigin: Item.Center
 
         Behavior on scale {
-            NumberAnimation { duration: 160; easing.type: Easing.OutBack; easing.overshoot: 1.5 }
+            SpringAnimation {
+                spring: 5.2
+                damping: 0.32
+                mass: 0.65
+                epsilon: 0.005
+            }
         }
         Behavior on color {
             ColorAnimation { duration: 140; easing.type: Easing.OutCubic }
@@ -55,7 +61,12 @@ CheckBox {
             opacity: control.checked ? 1.0 : 0.0
 
             Behavior on scale {
-                NumberAnimation { duration: 180; easing.type: Easing.OutBack; easing.overshoot: 1.8 }
+                SpringAnimation {
+                    spring: 5.5
+                    damping: 0.30
+                    mass: 0.6
+                    epsilon: 0.005
+                }
             }
             Behavior on opacity {
                 NumberAnimation { duration: 140; easing.type: Easing.OutCubic }

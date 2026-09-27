@@ -20,6 +20,8 @@
   "compress_webp": false,
   "keep_duplicates": false,
   "scan_content_images": true,
+  "fallback_to_thumbnails": true,
+  "redownload_small_files": false,
   "download_delay": 2.0,
   "save_post_metadata": true,
   "download_embeds": true,

@@ -56,7 +56,7 @@ Rectangle {
                     fileSize: item.fileSize || "-",
                     retryCount: item.retryCount || 0,
                     retryCapped: !!item.retryCapped,
-                    isSelected: !item.retryCapped // defaults to true unless capped
+                    isSelected: true // defaults to true so items can be retried immediately
                 })
             }
         }
@@ -90,6 +90,29 @@ Rectangle {
     onIsOpenChanged: {
         if (isOpen) {
             failedItemsModel.populate()
+        }
+    }
+
+    Connections {
+        target: modalRoot.bridge
+        function onIsDownloadingChanged() {
+            if (modalRoot.isOpen) {
+                failedItemsModel.populate()
+            }
+        }
+    }
+
+    Connections {
+        target: (modalRoot.bridge && modalRoot.bridge.queueModel) ? modalRoot.bridge.queueModel : null
+        function onFailedCountChanged() {
+            if (modalRoot.isOpen) {
+                failedItemsModel.populate()
+            }
+        }
+        function onCountsChanged() {
+            if (modalRoot.isOpen) {
+                failedItemsModel.populate()
+            }
         }
     }
 

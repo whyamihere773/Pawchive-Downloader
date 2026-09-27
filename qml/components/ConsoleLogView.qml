@@ -664,15 +664,15 @@ Rectangle {
                             height: 18
                             radius: 4
                             color: Qt.rgba(0.12, 0.16, 0.22, 0.9)
-                            border.color: model.levelColor
+                            border.color: (typeof model.levelColor !== "undefined" && model.levelColor) ? model.levelColor : "#38BDF8"
                             border.width: 1
 
                             Text {
                                 anchors.centerIn: parent
-                                text: model.icon
+                                text: (typeof model.icon !== "undefined" && model.icon) ? model.icon : "•"
                                 font.pixelSize: 9
                                 font.bold: true
-                                color: model.levelColor
+                                color: (typeof model.levelColor !== "undefined" && model.levelColor) ? model.levelColor : "#38BDF8"
                             }
                         }
 
@@ -691,7 +691,7 @@ Rectangle {
                             }
                             font.family: "Cascadia Code, Consolas, monospace"
                             font.pixelSize: 11
-                            color: rowItem.isSelected ? "#F1F5F9" : model.levelColor
+                            color: rowItem.isSelected ? "#F1F5F9" : ((typeof model.levelColor !== "undefined" && model.levelColor) ? model.levelColor : "#CBD5E1")
                             wrapMode: Text.WrapAnywhere
                             textFormat: Text.RichText
                         }

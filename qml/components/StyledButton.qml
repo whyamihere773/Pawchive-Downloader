@@ -27,9 +27,11 @@ Button {
     transformOrigin: Item.Center
 
     Behavior on scale {
-        NumberAnimation {
-            duration: control.down ? 110 : 160
-            easing.type: Easing.OutCubic
+        SpringAnimation {
+            spring: 5.2
+            damping: 0.35
+            mass: 0.75
+            epsilon: 0.005
         }
     }
 

@@ -166,6 +166,7 @@ Rectangle {
                         { key: "all", labelKey: "qtab_all", defaultLabel: "All", icon: "📁", count: root.bridge && root.bridge.queueModel ? root.bridge.queueModel.totalCount : 0, color: "#38BDF8", tipKey: "qtab_all_tip", defaultTip: "Show all download tasks in queue" },
                         { key: "downloading", labelKey: "qtab_active", defaultLabel: "Active", icon: "⚡", count: root.bridge && root.bridge.queueModel ? root.bridge.queueModel.downloadingCount : 0, color: "#0EA5E9", tipKey: "qtab_active_tip", defaultTip: "Show active/in-progress downloads" },
                         { key: "completed", labelKey: "qtab_completed", defaultLabel: "Completed", icon: "✔", count: root.bridge && root.bridge.queueModel ? root.bridge.queueModel.completedCount : 0, color: "#10B981", tipKey: "qtab_completed_tip", defaultTip: "Show successfully completed downloads" },
+                        { key: "skipped", labelKey: "qtab_skipped", defaultLabel: "Skipped", icon: "⏭️", count: root.bridge && root.bridge.queueModel ? root.bridge.queueModel.skippedCount : 0, color: "#F59E0B", tipKey: "qtab_skipped_tip", defaultTip: "Show downloads skipped by filters or rules" },
                         { key: "failed", labelKey: "qtab_failed", defaultLabel: "Errors / Failed", icon: "✖", count: root.bridge && root.bridge.queueModel ? root.bridge.queueModel.failedCount : 0, color: "#EF4444", tipKey: "qtab_failed_tip", defaultTip: "Show failed download tasks" }
                     ]
 
@@ -179,8 +180,8 @@ Rectangle {
                         width: tabIconText.implicitWidth + (showLabel ? (tabLabelText.implicitWidth + 6) : 0) + countPill.width + 18
                         radius: 5
 
-                        color: isSelected ? (modelData.key === "failed" ? "#3B181E" : "#1A2638") : (tabMouse.containsMouse ? "#1E2430" : "#141720")
-                        border.color: isSelected ? (modelData.key === "failed" ? "#EF4444" : modelData.color) : (modelData.key === "failed" && modelData.count > 0 ? "#7F1D1D" : "#242A38")
+                        color: isSelected ? (modelData.key === "failed" ? "#3B181E" : (modelData.key === "skipped" ? "#38230D" : "#1A2638")) : (tabMouse.containsMouse ? "#1E2430" : "#141720")
+                        border.color: isSelected ? (modelData.key === "failed" ? "#EF4444" : (modelData.key === "skipped" ? "#F59E0B" : modelData.color)) : (modelData.key === "failed" && modelData.count > 0 ? "#7F1D1D" : (modelData.key === "skipped" && modelData.count > 0 ? "#B45309" : "#242A38"))
                         border.width: isSelected ? 1.5 : 1
 
                         scale: tabMouse.pressed ? 0.93 : (tabMouse.containsMouse ? 1.04 : 1.0)
@@ -220,7 +221,7 @@ Rectangle {
                                 width: Math.max(16, cntText.implicitWidth + 8)
                                 radius: 8
                                 anchors.verticalCenter: parent.verticalCenter
-                                color: modelData.key === "failed" && modelData.count > 0 ? "#EF4444" : (isSelected ? "#2E3B50" : "#1E2330")
+                                color: modelData.key === "failed" && modelData.count > 0 ? "#EF4444" : (modelData.key === "skipped" && modelData.count > 0 ? "#D97706" : (isSelected ? "#2E3B50" : "#1E2330"))
 
                                 Behavior on color { ColorAnimation { duration: 150 } }
 
@@ -230,7 +231,7 @@ Rectangle {
                                     text: modelData.count.toString()
                                     font.pixelSize: 9
                                     font.bold: true
-                                    color: modelData.key === "failed" && modelData.count > 0 ? "#FFFFFF" : (isSelected ? modelData.color : "#64748B")
+                                    color: (modelData.key === "failed" || modelData.key === "skipped") && modelData.count > 0 ? "#FFFFFF" : (isSelected ? modelData.color : "#64748B")
                                 }
                             }
                         }
@@ -423,8 +424,8 @@ Rectangle {
                         height: cardInnerCol.implicitHeight + 20
                         implicitHeight: height
                         radius: 8
-                        color: groupCard.cardStatus === "failed" ? "#22161A" : (groupCard.cardStatus === "downloading" ? "#131E30" : (cardMouse.containsMouse ? "#1D2332" : "#171B26"))
-                        border.color: groupCard.cardStatus === "downloading" ? "#0EA5E9" : (groupCard.cardStatus === "failed" ? "#EF4444" : (cardMouse.containsMouse ? "#3B465E" : "#283042"))
+                        color: groupCard.cardStatus === "failed" ? "#22161A" : (groupCard.cardStatus === "downloading" ? "#131E30" : (groupCard.cardStatus === "skipped" ? "#1C150E" : (cardMouse.containsMouse ? "#1D2332" : "#171B26")))
+                        border.color: groupCard.cardStatus === "downloading" ? "#0EA5E9" : (groupCard.cardStatus === "failed" ? "#EF4444" : (groupCard.cardStatus === "skipped" ? "#B45309" : (cardMouse.containsMouse ? "#3B465E" : "#283042")))
                         border.width: 1.5
 
                         Behavior on color { ColorAnimation { duration: 150 } }
@@ -494,8 +495,8 @@ Rectangle {
                                     height: 20
                                     width: stText.implicitWidth + 10
                                     radius: 4
-                                    color: modelData.status === "completed" ? "#064E3B" : (modelData.status === "downloading" ? "#0C4A6E" : (modelData.status === "failed" ? "#7F1D1D" : "#1E293B"))
-                                    border.color: modelData.status === "completed" ? "#10B981" : (modelData.status === "downloading" ? "#0EA5E9" : (modelData.status === "failed" ? "#EF4444" : "#475569"))
+                                    color: modelData.status === "completed" ? "#064E3B" : (modelData.status === "downloading" ? "#0C4A6E" : (modelData.status === "skipped" ? "#451A03" : (modelData.status === "failed" ? "#7F1D1D" : "#1E293B")))
+                                    border.color: modelData.status === "completed" ? "#10B981" : (modelData.status === "downloading" ? "#0EA5E9" : (modelData.status === "skipped" ? "#F59E0B" : (modelData.status === "failed" ? "#EF4444" : "#475569")))
                                     border.width: 1
 
                                     Text {
@@ -504,7 +505,7 @@ Rectangle {
                                         text: modelData.status.toUpperCase()
                                         font.pixelSize: 9
                                         font.bold: true
-                                        color: modelData.status === "completed" ? "#6EE7B7" : (modelData.status === "downloading" ? "#7DD3FC" : (modelData.status === "failed" ? "#FCA5A5" : "#94A3B8"))
+                                        color: modelData.status === "completed" ? "#6EE7B7" : (modelData.status === "downloading" ? "#7DD3FC" : (modelData.status === "skipped" ? "#FDE68A" : (modelData.status === "failed" ? "#FCA5A5" : "#94A3B8")))
                                     }
                                 }
                             }
@@ -538,17 +539,17 @@ Rectangle {
                                             width: parent.width * Math.min(1.0, Math.max(0.0,
                                                 (modelData.totalProgress !== undefined ? modelData.totalProgress : modelData.progress)))
                                             radius: 2
-                                            color: modelData.status === "completed" ? "#10B981" : (modelData.status === "failed" ? "#EF4444" : "#10B981")
+                                            color: modelData.status === "completed" ? "#10B981" : (modelData.status === "skipped" ? "#F59E0B" : (modelData.status === "failed" ? "#EF4444" : "#10B981"))
                                             Behavior on width { NumberAnimation { duration: 200 } }
                                         }
                                     }
 
                                     Text {
-                                        text: modelData.completedFiles + "/" + modelData.totalFiles
+                                        text: (modelData.skippedFiles > 0 ? (modelData.completedFiles + " (+" + modelData.skippedFiles + " skipped)/" + modelData.totalFiles) : (modelData.completedFiles + "/" + modelData.totalFiles))
                                         font.family: "Cascadia Code, Segoe UI, sans-serif"
                                         font.pixelSize: 10
                                         color: "#94A3B8"
-                                        Layout.preferredWidth: 42
+                                        Layout.preferredWidth: modelData.skippedFiles > 0 ? 80 : 42
                                         horizontalAlignment: Text.AlignRight
                                     }
                                 }
@@ -814,9 +815,9 @@ Rectangle {
                     height: taskCol.implicitHeight + 16
                     implicitHeight: height
                     radius: 6
-                    color: model.status === "failed" ? "#1F161A" : (model.status === "downloading" ? "#131E2E" : (delegateHover.containsMouse ? "#1D222F" : "#1A1E29"))
-                    border.color: model.status === "downloading" ? "#38BDF8" : (model.status === "failed" ? "#EF4444" : (delegateHover.containsMouse ? "#3E485D" : "#282E3D"))
-                    border.width: model.status === "failed" ? 1.5 : 1
+                    color: model.status === "failed" ? "#1F161A" : (model.status === "downloading" ? "#131E2E" : (model.status === "skipped" ? "#1C150E" : (delegateHover.containsMouse ? "#1D222F" : "#1A1E29")))
+                    border.color: model.status === "downloading" ? "#38BDF8" : (model.status === "failed" ? "#EF4444" : (model.status === "skipped" ? (delegateHover.containsMouse ? "#F59E0B" : "#B45309") : (delegateHover.containsMouse ? "#3E485D" : "#282E3D")))
+                    border.width: (model.status === "failed" || model.status === "skipped") ? 1.5 : 1
 
                     Behavior on color { ColorAnimation { duration: 160; easing.type: Easing.OutCubic } }
                     Behavior on border.color { ColorAnimation { duration: 160; easing.type: Easing.OutCubic } }
@@ -852,6 +853,7 @@ Rectangle {
                                 color: {
                                     if (model.status === "completed") return "#10B981"
                                     if (model.status === "downloading") return "#0284C7"
+                                    if (model.status === "skipped") return "#D97706"
                                     if (model.status === "failed") return "#EF4444"
                                     return "#333A48"
                                 }
@@ -875,7 +877,7 @@ Rectangle {
                                 font.family: "Segoe UI, sans-serif"
                                 font.pixelSize: 12
                                 font.weight: 600
-                                color: model.status === "failed" ? "#FCA5A5" : "#F1F5F9"
+                                color: model.status === "failed" ? "#FCA5A5" : (model.status === "skipped" ? "#FDE68A" : "#F1F5F9")
                                 Layout.fillWidth: true
                                 elide: Text.ElideMiddle
                             }
@@ -893,12 +895,14 @@ Rectangle {
                                     color: {
                                         if (model.status === "completed") return "#064E3B"
                                         if (model.status === "downloading") return "#0C4A6E"
+                                        if (model.status === "skipped") return "#451A03"
                                         if (model.status === "failed") return "#450A0A"
                                         return "#1E293B"
                                     }
                                     border.color: {
                                         if (model.status === "completed") return "#10B981"
                                         if (model.status === "downloading") return "#38BDF8"
+                                        if (model.status === "skipped") return "#F59E0B"
                                         if (model.status === "failed") return "#EF4444"
                                         return "#334155"
                                     }
@@ -910,6 +914,7 @@ Rectangle {
                                         anchors.centerIn: parent
                                         text: {
                                             if (model.status === "completed") return "100%"
+                                            if (model.status === "skipped") return "Skipped"
                                             if (model.status === "failed") return (model.retryCount > 0 ? ("Failed (" + model.retryCount + "x)") : "Failed")
                                             if (model.status === "downloading") return model.percentage + "%"
                                             return "0%"
@@ -920,6 +925,7 @@ Rectangle {
                                         color: {
                                             if (model.status === "completed") return "#34D399"
                                             if (model.status === "downloading") return "#38BDF8"
+                                            if (model.status === "skipped") return "#FBBF24"
                                             if (model.status === "failed") return "#FCA5A5"
                                             return "#94A3B8"
                                         }
@@ -994,14 +1000,47 @@ Rectangle {
                             Rectangle {
                                 height: parent.height
                                 radius: 2
-                                width: Math.max(0, Math.min(parent.width, parent.width * model.progress))
-                                color: model.status === "completed" ? "#10B981" : "#38BDF8"
+                                width: Math.max(0, Math.min(parent.width, parent.width * (model.status === "skipped" ? 1.0 : model.progress)))
+                                color: model.status === "completed" ? "#10B981" : (model.status === "skipped" ? "#F59E0B" : "#38BDF8")
 
                                 Behavior on width {
                                     NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
                                 }
                                 Behavior on color {
                                     ColorAnimation { duration: 200 }
+                                }
+                            }
+                        }
+
+                        // Detailed Filter / Skip Reason Box (Visible when skipped)
+                        Rectangle {
+                            Layout.fillWidth: true
+                            height: skippedRow.implicitHeight + 8
+                            radius: 4
+                            color: "#28180E"
+                            border.color: "#92400E"
+                            border.width: 1
+                            visible: model.status === "skipped" && model.errorMsg.length > 0
+
+                            RowLayout {
+                                id: skippedRow
+                                anchors.fill: parent
+                                anchors.leftMargin: 8
+                                anchors.rightMargin: 8
+                                spacing: 6
+
+                                Text {
+                                    text: "⏭️"
+                                    font.pixelSize: 11
+                                }
+
+                                Text {
+                                    text: model.errorMsg
+                                    font.family: "Segoe UI, sans-serif"
+                                    font.pixelSize: 11
+                                    color: "#FDE68A"
+                                    Layout.fillWidth: true
+                                    wrapMode: Text.Wrap
                                 }
                             }
                         }
@@ -1061,6 +1100,7 @@ Rectangle {
                         if (status === "failed") return root.tr("empty_no_failed", "🎉 No failed downloads!\nAll tasks completed without errors.")
                         if (status === "downloading") return root.tr("empty_no_active", "⚡ No active downloads running.\nStart a download to see active files.")
                         if (status === "completed") return root.tr("empty_no_completed", "📁 No completed downloads yet.")
+                        if (status === "skipped") return root.tr("empty_no_skipped", "⏭️ No skipped files in queue.")
                         return root.tr("empty_no_tasks", "No download tasks in queue.\nEnter a URL and click 'Start Download' or 'Add to Queue'.")
                     }
                     color: "#475569"

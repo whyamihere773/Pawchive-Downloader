@@ -668,3 +668,167 @@ class KemonoApiClient:
         logger.info(f"Fetched {len(result)} tag(s) for {parsed.user_id} [{parsed.service}]", category="api")
         return result
 
+    def fetch_user_favorites(
+        self,
+        domain: str = "kemono.su",
+        fav_type: str = "post",
+        page_start: int = 1,
+        page_end: int = 999999,
+        page_size: int = 50,
+        progress_callback: Optional[Callable] = None,
+        cancel_event: Optional[threading.Event] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetches authenticated user favorites (posts or artists) from Kemono/Coomer favorites API.
+        Endpoint: https://{domain}/api/v1/favorites?type={fav_type}&o={offset}
+        """
+        # Ensure cookie is loaded from auth_manager if not explicitly passed
+        if not self.cookie_string:
+            try:
+                from core.auth_manager import auth_manager
+                d = domain.lower()
+                if "coomer" in d:
+                    prov_id = "coomer"
+                elif "pawchive" in d:
+                    prov_id = "pawchive"
+                elif "cum" in d:
+                    prov_id = "cumst"
+                else:
+                    prov_id = "kemono"
+                saved_cookie = auth_manager.get_credential(prov_id, "cookie")
+                if saved_cookie:
+                    self.set_cookie(saved_cookie)
+            except Exception:
+                pass
+
+        all_items: List[Dict[str, Any]] = []
+        current_page = page_start
+        offset = (page_start - 1) * page_size
+        consecutive_errors = 0
+        MAX_CONSECUTIVE_ERRORS = 3
+
+        logger.info(
+            f"Favorites enumeration started — domain={domain} type={fav_type} pages {page_start}–{page_end}",
+            category="api"
+        )
+
+        is_pawchive = "pawchive" in domain.lower()
+
+        while current_page <= page_end:
+            if cancel_event and cancel_event.is_set():
+                logger.warning("Favorites enumeration cancelled by user.", category="api")
+                break
+
+            if is_pawchive:
+                url = f"https://{domain}/favorites?type={fav_type}&o={offset}"
+            else:
+                url = f"https://{domain}/api/v1/favorites?type={fav_type}&o={offset}"
+
+            if progress_callback:
+                progress_callback(current_page, len(all_items))
+
+            resp = self._get_with_log(url, timeout=25)
+
+            if cancel_event and cancel_event.is_set():
+                break
+
+            if resp is None:
+                consecutive_errors += 1
+                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                    logger.error(f"Stopping favorites enumeration after {MAX_CONSECUTIVE_ERRORS} consecutive failures.", category="api")
+                    break
+                time.sleep(2.0)
+                continue
+
+            consecutive_errors = 0
+
+            if resp.status_code in (401, 403):
+                logger.error(
+                    f"HTTP {resp.status_code} Unauthorized when fetching favorites from {domain}. "
+                    f"Please log in or add your session cookie in Settings → Accounts & Logins.",
+                    category="api"
+                )
+                break
+
+            if resp.status_code != 200:
+                logger.warning(f"Favorites returned HTTP {resp.status_code}, stopping.", category="api")
+                break
+
+            items: List[Dict[str, Any]] = []
+
+            # Pawchive HTML parsing
+            if is_pawchive:
+                try:
+                    from bs4 import BeautifulSoup
+                    soup = BeautifulSoup(resp.text, "html.parser")
+                    if fav_type == "post":
+                        for a in soup.find_all("article", class_=re.compile(r"post-card")):
+                            pid = a.get("data-id")
+                            svc = a.get("data-service")
+                            usr = a.get("data-user")
+                            if pid and svc and usr:
+                                # Fetch full post metadata via API
+                                p_url = f"https://{domain}/api/v1/{svc}/user/{usr}/post/{pid}"
+                                p_resp = self._get_with_log(p_url, timeout=15)
+                                if p_resp and p_resp.status_code == 200:
+                                    try:
+                                        p_json = p_resp.json()
+                                        if isinstance(p_json, dict):
+                                            items.append(p_json)
+                                            continue
+                                    except Exception:
+                                        pass
+                                # Fallback minimal post representation
+                                title_el = a.find(class_=re.compile(r"post-card__title"))
+                                title = title_el.get_text(strip=True) if title_el else f"Post {pid}"
+                                items.append({
+                                    "id": str(pid),
+                                    "user": str(usr),
+                                    "service": str(svc),
+                                    "title": title
+                                })
+                    else:
+                        for u_card in soup.find_all("a", class_=re.compile(r"user-card")):
+                            cid = u_card.get("data-id")
+                            csvc = u_card.get("data-service")
+                            cname_el = u_card.find(class_=re.compile(r"user-card__name"))
+                            cname = cname_el.get_text(strip=True) if cname_el else ""
+                            if cid and csvc:
+                                items.append({"id": str(cid), "service": str(csvc), "name": cname})
+                except Exception as e:
+                    logger.error(f"Pawchive favorites HTML parse error: {e}", category="api")
+                    break
+            else:
+                try:
+                    raw_data = resp.json()
+                except Exception as e:
+                    logger.error(f"Favorites JSON parse error: {e}", category="api")
+                    break
+
+                if isinstance(raw_data, list):
+                    items = raw_data
+                elif isinstance(raw_data, dict):
+                    items = raw_data.get("posts") or raw_data.get("favorites") or raw_data.get("artists") or []
+                else:
+                    items = []
+
+            if not items:
+                logger.info(f"Page {current_page}: 0 favorites returned — enumeration complete.", category="api")
+                break
+
+            batch = len(items)
+            all_items.extend(items)
+            logger.info(f"Page {current_page:3d}  offset {offset:5d}  +{batch} favorite {fav_type}(s) (total: {len(all_items)})", category="api")
+
+            if batch < page_size:
+                logger.info(f"Partial page ({batch}<{page_size}) — reached end of favorites.", category="api")
+                break
+
+            offset += batch
+            current_page += 1
+            time.sleep(0.2)
+
+        logger.success(f"Favorites enumeration done: {len(all_items)} {fav_type}(s) collected.", category="api")
+        return all_items
+
+

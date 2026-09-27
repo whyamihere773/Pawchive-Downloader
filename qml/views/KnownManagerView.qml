@@ -85,6 +85,51 @@ Rectangle {
             }
         }
 
+        // AI Recognition Engine Callout Strip
+        Rectangle {
+            Layout.fillWidth: true
+            implicitHeight: aiStripLayout.implicitHeight + 16
+            radius: 8
+            color: "#0F172A"
+            border.color: "#1E293B"
+            border.width: 1
+
+            RowLayout {
+                id: aiStripLayout
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.margins: 12
+                spacing: 12
+
+                Text {
+                    text: "🧠"
+                    font.pixelSize: 16
+                }
+
+                Text {
+                    text: root.tr("known_ai_hint", "Tip: Pair Known.txt with Pawchive's offline AI models (MiniLM + Reasoner) to automatically recognize obscure, unspaced, or misspelled characters without manual entries.")
+                    font.family: "Segoe UI, sans-serif"
+                    font.pixelSize: 11
+                    color: "#94A3B8"
+                    wrapMode: Text.WordWrap
+                    Layout.fillWidth: true
+                }
+
+                StyledButton {
+                    text: root.tr("btn_configure_ai", "Configure AI")
+                    iconText: "⚡"
+                    variant: "outline"
+                    onClicked: {
+                        if (typeof appWindow !== "undefined" && typeof appWindow.openSettingsTab === "function") {
+                            appWindow.openSettingsTab(3)
+                        } else if (typeof appWindow !== "undefined") {
+                            appWindow.currentTab = 9
+                        }
+                    }
+                }
+            }
+        }
 
         // Characters Grid / ListView
         Rectangle {

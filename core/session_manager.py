@@ -136,7 +136,7 @@ class SessionManager:
             "cookie": "",
             "user_agent": "",
             "page_start": 1,
-            "page_end": 999,
+            "page_end": 999999,
             "filename_style": "post_title",
             "character_scope": "title",
             "skip_scope": "posts",
@@ -148,6 +148,8 @@ class SessionManager:
             "compress_webp": False,
             "keep_duplicates": False,
             "scan_content_images": True,
+            "fallback_to_thumbnails": True,
+            "redownload_small_files": False,
             "dark_theme": True,
             "auto_sync_known": True,
             "open_folder_on_complete": False,
@@ -166,7 +168,9 @@ class SessionManager:
             "scheduler_night_owl_end": "07:00",
             "scheduler_prevent_sleep": True,
             "scheduler_sweep_retry": True,
-            "cookie_watchdog_enabled": True
+            "cookie_watchdog_enabled": True,
+            "exact_extensions": "",
+            "saved_custom_extensions": []
         }
 
         if os.path.exists(self.settings_file):

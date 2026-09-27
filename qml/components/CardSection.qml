@@ -9,15 +9,18 @@ Rectangle {
     property bool interactive: true
     property real entranceOffsetY: 0
     property real entranceOpacity: 1.0
+    property color customBorderColor: "transparent"
+    property int customBorderWidth: 0
 
     default property alias content: contentContainer.data
 
     color: (cardHover.hovered && root.interactive) ? "#1B1F2A" : "#181B22"
-    border.color: (cardHover.hovered && root.interactive) ? "#38BDF8" : "#282E3D"
-    border.width: 1
+    border.color: (customBorderColor !== "transparent" && customBorderColor != "") ? customBorderColor : ((cardHover.hovered && root.interactive) ? "#38BDF8" : "#282E3D")
+    border.width: (customBorderWidth > 0) ? customBorderWidth : 1
     radius: 10
     opacity: root.entranceOpacity
 
+    width: parent ? parent.width : implicitWidth
     implicitHeight: mainCol.implicitHeight + 28
     implicitWidth: 0
     Layout.fillWidth: true

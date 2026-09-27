@@ -109,7 +109,10 @@ class FilterOptions:
         download_pawchive_temporary_files: bool = True,
         min_file_size: str = "",
         max_file_size: str = "",
-        write_audio_metadata: bool = False
+        write_audio_metadata: bool = False,
+        fallback_to_thumbnails: bool = True,
+        redownload_small_files: bool = False,
+        exact_extensions: str = ""
     ):
         self.characters = characters
         self.character_scope = character_scope
@@ -117,6 +120,7 @@ class FilterOptions:
         self.skip_scope = skip_scope
         self.remove_words = remove_words
         self.file_type = file_type
+        self.exact_extensions = str(exact_extensions or "").strip()
         self.skip_archives = skip_archives
         self.download_thumbnails_only = download_thumbnails_only
         self.scan_content_images = scan_content_images
@@ -148,6 +152,8 @@ class FilterOptions:
         self.min_file_size = normalize_size_str(min_file_size) if min_file_size else ""
         self.max_file_size = normalize_size_str(max_file_size) if max_file_size else ""
         self.write_audio_metadata = bool(write_audio_metadata)
+        self.fallback_to_thumbnails = bool(fallback_to_thumbnails)
+        self.redownload_small_files = bool(redownload_small_files)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize filter options to dictionary for persistence."""
@@ -189,6 +195,9 @@ class FilterOptions:
             "min_file_size": self.min_file_size,
             "max_file_size": self.max_file_size,
             "write_audio_metadata": self.write_audio_metadata,
+            "fallback_to_thumbnails": self.fallback_to_thumbnails,
+            "redownload_small_files": self.redownload_small_files,
+            "exact_extensions": self.exact_extensions,
         }
 
     @classmethod
@@ -234,6 +243,9 @@ class FilterOptions:
             min_file_size=d.get("min_file_size", ""),
             max_file_size=d.get("max_file_size", ""),
             write_audio_metadata=bool(d.get("write_audio_metadata", False)),
+            fallback_to_thumbnails=bool(d.get("fallback_to_thumbnails", True)),
+            redownload_small_files=bool(d.get("redownload_small_files", False)),
+            exact_extensions=d.get("exact_extensions", ""),
         )
 
 
@@ -391,6 +403,44 @@ class FilterEngine:
         min_size, _ = cls.get_file_size_range_bytes(skip_words)
         return min_size
 
+    @staticmethod
+    def format_size_str(size_bytes: int) -> str:
+        """Formats a byte count into clean, human-readable units (B, KB, MB, GB, TB)."""
+        if size_bytes >= 1024**4:
+            return f"{size_bytes / (1024**4):.2f} TB"
+        if size_bytes >= 1024**3:
+            return f"{size_bytes / (1024**3):.2f} GB"
+        if size_bytes >= 1024**2:
+            return f"{size_bytes / (1024**2):.2f} MB"
+        if size_bytes >= 1024:
+            return f"{size_bytes / 1024:.1f} KB"
+        return f"{size_bytes} B"
+
+    @classmethod
+    def get_effective_size_limits(cls, options: Optional[FilterOptions]) -> Tuple[Optional[int], Optional[int]]:
+        """
+        Returns (min_bytes, max_bytes) defined either explicitly in options.min_file_size/max_file_size
+        or embedded in options.skip_words bracket expressions.
+        """
+        if not options:
+            return None, None
+        opt_min_str = (getattr(options, "min_file_size", "") or "").strip()
+        opt_max_str = (getattr(options, "max_file_size", "") or "").strip()
+        min_size = cls._parse_size_str(opt_min_str) if opt_min_str else None
+        max_size = cls._parse_size_str(opt_max_str) if opt_max_str else None
+
+        sw_min, sw_max = cls.get_file_size_range_bytes(getattr(options, "skip_words", ""))
+        if min_size is None and sw_min is not None:
+            min_size = sw_min
+        if max_size is None and sw_max is not None:
+            max_size = sw_max
+
+        # Auto-correct inverted range (e.g. Min: 2GB, Max: 1GB) so downloads don't fail
+        if min_size is not None and max_size is not None and min_size > max_size:
+            min_size, max_size = max_size, min_size
+
+        return min_size, max_size
+
     @classmethod
     def should_keep_post(cls, post: Dict[str, Any], options: FilterOptions) -> Tuple[bool, str]:
         title = post.get("title", "") or ""
@@ -475,34 +525,21 @@ class FilterEngine:
         _, ext = os.path.splitext(filename.lower())
 
         if file_size is not None and file_size > 0:
-            # Check explicit min/max fields first, then bracket expression in skip_words
-            opt_min_str = (getattr(options, "min_file_size", "") or "").strip()
-            opt_max_str = (getattr(options, "max_file_size", "") or "").strip()
-            min_size = cls._parse_size_str(opt_min_str) if opt_min_str else None
-            max_size = cls._parse_size_str(opt_max_str) if opt_max_str else None
-
-            # If either is not set, check skip_words bracket expression e.g. [1GB-2GB]
-            sw_min, sw_max = cls.get_file_size_range_bytes(options.skip_words)
-            if min_size is None and sw_min is not None:
-                min_size = sw_min
-            if max_size is None and sw_max is not None:
-                max_size = sw_max
-
-            # Auto-correct inverted range (e.g. Min: 2GB, Max: 1GB) so downloads don't fail
-            if min_size is not None and max_size is not None and min_size > max_size:
-                min_size, max_size = max_size, min_size
+            min_size, max_size = cls.get_effective_size_limits(options)
 
             if min_size is not None and file_size < min_size:
-                min_str = f"{min_size / (1024 * 1024 * 1024):.1f} GB" if min_size >= 1024**3 else f"{min_size // (1024 * 1024)} MB"
-                curr_str = f"{file_size / (1024 * 1024 * 1024):.2f} GB" if file_size >= 1024**3 else f"{file_size // (1024 * 1024)} MB"
+                min_str = cls.format_size_str(min_size)
+                curr_str = cls.format_size_str(file_size)
                 return False, f"File size ({curr_str}) is below minimum threshold ({min_str})"
             if max_size is not None and file_size > max_size:
-                max_str = f"{max_size / (1024 * 1024 * 1024):.1f} GB" if max_size >= 1024**3 else f"{max_size // (1024 * 1024)} MB"
-                curr_str = f"{file_size / (1024 * 1024 * 1024):.2f} GB" if file_size >= 1024**3 else f"{file_size // (1024 * 1024)} MB"
+                max_str = cls.format_size_str(max_size)
+                curr_str = cls.format_size_str(file_size)
                 return False, f"File size ({curr_str}) exceeds maximum threshold ({max_str})"
 
         if options.skip_archives and ext in MediaTypes.ARCHIVE_EXTS:
-            return False, "Archive skipped due to 'Skip Archives' setting"
+            allowed_exts = cls.parse_extensions_list(options.exact_extensions) if options.exact_extensions else set()
+            if not allowed_exts or ext not in allowed_exts:
+                return False, "Archive skipped due to 'Skip Archives' setting"
 
         if options.download_thumbnails_only:
             if ext in MediaTypes.ARCHIVE_EXTS:
@@ -522,7 +559,14 @@ class FilterEngine:
                 if re.search(pattern, stem, re.IGNORECASE):
                     return False, f"File contains skipped word: '{word}'"
 
-        if options.file_type == MediaTypes.IMAGES:
+        # Exact File Extension Filter
+        if options.exact_extensions:
+            allowed_exts = cls.parse_extensions_list(options.exact_extensions)
+            if allowed_exts:
+                if ext not in allowed_exts:
+                    allowed_str = ", ".join(sorted(allowed_exts))
+                    return False, f"File extension '{ext}' does not match exact extension filter ({allowed_str})"
+        elif options.file_type == MediaTypes.IMAGES:
             if ext not in MediaTypes.IMAGE_EXTS:
                 return False, f"Not an image file ({ext})"
         elif options.file_type == MediaTypes.VIDEOS:
@@ -536,6 +580,28 @@ class FilterEngine:
                 return False, f"Not an audio file ({ext})"
 
         return True, "Passed file filter"
+
+    @classmethod
+    def parse_extensions_list(cls, raw: str) -> set[str]:
+        """
+        Parses a comma-, semicolon-, or space-separated string of file extensions
+        into a normalized set of lowercase extensions with leading dot.
+        E.g. 'zip, .rar, *.7z' -> {'.zip', '.rar', '.7z'}
+        """
+        if not raw:
+            return set()
+        exts = set()
+        tokens = re.split(r'[,;\s]+', str(raw).strip())
+        for token in tokens:
+            token = token.strip().lower()
+            if not token:
+                continue
+            token = token.lstrip("*")
+            if not token.startswith("."):
+                token = "." + token
+            if len(token) > 1:
+                exts.add(token)
+        return exts
 
     @staticmethod
     def clean_filesystem_text(text: str, max_len: int = 120, fallback: str = "Untitled") -> str:
@@ -677,10 +743,36 @@ class FilterEngine:
         pattern = r'(?:src|href)=["\']([^"\']+)["\']'
         matches = re.findall(pattern, html_content)
         images = []
+        seen_keys = set()
+
         for m in matches:
-            ext = os.path.splitext(m.lower().split("?")[0])[1]
+            clean_m = m.split("?")[0]
+            ext = os.path.splitext(clean_m.lower())[1]
             if ext in MediaTypes.IMAGE_EXTS:
-                images.append(m)
+                # Normalize thumbnail URLs to full-resolution URLs
+                # E.g. https://img.pawchive.pw/thumbnail/data/... -> https://file.pawchive.pw/data/...
+                # E.g. /thumbnail/data/... -> /data/...
+                full_url = m
+                if "/thumbnail/data/" in full_url:
+                    full_url = full_url.replace("/thumbnail/data/", "/data/")
+                    if "img.pawchive.pw" in full_url:
+                        full_url = full_url.replace("img.pawchive.pw", "file.pawchive.pw")
+                    elif "img.kemono.su" in full_url:
+                        full_url = full_url.replace("img.kemono.su", "c1.kemono.su")
+                    elif "img.coomer.su" in full_url:
+                        full_url = full_url.replace("img.coomer.su", "c1.coomer.su")
+                    elif "img.cum.st" in full_url:
+                        full_url = full_url.replace("img.cum.st", "cum.st")
+
+                # Deduplicate by key (/data/xx/yy/... or filename)
+                match_rel = re.search(r'/(?:data/)?([0-9a-f]{2}/[0-9a-f]{2}/[^\s?#]+)', full_url, re.IGNORECASE)
+                dedup_key = match_rel.group(1).lower() if match_rel else os.path.basename(full_url.split("?")[0]).lower()
+
+                if dedup_key in seen_keys:
+                    continue
+                seen_keys.add(dedup_key)
+                images.append(full_url)
+
         return images
 
     @classmethod
