@@ -1142,7 +1142,7 @@ SmoothFlickable {
                     StyledCheckBox {
                         text: root.tr("opt_fallback_to_thumbnails", "Fallback to thumbnails if full-size missing")
                         tooltip: root.tr("opt_fallback_to_thumbnails_tip", "If the original full-resolution file is missing on the server (404), allow downloading the preview thumbnail instead")
-                        checked: root.bridge ? root.bridge.fallbackToThumbnails : true
+                        checked: root.bridge ? root.bridge.fallbackToThumbnails : false
                         onCheckedChanged: if (root.bridge) root.bridge.fallbackToThumbnails = checked
                     }
 

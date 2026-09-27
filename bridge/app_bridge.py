@@ -254,7 +254,7 @@ class AppBridge(QObject):
         ]
         self._skip_archives = False
         self._download_thumbnails_only = bool(saved_settings.get("download_thumbnails_only", False))
-        self._fallback_to_thumbnails = bool(saved_settings.get("fallback_to_thumbnails", True))
+        self._fallback_to_thumbnails = bool(saved_settings.get("fallback_to_thumbnails", False))
         self._redownload_small_files = bool(saved_settings.get("redownload_small_files", False))
         self._skip_post_covers = bool(saved_settings.get("skip_post_covers", False))
         self._scan_content_images = saved_settings.get("scan_content_images", True)

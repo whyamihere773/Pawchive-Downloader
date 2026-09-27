@@ -108,7 +108,7 @@
         {
             "version": "1.2.0",
             "date": "2026-09-27",
-            "notes": "Favorite Mode for downloading account favorites, exact file extension filtering with quick-pick chips, character recognition overhaul with franchise-first folder hierarchy (Series/Character), full-resolution download priority & low-res thumbnail replacement (#19), instant cancellation for large downloads (100k+ tasks), fix download state and missing Cancel button after stopping a previous session, omnibox page range fix (max page defaults to blank/all), and encrypted credentials vault."
+            "notes": "Favorite Mode for downloading account favorites, exact file extension filtering with quick-pick chips, character recognition overhaul with franchise-first folder hierarchy (Series/Character), full-resolution download priority with opt-in thumbnail fallback & automatic low-res replacement (#19), instant cancellation for large downloads (100k+ tasks), fix download state and missing Cancel button after stopping a previous session, omnibox page range fix (max page defaults to blank/all), and encrypted credentials vault."
         }
     ]
 }

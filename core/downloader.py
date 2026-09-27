@@ -1098,7 +1098,7 @@ class KemonoDownloader:
                             fallback_thumb_url = f"https://img.kemono.su/thumbnail/data{clean_rel}"
 
                         # Only append thumbnail fallback if enabled in options
-                        allow_thumb_fallback = getattr(options, "fallback_to_thumbnails", True)
+                        allow_thumb_fallback = getattr(options, "fallback_to_thumbnails", False)
                         if allow_thumb_fallback:
                             if fallback_thumb_url and fallback_thumb_url not in candidate_urls:
                                 candidate_urls.append(fallback_thumb_url)

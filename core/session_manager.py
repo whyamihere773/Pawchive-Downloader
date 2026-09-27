@@ -148,7 +148,7 @@ class SessionManager:
             "compress_webp": False,
             "keep_duplicates": False,
             "scan_content_images": True,
-            "fallback_to_thumbnails": True,
+            "fallback_to_thumbnails": False,
             "redownload_small_files": False,
             "dark_theme": True,
             "auto_sync_known": True,

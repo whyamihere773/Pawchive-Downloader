@@ -110,7 +110,7 @@ class FilterOptions:
         min_file_size: str = "",
         max_file_size: str = "",
         write_audio_metadata: bool = False,
-        fallback_to_thumbnails: bool = True,
+        fallback_to_thumbnails: bool = False,
         redownload_small_files: bool = False,
         exact_extensions: str = ""
     ):
@@ -243,7 +243,7 @@ class FilterOptions:
             min_file_size=d.get("min_file_size", ""),
             max_file_size=d.get("max_file_size", ""),
             write_audio_metadata=bool(d.get("write_audio_metadata", False)),
-            fallback_to_thumbnails=bool(d.get("fallback_to_thumbnails", True)),
+            fallback_to_thumbnails=bool(d.get("fallback_to_thumbnails", False)),
             redownload_small_files=bool(d.get("redownload_small_files", False)),
             exact_extensions=d.get("exact_extensions", ""),
         )
