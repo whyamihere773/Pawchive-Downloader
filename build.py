@@ -106,6 +106,21 @@ def post_build_setup(output_dir: str, version: str):
         shutil.copy2(src_master_bin, dst_master_bin)
         print(f"   Copied {src_master_bin} -> {dst_master_bin}")
 
+    # Copy standalone tools into dependencies/ next to executable (excluding AI models)
+    for bin_name in ["7za.exe", "yt-dlp.exe"]:
+        src_bin = os.path.join("dependencies", bin_name)
+        dst_bin = os.path.join(deps_dir, bin_name)
+        if os.path.exists(src_bin):
+            shutil.copy2(src_bin, dst_bin)
+            print(f"   Copied {src_bin} -> {dst_bin}")
+
+    # Strictly purge any AI model directories from dist to keep the release lightweight
+    for root_dir in [output_dir, os.path.join(output_dir, "_internal")]:
+        models_path = os.path.join(root_dir, "dependencies", "models")
+        if os.path.isdir(models_path):
+            shutil.rmtree(models_path, ignore_errors=True)
+            print(f"   Purged bundled AI models from {models_path}")
+
     # Stamp version.json into dist so the compiled exe can report its exact version
     src_version = os.path.join(os.path.dirname(os.path.abspath(__file__)), "version.json")
     dst_version = os.path.join(output_dir, "version.json")

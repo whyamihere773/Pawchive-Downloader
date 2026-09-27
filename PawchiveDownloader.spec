@@ -16,9 +16,16 @@ datas = [
     (os.path.join(project_root, 'qml'), 'qml'),
     (os.path.join(project_root, 'assets'), 'assets'),
     (os.path.join(project_root, 'locales'), 'locales'),
-    (os.path.join(project_root, 'dependencies'), 'dependencies'),
     (os.path.join(project_root, 'config', 'settings.example.json'), 'config'),
 ]
+
+# Explicitly add binaries from dependencies/ (excluding AI models)
+deps_src = os.path.join(project_root, 'dependencies')
+for bin_name in ['7za.exe', 'yt-dlp.exe']:
+    bin_path = os.path.join(deps_src, bin_name)
+    if os.path.exists(bin_path):
+        datas.append((bin_path, 'dependencies'))
+
 
 # Hidden imports required for dynamic loading across PySide6 QML and PyCryptodome
 hidden_imports = [
@@ -128,6 +135,14 @@ a = Analysis(
     cipher=block_cipher,
     noarchive=False,
 )
+
+# Safeguard: ensure no AI model files are ever bundled into the build
+a.datas = [
+    d for d in a.datas
+    if not ('dependencies\\models' in d[0] or 'dependencies/models' in d[0] or
+            '\\models\\' in d[0] or '/models/' in d[0] or
+            d[0].lower().endswith('.onnx') or d[0].lower().endswith('.gguf'))
+]
 
 pyz = PYZ(
     a.pure,
