@@ -26,5 +26,7 @@
   "save_post_metadata": true,
   "download_embeds": true,
   "open_folder_on_complete": false,
-  "play_completion_sound": false
+  "play_completion_sound": false,
+  "exact_extensions": "",
+  "saved_custom_extensions": []
 }
