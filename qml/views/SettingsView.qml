@@ -2080,6 +2080,87 @@ SmoothFlickable {
                     onCheckedChanged: if (root.bridge) root.bridge.generateDesktopReport = checked
                 }
 
+                StyledCheckBox {
+                    text: tr("opt_skip_retry_404_settings", "Skip HTTP 404 (Not Found) errors during retries")
+                    tooltip: tr("opt_skip_retry_404_tip", "Exclude HTTP 404 (Not Found) errors from retries and hide them from the retry window")
+                    checked: root.bridge ? root.bridge.skipRetry404 : false
+                    onCheckedChanged: if (root.bridge) root.bridge.skipRetry404 = checked
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 10
+
+                    StyledCheckBox {
+                        id: groupTypeSettingsCheck
+                        text: tr("opt_group_file_type_settings", "Group downloaded attachments by file type (/Images, /Video, /Archive, ...)")
+                        tooltip: tr("opt_group_file_type_tip", "Organize attachments into /Images, /Video, /Archive, /Audio, /Other folders")
+                        checked: root.bridge ? (root.bridge.groupFileType !== "none") : false
+                        onCheckedChanged: {
+                            if (root.bridge) {
+                                root.bridge.groupFileType = checked ? (root.bridge.groupFileType !== "none" ? root.bridge.groupFileType : "post") : "none"
+                            }
+                        }
+                    }
+
+                    Item { Layout.fillWidth: true }
+
+                    Rectangle {
+                        visible: groupTypeSettingsCheck.checked
+                        implicitHeight: 28
+                        implicitWidth: settingsScopeRow.implicitWidth + 18
+                        radius: 6
+                        color: settingsScopeMouse.containsMouse ? "#2A364E" : "#182030"
+                        border.color: settingsScopeMouse.containsMouse ? "#38BDF8" : "#2A364E"
+                        border.width: 1
+
+                        scale: settingsScopeMouse.pressed ? 0.94 : (settingsScopeMouse.containsMouse ? 1.03 : 1.0)
+                        Behavior on scale { SpringAnimation { spring: 4.8; damping: 0.35; mass: 0.8; epsilon: 0.005 } }
+
+                        RowLayout {
+                            id: settingsScopeRow
+                            anchors.centerIn: parent
+                            spacing: 6
+
+                            Text {
+                                text: root.bridge && root.bridge.groupFileType === "creator" ? "📁" : "📂"
+                                font.pixelSize: 11
+                            }
+
+                            Text {
+                                text: root.bridge && root.bridge.groupFileType === "creator"
+                                      ? tr("opt_group_scope_creator", "Creator Root (Creator/Type/Post)")
+                                      : tr("opt_group_scope_post", "Inside Post (Creator/Post/Type)")
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 11
+                                font.weight: Font.Medium
+                                color: "#38BDF8"
+                            }
+                        }
+
+                        MouseArea {
+                            id: settingsScopeMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                if (root.bridge) {
+                                    root.bridge.groupFileType = (root.bridge.groupFileType === "creator" ? "post" : "creator")
+                                }
+                            }
+                        }
+
+                        ToolTip {
+                            visible: settingsScopeMouse.containsMouse
+                            delay: 400
+                            timeout: 5000
+                            text: root.bridge && root.bridge.groupFileType === "creator"
+                                  ? root.tr("tip_group_scope_creator", "Files grouped by type at creator level: Creator/Images/Post/... (click to switch)")
+                                  : root.tr("tip_group_scope_post", "Files grouped inside post folders: Creator/Post/Images/... (click to switch)")
+                        }
+                    }
+                }
+
                 // Download Archive Database Sub-Card (gallery-dl style)
                 Rectangle {
                     Layout.fillWidth: true

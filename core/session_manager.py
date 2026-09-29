@@ -143,6 +143,7 @@ class SessionManager:
             "subfolder_per_post": True,
             "date_prefix": True,
             "file_index_prefix": False,
+            "group_file_type": "none",
             "separate_by_known": False,
             "download_revisions": False,
             "compress_webp": False,

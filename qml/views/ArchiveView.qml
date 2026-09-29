@@ -371,6 +371,19 @@ Rectangle {
                     }
 
                     StyledButton {
+                        text: root.width < 640 ? "" : root.tr("btn_rebuild_archive", "Rebuild")
+                        iconText: "🔨"
+                        variant: "outline"
+                        implicitHeight: 30
+                        tooltip: root.tr("btn_rebuild_archive_tip", "Scan one or more local download directories to rebuild or sync the archive database")
+                        onClicked: {
+                            if (typeof appWindow !== "undefined" && typeof appWindow.openArchiveRebuildModal === "function") {
+                                appWindow.openArchiveRebuildModal()
+                            }
+                        }
+                    }
+
+                    StyledButton {
                         text: root.width < 640 ? "" : root.tr("btn_import_archive", "Import")
                         iconText: "📥"
                         variant: "outline"
@@ -1487,13 +1500,28 @@ Rectangle {
                     Layout.alignment: Qt.AlignHCenter
                 }
 
-                StyledButton {
+                RowLayout {
                     Layout.alignment: Qt.AlignHCenter
-                    text: root.tr("btn_import_archive_empty", "Import gallery-dl archive.txt")
-                    iconText: "📥"
-                    variant: "outline"
+                    spacing: 10
                     visible: root.searchFilter.length === 0
-                    onClicked: importFileDialog.open()
+
+                    StyledButton {
+                        text: root.tr("btn_rebuild_archive", "Rebuild Archive from Local Files")
+                        iconText: "🔨"
+                        variant: "primary"
+                        onClicked: {
+                            if (typeof appWindow !== "undefined" && typeof appWindow.openArchiveRebuildModal === "function") {
+                                appWindow.openArchiveRebuildModal()
+                            }
+                        }
+                    }
+
+                    StyledButton {
+                        text: root.tr("btn_import_archive_empty", "Import gallery-dl archive.txt")
+                        iconText: "📥"
+                        variant: "outline"
+                        onClicked: importFileDialog.open()
+                    }
                 }
             }
 

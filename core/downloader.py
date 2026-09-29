@@ -628,6 +628,9 @@ class KemonoDownloader:
                 else:
                     folder_parts.append("Untagged")
 
+            creator_base_parts = list(folder_parts)
+            post_subfolder_name = ""
+
             # Post subfolder
             if options.subfolder_per_post:
                 clean_title = FilterEngine.clean_filesystem_text(post_title, max_len=100, fallback="Untitled")
@@ -648,8 +651,21 @@ class KemonoDownloader:
                     )
                 post_folder_registry[candidate_folder] = post_id
                 folder_parts.append(folder_name)
+                post_subfolder_name = folder_name
 
             post_folder = os.path.join(*folder_parts)
+
+            def _get_dest_folder(fn: str) -> str:
+                grp = getattr(options, "group_file_type", "none")
+                if grp in ("post", "creator"):
+                    cat = FilterEngine.get_file_type_category(fn)
+                    if grp == "creator":
+                        if options.subfolder_per_post and post_subfolder_name:
+                            return os.path.join(*creator_base_parts, cat, post_subfolder_name)
+                        return os.path.join(*creator_base_parts, cat)
+                    else:  # "post"
+                        return os.path.join(post_folder, cat)
+                return post_folder
 
             # Smart password extraction (search full caption + comments)
             caption_text = post.get("content") or post.get("captionHtml") or post.get("caption") or ""
@@ -979,7 +995,8 @@ class KemonoDownloader:
                 # Deduplication check before incrementing folder file counts:
                 # Prevents incrementing the sequence counter (001_, 002_, ...) for duplicate files
                 norm_key = self.extract_norm_rel_key(fobj) or clean_rel.lower()
-                if not options.keep_duplicates and norm_key in _batch_rel_paths[post_folder]:
+                target_dest_dir = _get_dest_folder(raw_name)
+                if not options.keep_duplicates and norm_key in _batch_rel_paths[target_dest_dir]:
                     logger.debug(
                         f"Skipping identical duplicate attachment: '{raw_name}' ({clean_rel}) in post '{post_title}'",
                         category="file"
@@ -987,8 +1004,8 @@ class KemonoDownloader:
                     continue
 
                 # Track sequential file index per folder
-                folder_file_counts[post_folder] += 1
-                seq_idx = folder_file_counts[post_folder]
+                folder_file_counts[target_dest_dir] += 1
+                seq_idx = folder_file_counts[target_dest_dir]
 
                 # Format filename based on selected naming style
                 sanitized_name = FilterEngine.format_custom_filename(
@@ -1106,7 +1123,8 @@ class KemonoDownloader:
                                 candidate_urls.append(f"{original_url}?f={sanitized_name}")
 
                 file_url = candidate_urls[0] if candidate_urls else f"https://file.pawchive.pw/data{clean_rel}?f={sanitized_name}"
-                target_path = os.path.join(post_folder, sanitized_name)
+                target_dest_dir = _get_dest_folder(sanitized_name)
+                target_path = os.path.join(target_dest_dir, sanitized_name)
                 file_id = f"{post_id}_{clean_rel}"
 
                 # Resolve filename collisions: distinguish between duplicate attachments in the SAME post
@@ -1130,11 +1148,11 @@ class KemonoDownloader:
                     if prev_post_id != post_id:
                         # Collision across DIFFERENT posts (e.g. subfolder_per_post is disabled)
                         disambig_name = f"{stem} [{post_id}]{ext}"
-                        target_path = os.path.join(post_folder, disambig_name)
+                        target_path = os.path.join(target_dest_dir, disambig_name)
                         counter = 2
                         while target_path in _batch_paths:
                             disambig_name = f"{stem} [{post_id}] ({counter}){ext}"
-                            target_path = os.path.join(post_folder, disambig_name)
+                            target_path = os.path.join(target_dest_dir, disambig_name)
                             counter += 1
                         logger.debug(
                             f"Different-post filename collision: '{sanitized_name}' belongs to post '{post_title}' ({post_id}), "
@@ -1146,11 +1164,11 @@ class KemonoDownloader:
                         hash_hint = os.path.splitext(os.path.basename(clean_rel))[0][-6:] or \
                                     hashlib.md5(clean_rel.encode()).hexdigest()[:6]
                         disambig_name = f"{stem}_{hash_hint}{ext}"
-                        target_path = os.path.join(post_folder, disambig_name)
+                        target_path = os.path.join(target_dest_dir, disambig_name)
                         counter = 2
                         while target_path in _batch_paths:
                             disambig_name = f"{stem}_{hash_hint}_{counter}{ext}"
-                            target_path = os.path.join(post_folder, disambig_name)
+                            target_path = os.path.join(target_dest_dir, disambig_name)
                             counter += 1
                         logger.debug(
                             f"Same-post duplicate attachment: '{sanitized_name}' already queued in post '{post_title}' — "
@@ -1172,14 +1190,15 @@ class KemonoDownloader:
                 }
                 # Record the normalised key so future files in this folder can detect duplicates
                 # regardless of whether an index prefix changes their target filename.
-                _batch_rel_paths[post_folder].add(norm_key)
+                _batch_rel_paths[target_dest_dir].add(norm_key)
 
                 webp_path = os.path.splitext(target_path)[0] + ".webp"
-                raw_path = os.path.join(post_folder, raw_name)
+                raw_dest_dir = _get_dest_folder(raw_name)
+                raw_path = os.path.join(raw_dest_dir, raw_name)
                 raw_webp = os.path.splitext(raw_path)[0] + ".webp"
                 # Also check for the prefixed variant on disk (e.g. "001_filename.jpg") so that
                 # re-runs with index prefix enabled don't re-download already-saved files.
-                prefixed_raw = os.path.join(post_folder, f"{seq_idx:03d}_{raw_name}")
+                prefixed_raw = os.path.join(raw_dest_dir, f"{seq_idx:03d}_{raw_name}")
                 prefixed_webp = os.path.splitext(prefixed_raw)[0] + ".webp"
 
                 expected_sha = str(fobj.get("sha256") or fobj.get("hash") or "")
@@ -1264,7 +1283,8 @@ class KemonoDownloader:
                 for embed_idx, e_url in enumerate(embed_urls, 1):
                     e_host = re.sub(r'[^a-zA-Z0-9]', '', e_url.split("://")[-1].split("/")[0])
                     e_name = f"embed_{embed_idx}_{e_host}.mp4"
-                    e_target_path = os.path.join(post_folder, e_name)
+                    e_dest_dir = _get_dest_folder(e_name)
+                    e_target_path = os.path.join(e_dest_dir, e_name)
                     e_file_id = f"embed_{post_id}_{embed_idx}"
 
                     if self.archive_manager and self.archive_manager.is_enabled:
@@ -1483,6 +1503,11 @@ class KemonoDownloader:
 
     def retry_failed_tasks(self, options: FilterOptions, cookie_str: str, max_auto_retries: int = 5) -> int:
         """Resets all tasks with status 'failed' or 'cancelled' to 'pending' up to max_auto_retries (5) and resumes downloading."""
+        skip_404 = (
+            getattr(self.current_options, "skip_retry_404", False)
+            if self.current_options
+            else getattr(options, "skip_retry_404", False)
+        )
         all_failed = [t for t in self.tasks if t.status in ("failed", "cancelled")]
         if not all_failed:
             logger.info("No failed tasks to retry.", category="downloader")
@@ -1491,6 +1516,9 @@ class KemonoDownloader:
         eligible_tasks = []
         for t in all_failed:
             err = str(getattr(t, "error_msg", "")).lower()
+            if skip_404 and ("404" in err or getattr(t, "http_status", 0) == 404):
+                continue
+
             is_fatal_auth = any(f in err for f in (
                 "key is not registered",
                 "session expired",
@@ -1545,9 +1573,16 @@ class KemonoDownloader:
             logger.info("No tasks selected for retry.", category="downloader")
             return 0
 
+        skip_404 = (
+            getattr(self.current_options, "skip_retry_404", False)
+            if self.current_options
+            else getattr(options, "skip_retry_404", False)
+        )
         target_tasks = []
         for t in self.tasks:
             if t.status in ("failed", "cancelled") and (t.file_id in selected_ids or t.url in selected_ids or t.filename in selected_ids):
+                if skip_404 and ("404" in str(getattr(t, "error_msg", "")).lower() or getattr(t, "http_status", 0) == 404):
+                    continue
                 target_tasks.append(t)
 
         if not target_tasks:
@@ -1811,10 +1846,17 @@ class KemonoDownloader:
                             else options.auto_retry_at_end
                         )
                         if auto_retry_active and not self._cancel_event.is_set():
+                            skip_404 = (
+                                getattr(self.current_options, "skip_retry_404", False)
+                                if self.current_options
+                                else getattr(options, "skip_retry_404", False)
+                            )
                             all_failed = [t for t in self.tasks if t.status == "failed"]
                             failed_tasks = []
                             for t in all_failed:
                                 err = str(getattr(t, "error_msg", "")).lower()
+                                if skip_404 and ("404" in err or getattr(t, "http_status", 0) == 404):
+                                    continue
                                 is_fatal_auth = any(f in err for f in (
                                     "key is not registered",
                                     "session expired",

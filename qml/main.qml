@@ -52,6 +52,10 @@ ApplicationWindow {
         tutorialModal.isOpen = true;
     }
 
+    function openArchiveRebuildModal() {
+        archiveRebuildModal.isOpen = true;
+    }
+
     function openSettingsTab(subTabIndex) {
         appWindow.currentTab = 9;
         if (typeof settingsViewTab !== "undefined" && settingsViewTab) {
@@ -2075,7 +2079,11 @@ ApplicationWindow {
                             Behavior on y { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
                             Behavior on scale { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
 
-                            ArchiveView { anchors.fill: parent; bridge: appBridge }
+                            ArchiveView {
+                                id: archiveViewTab
+                                anchors.fill: parent
+                                bridge: appBridge
+                            }
                         }
 
                         // Tab 8: History View with Newtonian slide & fade transition
@@ -2352,6 +2360,17 @@ ApplicationWindow {
         id: sessionRecoveryModal
         bridge: appBridge
         isOpen: false
+    }
+
+    // Global Archive Rebuild Modal
+    ArchiveRebuildModal {
+        id: archiveRebuildModal
+        bridge: appBridge
+        onRebuildCompleted: {
+            if (typeof archiveViewTab !== "undefined" && archiveViewTab && typeof archiveViewTab.reload === "function") {
+                archiveViewTab.reload();
+            }
+        }
     }
 
     // Wire: when bridge emits postActionCountdownStarted, open the modal with the action label

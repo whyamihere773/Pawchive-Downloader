@@ -26,6 +26,37 @@ class MediaTypes:
     AUDIO_EXTS = {".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".opus"}
     ARCHIVE_EXTS = {".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".iso"}
 
+    @staticmethod
+    def get_file_type_category(filename: str) -> str:
+        """
+        Returns broad category folder name ('Images', 'Video', 'Archive', 'Audio', 'Other')
+        for organizing attachments by file type.
+        """
+        if not filename:
+            return "Other"
+        _, ext = os.path.splitext(filename.lower())
+        if ext in {
+            ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".svg",
+            ".ico", ".tiff", ".tif", ".avif", ".heic", ".heif", ".jfif"
+        }:
+            return "Images"
+        elif ext in {
+            ".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v", ".flv",
+            ".wmv", ".ts", ".mts", ".m2ts", ".3gp"
+        }:
+            return "Video"
+        elif ext in {
+            ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".iso",
+            ".psd", ".clip", ".sai", ".sai2", ".cpt", ".procreate", ".7zip", ".tgz"
+        }:
+            return "Archive"
+        elif ext in {
+            ".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".opus",
+            ".wma", ".aiff", ".alac", ".mka"
+        }:
+            return "Audio"
+        return "Other"
+
 
 class FilenameStyles:
     POST_TITLE = "post_title"
@@ -112,7 +143,9 @@ class FilterOptions:
         write_audio_metadata: bool = False,
         fallback_to_thumbnails: bool = False,
         redownload_small_files: bool = False,
-        exact_extensions: str = ""
+        exact_extensions: str = "",
+        skip_retry_404: bool = False,
+        group_file_type: str = "none"
     ):
         self.characters = characters
         self.character_scope = character_scope
@@ -154,6 +187,8 @@ class FilterOptions:
         self.write_audio_metadata = bool(write_audio_metadata)
         self.fallback_to_thumbnails = bool(fallback_to_thumbnails)
         self.redownload_small_files = bool(redownload_small_files)
+        self.skip_retry_404 = bool(skip_retry_404)
+        self.group_file_type = str(group_file_type).lower() if str(group_file_type).lower() in ("none", "post", "creator") else "none"
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize filter options to dictionary for persistence."""
@@ -198,6 +233,8 @@ class FilterOptions:
             "fallback_to_thumbnails": self.fallback_to_thumbnails,
             "redownload_small_files": self.redownload_small_files,
             "exact_extensions": self.exact_extensions,
+            "skip_retry_404": self.skip_retry_404,
+            "group_file_type": self.group_file_type,
         }
 
     @classmethod
@@ -246,11 +283,18 @@ class FilterOptions:
             fallback_to_thumbnails=bool(d.get("fallback_to_thumbnails", False)),
             redownload_small_files=bool(d.get("redownload_small_files", False)),
             exact_extensions=d.get("exact_extensions", ""),
+            skip_retry_404=bool(d.get("skip_retry_404", False)),
+            group_file_type=d.get("group_file_type", "none"),
         )
 
 
 
 class FilterEngine:
+    @staticmethod
+    def get_file_type_category(filename: str) -> str:
+        """Returns broad category folder name ('Images', 'Video', 'Archive', 'Audio', 'Other') for a file."""
+        return MediaTypes.get_file_type_category(filename)
+
     @staticmethod
     def normalize_date(date_str: str) -> str:
         """Normalizes user-supplied date string into YYYY-MM-DD format.

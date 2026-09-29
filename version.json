@@ -1,8 +1,8 @@
 {
-    "version": "1.2.0",
+    "version": "1.2.1",
     "commit": "",
     "short_commit": "",
-    "date": "2026-09-27",
+    "date": "2026-09-30",
     "channel": "release",
     "history": [
         {
@@ -109,6 +109,11 @@
             "version": "1.2.0",
             "date": "2026-09-27",
             "notes": "Favorite Mode for downloading account favorites, exact file extension filtering with quick-pick chips, character recognition overhaul with franchise-first folder hierarchy (Series/Character), full-resolution download priority with opt-in thumbnail fallback & automatic low-res replacement (#19), instant cancellation for large downloads (100k+ tasks), fix download state and missing Cancel button after stopping a previous session, omnibox page range fix (max page defaults to blank/all), and encrypted credentials vault."
+        },
+        {
+            "version": "1.2.1",
+            "date": "2026-09-30",
+            "notes": "Asynchronous Multi-Directory Archive Rebuilder to sync and index local download folders across drives into the download archive database, broad file-type subfolder grouping (/Images, /Video, /Archive), adaptive threading toggle restored in the download interface, removed duplicate extension filter from Engine settings so it only appears in Downloader, and skip retry on HTTP 404 permanently missing files."
         }
     ]
 }

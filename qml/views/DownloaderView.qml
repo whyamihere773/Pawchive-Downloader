@@ -81,7 +81,6 @@ SmoothFlickable {
         if (root.bridge.dateBefore && root.bridge.dateBefore.trim().length > 0) count++
         if (root.bridge.minFileSize && root.bridge.minFileSize.trim().length > 0) count++
         if (root.bridge.maxFileSize && root.bridge.maxFileSize.trim().length > 0) count++
-        if (root.bridge.exactExtensions && root.bridge.exactExtensions.trim().length > 0) count++
         return count
     }
 
@@ -450,9 +449,34 @@ SmoothFlickable {
                             font.weight: root.currentSubTab === 2 ? 600 : Font.Medium
                             color: root.currentSubTab === 2 ? "#F8FAFC" : (tabMouse2.containsMouse ? "#CBD5E1" : "#94A3B8")
                             elide: Text.ElideRight
-                            width: Math.min(implicitWidth, tabBtn2.width - (subTabDock.isCompact ? 24 : 32))
+                            width: Math.min(implicitWidth, tabBtn2.width - (subTabDock.isCompact ? 36 : 50))
                             anchors.verticalCenter: parent.verticalCenter
                             Behavior on color { ColorAnimation { duration: 150 } }
+                        }
+
+                        // Concurrency & Adaptive thread chip mini-pill
+                        Rectangle {
+                            id: threadBadge
+                            implicitWidth: threadBadgeText.implicitWidth + 10
+                            height: 16
+                            radius: 8
+                            color: (root.bridge && root.bridge.threadsLocked) ? "#3A1A1C"
+                                   : ((root.bridge && root.bridge.adaptiveThreading) ? "#291E0A" : "#0C1828")
+                            border.color: (root.bridge && root.bridge.threadsLocked) ? "#EF4444"
+                                          : ((root.bridge && root.bridge.adaptiveThreading) ? "#F59E0B" : "#164E63")
+                            border.width: 1
+                            anchors.verticalCenter: parent.verticalCenter
+
+                            Text {
+                                id: threadBadgeText
+                                anchors.centerIn: parent
+                                text: root.threadChipText
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 9
+                                font.bold: true
+                                color: (root.bridge && root.bridge.threadsLocked) ? "#FCA5A5"
+                                       : ((root.bridge && root.bridge.adaptiveThreading) ? "#FCD34D" : "#7DD3FA")
+                            }
                         }
                     }
 
@@ -1362,454 +1386,6 @@ SmoothFlickable {
                 }
             }
 
-            // Card 1.1b: Exact File Extensions
-            CardSection {
-                Layout.fillWidth: true
-                title: root.tr("label_exact_extensions", "Exact File Extensions")
-                iconText: "🏷️"
-                entranceOffsetY: root.tabEntranceOffsetY * 1.15
-                entranceOpacity: root.tabEntranceOpacity
-
-                ColumnLayout {
-                    width: parent.width
-                    spacing: 10
-
-                    // Header with Hint and Clear Button
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 8
-
-                        Text {
-                            text: root.tr("hint_exact_extensions", "Only download files matching selected or entered extensions (e.g. .zip, .png, .psd)")
-                            font.family: "Segoe UI, sans-serif"
-                            font.pixelSize: 10
-                            color: "#64748B"
-                            Layout.fillWidth: true
-                            elide: Text.ElideRight
-                        }
-
-                        // Clear Extensions Button
-                        Text {
-                            visible: root.bridge && root.bridge.exactExtensions.length > 0
-                            text: root.tr("btn_clear_extensions", "Clear All ✕")
-                            font.family: "Segoe UI, sans-serif"
-                            font.pixelSize: 11
-                            font.bold: true
-                            color: extClearMouse1.containsMouse ? "#F87171" : "#94A3B8"
-                            scale: extClearMouse1.pressed ? 0.92 : (extClearMouse1.containsMouse ? 1.06 : 1.0)
-                            Behavior on scale { SpringAnimation { spring: 5.2; damping: 0.32; mass: 0.65; epsilon: 0.005 } }
-                            Behavior on color { ColorAnimation { duration: 140 } }
-
-                            MouseArea {
-                                id: extClearMouse1
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: {
-                                    if (root.bridge) {
-                                        root.bridge.clearExactExtensions()
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // ── 1. ACTIVE EXTENSIONS DISPLAY BANNER ──
-                    Rectangle {
-                        Layout.fillWidth: true
-                        implicitHeight: activeContentCol1.implicitHeight + 16
-                        radius: 8
-                        color: (root.bridge && root.bridge.activeExtensionsList.length > 0) ? "#0B1120" : "#0F172A"
-                        border.color: (root.bridge && root.bridge.activeExtensionsList.length > 0) ? "#3B82F6" : "#1E293B"
-                        border.width: 1
-
-                        Behavior on color { ColorAnimation { duration: 180 } }
-                        Behavior on border.color { ColorAnimation { duration: 180 } }
-
-                        ColumnLayout {
-                            id: activeContentCol1
-                            anchors.fill: parent
-                            anchors.margins: 8
-                            spacing: 8
-
-                            RowLayout {
-                                Layout.fillWidth: true
-                                spacing: 8
-
-                                Rectangle {
-                                    implicitWidth: 8
-                                    implicitHeight: 8
-                                    radius: 4
-                                    color: (root.bridge && root.bridge.activeExtensionsList.length > 0) ? "#38BDF8" : "#10B981"
-                                }
-
-                                Text {
-                                    text: (root.bridge && root.bridge.activeExtensionsList.length > 0)
-                                        ? (root.tr("label_active_extensions", "Active Extensions:") + " (" + root.bridge.activeExtensionsList.length + ")")
-                                        : root.tr("msg_all_extensions_allowed", "All file extensions allowed (no filter active)")
-                                    font.family: "Segoe UI, sans-serif"
-                                    font.pixelSize: 11
-                                    font.bold: (root.bridge && root.bridge.activeExtensionsList.length > 0)
-                                    color: (root.bridge && root.bridge.activeExtensionsList.length > 0) ? "#93C5FD" : "#64748B"
-                                    Layout.fillWidth: true
-                                }
-                            }
-
-                            // Interactive Active Chips
-                            Flow {
-                                visible: root.bridge && root.bridge.activeExtensionsList.length > 0
-                                Layout.fillWidth: true
-                                spacing: 6
-
-                                Repeater {
-                                    model: root.bridge ? root.bridge.activeExtensionsList : []
-
-                                    Item {
-                                        id: activeChipItem1
-                                        required property string modelData
-                                        implicitHeight: 26
-                                        implicitWidth: activeChipRow1.implicitWidth + 14
-
-                                        scale: activeChipMouse1.pressed ? 0.92 : (activeChipMouse1.containsMouse ? 1.05 : 1.0)
-                                        Behavior on scale { SpringAnimation { spring: 5.2; damping: 0.35; mass: 0.7; epsilon: 0.005 } }
-
-                                        Rectangle {
-                                            anchors.fill: parent
-                                            radius: 6
-                                            color: activeChipMouse1.containsMouse ? "#1E293B" : "#172033"
-                                            border.color: activeChipMouse1.containsMouse ? "#F87171" : "#60A5FA"
-                                            border.width: 1
-
-                                            Behavior on color { ColorAnimation { duration: 120 } }
-                                            Behavior on border.color { ColorAnimation { duration: 120 } }
-
-                                            RowLayout {
-                                                id: activeChipRow1
-                                                anchors.centerIn: parent
-                                                spacing: 5
-
-                                                Text {
-                                                    text: activeChipItem1.modelData
-                                                    font.family: "Segoe UI, sans-serif"
-                                                    font.pixelSize: 11
-                                                    font.bold: true
-                                                    color: "#E0F2FE"
-                                                }
-
-                                                Text {
-                                                    text: "✕"
-                                                    font.pixelSize: 10
-                                                    font.bold: true
-                                                    color: activeChipMouse1.containsMouse ? "#F87171" : "#93C5FD"
-                                                }
-                                            }
-
-                                            MouseArea {
-                                                id: activeChipMouse1
-                                                anchors.fill: parent
-                                                hoverEnabled: true
-                                                cursorShape: Qt.PointingHandCursor
-                                                onClicked: {
-                                                    if (root.bridge) root.bridge.toggleExactExtension(activeChipItem1.modelData)
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // ── 2. QUICK-PICK STANDARD EXTENSIONS FLOW ──
-                    Flow {
-                        width: parent.width
-                        Layout.fillWidth: true
-                        spacing: 6
-
-                        // Archive types
-                        FilterCheckbox {
-                            label: ".zip"
-                            activeColor: "#F59E0B"
-                            tooltip: "Only download ZIP archives (.zip)"
-                            checked: root.isExtActive(".zip")
-                            onClicked: if (root.bridge) root.bridge.toggleExactExtension(".zip")
-                        }
-                        FilterCheckbox {
-                            label: ".rar"
-                            activeColor: "#F59E0B"
-                            tooltip: "Only download RAR archives (.rar)"
-                            checked: root.isExtActive(".rar")
-                            onClicked: if (root.bridge) root.bridge.toggleExactExtension(".rar")
-                        }
-                        FilterCheckbox {
-                            label: ".7z"
-                            activeColor: "#F59E0B"
-                            tooltip: "Only download 7-Zip archives (.7z)"
-                            checked: root.isExtActive(".7z")
-                            onClicked: if (root.bridge) root.bridge.toggleExactExtension(".7z")
-                        }
-
-                        // Image / Art types
-                        FilterCheckbox {
-                            label: ".png"
-                            activeColor: "#38BDF8"
-                            tooltip: "Only download PNG lossless images (.png)"
-                            checked: root.isExtActive(".png")
-                            onClicked: if (root.bridge) root.bridge.toggleExactExtension(".png")
-                        }
-                        FilterCheckbox {
-                            label: ".jpg"
-                            activeColor: "#38BDF8"
-                            tooltip: "Only download JPG / JPEG images (.jpg, .jpeg)"
-                            checked: root.isExtActive(".jpg")
-                            onClicked: if (root.bridge) root.bridge.toggleExactExtension(".jpg")
-                        }
-                        FilterCheckbox {
-                            label: ".gif"
-                            activeColor: "#38BDF8"
-                            tooltip: "Only download animated GIF images (.gif)"
-                            checked: root.isExtActive(".gif")
-                            onClicked: if (root.bridge) root.bridge.toggleExactExtension(".gif")
-                        }
-                        FilterCheckbox {
-                            label: ".webp"
-                            activeColor: "#38BDF8"
-                            tooltip: "Only download WebP images (.webp)"
-                            checked: root.isExtActive(".webp")
-                            onClicked: if (root.bridge) root.bridge.toggleExactExtension(".webp")
-                        }
-                        FilterCheckbox {
-                            label: ".psd"
-                            activeColor: "#EC4899"
-                            tooltip: "Only download Photoshop PSD project files (.psd)"
-                            checked: root.isExtActive(".psd")
-                            onClicked: if (root.bridge) root.bridge.toggleExactExtension(".psd")
-                        }
-                        FilterCheckbox {
-                            label: ".clip"
-                            activeColor: "#EC4899"
-                            tooltip: "Only download Clip Studio Paint CLIP files (.clip)"
-                            checked: root.isExtActive(".clip")
-                            onClicked: if (root.bridge) root.bridge.toggleExactExtension(".clip")
-                        }
-
-                        // Video types
-                        FilterCheckbox {
-                            label: ".mp4"
-                            activeColor: "#818CF8"
-                            tooltip: "Only download MP4 videos (.mp4)"
-                            checked: root.isExtActive(".mp4")
-                            onClicked: if (root.bridge) root.bridge.toggleExactExtension(".mp4")
-                        }
-                        FilterCheckbox {
-                            label: ".mkv"
-                            activeColor: "#818CF8"
-                            tooltip: "Only download Matroska MKV videos (.mkv)"
-                            checked: root.isExtActive(".mkv")
-                            onClicked: if (root.bridge) root.bridge.toggleExactExtension(".mkv")
-                        }
-                        FilterCheckbox {
-                            label: ".webm"
-                            activeColor: "#818CF8"
-                            tooltip: "Only download WebM videos (.webm)"
-                            checked: root.isExtActive(".webm")
-                            onClicked: if (root.bridge) root.bridge.toggleExactExtension(".webm")
-                        }
-
-                        // Audio types
-                        FilterCheckbox {
-                            label: ".mp3"
-                            activeColor: "#10B981"
-                            tooltip: "Only download MP3 audio (.mp3)"
-                            checked: root.isExtActive(".mp3")
-                            onClicked: if (root.bridge) root.bridge.toggleExactExtension(".mp3")
-                        }
-                        FilterCheckbox {
-                            label: ".flac"
-                            activeColor: "#10B981"
-                            tooltip: "Only download FLAC lossless audio (.flac)"
-                            checked: root.isExtActive(".flac")
-                            onClicked: if (root.bridge) root.bridge.toggleExactExtension(".flac")
-                        }
-
-                        // Document types
-                        FilterCheckbox {
-                            label: ".pdf"
-                            activeColor: "#F87171"
-                            tooltip: "Only download PDF documents (.pdf)"
-                            checked: root.isExtActive(".pdf")
-                            onClicked: if (root.bridge) root.bridge.toggleExactExtension(".pdf")
-                        }
-                    }
-
-                    // ── 3. SAVED CUSTOM EXTENSIONS SECTION ──
-                    ColumnLayout {
-                        visible: root.bridge && root.bridge.savedCustomExtensions.length > 0
-                        Layout.fillWidth: true
-                        spacing: 4
-
-                        Text {
-                            text: root.tr("label_saved_custom_extensions", "Custom Extensions:")
-                            font.family: "Segoe UI, sans-serif"
-                            font.pixelSize: 10
-                            font.bold: true
-                            color: "#A5B4FC"
-                        }
-
-                        Flow {
-                            Layout.fillWidth: true
-                            spacing: 6
-
-                            Repeater {
-                                model: root.bridge ? root.bridge.savedCustomExtensions : []
-
-                                Item {
-                                    id: savedPillRoot1
-                                    required property string modelData
-                                    readonly property bool isChecked: root.isExtActive(modelData)
-                                    implicitHeight: 28
-                                    implicitWidth: savedPillRow1.implicitWidth + 14
-
-                                    scale: savedPillMouse1.pressed ? 0.93 : (savedPillMouse1.containsMouse ? 1.04 : 1.0)
-                                    Behavior on scale { SpringAnimation { spring: 4.5; damping: 0.35; mass: 0.8; epsilon: 0.01 } }
-
-                                    Rectangle {
-                                        anchors.fill: parent
-                                        radius: 6
-                                        color: savedPillRoot1.isChecked ? "#312E81" : (savedPillMouse1.containsMouse ? "#222733" : "#181B24")
-                                        border.color: savedPillRoot1.isChecked ? "#818CF8" : (savedPillMouse1.containsMouse ? "#475569" : "#2E3544")
-                                        border.width: savedPillRoot1.isChecked ? 1.5 : 1
-                                        Behavior on color { ColorAnimation { duration: 160 } }
-                                        Behavior on border.color { ColorAnimation { duration: 160 } }
-
-                                        RowLayout {
-                                            id: savedPillRow1
-                                            anchors.centerIn: parent
-                                            spacing: 6
-
-                                            Text {
-                                                text: "✨"
-                                                font.pixelSize: 10
-                                            }
-
-                                            Text {
-                                                text: savedPillRoot1.modelData
-                                                font.family: "Segoe UI, Inter, sans-serif"
-                                                font.pixelSize: 11
-                                                font.weight: savedPillRoot1.isChecked ? Font.Bold : Font.Medium
-                                                color: savedPillRoot1.isChecked ? "#EEF2FF" : "#94A3B8"
-                                            }
-
-                                            // Remove from saved (✕)
-                                            Rectangle {
-                                                implicitWidth: 16
-                                                implicitHeight: 16
-                                                radius: 8
-                                                color: removeSavedMouse1.containsMouse ? "#EF4444" : "transparent"
-                                                Behavior on color { ColorAnimation { duration: 120 } }
-
-                                                Text {
-                                                    anchors.centerIn: parent
-                                                    text: "✕"
-                                                    font.pixelSize: 9
-                                                    color: removeSavedMouse1.containsMouse ? "#FFFFFF" : "#64748B"
-                                                }
-
-                                                MouseArea {
-                                                    id: removeSavedMouse1
-                                                    anchors.fill: parent
-                                                    hoverEnabled: true
-                                                    cursorShape: Qt.PointingHandCursor
-                                                    onClicked: {
-                                                        if (root.bridge) {
-                                                            root.bridge.removeSavedCustomExtension(savedPillRoot1.modelData)
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        MouseArea {
-                                            id: savedPillMouse1
-                                            anchors.fill: parent
-                                            anchors.rightMargin: 20
-                                            hoverEnabled: true
-                                            cursorShape: Qt.PointingHandCursor
-                                            onClicked: {
-                                                if (root.bridge) {
-                                                    root.bridge.toggleExactExtension(savedPillRoot1.modelData)
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // ── 4. ADD / SAVE CUSTOM EXTENSION INPUT ROW ──
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: 8
-
-                            StyledTextField {
-                                id: exactExtInputTab1
-                                Layout.fillWidth: true
-                                placeholderText: root.tr("ph_save_custom_ext", "Add custom extension (e.g. .blend, .fbx, .cbr)")
-                                tooltip: root.tr("hint_exact_extensions", "Only download files matching selected or entered extensions (e.g. .zip, .png, .psd)")
-                                onAccepted: {
-                                    if (text.trim().length > 0 && root.bridge) {
-                                        root.bridge.addSavedCustomExtension(text.trim())
-                                        text = ""
-                                    }
-                                }
-                            }
-
-                            StyledButton {
-                                text: root.tr("btn_save_extension", "+ Save")
-                                variant: "primary"
-                                tooltip: "Save extension to your permanent custom extensions and activate it"
-                                onClicked: {
-                                    if (exactExtInputTab1.text.trim().length > 0 && root.bridge) {
-                                        root.bridge.addSavedCustomExtension(exactExtInputTab1.text.trim())
-                                        exactExtInputTab1.text = ""
-                                    }
-                                }
-                            }
-
-                            // Active Filter badge indicator with Newtonian fluid pop
-                            Rectangle {
-                                visible: root.bridge && root.bridge.activeExtensionsList.length > 0
-                                implicitHeight: 34
-                                implicitWidth: activeExtLabel1.implicitWidth + 20
-                                radius: 8
-                                color: "#1E1B4B"
-                                border.color: "#6366F1"
-                                border.width: 1
-
-                                scale: visible ? 1.0 : 0.8
-                                opacity: visible ? 1.0 : 0.0
-                                Behavior on scale { SpringAnimation { spring: 4.8; damping: 0.35; mass: 0.7; epsilon: 0.005 } }
-                                Behavior on opacity { NumberAnimation { duration: 180 } }
-
-                                RowLayout {
-                                    anchors.centerIn: parent
-                                    spacing: 4
-
-                                    Text {
-                                        id: activeExtLabel1
-                                        text: (root.bridge ? root.bridge.activeExtensionsList.length : 0) + " " + root.tr("badge_exact_extensions", "Active")
-                                        font.family: "Segoe UI, sans-serif"
-                                        font.pixelSize: 11
-                                        font.bold: true
-                                        color: "#A5B4FC"
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
             // Card 1.2: Post Publication Date Range
             CardSection {
                 Layout.fillWidth: true
@@ -2239,9 +1815,83 @@ SmoothFlickable {
                         onCheckedChanged: if (root.bridge) root.bridge.fileIndexPrefix = checked
                     }
 
-                    RowLayout {
+                    Row {
+                        spacing: 8
+
+                        StyledCheckBox {
+                            id: groupTypeCheck
+                            text: root.tr("opt_group_file_type", "Group by File Type")
+                            tooltip: root.tr("opt_group_file_type_tip", "Organize attachments into /Images, /Video, /Archive, /Audio, /Other folders")
+                            checked: root.bridge ? (root.bridge.groupFileType !== "none") : false
+                            onCheckedChanged: {
+                                if (root.bridge) {
+                                    root.bridge.groupFileType = checked ? (root.bridge.groupFileType !== "none" ? root.bridge.groupFileType : "post") : "none"
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            id: groupScopePill
+                            visible: groupTypeCheck.checked
+                            y: Math.round((groupTypeCheck.height - height) / 2)
+                            implicitHeight: 22
+                            implicitWidth: groupScopeRow.implicitWidth + 14
+                            radius: 11
+                            color: groupScopeMouse.containsMouse ? "#2A364E" : "#1B2232"
+                            border.color: groupScopeMouse.containsMouse ? "#38BDF8" : "#334155"
+                            border.width: 1
+
+                            scale: groupScopeMouse.pressed ? 0.94 : (groupScopeMouse.containsMouse ? 1.04 : 1.0)
+                            Behavior on scale { SpringAnimation { spring: 4.8; damping: 0.35; mass: 0.8; epsilon: 0.005 } }
+
+                            RowLayout {
+                                id: groupScopeRow
+                                anchors.centerIn: parent
+                                spacing: 4
+
+                                Text {
+                                    text: root.bridge && root.bridge.groupFileType === "creator" ? "📁" : "📂"
+                                    font.pixelSize: 10
+                                }
+
+                                Text {
+                                    text: root.bridge && root.bridge.groupFileType === "creator"
+                                          ? root.tr("opt_group_scope_creator", "Creator Root")
+                                          : root.tr("opt_group_scope_post", "Inside Post")
+                                    font.family: "Segoe UI, sans-serif"
+                                    font.pixelSize: 10
+                                    font.weight: Font.Medium
+                                    color: "#38BDF8"
+                                }
+                            }
+
+                            MouseArea {
+                                id: groupScopeMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    if (root.bridge) {
+                                        root.bridge.groupFileType = (root.bridge.groupFileType === "creator" ? "post" : "creator")
+                                    }
+                                }
+                            }
+
+                            ToolTip {
+                                visible: groupScopeMouse.containsMouse
+                                delay: 400
+                                timeout: 5000
+                                text: root.bridge && root.bridge.groupFileType === "creator"
+                                      ? root.tr("tip_group_scope_creator", "Files grouped by type at creator level: Creator/Images/Post/... (click to switch)")
+                                      : root.tr("tip_group_scope_post", "Files grouped inside post folders: Creator/Post/Images/... (click to switch)")
+                            }
+                        }
+                    }
+
+                    Row {
                         spacing: 6
                         StyledCheckBox {
+                            id: tagFolderCheck
                             text: root.tr("opt_tag_folder_mode", "Sort by Tag Folder")
                             tooltip: root.tr("opt_tag_folder_mode_tip", "(Pawchive & cum.st only) Groups downloaded files into subfolders named after the post's primary tag")
                             checked: root.bridge ? root.bridge.tagFolderMode : false
@@ -2252,6 +1902,7 @@ SmoothFlickable {
                             readonly property string curUrl: root.bridge ? (root.bridge.currentUrl || "").toLowerCase() : ""
                             readonly property bool isNonTagDomain: curUrl.length > 0 && curUrl.indexOf("pawchive.pw") === -1 && curUrl.indexOf("cum.st") === -1
                             visible: isNonTagDomain
+                            y: Math.round((tagFolderCheck.height - height) / 2)
                             implicitHeight: 20
                             implicitWidth: tagWarnText.implicitWidth + 10
                             radius: 4
@@ -2334,8 +1985,6 @@ SmoothFlickable {
                         width: parent.width
                         Layout.fillWidth: true
                         spacing: 8
-                        opacity: (root.bridge && root.bridge.isTelegramUrl) ? 0.45 : ((root.bridge && root.bridge.adaptiveThreading) ? 0.38 : 1.0)
-                        Behavior on opacity { NumberAnimation { duration: 180 } }
 
                         Text {
                             text: root.tr("label_concurrent_workers", "Concurrent Workers:")
@@ -2349,6 +1998,8 @@ SmoothFlickable {
                         RowLayout {
                             height: 32
                             spacing: 8
+                            opacity: (root.bridge && root.bridge.isTelegramUrl) ? 0.45 : ((root.bridge && root.bridge.adaptiveThreading) ? 0.38 : 1.0)
+                            Behavior on opacity { NumberAnimation { duration: 180 } }
 
                             Slider {
                                 id: threadSlider
@@ -2531,6 +2182,95 @@ SmoothFlickable {
                                 }
                             }
 
+                            // Adaptive Threading Toggle Button with Newtonian Fluid squash-stretch and buoyant hover
+                            Rectangle {
+                                id: adaptiveBtn
+                                height: 24
+                                radius: 5
+                                readonly property bool isTg: root.bridge && root.bridge.isTelegramUrl
+                                readonly property bool isLocked: root.bridge && root.bridge.threadsLocked
+                                readonly property bool isAdaptive: !isTg && !isLocked && (root.bridge && root.bridge.adaptiveThreading)
+                                readonly property bool canToggle: !isTg && !isLocked
+
+                                opacity: canToggle ? 1.0 : 0.38
+                                Behavior on opacity { NumberAnimation { duration: 180 } }
+
+                                implicitWidth: adaptiveRow.implicitWidth + 16
+                                color: isAdaptive
+                                       ? (adaptiveMouse.containsMouse ? "#3A2908" : "#2A1D05")
+                                       : (adaptiveMouse.containsMouse ? "#1E293B" : "#161E2E")
+                                border.color: isAdaptive
+                                              ? (adaptiveMouse.containsMouse ? "#FCD34D" : "#F59E0B")
+                                              : (adaptiveMouse.containsMouse ? "#475569" : "#242A38")
+                                border.width: 1
+
+                                scale: (canToggle && adaptiveMouse.pressed) ? 0.94 : ((canToggle && adaptiveMouse.containsMouse) ? 1.04 : 1.0)
+                                Behavior on scale { SpringAnimation { spring: 4.8; damping: 0.32; mass: 0.8; epsilon: 0.005 } }
+
+                                transform: Translate {
+                                    y: (adaptiveBtn.canToggle && adaptiveMouse.containsMouse) ? -1.5 : 0
+                                    Behavior on y { SpringAnimation { spring: 4.5; damping: 0.35; mass: 0.8; epsilon: 0.1 } }
+                                }
+
+                                RowLayout {
+                                    id: adaptiveRow
+                                    anchors.centerIn: parent
+                                    spacing: 5
+
+                                    Text {
+                                        text: "⚡"
+                                        font.pixelSize: 11
+                                        scale: adaptiveBtn.isAdaptive ? 1.15 : 1.0
+                                        Behavior on scale { SpringAnimation { spring: 5.0; damping: 0.35; mass: 0.7; epsilon: 0.01 } }
+                                    }
+
+                                    Text {
+                                        text: root.tr("opt_adaptive_threading", "Adaptive Threading")
+                                        font.family: "Segoe UI, sans-serif"
+                                        font.bold: true
+                                        font.pixelSize: 11
+                                        color: adaptiveBtn.isAdaptive ? "#FCD34D" : "#94A3B8"
+                                    }
+                                }
+
+                                MouseArea {
+                                    id: adaptiveMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: adaptiveBtn.canToggle ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                    onClicked: {
+                                        if (root.bridge && adaptiveBtn.canToggle) {
+                                            root.bridge.adaptiveThreading = !root.bridge.adaptiveThreading
+                                        }
+                                    }
+                                }
+
+                                ToolTip {
+                                    id: adaptiveToolTip
+                                    visible: adaptiveMouse.containsMouse
+                                    delay: 400
+                                    timeout: 5000
+                                    text: adaptiveBtn.isTg
+                                          ? root.tr("opt_adaptive_telegram_tip", "Adaptive Threading is disabled for Telegram downloads (locked strictly to 2 threads to prevent account bans)")
+                                          : (adaptiveBtn.isLocked
+                                             ? root.tr("opt_adaptive_disabled_tip", "Adaptive Threading is disabled because Thread Lock is active")
+                                             : root.tr("opt_adaptive_threading_tip", "Automatically scale worker thread count based on network conditions and 429 rate limits"))
+                                    contentItem: Text {
+                                        text: adaptiveToolTip.text
+                                        font.family: "Segoe UI, Inter, sans-serif"
+                                        font.pixelSize: 11
+                                        color: "#F1F5F9"
+                                        wrapMode: Text.WordWrap
+                                    }
+                                    background: Rectangle {
+                                        color: "#141924"
+                                        border.color: adaptiveBtn.isAdaptive ? "#F59E0B" : "#38BDF8"
+                                        border.width: 1
+                                        radius: 6
+                                    }
+                                }
+                            }
+
                             // Telegram thread lock reason badge
                             Rectangle {
                                 id: tgLockBadge
@@ -2626,22 +2366,6 @@ SmoothFlickable {
                                            ? "#F87171"
                                            : (root.bridge && root.bridge.adaptiveThreading ? "#FBBF24" : "#38BDF8")
                                 }
-                            }
-
-                            // Adaptive Threading Checkbox
-                            StyledCheckBox {
-                                id: adaptiveCheck
-                                text: root.tr("opt_adaptive_threading", "Adaptive Threading")
-                                tooltip: (root.bridge && root.bridge.isTelegramUrl)
-                                         ? root.tr("opt_adaptive_telegram_tip", "Adaptive Threading is disabled for Telegram downloads (locked strictly to 2 threads to prevent account bans)")
-                                         : ((root.bridge && root.bridge.threadsLocked)
-                                            ? root.tr("opt_adaptive_disabled_tip", "Adaptive Threading is disabled because Thread Lock is active")
-                                            : root.tr("opt_adaptive_threading_tip", "Automatically scale worker thread count based on network conditions and 429 rate limits"))
-                                enabled: (root.bridge && root.bridge.isTelegramUrl) ? false : (root.bridge ? !root.bridge.threadsLocked : true)
-                                opacity: enabled ? 1.0 : 0.38
-                                Behavior on opacity { NumberAnimation { duration: 180 } }
-                                checked: (root.bridge && root.bridge.isTelegramUrl) ? false : (root.bridge ? root.bridge.adaptiveThreading : false)
-                                onCheckedChanged: if (root.bridge && enabled) root.bridge.adaptiveThreading = checked
                             }
                         }
                     }

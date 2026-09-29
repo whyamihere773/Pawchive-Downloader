@@ -469,10 +469,25 @@ class QueueModel(QAbstractListModel):
 
     @Property(int, notify=failedCountChanged)
     def failedCount(self) -> int:
+        p = self.parent()
+        skip_404 = bool(getattr(p, "skipRetry404", False)) if p else False
+
+        if skip_404:
+            count = sum(1 for t in self._tasks if t.status in ("failed", "cancelled") and not ("404" in str(getattr(t, "error_msg", "") or "").lower() or getattr(t, "http_status", 0) == 404))
+            if count > 0:
+                return count
+            try:
+                if p and hasattr(p, "recovery_manager"):
+                    spilled = p.recovery_manager.load_retries()
+                    if spilled:
+                        return sum(1 for item in spilled if not ("404" in str((item.get("error_msg") if isinstance(item, dict) else getattr(item, "error_msg", "")) or "").lower()))
+            except Exception:
+                pass
+            return count
+
         if self._failed_count > 0:
             return self._failed_count
         try:
-            p = self.parent()
             if p and hasattr(p, "recovery_manager"):
                 spilled = p.recovery_manager.load_retries()
                 if spilled:
@@ -921,9 +936,16 @@ class QueueModel(QAbstractListModel):
     @Slot(result="QVariantList")
     def getFailedTasksList(self):
         """Returns detailed failed and cancelled task metadata for the Retry Modal dialog."""
+        p = self.parent()
+        skip_404 = bool(getattr(p, "skipRetry404", False)) if p else False
+
         failed = []
         for t in self._tasks:
             if t.status in ("failed", "cancelled"):
+                err_msg = t.error_msg or ("Download cancelled by user" if t.status == "cancelled" else "Download failed")
+                if skip_404 and ("404" in str(err_msg).lower() or getattr(t, "http_status", 0) == 404):
+                    continue
+
                 p_url = getattr(t, "post_url", "") or ""
                 if not p_url and t.service and t.post_id:
                     p_url = f"https://pawchive.pw/{t.service}/user/{t.creator_name}/post/{t.post_id}"
@@ -937,7 +959,7 @@ class QueueModel(QAbstractListModel):
                     "postId": t.post_id,
                     "postUrl": p_url,
                     "url": t.url,
-                    "errorMsg": t.error_msg or ("Download cancelled by user" if t.status == "cancelled" else "Download failed"),
+                    "errorMsg": err_msg,
                     "fileSize": self._format_size(t.file_size),
                     "retryCount": getattr(t, "retry_count", 0),
                     "retryCapped": getattr(t, "retry_capped", False) or getattr(t, "retry_count", 0) >= 5
@@ -945,12 +967,15 @@ class QueueModel(QAbstractListModel):
 
         if not failed:
             try:
-                p = self.parent()
                 if p and hasattr(p, "recovery_manager"):
                     spilled = p.recovery_manager.load_retries()
                     if spilled:
                         for item in spilled:
                             d = item.to_dict() if hasattr(item, "to_dict") else (item if isinstance(item, dict) else vars(item))
+                            err_msg = d.get("error_msg") or "Download failed"
+                            if skip_404 and ("404" in str(err_msg).lower() or d.get("http_status") == 404):
+                                continue
+
                             p_url = d.get("post_url") or ""
                             if not p_url and d.get("service") and d.get("post_id"):
                                 p_url = f"https://pawchive.pw/{d.get('service')}/user/{d.get('creator_name')}/post/{d.get('post_id')}"
@@ -963,7 +988,7 @@ class QueueModel(QAbstractListModel):
                                 "postId": d.get("post_id", ""),
                                 "postUrl": p_url,
                                 "url": d.get("url", ""),
-                                "errorMsg": d.get("error_msg") or "Download failed",
+                                "errorMsg": err_msg,
                                 "fileSize": self._format_size(d.get("file_size", 0)),
                                 "retryCount": d.get("retry_count", 0),
                                 "retryCapped": d.get("retry_capped", False) or d.get("retry_count", 0) >= 5

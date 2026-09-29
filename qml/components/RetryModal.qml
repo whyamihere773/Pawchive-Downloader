@@ -43,6 +43,9 @@ Rectangle {
             var list = modalRoot.bridge.queueModel.getFailedTasksList()
             for (var i = 0; i < list.length; i++) {
                 var item = list[i]
+                if (modalRoot.bridge && modalRoot.bridge.skipRetry404 && item.errorMsg && item.errorMsg.indexOf("404") !== -1) {
+                    continue
+                }
                 failedItemsModel.append({
                     fileId: item.fileId || "",
                     filename: item.filename || "",
@@ -96,6 +99,11 @@ Rectangle {
     Connections {
         target: modalRoot.bridge
         function onIsDownloadingChanged() {
+            if (modalRoot.isOpen) {
+                failedItemsModel.populate()
+            }
+        }
+        function onSkipRetry404Changed() {
             if (modalRoot.isOpen) {
                 failedItemsModel.populate()
             }
@@ -241,6 +249,17 @@ Rectangle {
                 }
 
                 Item { Layout.fillWidth: true }
+
+                StyledSwitch {
+                    label: modalRoot.tr("opt_skip_retry_404", "Skip 404s")
+                    tooltip: modalRoot.tr("opt_skip_retry_404_tip", "Exclude HTTP 404 (Not Found) errors from retries and hide them from this window")
+                    checked: modalRoot.bridge ? modalRoot.bridge.skipRetry404 : false
+                    onToggled: function(val) {
+                        if (modalRoot.bridge) {
+                            modalRoot.bridge.skipRetry404 = val
+                        }
+                    }
+                }
 
                 Text {
                     text: failedItemsModel.countSelected() + " / " + failedItemsModel.count + " " + modalRoot.tr("label_selected_of", "selected")

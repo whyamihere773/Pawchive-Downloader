@@ -50,6 +50,7 @@ from services.cloud_downloader import (
 )
 from core.text_utils import clean_text, sanitize_filesystem_name
 from core.archive_manager import ArchiveManager
+from core.archive_rebuilder import ArchiveRebuilder, ArchiveRebuildOptions
 from services.model_manager import ModelManager, MODEL_CATALOG
 from core.hardware_detector import HardwareDetector
 
@@ -94,6 +95,7 @@ class AppBridge(QObject):
     downloadRevisionsChanged = Signal()
     adaptiveThreadingChanged = Signal()
     autoRetryAtEndChanged = Signal()
+    skipRetry404Changed = Signal()
     mangaModeChanged = Signal()
     filenameStyleChanged = Signal()
     filenameTemplateChanged = Signal()
@@ -153,8 +155,12 @@ class AppBridge(QObject):
     archiveCreatorVerificationStarted  = Signal(str, str)
     archiveCreatorVerificationProgress = Signal(str, str, int, int)
     archiveCreatorVerificationFinished = Signal(str, str, 'QVariant')
+    archiveRebuildProgress             = Signal('QVariant')
+    archiveRebuildFinished            = Signal('QVariant')
+    archiveRebuildStatusChanged        = Signal()
 
     tagFolderModeChanged      = Signal()
+    groupFileTypeChanged      = Signal()
     watchlistChanged          = Signal()
     watchlistCheckStarted     = Signal()
     watchlistCheckFinished    = Signal(int)  # total new posts found
@@ -263,6 +269,9 @@ class AppBridge(QObject):
         self._write_audio_metadata = bool(saved_settings.get("write_audio_metadata", False))
         self._keep_duplicates = saved_settings.get("keep_duplicates", False)
         self._last_archive_emit_time: float = 0.0
+        self._archive_rebuilder: Optional[ArchiveRebuilder] = None
+        self._is_archive_rebuilding: bool = False
+        self._is_archive_rebuild_paused: bool = False
         self._favorite_mode = False
         self._subfolder_per_post = saved_settings.get("subfolder_per_post", True)
         self._date_prefix = saved_settings.get("date_prefix", True)
@@ -274,6 +283,7 @@ class AppBridge(QObject):
         if self._threads_locked:
             self._adaptive_threading = False
         self._auto_retry_at_end = saved_settings.get("auto_retry_at_end", False)
+        self._skip_retry_404 = bool(saved_settings.get("skip_retry_404", False))
         self._manga_mode = saved_settings.get("manga_mode", False)
         self._filename_style = saved_settings.get("filename_style", "post_title")
         self._filename_template = saved_settings.get("filename_template", "{title} - {orig_name}")
@@ -329,6 +339,7 @@ class AppBridge(QObject):
         self._screen_hz = 60
         self._creator_name = ""
         self._tag_folder_mode = bool(saved_settings.get("tag_folder_mode", False))
+        self._group_file_type = str(saved_settings.get("group_file_type", "none"))
         self._telegram_safety_acknowledged = bool(saved_settings.get("telegram_safety_acknowledged", False))
         self._telegram_liability_acknowledged = bool(saved_settings.get("telegram_liability_acknowledged", False))
         self._telegram_pending_action = ""
@@ -1038,6 +1049,22 @@ class AppBridge(QObject):
             else:
                 self.autoRetryAtEnd = False
 
+    @Property(bool, notify=skipRetry404Changed)
+    def skipRetry404(self) -> bool:
+        return self._skip_retry_404
+
+    @skipRetry404.setter
+    def skipRetry404(self, val: bool):
+        val = bool(val)
+        if self._skip_retry_404 != val:
+            self._skip_retry_404 = val
+            self.skipRetry404Changed.emit()
+            self.saveSettings()
+            if hasattr(self.downloader, "current_options") and self.downloader.current_options:
+                self.downloader.current_options.skip_retry_404 = val
+            if hasattr(self, "_queue_model") and self._queue_model:
+                self._queue_model.failedCountChanged.emit()
+
     @Property(bool, notify=mangaModeChanged)
     def mangaMode(self) -> bool:
         return self._manga_mode
@@ -1442,6 +1469,122 @@ class AppBridge(QObject):
             self.archiveUpdated.emit()
         return deleted
 
+    @Property(bool, notify=archiveRebuildStatusChanged)
+    def isArchiveRebuilding(self) -> bool:
+        return self._is_archive_rebuilding
+
+    @Property(bool, notify=archiveRebuildStatusChanged)
+    def isArchiveRebuildPaused(self) -> bool:
+        return self._is_archive_rebuild_paused
+
+    @Slot(result="QVariantList")
+    def getSuggestedRebuildDirectories(self) -> list:
+        """Returns candidate download folders across active settings, storage pools, and watchlist."""
+        candidates = []
+        if self._download_dir and os.path.isdir(self._download_dir):
+            candidates.append(os.path.normpath(self._download_dir))
+        try:
+            from core.storage_pool_manager import storage_pool_manager
+            if storage_pool_manager.enabled and storage_pool_manager.overflow_dirs:
+                for d in storage_pool_manager.overflow_dirs:
+                    if d and os.path.isdir(d):
+                        candidates.append(os.path.normpath(d))
+        except Exception:
+            pass
+        try:
+            if self._watchlist_manager:
+                for item in self._watchlist_manager.get_all():
+                    df = getattr(item, "download_folder", None) or getattr(item, "folder_path", None)
+                    if df and os.path.isdir(df):
+                        candidates.append(os.path.normpath(df))
+        except Exception:
+            pass
+        return list(dict.fromkeys(candidates))
+
+    @Slot(str, str, result=str)
+    @Slot(str, result=str)
+    @Slot(result=str)
+    def browseFolderDialog(self, title: str = "Select Directory", initialDir: str = "") -> str:
+        """Open a native OS directory picker dialog and return the selected folder path."""
+        start_dir = initialDir if (initialDir and os.path.isdir(initialDir)) else (self._download_dir or os.path.expanduser("~"))
+        folder = QFileDialog.getExistingDirectory(None, title or "Select Directory", start_dir)
+        return os.path.normpath(folder) if folder else ""
+
+    @Slot("QVariantList", str, bool, bool, result=bool)
+    @Slot(list, str, bool, bool, result=bool)
+    @Slot("QVariantList", result=bool)
+    @Slot(list, result=bool)
+    def startArchiveRebuild(
+        self,
+        directories: list,
+        hashMode: str = "full",
+        detectPostInfo: bool = True,
+        skipExisting: bool = True
+    ) -> bool:
+        """
+        Asynchronously scans and rebuilds the archive database from multiple directories.
+        Completely non-blocking to the Qt main thread with live telemetry streaming.
+        """
+        if self._is_archive_rebuilding:
+            return False
+
+        valid_dirs = [os.path.normpath(d) for d in directories if d and os.path.isdir(d)]
+        if not valid_dirs:
+            return False
+
+        opts = ArchiveRebuildOptions(
+            hash_mode=hashMode,
+            detect_post_info=detectPostInfo,
+            skip_existing=skipExisting
+        )
+
+        def _on_progress(data: dict):
+            self._is_archive_rebuild_paused = data.get("is_paused", False)
+            self.archiveRebuildProgress.emit(data)
+
+        def _on_finished(stats: dict):
+            self._is_archive_rebuilding = False
+            self._is_archive_rebuild_paused = False
+            self._archive_rebuilder = None
+            self.archiveRecordCountChanged.emit()
+            self.archiveUpdated.emit()
+            self.archiveRebuildStatusChanged.emit()
+            self.archiveRebuildFinished.emit(stats)
+
+        self._archive_rebuilder = ArchiveRebuilder(
+            archive_manager=self.archive_manager,
+            directories=valid_dirs,
+            options=opts,
+            on_progress=_on_progress,
+            on_finished=_on_finished
+        )
+
+        started = self._archive_rebuilder.start()
+        if started:
+            self._is_archive_rebuilding = True
+            self._is_archive_rebuild_paused = False
+            self.archiveRebuildStatusChanged.emit()
+        return started
+
+    @Slot()
+    def pauseArchiveRebuild(self) -> None:
+        if self._archive_rebuilder and self._archive_rebuilder.is_running:
+            self._archive_rebuilder.pause()
+            self._is_archive_rebuild_paused = True
+            self.archiveRebuildStatusChanged.emit()
+
+    @Slot()
+    def resumeArchiveRebuild(self) -> None:
+        if self._archive_rebuilder and self._archive_rebuilder.is_running:
+            self._archive_rebuilder.resume()
+            self._is_archive_rebuild_paused = False
+            self.archiveRebuildStatusChanged.emit()
+
+    @Slot()
+    def cancelArchiveRebuild(self) -> None:
+        if self._archive_rebuilder and self._archive_rebuilder.is_running:
+            self._archive_rebuilder.cancel()
+
     @Slot(str, result=bool)
     def revealFileInExplorer(self, filePath: str) -> bool:
         """Reveals file or directory in Windows File Explorer / OS file manager."""
@@ -1674,6 +1817,20 @@ class AppBridge(QObject):
             self.tagFolderModeChanged.emit()
             self.saveSettings()
 
+    @Property(str, notify=groupFileTypeChanged)
+    def groupFileType(self) -> str:
+        return self._group_file_type
+
+    @groupFileType.setter
+    def groupFileType(self, val: str):
+        val = str(val or "none").lower()
+        if val not in ("none", "post", "creator"):
+            val = "none"
+        if self._group_file_type != val:
+            self._group_file_type = val
+            self.groupFileTypeChanged.emit()
+            self.saveSettings()
+
     @Property(bool, notify=harvestedLinksChanged)
     def hasHarvestedLinks(self) -> bool:
         return bool(self.downloader.harvested_links_records)
@@ -1889,7 +2046,9 @@ class AppBridge(QObject):
             download_pawchive_temporary_files=self._download_pawchive_temporary_files,
             min_file_size=self._min_file_size,
             max_file_size=self._max_file_size,
-            write_audio_metadata=self._write_audio_metadata
+            write_audio_metadata=self._write_audio_metadata,
+            skip_retry_404=self._skip_retry_404,
+            group_file_type=self._group_file_type
         )
 
     def _get_link_identity(self, parsed: URLParseResult) -> tuple[str, str, Optional[str], str]:
@@ -4271,7 +4430,9 @@ class AppBridge(QObject):
             "saved_custom_extensions": self._saved_custom_extensions,
             "write_audio_metadata": self._write_audio_metadata,
             "telegram_safety_acknowledged": self._telegram_safety_acknowledged,
-            "telegram_liability_acknowledged": self._telegram_liability_acknowledged
+            "telegram_liability_acknowledged": self._telegram_liability_acknowledged,
+            "skip_retry_404": self._skip_retry_404,
+            "group_file_type": self._group_file_type
         }
         self.session_manager.save_settings(settings_dict, silent=True)
 
@@ -4436,7 +4597,7 @@ class AppBridge(QObject):
             snapshot = {
                 "_summary": {
                     "title": "Pawchive Downloader Queue State Backup",
-                    "app_version": "1.2.0",
+                    "app_version": "1.2.1",
                     "exported_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "creators": unique_creators,
                     "total_batches": len(self._queue_model.groups),
