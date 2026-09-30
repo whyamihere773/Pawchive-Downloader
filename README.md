@@ -1,212 +1,61 @@
-# Pawchive Downloader
+# Pawchive Downloader — `experimental` Branch
 
 <p align="center">
   <img src="assets/icon.png" alt="Pawchive Downloader Logo" width="96" height="96" />
 </p>
 
 <p align="center">
-  <strong>A modern, high-speed desktop media archiver and downloader for Pawchive, Kemono, Coomer, Telegram, and external cloud hosts.</strong><br>
-  Built with Python, PySide6, and modern reactive QML.<br>
-  <em>Engineered for maximum automation: hands-off scheduled syncing, permanent link vaulting, multi-drive overflow, self-healing session recovery, and Telegram channel archiving.</em>
+  <strong>Cutting-edge testing branch for Pawchive Downloader</strong><br>
+  <em>Active development branch for native Linux / CachyOS support, cross-platform engine updates, and experimental features.</em>
 </p>
 
 <p align="center">
-  <a href="https://github.com/whyamihere773/Pawchive-Downloader/releases/latest"><img src="https://img.shields.io/github/v/release/whyamihere773/Pawchive-Downloader?style=for-the-badge&color=blue&label=Latest%20Release" alt="Latest Release"></a>
-  <a href="https://github.com/whyamihere773/Pawchive-Downloader/releases"><img src="https://img.shields.io/github/downloads/whyamihere773/Pawchive-Downloader/total?style=for-the-badge&color=success&label=Downloads" alt="Total Downloads"></a>
+  <img src="https://img.shields.io/badge/Branch-Experimental-orange?style=for-the-badge&logo=git&logoColor=white" alt="Branch: Experimental">
+  <img src="https://img.shields.io/badge/Status-Bleeding--Edge-red?style=for-the-badge" alt="Status: Bleeding Edge">
   <a href="https://discord.gg/YBrKkzVq8"><img src="https://img.shields.io/badge/Discord-Join%20Community-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord Server"></a>
-  <img src="https://img.shields.io/badge/Platform-Windows-0078D6?style=for-the-badge&logo=windows&logoColor=white" alt="Platform: Windows">
-  <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.10+">
 </p>
 
-<p align="center">
-  <a href="https://github.com/whyamihere773/Pawchive-Downloader/releases/latest">
-    <img src="https://img.shields.io/badge/Download-Windows%20Executable%20(.zip)-2ea44f?style=for-the-badge&logo=windows&logoColor=white" height="42" alt="Download Windows Executable">
-  </a>
-  <a href="https://discord.gg/YBrKkzVq8">
-    <img src="https://img.shields.io/badge/Discord-Join%20Community%20%26%20Support-5865F2?style=for-the-badge&logo=discord&logoColor=white" height="42" alt="Join Discord Server">
-  </a>
-</p>
-
-<p align="center">
-  <em>(Portable — no Python or command-line setup required! Just extract and run <code>Pawchive Downloader.exe</code>)</em>
-</p>
+---
 
 > [!WARNING]
-> ### 🧪 EXPERIMENTAL BRANCH
-> You are currently viewing the **`experimental`** branch of Pawchive Downloader.
-> * **Expect bugs, instability, and crashes**: This branch contains cutting-edge, in-development features, Linux portability experiments, and rapid code changes that have not undergone full release testing.
-> * **Backup your data**: Config or database formats on this branch may change without migration paths.
-> * **Looking for stability?**: Please switch to the **[`main`](https://github.com/whyamihere773/Pawchive-Downloader/tree/main)** branch or download the latest official release from **[Releases](https://github.com/whyamihere773/Pawchive-Downloader/releases)**.
-
-> 💬 **Need Help, Support, or Want to Chat?**  
-> If you run into any issues, have suggestions, or need further help, you can communicate directly with me on our **[Discord Server](https://discord.gg/YBrKkzVq8)**!
-
----
-
-## 📸 Interface Preview
-
-<p align="center">
-  <img src="assets/screenshots/01.png" alt="Pawchive Downloader Main Screen" width="95%" />
-</p>
-
-<details>
-<summary><strong>🖼️ Click to expand more interface screenshots</strong></summary>
-<br>
-
-<img src="assets/screenshots/02.png" width="90%" />
-<img src="assets/screenshots/03.png" width="90%" />
-<img src="assets/screenshots/04.png" width="90%" />
-<img src="assets/screenshots/05.png" width="90%" />
-<img src="assets/screenshots/06.png" width="90%" />
-<img src="assets/screenshots/07.png" width="90%" />
-<img src="assets/screenshots/08.png" width="90%" />
-<img src="assets/screenshots/09.png" width="90%" />
-<img src="assets/screenshots/10.png" width="90%" />
-
-</details>
-
-## ✨ Flagship Highlights (Engineered for Maximum Automation)
-
-> 💡 **Philosophy: Maximum Automation, Minimum Friction**  
-> Pawchive Downloader is designed to take the heavy lifting off your hands. You point it at what you want — and it handles the rest: automated schedules, background link harvesting, multi-drive overflow, self-healing recovery, and intelligent file organisation. You stay in control; the app does the work.
-
-- ✈️ **Telegram Channel Downloader & Media Browser:** Download photos, videos, and files directly from public channels, private links, and individual posts (`t.me/...`). Features an interactive visual thumbnail post selector with checkboxes, one-click criteria filtering (dates, media types), effortless QR code / phone login, client-side encrypted session storage, and automated anti-ban safeguards (locked 2-thread concurrency & FloodWait cooldowns).
-- 🧹 **Automatic Memory Cleanup Daemon *(WIP)*:** Periodic memory management daemon that continuously monitors process memory, sweeping cyclic objects and reclaiming unused RAM during massive download sessions to keep long-running tasks light and stable.
-- 🛑 **Sub-Second Multi-Service Cancellation:** Universal instant abort across multi-part files, child `yt-dlp` video processes, cloud mirrors (Mega, Dropbox, GoFile), and Telegram downloads in less than a second.
-- 🎵 **Automatic ID3 Audio Tagging:** Automatically embeds creator as Artist and post title as Track Title on `.mp3`, `.m4a`, `.flac`, `.ogg`, and `.wav` downloads for instant integration with iTunes, Plex, and MusicBee.
-- ⏰ **Task Scheduler & Automation Hub:** Create recurring automation schedules to poll your Watchlist for new creator posts, schedule off-peak **Night Owl** download windows, prevent Windows sleep during active jobs, and automatically sweep-retry any rate-limited or dropped files.
-- 🖼️ **Interactive Post Selector & Inspector:** Browse, search, and selectively download or queue individual creator posts. Drill down into post descriptions and passwords, pick individual attachments, view files in a fullscreen media Lightbox visualizer, and track real-time file and post selection tallies.
-- 🗄️ **Download Archive Database & Verifier:** Dedicated offline database cataloging all downloaded posts and files. Includes a disk verification engine to detect missing files, red/amber visual warning indicators, and a one-click database cleanup flow.
-- 🏷️ **Custom Filename Template Builder:** Flexible pattern designer with interactive tag chips (`{artist}`, `{title}`, `{post_id}`, `{date}`, `{file_index}`, etc.), real-time live preview, and filesystem sanitization.
-- 🗄️ **Permanent Link Vault & Harvester:** Harvests external cloud links (Mega, Google Drive, Pixeldrain, etc.) and archive passwords from posts *(WIP)* into a permanent offline vault. Run link health checks, prune dead links, sync passwords to the Decompressor with one click, or harvest entire creator histories without downloading files.
-- 💾 **Multi-Drive Storage Pools (Auto-Spanning Overflow):** Never suffer "Disk Full" crashes again. Automatically spills downloads to secondary drives or folders when your primary drive reaches its safety margin, preserving creator and post folder hierarchies seamlessly.
-- 📌 **Artist Watchlist:** Track followed creators and automatically check for new posts. Features one-click "Download All Updates", an interactive post review drawer with per-post and bulk ignoring, custom download paths per artist, saved per-artist filter settings, and an editable last-downloaded cutoff date with smart auto-normalization.
-- 🧩 **Franchise Recognition Engine:** Automatically structures downloaded files into clean creator/franchise folders using an integrated franchise database and fully customisable `Known.txt` rules — no manual sorting needed.
-- 📦 **Universal Bulk Decompressor:** Automated scan across downloaded artists, multi-threaded parallel extraction for `.zip`, `.rar`, `.7z`, multi-part archives, disk safety pre-flight checks, creator-organized Password Bank with collapsible sections and emerald active-target highlights, alphabetical artist selector with keyboard jumping, automatic password prompting with wrong-password feedback, password bank auto-sync, and a re-extract confirmation flow for already-extracted archives with amber colour-coding.
-- 🛡️ **Zero-Loss Session Recovery:** If the app is closed, crashed, or cancelled mid-download, atomic checkpoints allow instant one-click resumption right where you left off.
-- 🔓 **Client-Side Cloud Decryptor & Modern Host Support:** Native AES client-side decryption for Mega folders, Google Drive full trees with live progress, 1-click browser cookie importer, and rebuilt Bunkr 2026 parallel resolution.
-
-<details>
-<summary><strong>🔍 Click to explore all features & tools (25+ capabilities)</strong></summary>
-<br>
-
-### 📥 Core Downloading & Performance
-- ⚡ **Adaptive Multi-Threaded Engine:** Parallel chunked downloads with dynamic concurrency scaling and manual thread-locking.
-- 📊 **Active Large File Monitor (≥ 50 MB):** Dedicated real-time monitoring panel displaying individual progress bars, speed, and ETA for large media downloads.
-- 🎬 **Embedded Player Downloads:** Auto-updating `yt-dlp` integration grabs videos from Vimeo, YouTube, Streamable, RedGifs, Twitter/X, and more.
-- 🛡️ **SSD Stall & Disk Saturation Protection:** Hardened speed estimation engine prevents freeze glitches and auto-pauses gracefully upon out-of-disk space (`WinError 112` / `Errno 28`) without crashing worker threads.
-- ✨ **Fluid Newtonian Smooth Scrolling:** Physics-based kinetic momentum scrolling and velocity accumulation deployed across every view, list, panel, and modal in the UI.
-
-### 🗂️ Smart Organization & Filtering
-- 🗂️ **Post-Aware Folder Isolation:** When posts share identical titles or dates, each post is isolated into its own folder (`[post_id]`) so generic filenames (`1.png`, `4.png`) never overwrite or collide.
-- 🏷️ **Tag-Based Folder Sorting:** Organise downloads by their primary tag into sub-folders (`Artist / Tag / ...`) so related content stays cleanly grouped.
-- 🔢 **Sequential File Indexing:** Files are numbered (`001_`, `002_`, ...) to preserve chronological viewing order without relying on filesystem time sorting.
-- 🎯 **Advanced Smart Filtering:** Filter by character names, series, keywords, file categories (images, videos, audio, archives), or minimum file size thresholds.
-- 📖 **Manga & Comic Order:** Chronologically sequences files and folders (`001 - Title`) so chapters stay in proper sequential order in image viewers.
-
-### 📊 Auditing, Recovery & Settings
-- 📊 **Desktop Completion Reports:** Generates rich visual HTML summaries and plaintext audit reports directly to your Desktop upon download completion (opt-in).
-- 📋 **Failed Download Export:** Export a full report of failed files — including direct download links and source post URLs — to a text file for manual auditing.
-- 🍪 **1-Click Browser Session Importer:** Extracts authenticated Kemono/Patreon cookies directly from installed browsers without locking open sessions or manual DevTools copying.
-- 🌐 **Full 14-Language Localization (i18n):** Instant in-app language switching and real-time dynamically translated console activity logs (English, Chinese, Japanese, Korean, Spanish, French, German, Russian, Portuguese, and more).
-- 🔄 **Smart In-App Updater & Standalone Companion (`updater.exe`):** Automatic update alerts on launch with release notes preview and a dedicated standalone companion updater for zero-lock binary updates, seamless extraction, and instant restart.
-
-</details>
+> ### ⚠️ EXPERIMENTAL & BLEEDING-EDGE WARNING
+> **Expect bugs, instability, UI glitches, and crashes!**
+> 
+> * **Not recommended for daily/production use**: Features on this branch are actively being developed, tested, and iterated on.
+> * **Experimental Linux Port**: Native Linux ELF compilation, display server handling (Wayland/X11), and desktop integration are under active testing.
+> * **Always back up your files**: Configuration schemas and databases on this branch may change without automated migration.
+> 
+> 👉 **Looking for the stable, tested version?** Switch to the **[`main`](https://github.com/whyamihere773/Pawchive-Downloader/tree/main)** branch or download the latest release from **[Releases](https://github.com/whyamihere773/Pawchive-Downloader/releases)**.
 
 ---
 
-## 🌐 Supported Platforms & Hosts
+## 🔬 What is on this Branch?
 
-### Creator Archives & Portals
-- **Pawchive** (`pawchive.pw`)
-- **Kemono** (`kemono.su`)
-- **Coomer** (`coomer.su`)
-- **Cum.st** (`cum.st`)
-- **Telegram** (`t.me/...` public channels, private links, and individual media posts)
-- *Supported creator services:* Patreon, Pixiv Fanbox, Fantia, Subscribestar, Gumroad, Boosty, Discord, OnlyFans, Fansly, Afdian, DLsite, and more.
+This branch serves as the sandbox for cross-platform portability and upcoming architecture improvements:
 
-### Cloud Drives & Direct Storage
-- **Mega** (folders and individual files with automatic AES decryption)
-- **Google Drive** (shared files and public folders)
-- **Dropbox** (direct download links and auto-extracted archives)
-- **GoFile** (direct albums and folders)
-
-### Media Galleries & File Lockers
-- **Bunkr**, **Erome**, **nHentai**, **Saint2**, **Pixeldrain**, **Catbox**, **Mediafire**, **SimpCity**
-
-### Video & Stream Embeds
-- **YouTube**, **Vimeo**, **Streamable**, **RedGifs**, **Twitter/X**, **Bilibili**, **SoundCloud**, **Dailymotion**
+* **Native Linux / CachyOS Distribution**: Complete ELF binary compilation with bundled Qt6/QML environments, `pawchive.desktop` integration, and native process launching.
+* **Automated GitHub Actions Compilation**: Pushes to this branch trigger automated Linux builds on GitHub's Ubuntu runners, publishing standalone `.tar.gz` packages directly to the **Actions** tab.
+* **Cross-Platform Engine Upgrades**: Unified path handling, POSIX process management, and cross-platform desktop opening (`xdg-open` / `open` / `os.startfile`).
 
 ---
 
-## 🚀 Getting Started
+## 📖 About Pawchive Downloader
 
-### Option A: Pre-compiled Windows Binary (Recommended for most users)
+**Pawchive Downloader** is a high-speed desktop media archiver and batch downloader for Pawchive, Kemono, Coomer, Telegram, and external cloud hosts, built with Python, PySide6, and modern reactive QML.
 
-1. Head over to the **[Latest Release](https://github.com/whyamihere773/Pawchive-Downloader/releases/latest)** page.
-2. Download `Pawchive-Downloader-v1.2.0-Windows.zip`.
-3. Extract the ZIP archive anywhere on your computer.
-4. Run `Pawchive Downloader.exe` — that's it!
-
----
-
-### Option B: Running from Source (Developers)
-
-Ensure you have **Python 3.10 or newer** installed.
-
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/whyamihere773/Pawchive-Downloader.git
-   cd Pawchive-Downloader
-   ```
-
-2. **Install dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. **Run the application:**
-   ```bash
-   python main.py
-   ```
-
-4. **Build a Windows package:**
-   ```bash
-   python build.py
-   ```
-   The portable distribution will be output to `dist/Pawchive Downloader/` alongside a compressed release ZIP archive.
+Key capabilities include:
+* Multi-threaded parallel downloading with bandwidth throttling and polite rate-limit pacing.
+* Scheduled background syncing & automated artist watchlist monitoring.
+* Multi-drive storage pools with automatic overflow management.
+* Built-in media decompressor, offline AI character tagger, and link vaulting.
 
 ---
 
-## 🤝 Contributing & Community
+## 💬 Need Help, Support, or Want to Chat?
 
-Feedback, bug reports, and pull requests are warmly welcome!
-- 💬 **Need further help or want to chat?** If you need assistance, have questions, or want to communicate directly with me, feel free to join our **[Discord Server](https://discord.gg/YBrKkzVq8)**!
-- **Have a suggestion or found a bug?** Please open an **[Issue](https://github.com/whyamihere773/Pawchive-Downloader/issues)**.
-- **Want to add a new host or feature?** Fork the repository, create a feature branch, and submit a **Pull Request**.
+If you run into any issues, notice unexpected crashes, or want to share feedback on the experimental builds:
 
----
-
-## 🔍 Tags & Search Keywords
-
-<details>
-<summary><strong>🏷️ Click to view indexed tags & keyword aliases</strong></summary>
-<br>
-
-- **Kemono:** `kemono`, `kemono.su`, `kemono.party`, `kemono-party`, `kemonoparty`, `kemono party`, `kemono downloader`, `kemono-downloader`, `kemonodownloader`, `kemono scraper`, `kemono ripper`, `kemono archiver`, `kemono party downloader`
-- **Coomer:** `coomer`, `coomer.su`, `coomer.party`, `coomer-party`, `coomerparty`, `coomer party`, `coomer downloader`, `coomer-downloader`, `coomerdownloader`, `coomer scraper`
-- **Pawchive:** `pawchive`, `pawchive.pw`, `pawchive downloader`, `pawchive-downloader`, `pawchivedownloader`, `pawchive grabber`, `pawchive scraper`, `pawchive archiver`
-- **Cum.st:** `cum.st`, `cum-st`, `cumst`, `cum.st downloader`, `cum-st downloader`, `cumst downloader`, `cum-st scraper`, `cumst scraper`, `cum.st grabber`
-- **Telegram:** `telegram-downloader`, `telegram downloader`, `telegram channel downloader`, `telegram media downloader`, `telegram media archiver`, `telegram scraper`, `t.me downloader`
-- **Cloud & Hosts:** `mega-downloader`, `megadownloader`, `mega downloader`, `mega folder downloader`, `mega decryptor`, `mega decrypter`, `google drive downloader`, `gdrive downloader`, `dropbox downloader`, `gofile downloader`, `bunkr downloader`, `pixeldrain downloader`, `catbox downloader`
-- **Patreon & Creator Sites:** `patreon-downloader`, `patreondownloader`, `patreon downloader`, `patreon scraper`, `patreon ripper`, `patreon archiver`, `fanbox-downloader`, `fanboxdownloader`, `fanbox downloader`, `fantia-downloader`, `fantiadownloader`, `fantia downloader`, `subscribestar-downloader`, `subscribestar downloader`, `boosty downloader`, `gumroad downloader`
-- **Archiving & Utilities:** `media-downloader`, `mediadownloader`, `media downloader`, `media grabber`, `media archiver`, `data-hoarder`, `datahoarder`, `data hoarder`, `data-hoarding`, `datahoarding`, `data hoarding`, `batch downloader`, `bulk downloader`, `pyside6`, `qml`, `yt-dlp`
-
-</details>
+* **Join our community:** Chat directly on our **[Discord Server](https://discord.gg/YBrKkzVq8)**.
+* **Report a bug:** Open an issue on the **[GitHub Issues](https://github.com/whyamihere773/Pawchive-Downloader/issues)** tracker with logs from the `logs/` directory.
 
 ---
-
-## ⚖️ Disclaimer
-
-This tool is intended strictly for personal archiving and backup purposes. Please respect content creators' terms of service and rights.
-
