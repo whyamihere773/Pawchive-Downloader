@@ -37,6 +37,8 @@ class QueueGroupsModel(QAbstractListModel):
         self._groups: List[Dict[str, Any]] = []
         self._row_by_id: Dict[str, int] = {}
         self._tasks_by_id: Dict[str, List[DownloadTask]] = {}
+        self._task_ids_by_group: Dict[str, set] = {}
+        self._task_last_group_status: Dict[int, str] = {}
         self._last_progress_time: Dict[str, float] = {}
         self._last_emitted_stats: Dict[str, tuple] = {}
 
@@ -188,6 +190,8 @@ class QueueGroupsModel(QAbstractListModel):
         self._groups = []
         self._row_by_id = {}
         self._tasks_by_id = {}
+        self._task_ids_by_group = {}
+        self._task_last_group_status.clear()
         self._last_progress_time.clear()
         self._last_emitted_stats.clear()
 
@@ -197,6 +201,7 @@ class QueueGroupsModel(QAbstractListModel):
                 bid = "batch_default"
             if bid not in self._tasks_by_id:
                 self._tasks_by_id[bid] = []
+                self._task_ids_by_group[bid] = set()
                 post_title = t.post_title or "Media Collection"
                 if bid.startswith("artist_") or bid.startswith("creator_"):
                     post_title = "All Works / Posts"
@@ -210,6 +215,8 @@ class QueueGroupsModel(QAbstractListModel):
                 self._row_by_id[bid] = len(self._groups)
                 self._groups.append(g)
             self._tasks_by_id[bid].append(t)
+            self._task_ids_by_group[bid].add(id(t))
+            self._task_last_group_status[id(t)] = getattr(t, "status", "")
 
         for g in self._groups:
             bid = g["batchId"]
@@ -226,10 +233,15 @@ class QueueGroupsModel(QAbstractListModel):
         if not bid:
             bid = "batch_default"
 
+        tid = id(task)
+        new_status = getattr(task, "status", "")
+
         if bid not in self._row_by_id:
             row = len(self._groups)
             self.beginInsertRows(QModelIndex(), row, row)
             self._tasks_by_id[bid] = [task]
+            self._task_ids_by_group[bid] = {tid}
+            self._task_last_group_status[tid] = new_status
             self._row_by_id[bid] = row
             post_title = task.post_title or "Media Collection"
             if bid.startswith("artist_") or bid.startswith("creator_"):
@@ -252,8 +264,24 @@ class QueueGroupsModel(QAbstractListModel):
             row = self._row_by_id[bid]
             g = self._groups[row]
             tasks = self._tasks_by_id.get(bid, [])
-            if task not in tasks:
+            group_task_ids = self._task_ids_by_group.setdefault(bid, set())
+
+            is_new_task = (tid not in group_task_ids)
+            if is_new_task:
+                group_task_ids.add(tid)
                 tasks.append(task)
+
+            old_status = self._task_last_group_status.get(tid)
+            status_changed = (old_status != new_status)
+            self._task_last_group_status[tid] = new_status
+
+            # Throttle: if status did NOT change and task is already tracked, only byte/speed
+            # progress changed. Throttle recalculation to ~100ms to keep Qt GUI thread fully responsive.
+            now = time.time()
+            if not is_new_task and not status_changed:
+                if now - self._last_progress_time.get(bid, 0.0) < 0.10:
+                    return
+
             self._calc_group_stats(g, tasks)
 
             old_stats = self._last_emitted_stats.get(bid)
@@ -268,11 +296,6 @@ class QueueGroupsModel(QAbstractListModel):
                 self._last_emitted_stats[bid] = new_stats
                 self.dataChanged.emit(idx, idx)
             else:
-                # Only byte progress or speed changed: throttle to ~80ms and emit ONLY progress roles
-                # so structural UI bindings (buttons, visibility, layout) do not jitter or drop hover
-                now = time.time()
-                if now - self._last_progress_time.get(bid, 0.0) < 0.08:
-                    return
                 self._last_progress_time[bid] = now
                 self.dataChanged.emit(idx, idx, [
                     self.ProgressRole,
@@ -290,7 +313,11 @@ class QueueGroupsModel(QAbstractListModel):
             self.beginRemoveRows(QModelIndex(), row, row)
             self._groups.pop(row)
             if batch_id in self._tasks_by_id:
+                for t in self._tasks_by_id[batch_id]:
+                    self._task_last_group_status.pop(id(t), None)
                 del self._tasks_by_id[batch_id]
+            if batch_id in self._task_ids_by_group:
+                del self._task_ids_by_group[batch_id]
             if batch_id in self._last_progress_time:
                 del self._last_progress_time[batch_id]
             if batch_id in self._last_emitted_stats:
@@ -303,6 +330,8 @@ class QueueGroupsModel(QAbstractListModel):
         self._groups.clear()
         self._row_by_id.clear()
         self._tasks_by_id.clear()
+        self._task_ids_by_group.clear()
+        self._task_last_group_status.clear()
         self._last_progress_time.clear()
         self._last_emitted_stats.clear()
         self.endResetModel()

@@ -172,6 +172,10 @@ class KemonoDownloader:
         self.current_options: Optional[FilterOptions] = None
         self._active_responses: set = set()
         self._active_resp_lock = threading.Lock()
+        self._worker_sessions: set = set()
+        self._worker_sessions_lock = threading.Lock()
+        self._thread_local = threading.local()
+        self._clean_cookie: str = ""
 
         self.total_bytes = 0
         self.downloaded_bytes = 0
@@ -207,6 +211,42 @@ class KemonoDownloader:
     @property
     def is_paused(self) -> bool:
         return self._pause_event.is_set()
+
+    def _get_worker_session(self, clean_cookie: str = "") -> requests.Session:
+        sess = getattr(self._thread_local, "session", None)
+        if sess is None:
+            sess = requests.Session()
+            adapter = requests.adapters.HTTPAdapter(pool_connections=16, pool_maxsize=16, max_retries=1)
+            sess.mount("https://", adapter)
+            sess.mount("http://", adapter)
+            sess.headers.update({
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Accept": "*/*"
+            })
+            eff_cookie = clean_cookie or self._clean_cookie
+            if eff_cookie:
+                sess.headers["Cookie"] = eff_cookie
+            else:
+                sess.headers["X-Contact"] = "https://github.com/whyamihere773/Pawchive-Downloader"
+                sess.headers["X-Client-Notice"] = (
+                    "Pawchive Downloader user here! Love your site. If my client is ever causing server strain, "
+                    "please open an issue on GitHub instead of a hard ban and I'll fix my request pacing immediately."
+                )
+            self._thread_local.session = sess
+            with self._worker_sessions_lock:
+                self._worker_sessions.add(sess)
+        return sess
+
+    def _close_worker_sessions(self):
+        with self._worker_sessions_lock:
+            for s in list(self._worker_sessions):
+                try:
+                    s.close()
+                except Exception:
+                    pass
+            self._worker_sessions.clear()
+        if hasattr(self._thread_local, "session"):
+            self._thread_local.session = None
 
     def cancel(self):
         self._session_id += 1
@@ -252,6 +292,9 @@ class KemonoDownloader:
                 except Exception:
                     pass
             self._active_responses.clear()
+
+        # 6. Instantly close worker sessions to terminate open socket pools
+        self._close_worker_sessions()
 
         rec = getattr(self.session_manager, "recovery_manager", None)
         if rec:
@@ -1626,7 +1669,7 @@ class KemonoDownloader:
         last_scale_time = time.time()
         last_checkpoint_time = time.time()
         consecutive_successes = 0
-        scale_step_interval = 5.0 # Check scaling up every 5 seconds of healthy throughput
+        scale_step_interval = 8.0 # Check scaling up every 8 seconds of healthy throughput
 
         # Strict Telegram Concurrency Lock: Under ANY circumstance, Telegram downloads must never exceed 2 threads
         is_pure_telegram = bool(self.tasks) and all(
@@ -1668,25 +1711,7 @@ class KemonoDownloader:
                 clean_cookie = f"session={clean_cookie}"
             logger.debug(f"Applied authenticated session cookie ({len(clean_cookie)} chars)", category="downloader")
 
-        session = requests.Session()
-        # Configure high-concurrency connection adapter to prevent connection pool starvation across worker threads
-        adapter = requests.adapters.HTTPAdapter(pool_connections=64, pool_maxsize=64, max_retries=1)
-        session.mount("https://", adapter)
-        session.mount("http://", adapter)
-        session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Accept": "*/*"
-        })
-        if clean_cookie:
-            session.headers["Cookie"] = clean_cookie
-            session.headers.pop("X-Contact", None)
-            session.headers.pop("X-Client-Notice", None)
-        else:
-            session.headers["X-Contact"] = "https://github.com/whyamihere773/Pawchive-Downloader"
-            session.headers["X-Client-Notice"] = (
-                "Pawchive Downloader user here! Love your site. If my client is ever causing server strain, "
-                "please open an issue on GitHub instead of a hard ban and I'll fix my request pacing immediately."
-            )
+        self._clean_cookie = clean_cookie
 
         active_futures = {}
         auto_retried_once = False
@@ -1774,8 +1799,8 @@ class KemonoDownloader:
                                 if self.on_task_status_changed:
                                     self.on_task_status_changed(task)
 
-                                # Fast Adaptive Scaling: Scale up after 4 consecutive successful files if below ceiling
-                                if options.adaptive_threading and not is_locked and not is_pure_telegram and consecutive_successes >= 4 and (now - last_scale_time >= 3.0):
+                                # Fast Adaptive Scaling: Scale up after 10 consecutive successful files if below ceiling and interval elapsed
+                                if options.adaptive_threading and not is_locked and not is_pure_telegram and consecutive_successes >= 10 and (now - last_scale_time >= 6.0):
                                     effective_ceiling = self._learned_stable_ceiling if self._learned_stable_ceiling is not None else target_max_workers
                                     if now >= self._rate_limit_cooldown_until and self.max_workers < effective_ceiling:
                                         self.max_workers += 1
@@ -1937,7 +1962,7 @@ class KemonoDownloader:
                         if self.on_task_status_changed:
                             self.on_task_status_changed(task)
                         try:
-                            fut = executor.submit(self._download_single_file, task, session, options)
+                            fut = executor.submit(self._worker_download_task, task, options)
                             active_futures[fut] = task
                         except RuntimeError:
                             # Executor was shut down (e.g. cancelled)
@@ -1976,11 +2001,6 @@ class KemonoDownloader:
                 if now - last_checkpoint_time >= 30.0:
                     last_checkpoint_time = now
                     self._save_recovery_checkpoint(options)
-                    try:
-                        from core.memory_collector import MemoryCollector
-                        MemoryCollector.instance().collect()
-                    except Exception:
-                        pass
 
                 time.sleep(0.05)
 
@@ -1991,10 +2011,7 @@ class KemonoDownloader:
                 except Exception:
                     pass
 
-        try:
-            session.close()
-        except Exception:
-            pass
+        self._close_worker_sessions()
         try:
             from core.memory_collector import MemoryCollector
             MemoryCollector.instance().collect()
@@ -2043,7 +2060,15 @@ class KemonoDownloader:
             if self.on_download_finished:
                 self.on_download_finished(True, f"Completed: {completed_count} downloaded{skip_msg}, {failed_count} failed.")
 
-    def _download_single_file(self, task: DownloadTask, session: requests.Session, options: FilterOptions) -> (bool, str):
+    def _worker_download_task(self, task: DownloadTask, options: FilterOptions):
+        worker_session = self._get_worker_session()
+        return self._download_single_file(task, worker_session, options)
+
+    def _download_single_file(self, task: DownloadTask, session: Optional[requests.Session] = None, options: Optional[FilterOptions] = None) -> (bool, str):
+        if session is None:
+            session = self._get_worker_session()
+        if options is None:
+            options = self.current_options or FilterOptions()
         if self._cancel_event.is_set():
             return False, "Cancelled"
 

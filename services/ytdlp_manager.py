@@ -24,32 +24,46 @@ class YtDlpManager:
     """
 
     GITHUB_LATEST_RELEASE_URL = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest"
-    GITHUB_DIRECT_DOWNLOAD_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+    GITHUB_DIRECT_DOWNLOAD_URL = (
+        "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+        if sys.platform == "win32"
+        else "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp"
+    )
 
     def __init__(self, base_dir: Optional[str] = None):
+        self.binary_name = "yt-dlp.exe" if sys.platform == "win32" else "yt-dlp"
         if base_dir:
             self.base_dir = base_dir
+            self.dependencies_dir = os.path.join(self.base_dir, "dependencies")
         else:
-            if getattr(sys, 'frozen', False):
-                self.base_dir = os.path.dirname(sys.executable)
-            else:
-                self.base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            from core.path_utils import get_dependencies_dir, get_base_dir
+            self.base_dir = get_base_dir()
+            self.dependencies_dir = get_dependencies_dir()
 
-        self.dependencies_dir = os.path.join(self.base_dir, "dependencies")
-        self.exe_path = os.path.join(self.dependencies_dir, "yt-dlp.exe")
+        self.exe_path = os.path.join(self.dependencies_dir, self.binary_name)
         self._update_in_progress = False
         self._lock = threading.Lock()
         self._active_processes: set = set()
         self._proc_lock = threading.Lock()
 
     def get_executable_path(self) -> str:
-        """Returns path to yt-dlp.exe, ensuring dependencies directory exists."""
+        """Returns path to yt-dlp executable, checking local dependencies or system PATH."""
+        if os.path.exists(self.exe_path):
+            return self.exe_path
+        if sys.platform != "win32":
+            system_bin = shutil.which(self.binary_name)
+            if system_bin:
+                return system_bin
         os.makedirs(self.dependencies_dir, exist_ok=True)
         return self.exe_path
 
     def is_binary_available(self) -> bool:
-        """Checks if yt-dlp.exe exists and is executable."""
-        return os.path.exists(self.exe_path) and os.path.getsize(self.exe_path) > 1024 * 1024
+        """Checks if yt-dlp exists and is executable."""
+        if os.path.exists(self.exe_path) and os.path.getsize(self.exe_path) > 1024 * 1024:
+            return True
+        if sys.platform != "win32" and shutil.which(self.binary_name):
+            return True
+        return False
 
     def download_latest_binary(self) -> bool:
         """
@@ -81,7 +95,12 @@ class YtDlpManager:
 
             if os.path.exists(temp_exe) and os.path.getsize(temp_exe) > 1024 * 1024:
                 shutil.move(temp_exe, self.exe_path)
-                logger.success(f"yt-dlp.exe successfully installed ({downloaded / (1024*1024):.2f} MB)", category="ytdlp")
+                if sys.platform != "win32":
+                    try:
+                        os.chmod(self.exe_path, 0o755)
+                    except Exception:
+                        pass
+                logger.success(f"{self.binary_name} successfully installed ({downloaded / (1024*1024):.2f} MB)", category="ytdlp")
                 return True
             return False
 
@@ -201,7 +220,7 @@ class YtDlpManager:
 
         # Command with custom progress formatting on stdout
         cmd = [
-            self.exe_path,
+            self.get_executable_path(),
             "--no-playlist",
             "--no-warnings",
             "--newline",

@@ -314,11 +314,8 @@ class FranchiseResolver:
         if cache_path:
             self._cache_path = cache_path
         else:
-            if getattr(sys, 'frozen', False):
-                base_dir = os.path.dirname(sys.executable)
-            else:
-                base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            self._cache_path = os.path.join(base_dir, "data", "franchise_cache.json")
+            from core.path_utils import get_data_dir
+            self._cache_path = os.path.join(get_data_dir(), "data", "franchise_cache.json")
 
         self._load()
 

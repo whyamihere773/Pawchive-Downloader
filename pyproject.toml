@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pawchive-downloader"
+version = "1.2.1"
+description = "Universal Cross-Platform Kemono, Coomer, Bunkr & Fanbox Archival Suite"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [
+    { name = "whyamihere773" }
+]
+keywords = ["kemono", "coomer", "downloader", "archival", "pyside6", "qml"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS",
+    "Topic :: Internet :: WWW/HTTP",
+    "Environment :: X11 Applications :: Qt",
+]
+
+dependencies = [
+    "PySide6>=6.6.0",
+    "requests>=2.31.0",
+    "urllib3>=2.0.0",
+    "Pillow>=10.0.0",
+    "pycryptodome>=3.20.0",
+    "gdown>=5.1.0",
+    "mutagen>=1.47.0",
+    "telethon>=1.35.0",
+    "qrcode>=7.4.0",
+]
+
+[project.optional-dependencies]
+build = [
+    "pyinstaller>=6.5.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-qt>=4.0.0",
+]
+
+[project.scripts]
+pawchive = "main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["bridge*", "core*", "services*", "qml*"]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=7.0.0",
+    "pytest-qt>=4.0.0",
+    "pyinstaller>=6.5.0",
+]

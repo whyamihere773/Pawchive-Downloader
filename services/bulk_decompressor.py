@@ -29,24 +29,29 @@ SPLIT_SECONDARY_REGEX = re.compile(
 
 def get_7za_path() -> str:
     """Resolve the path to the bundled or system 7za/7z executable."""
-    # 1. Next to the executable — dependencies/ folder visible to the user
-    #    (works both for compiled release and running from source)
-    if getattr(sys, 'frozen', False):
-        exe_dir = os.path.dirname(sys.executable)
-    else:
-        exe_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    local_p = os.path.join(exe_dir, "dependencies", "7za.exe")
-    if os.path.exists(local_p):
-        return local_p
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, "frozen", False) else __file__))
+    # 1. Next to executable / dependencies folder or XDG bin
+    try:
+        from core.path_utils import get_dependencies_dir
+        deps_dirs = [os.path.join(exe_dir, "dependencies"), get_dependencies_dir()]
+    except Exception:
+        deps_dirs = [os.path.join(exe_dir, "dependencies")]
+
+    for d in deps_dirs:
+        for b in ["7za.exe", "7za", "7z.exe", "7z"]:
+            cand = os.path.join(d, b)
+            if os.path.exists(cand):
+                return cand
 
     # 2. PyInstaller _MEIPASS fallback (legacy / should not be reached in normal release)
     if hasattr(sys, "_MEIPASS"):
-        meipass_p = os.path.join(sys._MEIPASS, "dependencies", "7za.exe")
-        if os.path.exists(meipass_p):
-            return meipass_p
-        meipass_root = os.path.join(sys._MEIPASS, "7za.exe")
-        if os.path.exists(meipass_root):
-            return meipass_root
+        for b in ["7za.exe", "7za", "7z.exe", "7z"]:
+            meipass_p = os.path.join(sys._MEIPASS, "dependencies", b)
+            if os.path.exists(meipass_p):
+                return meipass_p
+            meipass_root = os.path.join(sys._MEIPASS, b)
+            if os.path.exists(meipass_root):
+                return meipass_root
 
     # 3. System PATH fallback
     for binary in ["7za", "7z", "7za.exe", "7z.exe"]:
@@ -261,10 +266,22 @@ class BulkDecompressorEngine:
         for item in items:
             if not item.selected:
                 continue
-            drive, _ = os.path.splitdrive(os.path.abspath(item.path))
-            if not drive:
-                drive = os.path.abspath(item.path)[:3]
-            drive = drive.upper()
+            if sys.platform == "win32":
+                drive, _ = os.path.splitdrive(os.path.abspath(item.path))
+                if not drive:
+                    drive = os.path.abspath(item.path)[:3]
+                drive = drive.upper()
+            else:
+                # On Linux / POSIX: use the mount point or parent directory
+                drive = "/"
+                try:
+                    p = os.path.abspath(item.path)
+                    while not os.path.ismount(p) and p != os.path.dirname(p):
+                        p = os.path.dirname(p)
+                    drive = p
+                except Exception:
+                    drive = "/"
+
             drive_map.setdefault(drive, []).append(item)
 
         results: List[DiskCheckResult] = []
@@ -276,7 +293,10 @@ class BulkDecompressorEngine:
 
             free_bytes = 0
             try:
-                usage = shutil.disk_usage(drive if drive.endswith("\\") else drive + "\\")
+                if sys.platform == "win32":
+                    usage = shutil.disk_usage(drive if drive.endswith("\\") else drive + "\\")
+                else:
+                    usage = shutil.disk_usage(drive)
                 free_bytes = usage.free
             except Exception:
                 try:

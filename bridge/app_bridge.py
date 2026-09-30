@@ -4783,14 +4783,14 @@ class AppBridge(QObject):
                 elif sys.platform == "darwin":
                     subprocess.run(["osascript", "-e", 'tell app "System Events" to shut down'], check=False)
                 else:
-                    subprocess.run(["shutdown", "-h", "-f", "now"], check=False)
+                    subprocess.run(["shutdown", "-h", "now"], check=False)
             elif action == "restart":
                 if sys.platform == "win32":
                     subprocess.run(["shutdown", "/r", "/f", "/t", "5", "/c", "Pawchive Downloader: restarting..."], check=False)
                 elif sys.platform == "darwin":
                     subprocess.run(["osascript", "-e", 'tell app "System Events" to restart'], check=False)
                 else:
-                    subprocess.run(["shutdown", "-r", "-f", "now"], check=False)
+                    subprocess.run(["shutdown", "-r", "now"], check=False)
             elif action == "sleep":
                 if sys.platform == "win32":
                     subprocess.run(["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"], check=False)

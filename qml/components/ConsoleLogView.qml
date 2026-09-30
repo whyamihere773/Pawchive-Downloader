@@ -130,8 +130,8 @@ Rectangle {
     signal exportLinksRequested()
     signal downloadLinksRequested()
 
-    readonly property bool isCompact: root.width < 660
-    readonly property bool isVeryNarrow: root.width < 420
+    readonly property bool isCompact: root.width < 780
+    readonly property bool isVeryNarrow: root.width < 440
 
     color: "#0D0F14"
 

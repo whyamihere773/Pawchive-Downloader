@@ -53,11 +53,19 @@ def check_and_install_dependencies():
 
     if missing:
         print(f"⚠️  Missing required build packages: {', '.join(missing)}")
-        print("📦 Installing required packages via pip...")
-        pip_cmd = [sys.executable, "-m", "pip", "install", "-r", "requirements.txt"]
-        result = subprocess.run(pip_cmd)
+        uv_path = shutil.which("uv")
+        if uv_path:
+            print("⚡ Fast installing required packages via uv...")
+            install_cmd = [uv_path, "pip", "install", "-r", "requirements.txt"]
+        else:
+            print("📦 Installing required packages via pip...")
+            install_cmd = [sys.executable, "-m", "pip", "install", "-r", "requirements.txt"]
+        result = subprocess.run(install_cmd)
+        if result.returncode != 0 and uv_path:
+            print("⚠️ uv installation failed, falling back to standard pip...")
+            result = subprocess.run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"])
         if result.returncode != 0:
-            print("❌ Failed to install dependencies. Please run 'pip install -r requirements.txt' manually.")
+            print("❌ Failed to install dependencies. Please run 'pip install -r requirements.txt' or 'uv pip install -r requirements.txt' manually.")
             sys.exit(1)
         print("✅ Dependencies installed successfully.\n")
 

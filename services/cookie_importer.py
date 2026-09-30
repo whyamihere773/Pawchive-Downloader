@@ -26,16 +26,19 @@ from core.logger import logger
 from Crypto.Cipher import AES
 
 
-class DATA_BLOB(ctypes.Structure):
-    _fields_ = [
-        ('cbData', wintypes.DWORD),
-        ('pbData', ctypes.POINTER(ctypes.c_char))
-    ]
+if sys.platform == "win32":
+    class DATA_BLOB(ctypes.Structure):
+        _fields_ = [
+            ('cbData', wintypes.DWORD),
+            ('pbData', ctypes.POINTER(ctypes.c_char))
+        ]
+else:
+    DATA_BLOB = None
 
 
 class BrowserCookieImporter:
     """
-    Extracts session and authorization cookies directly from local Windows browsers.
+    Extracts session and authorization cookies directly from local browsers.
     """
 
     TARGET_DOMAINS = [
@@ -71,17 +74,28 @@ class BrowserCookieImporter:
     def get_supported_browsers(cls) -> List[Dict[str, str]]:
         """Returns list of installed/detected browsers on the machine."""
         found = []
-        appdata = os.environ.get("APPDATA", "")
-        localappdata = os.environ.get("LOCALAPPDATA", "")
+        if sys.platform == "win32":
+            appdata = os.environ.get("APPDATA", "")
+            localappdata = os.environ.get("LOCALAPPDATA", "")
 
-        candidates = [
-            ("firefox", "Mozilla Firefox", os.path.join(appdata, "Mozilla", "Firefox", "Profiles")),
-            ("edge", "Microsoft Edge", os.path.join(localappdata, "Microsoft", "Edge", "User Data")),
-            ("brave", "Brave Browser", os.path.join(localappdata, "BraveSoftware", "Brave-Browser", "User Data")),
-            ("opera", "Opera", os.path.join(appdata, "Opera Software", "Opera Stable")),
-            ("operagx", "Opera GX", os.path.join(appdata, "Opera Software", "Opera GX Stable")),
-            ("chrome", "Google Chrome", os.path.join(localappdata, "Google", "Chrome", "User Data")),
-        ]
+            candidates = [
+                ("firefox", "Mozilla Firefox", os.path.join(appdata, "Mozilla", "Firefox", "Profiles")),
+                ("edge", "Microsoft Edge", os.path.join(localappdata, "Microsoft", "Edge", "User Data")),
+                ("brave", "Brave Browser", os.path.join(localappdata, "BraveSoftware", "Brave-Browser", "User Data")),
+                ("opera", "Opera", os.path.join(appdata, "Opera Software", "Opera Stable")),
+                ("operagx", "Opera GX", os.path.join(appdata, "Opera Software", "Opera GX Stable")),
+                ("chrome", "Google Chrome", os.path.join(localappdata, "Google", "Chrome", "User Data")),
+            ]
+        else:
+            home = os.path.expanduser("~")
+            candidates = [
+                ("firefox", "Mozilla Firefox", os.path.join(home, ".mozilla", "firefox")),
+                ("chrome", "Google Chrome", os.path.join(home, ".config", "google-chrome")),
+                ("chromium", "Chromium", os.path.join(home, ".config", "chromium")),
+                ("brave", "Brave Browser", os.path.join(home, ".config", "BraveSoftware", "Brave-Browser")),
+                ("edge", "Microsoft Edge", os.path.join(home, ".config", "microsoft-edge")),
+                ("opera", "Opera", os.path.join(home, ".config", "opera")),
+            ]
 
         for bid, name, path in candidates:
             if os.path.exists(path):
@@ -92,6 +106,8 @@ class BrowserCookieImporter:
     @staticmethod
     def _dpapi_decrypt(encrypted_bytes: bytes) -> bytes:
         """Decrypts data using Windows DPAPI (CryptUnprotectData)."""
+        if sys.platform != "win32":
+            raise NotImplementedError("DPAPI decryption is only supported on Windows.")
         if not encrypted_bytes:
             return b""
         in_blob = DATA_BLOB(len(encrypted_bytes), ctypes.cast(ctypes.create_string_buffer(encrypted_bytes), ctypes.POINTER(ctypes.c_char)))
@@ -116,6 +132,8 @@ class BrowserCookieImporter:
     @classmethod
     def _get_chromium_master_key(cls, user_data_path: str) -> bytes:
         """Extracts and decrypts AES master key from Chromium 'Local State'."""
+        if sys.platform != "win32":
+            raise NotImplementedError("Chromium DPAPI decryption is only supported on Windows. On Linux, please use Mozilla Firefox or paste cookies manually.")
         local_state_path = os.path.join(user_data_path, "Local State")
         if not os.path.exists(local_state_path):
             raise FileNotFoundError(f"Local State not found at {local_state_path}")

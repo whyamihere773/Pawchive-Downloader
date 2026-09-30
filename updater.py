@@ -16,9 +16,13 @@ import threading
 import urllib.request
 from typing import Optional
 
-# GUI: Tkinter (standard library, zero external DLL dependency)
-import tkinter as tk
-from tkinter import ttk
+# GUI: Tkinter (standard library, zero external DLL dependency on Windows)
+try:
+    import tkinter as tk
+    from tkinter import ttk
+    HAS_TKINTER = True
+except (ImportError, Exception):
+    HAS_TKINTER = False
 
 # Files and folders that must NEVER be touched during an update
 PROTECTED_DIRS = {"config", "downloads", "temp", "logs", "venv", ".venv", "__pycache__", ".git"}
@@ -454,8 +458,8 @@ class UpdaterApp:
             # Extra buffer for Windows to fully release file handles (no admin needed)
             time.sleep(_EXE_RELEASE_WAIT)
 
-            # 2. Prepare directories in %TEMP%
-            temp_base = os.environ.get("TEMP", os.path.expanduser("~"))
+            # 2. Prepare directories in temporary directory
+            temp_base = tempfile.gettempdir()
             updater_work_dir = os.path.join(temp_base, f"pawchive_update_{int(time.time())}")
             zip_dest = os.path.join(updater_work_dir, "update.zip")
             staging_dir = os.path.join(updater_work_dir, "staging")
@@ -567,22 +571,120 @@ class UpdaterApp:
             self._set_status("Update complete!", "Relaunching Pawchive Downloader...", progress=100.0)
             time.sleep(0.8)
 
-            exe_path = os.path.join(self.target_dir, "Pawchive Downloader.exe")
-            if not os.path.exists(exe_path):
-                # Fallback search
-                for f in os.listdir(self.target_dir):
-                    if f.lower().endswith(".exe") and "updater" not in f.lower():
-                        exe_path = os.path.join(self.target_dir, f)
-                        break
+            exe_path = ""
+            if sys.platform == "win32":
+                cand = os.path.join(self.target_dir, "Pawchive Downloader.exe")
+                if os.path.exists(cand):
+                    exe_path = cand
+                else:
+                    for f in os.listdir(self.target_dir):
+                        if f.lower().endswith(".exe") and "updater" not in f.lower():
+                            exe_path = os.path.join(self.target_dir, f)
+                            break
+            else:
+                cand = os.path.join(self.target_dir, "Pawchive Downloader")
+                if os.path.exists(cand) and os.access(cand, os.X_OK):
+                    exe_path = cand
+                else:
+                    for f in os.listdir(self.target_dir):
+                        p = os.path.join(self.target_dir, f)
+                        if os.path.isfile(p) and os.access(p, os.X_OK) and "updater" not in f.lower() and not f.endswith(".sh"):
+                            exe_path = p
+                            break
 
-            if os.path.exists(exe_path):
+            if exe_path and os.path.exists(exe_path):
                 subprocess.Popen([exe_path], cwd=self.target_dir)
+            elif not getattr(sys, "frozen", False):
+                main_py = os.path.join(self.target_dir, "main.py")
+                if os.path.exists(main_py):
+                    subprocess.Popen([sys.executable, main_py], cwd=self.target_dir)
 
             self.root.after(500, self.root.destroy)
 
         except Exception as err:
             self._set_status("Update Failed", f"Error: {err}", progress=0.0)
             self.root.after(0, lambda: self.cancel_btn.config(text="Close", state="normal", command=self.root.destroy))
+
+
+def run_headless_update(target_dir: str, pid: int, download_url: str, version: str):
+    """Fallback CLI update pipeline when Tkinter is not available (common on minimal Linux/Docker)."""
+    print(f"[*] Starting Pawchive Downloader CLI updater (Target: {version or 'latest'})...")
+    if pid > 0:
+        print("[*] Waiting for previous application process to exit...")
+        start_wait = time.time()
+        while is_pid_running(pid):
+            if time.time() - start_wait > 15:
+                break
+            time.sleep(0.3)
+    time.sleep(_EXE_RELEASE_WAIT)
+
+    temp_base = tempfile.gettempdir()
+    updater_work_dir = os.path.join(temp_base, f"pawchive_update_{int(time.time())}")
+    zip_dest = os.path.join(updater_work_dir, "update.zip")
+    staging_dir = os.path.join(updater_work_dir, "staging")
+    os.makedirs(staging_dir, exist_ok=True)
+
+    try:
+        print(f"[*] Downloading update from {download_url}...")
+        req = urllib.request.Request(download_url, headers={"User-Agent": "Pawchive-Updater/1.0"})
+        with urllib.request.urlopen(req, timeout=45) as resp, open(zip_dest, "wb") as out_f:
+            shutil.copyfileobj(resp, out_f)
+
+        print("[*] Extracting update package...")
+        with zipfile.ZipFile(zip_dest, "r") as zf:
+            zf.extractall(staging_dir)
+
+        stage_root = staging_dir
+        entries = [os.path.join(staging_dir, e) for e in os.listdir(staging_dir)]
+        if len(entries) == 1 and os.path.isdir(entries[0]):
+            stage_root = entries[0]
+
+        print("[*] Installing updated files...")
+        copied = 0
+        for root_d, dirs, files in os.walk(stage_root):
+            rel = os.path.relpath(root_d, stage_root)
+            first = rel.split(os.sep)[0] if rel != "." else ""
+            if first.lower() in PROTECTED_DIRS:
+                dirs[:] = []
+                continue
+            dest_folder = target_dir if rel == "." else os.path.join(target_dir, rel)
+            os.makedirs(dest_folder, exist_ok=True)
+            for file_name in files:
+                if file_name.lower() in PROTECTED_FILES:
+                    continue
+                s_file = os.path.join(root_d, file_name)
+                d_file = os.path.join(dest_folder, file_name)
+                try:
+                    shutil.copy2(s_file, d_file)
+                    copied += 1
+                except Exception as ex:
+                    print(f"[!] Warning: could not copy {file_name}: {ex}")
+
+        print(f"[+] Update complete! Installed {copied} files.")
+        shutil.rmtree(updater_work_dir, ignore_errors=True)
+
+        # Relaunch
+        exe_path = ""
+        if sys.platform == "win32":
+            cand = os.path.join(target_dir, "Pawchive Downloader.exe")
+            if os.path.exists(cand):
+                exe_path = cand
+        else:
+            cand = os.path.join(target_dir, "Pawchive Downloader")
+            if os.path.exists(cand) and os.access(cand, os.X_OK):
+                exe_path = cand
+
+        if exe_path and os.path.exists(exe_path):
+            print(f"[*] Relaunching {exe_path}...")
+            subprocess.Popen([exe_path], cwd=target_dir)
+        elif not getattr(sys, "frozen", False):
+            main_py = os.path.join(target_dir, "main.py")
+            if os.path.exists(main_py):
+                print(f"[*] Relaunching source: {main_py}...")
+                subprocess.Popen([sys.executable, main_py], cwd=target_dir)
+    except Exception as e:
+        print(f"[!] Update error: {e}")
+        shutil.rmtree(updater_work_dir, ignore_errors=True)
 
 
 def main():
@@ -627,14 +729,20 @@ def main():
         sys.exit(1)
 
     # Self-relocation:
-    # If running from inside target_dir as a compiled exe, copy self to %TEMP%
-    # so target_dir/updater.exe itself is not locked and can be cleanly updated!
+    # If running from inside target_dir as a compiled exe, copy self to tempdir
+    # so target_dir/updater itself is not locked and can be cleanly updated!
     if getattr(sys, "frozen", False) and not args.temp_runner:
         my_exe = os.path.abspath(sys.executable)
-        temp_dir = os.environ.get("TEMP", os.path.expanduser("~"))
-        temp_updater = os.path.join(temp_dir, f"pawchive_updater_run_{int(time.time())}.exe")
+        temp_dir = tempfile.gettempdir()
+        ext = ".exe" if sys.platform == "win32" else ""
+        temp_updater = os.path.join(temp_dir, f"pawchive_updater_run_{int(time.time())}{ext}")
         try:
             shutil.copy2(my_exe, temp_updater)
+            if sys.platform != "win32":
+                try:
+                    os.chmod(temp_updater, 0o755)
+                except Exception:
+                    pass
             cmd = [
                 temp_updater,
                 "--target-dir", target_dir,
@@ -647,6 +755,10 @@ def main():
             sys.exit(0)
         except Exception:
             pass  # Fall back to running in-place
+
+    if not HAS_TKINTER:
+        run_headless_update(target_dir, args.pid, download_url, version)
+        sys.exit(0)
 
     root = tk.Tk()
     app = UpdaterApp(

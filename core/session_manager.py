@@ -13,16 +13,12 @@ from core.logger import logger
 from core.recovery_manager import RecoveryManager
 
 
+from core.path_utils import get_config_dir
+
+
 class SessionManager:
     def __init__(self, config_dir: Optional[str] = None):
-        if not config_dir:
-            if getattr(sys, 'frozen', False):
-                base_dir = os.path.dirname(sys.executable)
-            else:
-                base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            self.config_dir = os.path.join(base_dir, "config")
-        else:
-            self.config_dir = config_dir
+        self.config_dir = get_config_dir(config_dir)
 
         os.makedirs(self.config_dir, exist_ok=True)
         self.recovery_manager = RecoveryManager(self.config_dir)

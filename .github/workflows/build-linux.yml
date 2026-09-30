@@ -1,0 +1,67 @@
+name: Build Linux & CachyOS Release
+
+on:
+  push:
+    branches: [ "main", "experimental" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main", "experimental" ]
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
+    - name: Install system dependencies (OpenGL, Qt6 libs, 7zip, yt-dlp)
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          libgl1-mesa-dev \
+          libxkbcommon-x11-0 \
+          libegl1 \
+          libdbus-1-3 \
+          p7zip-full \
+          ffmpeg
+
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+
+    - name: Run test suite (if present)
+      run: |
+        if [ -d "tests" ]; then
+          python -m pytest tests/
+        else
+          echo "No tests directory found in checkout, skipping test suite."
+        fi
+
+    - name: Compile Standalone Linux Binary via PyInstaller
+      run: |
+        python build_linux.py --clean
+
+    - name: Package Linux Distribution Tarball
+      run: |
+        VERSION=$(python -c "import json; print(json.load(open('version.json'))['version'])")
+        cd dist
+        tar -czvf "Pawchive-Downloader-v${VERSION}-Linux-x86_64.tar.gz" "Pawchive Downloader"
+        cd ..
+
+    - name: Upload Linux Build Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: Pawchive-Downloader-Linux-x86_64
+        path: |
+          dist/Pawchive-Downloader-v*-Linux-x86_64.tar.gz
+          dist/Pawchive Downloader/
+        retention-days: 14

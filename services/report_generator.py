@@ -24,7 +24,7 @@ except Exception:
 
 
 def get_desktop_path() -> str:
-    """Find the user's Desktop directory reliably on Windows, including OneDrive redirects."""
+    """Find the user's Desktop directory reliably across Windows, Linux (XDG), and macOS."""
     # 1. Try Windows Registry Shell Folders
     if sys.platform == "win32":
         try:
@@ -41,19 +41,29 @@ def get_desktop_path() -> str:
         except Exception:
             pass
 
-    # 2. Check OneDrive Desktop
-    userprofile = os.environ.get("USERPROFILE", os.path.expanduser("~"))
-    onedrive_desktop = os.path.join(userprofile, "OneDrive", "Desktop")
-    if os.path.exists(onedrive_desktop):
-        return onedrive_desktop
+        # Check OneDrive Desktop
+        userprofile = os.environ.get("USERPROFILE", os.path.expanduser("~"))
+        onedrive_desktop = os.path.join(userprofile, "OneDrive", "Desktop")
+        if os.path.exists(onedrive_desktop):
+            return onedrive_desktop
+    else:
+        # Linux: try xdg-user-dir DESKTOP (handles localized Desktop names e.g. Schreibtisch, Bureau)
+        try:
+            import subprocess
+            out = subprocess.check_output(["xdg-user-dir", "DESKTOP"], stderr=subprocess.DEVNULL, timeout=2).decode().strip()
+            if out and os.path.isdir(out):
+                return out
+        except Exception:
+            pass
 
-    # 3. Standard Desktop
-    std_desktop = os.path.join(userprofile, "Desktop")
-    if os.path.exists(std_desktop):
+    # Standard Desktop fallback
+    home = os.path.expanduser("~")
+    std_desktop = os.path.join(home, "Desktop")
+    if os.path.isdir(std_desktop):
         return std_desktop
 
     # Fallback to home dir
-    return userprofile
+    return home
 
 
 def _format_size(num_bytes: int) -> str:

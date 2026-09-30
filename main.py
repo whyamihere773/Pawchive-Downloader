@@ -28,14 +28,8 @@ def main():
     sig_timer.start(300)
     sig_timer.timeout.connect(lambda: None)
 
-    if getattr(sys, 'frozen', False):
-        if hasattr(sys, '_MEIPASS') and os.path.exists(os.path.join(sys._MEIPASS, "qml")):
-            base_dir = sys._MEIPASS
-        else:
-            cand = os.path.join(os.path.dirname(sys.executable), "_internal")
-            base_dir = cand if os.path.exists(cand) else os.path.dirname(sys.executable)
-    else:
-        base_dir = os.path.dirname(os.path.abspath(__file__))
+    from core.path_utils import get_base_dir
+    base_dir = get_base_dir()
 
     icon_path = os.path.join(base_dir, "assets", "icon.png")
     if os.path.exists(icon_path):

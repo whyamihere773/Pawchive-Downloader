@@ -52,16 +52,20 @@ class AppLogger:
         self._history = []
         self._max_history = 1000
 
-        # Resolve logs directory: <project_root>/logs
-        if getattr(sys, 'frozen', False):
-            base_dir = os.path.dirname(sys.executable)
-        else:
-            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        self._logs_dir = os.path.join(base_dir, "logs")
+        # Resolve logs directory using cross-platform path resolver
         try:
-            os.makedirs(self._logs_dir, exist_ok=True)
+            from core.path_utils import get_logs_dir
+            self._logs_dir = get_logs_dir()
         except Exception:
-            pass
+            if getattr(sys, 'frozen', False):
+                base_dir = os.path.dirname(sys.executable)
+            else:
+                base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            self._logs_dir = os.path.join(base_dir, "logs")
+            try:
+                os.makedirs(self._logs_dir, exist_ok=True)
+            except Exception:
+                pass
 
         import threading
         self._file_lock = threading.Lock()

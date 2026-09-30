@@ -32,14 +32,8 @@ class ArchiveManager:
     """Manages the download archive SQLite database with complete opt-in isolation."""
 
     def __init__(self, config_dir: Optional[str] = None, enabled: bool = False):
-        if not config_dir:
-            if getattr(sys, "frozen", False):
-                base_dir = os.path.dirname(sys.executable)
-            else:
-                base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            self.config_dir = os.path.join(base_dir, "config")
-        else:
-            self.config_dir = config_dir
+        from core.path_utils import get_config_dir
+        self.config_dir = get_config_dir(config_dir)
 
         self.db_path = os.path.join(self.config_dir, "download_archive.db")
         self._enabled = bool(enabled)

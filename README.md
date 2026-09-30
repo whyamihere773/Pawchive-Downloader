@@ -31,6 +31,13 @@
   <em>(Portable — no Python or command-line setup required! Just extract and run <code>Pawchive Downloader.exe</code>)</em>
 </p>
 
+> [!WARNING]
+> ### 🧪 EXPERIMENTAL BRANCH
+> You are currently viewing the **`experimental`** branch of Pawchive Downloader.
+> * **Expect bugs, instability, and crashes**: This branch contains cutting-edge, in-development features, Linux portability experiments, and rapid code changes that have not undergone full release testing.
+> * **Backup your data**: Config or database formats on this branch may change without migration paths.
+> * **Looking for stability?**: Please switch to the **[`main`](https://github.com/whyamihere773/Pawchive-Downloader/tree/main)** branch or download the latest official release from **[Releases](https://github.com/whyamihere773/Pawchive-Downloader/releases)**.
+
 > 💬 **Need Help, Support, or Want to Chat?**  
 > If you run into any issues, have suggestions, or need further help, you can communicate directly with me on our **[Discord Server](https://discord.gg/YBrKkzVq8)**!
 

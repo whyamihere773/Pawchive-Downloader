@@ -69,6 +69,35 @@ def get_local_version_info() -> Dict[str, str]:
         except Exception:
             pass
 
+        # Fallback to direct .git file reading (handles Docker/WSL safe.directory restriction)
+        head_file = os.path.join(git_dir, "HEAD")
+        if os.path.exists(head_file):
+            try:
+                with open(head_file, "r", encoding="utf-8") as f:
+                    head_content = f.read().strip()
+                if head_content.startswith("ref:"):
+                    ref_rel = head_content[4:].strip()
+                    ref_path = os.path.join(git_dir, ref_rel)
+                    if os.path.exists(ref_path):
+                        with open(ref_path, "r", encoding="utf-8") as rf:
+                            sha = rf.read().strip()
+                            if sha:
+                                return {
+                                    "commit": sha,
+                                    "short_commit": sha[:7],
+                                    "version": "source-dev",
+                                    "date": ""
+                                }
+                elif len(head_content) == 40:
+                    return {
+                        "commit": head_content,
+                        "short_commit": head_content[:7],
+                        "version": "source-dev",
+                        "date": ""
+                    }
+            except Exception:
+                pass
+
     return {
         "commit": "",
         "short_commit": "current",
@@ -149,7 +178,8 @@ def check_for_updates(timeout: int = 8) -> Dict[str, Any]:
         download_url = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/archive/refs/heads/{GITHUB_BRANCH}.zip"
 
         local_sha = local_info.get("commit", "").strip()
-        update_available = bool(remote_sha and remote_sha != local_sha)
+        # Require a valid local commit SHA to prevent endless update loops if git is unavailable
+        update_available = bool(remote_sha and local_sha and remote_sha != local_sha)
 
         return {
             "update_available": update_available,
@@ -301,7 +331,7 @@ def launch_external_updater(update_info: Dict[str, Any]):
         ]
     else:
         # Running from source or fallback
-        python_exe = sys.executable if not is_compiled() else "python.exe"
+        python_exe = sys.executable if not is_compiled() else ("python.exe" if sys.platform == "win32" else "python3")
         cmd = [
             python_exe,
             updater_script,

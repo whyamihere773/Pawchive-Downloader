@@ -84,13 +84,12 @@ class ModelManager:
     def __init__(self, base_dir: Optional[str] = None):
         if base_dir:
             self.base_dir = base_dir
+            self.models_dir = os.path.join(self.base_dir, "dependencies", "models")
         else:
-            if getattr(sys, "frozen", False):
-                self.base_dir = os.path.dirname(sys.executable)
-            else:
-                self.base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            from core.path_utils import get_dependencies_dir, get_base_dir
+            self.base_dir = get_base_dir()
+            self.models_dir = os.path.join(get_dependencies_dir(), "models")
 
-        self.models_dir = os.path.join(self.base_dir, "dependencies", "models")
         os.makedirs(self.models_dir, exist_ok=True)
 
         self._lock = threading.Lock()

@@ -198,11 +198,8 @@ class KnownManager:
         if file_path:
             self.file_path = file_path
         else:
-            if getattr(sys, 'frozen', False):
-                base_dir = os.path.dirname(sys.executable)
-            else:
-                base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            self.file_path = os.path.join(base_dir, "config", "Known.txt")
+            from core.path_utils import get_config_dir
+            self.file_path = os.path.join(get_config_dir(), "Known.txt")
 
         # Recognition mode: "hybrid", "database_only", "learning_only"
         self.mode: str = "hybrid"
