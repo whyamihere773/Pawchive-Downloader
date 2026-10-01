@@ -60,6 +60,21 @@ class TestFileExplorer(unittest.TestCase):
         self.assertIn("path", drives[0])
         self.assertIn("name", drives[0])
 
+    def test_folder_stats_calculation(self):
+        folder_a = os.path.join(self.temp_dir, "FolderA")
+        with open(os.path.join(folder_a, "subfile1.bin"), "wb") as f:
+            f.write(b"12345")
+        with open(os.path.join(folder_a, "subfile2.bin"), "wb") as f:
+            f.write(b"67890")
+
+        bridge = AppBridge()
+        bridge._folder_stats_worker_token = 1
+        bridge._compute_folder_stats(folder_a, 1)
+
+        stats = bridge.getFolderStats(folder_a)
+        self.assertEqual(stats["files"], 2)
+        self.assertEqual(stats["size"], 10)
+
 
 if __name__ == "__main__":
     unittest.main()

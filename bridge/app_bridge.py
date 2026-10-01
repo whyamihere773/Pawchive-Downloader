@@ -199,6 +199,9 @@ class AppBridge(QObject):
     # Task Scheduler signals
     schedulerChanged          = Signal()
 
+    # File Explorer & Media Gallery signals
+    folderStatsCalculated     = Signal(str, int, int, int)  # (path, total_size, file_count, folder_count)
+
     _progressSignal    = Signal(dict)    # carries progress info dict
     _taskSignal        = Signal(object)  # carries a DownloadTask object
     _finishedSignal    = Signal(bool, str)
@@ -212,6 +215,10 @@ class AppBridge(QObject):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+
+        # File explorer folder stats cache & worker token
+        self._folder_stats_cache = {}
+        self._folder_stats_worker_token = 0
 
         # Core systems
         self.known_manager = KnownManager()
@@ -6156,8 +6163,10 @@ class AppBridge(QObject):
         """
         High-performance on-demand lazy directory listing.
         Engineered for libraries with millions of files:
-        - Only scans immediate directory children (never recurses).
+        - Only scans immediate directory children (never recurses on main thread).
         - Uses os.scandir for direct cached stat retrieval.
+        - Provides immediate shallow child counts.
+        - Asynchronously calculates deep recursive file count & size in background.
         - Caps return count to max_entries to guarantee 0 UI lag.
         """
         if not path:
@@ -6166,6 +6175,11 @@ class AppBridge(QObject):
         path = os.path.normpath(os.path.abspath(path))
         if not os.path.exists(path) or not os.path.isdir(path):
             return []
+
+        # Invalidate old background worker tasks
+        self._folder_stats_worker_token += 1
+        current_token = self._folder_stats_worker_token
+        subfolders_to_scan = []
 
         items = []
         try:
@@ -6176,27 +6190,142 @@ class AppBridge(QObject):
                         break
                     try:
                         is_dir = entry.is_dir(follow_symlinks=False)
-                        st = entry.stat(follow_symlinks=False) if not is_dir else None
-                        size = st.st_size if st else 0
-                        mtime = st.st_mtime if st else 0
-                        ext = "" if is_dir else os.path.splitext(entry.name)[1].lower()
-                        items.append({
-                            "name": entry.name,
-                            "path": os.path.normpath(entry.path),
-                            "is_dir": is_dir,
-                            "size": size,
-                            "mtime": mtime,
-                            "ext": ext
-                        })
+                        norm_p = os.path.normpath(entry.path)
+                        if is_dir:
+                            # Immediate shallow child count
+                            immediate_children = 0
+                            try:
+                                with os.scandir(entry.path) as sub_it:
+                                    immediate_children = sum(1 for _ in sub_it)
+                            except (PermissionError, OSError):
+                                pass
+
+                            # Check cache for recursive stats
+                            cached = self._folder_stats_cache.get(norm_p)
+                            if cached:
+                                size = cached["size"]
+                                file_count = cached["files"]
+                                folder_count = cached["dirs"]
+                            else:
+                                size = -1
+                                file_count = -1
+                                folder_count = immediate_children
+                                subfolders_to_scan.append(norm_p)
+
+                            items.append({
+                                "name": entry.name,
+                                "path": norm_p,
+                                "is_dir": True,
+                                "size": size,
+                                "file_count": file_count,
+                                "folder_count": folder_count,
+                                "child_count": immediate_children,
+                                "mtime": os.path.getmtime(entry.path) if not cached else cached.get("mtime", 0),
+                                "ext": ""
+                            })
+                        else:
+                            st = entry.stat(follow_symlinks=False)
+                            size = st.st_size if st else 0
+                            mtime = st.st_mtime if st else 0
+                            ext = os.path.splitext(entry.name)[1].lower()
+                            items.append({
+                                "name": entry.name,
+                                "path": norm_p,
+                                "is_dir": False,
+                                "size": size,
+                                "file_count": 0,
+                                "folder_count": 0,
+                                "child_count": 0,
+                                "mtime": mtime,
+                                "ext": ext
+                            })
                         count += 1
                     except (PermissionError, OSError):
                         continue
         except (PermissionError, OSError):
             return []
 
+        # Launch background worker for un-cached folders
+        if subfolders_to_scan:
+            threading.Thread(
+                target=self._batch_calculate_folder_stats,
+                args=(subfolders_to_scan, current_token),
+                daemon=True
+            ).start()
+
         # Sort folders first, then alphabetical by name
         items.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
         return items
+
+    def _compute_folder_stats(self, folder_path: str, token: int):
+        """Worker function executed in background thread."""
+        try:
+            if not os.path.exists(folder_path) or not os.path.isdir(folder_path):
+                return
+
+            mtime = os.path.getmtime(folder_path)
+            cached = self._folder_stats_cache.get(folder_path)
+            if cached and cached.get("mtime") == mtime:
+                self.folderStatsCalculated.emit(
+                    os.path.normpath(folder_path),
+                    cached["size"],
+                    cached["files"],
+                    cached["dirs"]
+                )
+                return
+
+            total_size = 0
+            total_files = 0
+            total_dirs = 0
+            max_files = 250000
+
+            for root, dirs, files in os.walk(folder_path):
+                if token != self._folder_stats_worker_token:
+                    return
+                total_dirs += len(dirs)
+                total_files += len(files)
+                for f in files:
+                    try:
+                        fp = os.path.join(root, f)
+                        total_size += os.path.getsize(fp)
+                    except OSError:
+                        pass
+                if total_files >= max_files:
+                    break
+
+            stats = {
+                "size": total_size,
+                "files": total_files,
+                "dirs": total_dirs,
+                "mtime": mtime
+            }
+            self._folder_stats_cache[folder_path] = stats
+
+            if token == self._folder_stats_worker_token:
+                self.folderStatsCalculated.emit(
+                    os.path.normpath(folder_path),
+                    total_size,
+                    total_files,
+                    total_dirs
+                )
+        except Exception:
+            pass
+
+    def _batch_calculate_folder_stats(self, paths: list, token: int):
+        for p in paths:
+            if token != self._folder_stats_worker_token:
+                break
+            self._compute_folder_stats(p, token)
+
+    @Slot(str, result='QVariantMap')
+    def getFolderStats(self, folder_path: str) -> dict:
+        """Return cached stats for a folder or trigger immediate lookup."""
+        norm_path = os.path.normpath(os.path.abspath(folder_path))
+        cached = self._folder_stats_cache.get(norm_path)
+        if cached:
+            return cached
+        return {"size": -1, "files": -1, "dirs": -1}
+
 
     @Slot(str, result='QVariantList')
     def getBreadcrumbs(self, path: str = "") -> list:

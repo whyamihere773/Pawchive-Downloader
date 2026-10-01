@@ -79,6 +79,58 @@ Item {
         return "#94A3B8"
     }
 
+    function formatFolderSize(item) {
+        if (!item) return ""
+        if (!item.is_dir) return formatBytes(item.size)
+        if (item.size >= 0) return formatBytes(item.size)
+        if (item.child_count >= 0) return item.child_count + (item.child_count === 1 ? " item" : " items")
+        return "Calculating…"
+    }
+
+    function formatFolderSubtitle(item) {
+        if (!item) return ""
+        if (!item.is_dir) return formatDate(item.mtime)
+        if (item.file_count >= 0) {
+            var txt = item.file_count + (item.file_count === 1 ? " file" : " files")
+            if (item.folder_count > 0) {
+                txt += " • " + item.folder_count + (item.folder_count === 1 ? " dir" : " dirs")
+            }
+            if (item.size >= 0) {
+                txt += " • " + formatBytes(item.size)
+            }
+            return txt
+        }
+        if (item.child_count >= 0) {
+            return item.child_count + (item.child_count === 1 ? " item" : " items") + " • Calculating size…"
+        }
+        return "Folder • Calculating size…"
+    }
+
+    // ── Live background folder stats updates ────────────────────────────────
+    Connections {
+        target: root.bridge
+        function onFolderStatsCalculated(path, size, fileCount, folderCount) {
+            updateFolderStats(path, size, fileCount, folderCount)
+        }
+    }
+
+    function updateFolderStats(path, size, fileCount, folderCount) {
+        var changed = false
+        var raw = root.rawItems || []
+        for (var i = 0; i < raw.length; i++) {
+            if (raw[i].path === path) {
+                raw[i].size = size
+                raw[i].file_count = fileCount
+                raw[i].folder_count = folderCount
+                changed = true
+                break
+            }
+        }
+        if (changed) {
+            applyFilter()
+        }
+    }
+
     // ── Directory Navigation ────────────────────────────────────────────────
     function navigateTo(path) {
         if (!root.bridge) return
@@ -929,17 +981,19 @@ Item {
                             }
                             Item { Layout.fillWidth: true }
                             Rectangle {
-                                visible: !modelData.is_dir
-                                implicitHeight: 16
-                                implicitWidth: sizeText.implicitWidth + 8
+                                implicitHeight: 18
+                                implicitWidth: sizeText.implicitWidth + 10
                                 radius: 4
-                                color: "#0B0E17"
+                                color: modelData.is_dir ? "#0D1322" : "#0B0E17"
+                                border.color: modelData.is_dir ? (modelData.size >= 0 ? "#38BDF8" : "#25334D") : "transparent"
+                                border.width: modelData.is_dir ? 1 : 0
                                 Text {
                                     id: sizeText
                                     anchors.centerIn: parent
-                                    text: formatBytes(modelData.size)
+                                    text: formatFolderSize(modelData)
                                     font.pixelSize: 9
-                                    color: "#94A3B8"
+                                    font.weight: modelData.is_dir ? 600 : Font.Normal
+                                    color: modelData.is_dir ? (modelData.size >= 0 ? "#38BDF8" : "#94A3B8") : "#94A3B8"
                                 }
                             }
                         }
@@ -957,9 +1011,9 @@ Item {
                         }
 
                         Text {
-                            text: formatDate(modelData.mtime)
+                            text: formatFolderSubtitle(modelData)
                             font.pixelSize: 9
-                            color: "#64748B"
+                            color: modelData.is_dir ? (modelData.size >= 0 ? "#38BDF8" : "#818CF8") : "#64748B"
                             elide: Text.ElideRight
                             Layout.fillWidth: true
                         }
@@ -1027,15 +1081,41 @@ Item {
                             Layout.fillWidth: true
                         }
 
+                        // Files / Child count column
                         Text {
-                            text: modelData.is_dir ? "Directory" : formatBytes(modelData.size)
+                            text: {
+                                if (modelData.is_dir) {
+                                    if (modelData.file_count >= 0) {
+                                        var cnt = modelData.file_count + (modelData.file_count === 1 ? " file" : " files")
+                                        if (modelData.folder_count > 0) {
+                                            cnt += " (" + modelData.folder_count + " dirs)"
+                                        }
+                                        return cnt
+                                    }
+                                    return modelData.child_count + (modelData.child_count === 1 ? " item" : " items")
+                                }
+                                return modelData.ext ? modelData.ext.toUpperCase() : "FILE"
+                            }
                             font.family: "Segoe UI, monospace"
                             font.pixelSize: 10
-                            color: "#94A3B8"
-                            Layout.preferredWidth: 80
+                            font.weight: modelData.is_dir ? 600 : Font.Normal
+                            color: modelData.is_dir ? "#A78BFA" : "#64748B"
+                            Layout.preferredWidth: 110
                             horizontalAlignment: Text.AlignRight
                         }
 
+                        // Size column
+                        Text {
+                            text: formatFolderSize(modelData)
+                            font.family: "Segoe UI, monospace"
+                            font.pixelSize: 10
+                            font.weight: (modelData.is_dir && modelData.size >= 0) ? 600 : Font.Normal
+                            color: modelData.is_dir ? (modelData.size >= 0 ? "#38BDF8" : "#818CF8") : "#94A3B8"
+                            Layout.preferredWidth: 90
+                            horizontalAlignment: Text.AlignRight
+                        }
+
+                        // Date Modified column
                         Text {
                             text: formatDate(modelData.mtime)
                             font.family: "Segoe UI, sans-serif"
