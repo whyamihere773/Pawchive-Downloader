@@ -50,6 +50,12 @@ Item {
         startIndex = 1
         includeSubfolders = false
         moveToFolder = false
+        if (patternField) patternField.text = "{name}.{ext}"
+        if (findField) findField.text = ""
+        if (replaceField) replaceField.text = ""
+        if (prefixField) prefixField.text = ""
+        if (suffixField) suffixField.text = ""
+        if (startField) startField.text = "1"
         isOpen = true
         updatePreview()
     }
@@ -216,6 +222,7 @@ Item {
                     spacing: 3
                     Text { text: "Find:"; font.pixelSize: 10; font.weight: 600; color: "#94A3B8" }
                     TextField {
+                        id: findField
                         Layout.fillWidth: true
                         placeholderText: "Find text..."
                         font.pixelSize: 11
@@ -231,6 +238,7 @@ Item {
                     spacing: 3
                     Text { text: "Replace:"; font.pixelSize: 10; font.weight: 600; color: "#94A3B8" }
                     TextField {
+                        id: replaceField
                         Layout.fillWidth: true
                         placeholderText: "Replace..."
                         font.pixelSize: 11
@@ -246,6 +254,7 @@ Item {
                     spacing: 3
                     Text { text: "Prefix:"; font.pixelSize: 10; font.weight: 600; color: "#94A3B8" }
                     TextField {
+                        id: prefixField
                         Layout.fillWidth: true
                         placeholderText: "Prefix..."
                         font.pixelSize: 11
@@ -261,6 +270,7 @@ Item {
                     spacing: 3
                     Text { text: "Suffix:"; font.pixelSize: 10; font.weight: 600; color: "#94A3B8" }
                     TextField {
+                        id: suffixField
                         Layout.fillWidth: true
                         placeholderText: "Suffix..."
                         font.pixelSize: 11

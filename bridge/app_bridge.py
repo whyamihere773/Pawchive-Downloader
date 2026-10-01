@@ -6403,64 +6403,116 @@ class AppBridge(QObject):
         """
         Scan folder for existing numbered files and detect the next sequential index.
         E.g., if files end or contain 100, returns 101.
-        If current folder has no numbered files, checks previous sibling folder (e.g. Folder 1 before Folder 2).
+        Filters out non-media binaries (.dll, .exe, etc.), architecture codes (x64, x86), and version numbers.
+        If current folder is a numbered volume/chapter, safely checks the previous numbered sibling volume.
         If no numbers found anywhere, returns 1.
         """
         if not folder_path or not os.path.exists(folder_path):
             return 1
 
-        def extract_max_num_from_dir(dpath: str) -> int:
+        VALID_MEDIA_EXTS = {
+            '.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.avif', '.heic', '.tiff', '.svg',
+            '.mp4', '.mkv', '.webm', '.mov', '.avi', '.m4v', '.flv', '.wmv',
+            '.mp3', '.flac', '.wav', '.m4a', '.ogg', '.opus',
+            '.zip', '.cbz', '.cbr', '.rar', '.7z', '.tar', '.gz', '.pdf', '.txt', '.epub'
+        }
+
+        def extract_sequence_number(name: str, is_dir: bool = False):
+            base, ext = os.path.splitext(name)
+            if not is_dir:
+                if ext.lower() not in VALID_MEDIA_EXTS and not base.isdigit():
+                    return None
+            # Filter out system architectures and video resolutions (e.g. x64, x86, 1080p, 720p, 4k)
+            if re.search(r'\b(?:x86|x64|win32|win64|amd64|arm64|1080p|720p|4k|2160p|480p)\b', base, re.I) or base.lower() in ('x64', 'x86', 'win64', 'win32'):
+                return None
+            # Avoid dotted version numbers like 8.0.23.53103 or IP addresses
+            if re.search(r'\d+\.\d+', base):
+                return None
+            # 1. Pure digits: '001', '100'
+            if base.isdigit():
+                val = int(base)
+                return val if 0 < val < 10000 else None
+            # 2. Number separated by separator or brackets: 'img_100', 'page-100', 'photo 100', 'art (100)'
+            m = re.search(r'[\s_\-\(\[\{](\d+)\s*[\)\]\}]?$', base)
+            if m:
+                val = int(m.group(1))
+                return val if 0 < val < 10000 else None
+            # 3. Leading sequence number: '001_img', '100 - photo'
+            m = re.search(r'^(\d+)[\s_\-\)\]\}]', base)
+            if m:
+                val = int(m.group(1))
+                return val if 0 < val < 10000 else None
+            # 4. Standard series keyword with number: 'Ch10', 'Vol2', 'Part3'
+            m = re.search(r'(?:ch(?:apter)?|vol(?:ume)?|part|season|folder|set|page)?[\s_\-\#\[\(]?(\d+)$', base, re.I)
+            if m:
+                val = int(m.group(1))
+                return val if 0 < val < 10000 else None
+            return None
+
+        def extract_max_from_dir(dpath: str) -> int:
             if not os.path.isdir(dpath):
                 return 0
             candidate_numbers = []
             try:
                 for entry in os.scandir(dpath):
                     if entry.is_file():
-                        base, _ = os.path.splitext(entry.name)
-                        # Match trailing number sequence first: e.g. file_100, 100, image (100)
-                        m = re.search(r'(\d+)\D*$', base)
-                        if m:
-                            try:
-                                val = int(m.group(1))
-                                if 0 < val < 1000000:
-                                    candidate_numbers.append(val)
-                            except ValueError:
-                                pass
-                        else:
-                            for n in re.findall(r'\d+', base):
-                                try:
-                                    val = int(n)
-                                    if 0 < val < 1000000:
-                                        candidate_numbers.append(val)
-                                except ValueError:
-                                    pass
+                        num = extract_sequence_number(entry.name, is_dir=False)
+                        if num is not None:
+                            candidate_numbers.append(num)
             except Exception:
                 pass
             return max(candidate_numbers) if candidate_numbers else 0
 
-        # 1. Try folder_path itself
-        max_num = extract_max_num_from_dir(folder_path)
+        # 1. Scan files directly in folder_path
+        max_num = extract_max_from_dir(folder_path)
         if max_num > 0:
             return max_num + 1
 
-        # 2. If no numbers in folder_path, check previous sibling folder
+        # 2. If folder_path has no files with numbers, check subfolders within folder_path
         try:
-            parent = os.path.dirname(os.path.normpath(folder_path))
-            cur_name = os.path.basename(os.path.normpath(folder_path))
-            if parent and os.path.isdir(parent):
-                def natural_sort_key(s):
-                    return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', str(s))]
+            sub_candidates = []
+            for entry in os.scandir(folder_path):
+                if entry.is_dir():
+                    num = extract_sequence_number(entry.name, is_dir=True)
+                    if num is not None:
+                        sub_candidates.append(num)
+            if sub_candidates:
+                return max(sub_candidates) + 1
+        except Exception:
+            pass
 
-                siblings = []
-                for entry in os.scandir(parent):
-                    if entry.is_dir():
-                        siblings.append(entry.name)
-                siblings.sort(key=natural_sort_key)
-                if cur_name in siblings:
-                    cur_idx = siblings.index(cur_name)
-                    if cur_idx > 0:
-                        prev_sibling = os.path.join(parent, siblings[cur_idx - 1])
-                        prev_max = extract_max_num_from_dir(prev_sibling)
+        # 3. Check sibling ONLY if parent is not root/desktop/downloads and folder shares a series prefix
+        try:
+            norm_p = os.path.normpath(os.path.abspath(folder_path))
+            parent = os.path.dirname(norm_p)
+            cur_name = os.path.basename(norm_p)
+
+            user_home = os.path.expanduser('~')
+            skip_parents = {
+                os.path.normcase(user_home),
+                os.path.normcase(os.path.join(user_home, 'Desktop')),
+                os.path.normcase(os.path.join(user_home, 'Downloads')),
+                os.path.normcase(os.path.join(user_home, 'Documents')),
+                os.path.normcase(os.path.dirname(user_home))
+            }
+            if os.path.splitdrive(norm_p)[1] in ('\\', '/', ''):
+                skip_parents.add(os.path.normcase(parent))
+
+            if os.path.normcase(parent) not in skip_parents and parent and os.path.isdir(parent):
+                m_cur = re.search(r'^(.*?)(\d+)\s*$', cur_name)
+                if m_cur:
+                    prefix = m_cur.group(1).lower()
+                    cur_num = int(m_cur.group(2))
+                    siblings = []
+                    for entry in os.scandir(parent):
+                        if entry.is_dir():
+                            m_sib = re.search(r'^(.*?)(\d+)\s*$', entry.name)
+                            if m_sib and m_sib.group(1).lower() == prefix:
+                                siblings.append((int(m_sib.group(2)), entry.path))
+                    siblings.sort(key=lambda x: x[0])
+                    prev_siblings = [path for num, path in siblings if num < cur_num]
+                    if prev_siblings:
+                        prev_max = extract_max_from_dir(prev_siblings[-1])
                         if prev_max > 0:
                             return prev_max + 1
         except Exception:
