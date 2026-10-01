@@ -6,6 +6,7 @@ reactive properties, slots, session persistence, telemetry signals, and async or
 
 import os
 import sys
+import shutil
 import time
 import subprocess
 import threading
@@ -6349,8 +6350,51 @@ class AppBridge(QObject):
 
     @Slot(result='QVariantList')
     def getSystemDrives(self) -> list:
-        """Return available system root drives or volumes for quick navigation."""
+        """Return available system root drives or volumes with live disk space information."""
         drives = []
+
+        def _fmt_gb(gb_val: float) -> str:
+            if gb_val >= 1000:
+                return f"{gb_val / 1024:.1f} TB"
+            elif gb_val >= 10:
+                return f"{gb_val:.0f} GB"
+            else:
+                return f"{gb_val:.1f} GB"
+
+        def _get_space_info(drive_path: str) -> dict:
+            try:
+                total, used, free = shutil.disk_usage(drive_path)
+                free_gb = free / (1024**3)
+                total_gb = total / (1024**3)
+
+                if total_gb >= 1000 and free_gb < 1000:
+                    space_label = f"{_fmt_gb(free_gb)} / {_fmt_gb(total_gb)} (free)"
+                else:
+                    f_num = f"{free_gb:.0f}" if free_gb >= 10 else f"{free_gb:.1f}"
+                    t_num = f"{total_gb:.0f}" if total_gb >= 10 else f"{total_gb:.1f}"
+                    space_label = f"{f_num}/{t_num} GB (free)"
+
+                pct_free = (free / total * 100) if total > 0 else 0
+                return {
+                    "free_bytes": free,
+                    "total_bytes": total,
+                    "used_bytes": used,
+                    "free_str": _fmt_gb(free_gb),
+                    "total_str": _fmt_gb(total_gb),
+                    "space_label": space_label,
+                    "percent_free": pct_free
+                }
+            except Exception:
+                return {
+                    "free_bytes": 0,
+                    "total_bytes": 0,
+                    "used_bytes": 0,
+                    "free_str": "",
+                    "total_str": "",
+                    "space_label": "",
+                    "percent_free": 100
+                }
+
         if sys.platform == "win32":
             import string
             from ctypes import windll
@@ -6359,15 +6403,23 @@ class AppBridge(QObject):
                 for letter in string.ascii_uppercase:
                     if bitmask & 1:
                         drive_path = f"{letter}:\\"
-                        drives.append({"name": f"{letter}:", "path": drive_path})
+                        drive_item = {"name": f"{letter}:", "path": drive_path}
+                        drive_item.update(_get_space_info(drive_path))
+                        drives.append(drive_item)
                     bitmask >>= 1
             except Exception:
-                drives.append({"name": "C:", "path": "C:\\"})
+                fallback = {"name": "C:", "path": "C:\\"}
+                fallback.update(_get_space_info("C:\\"))
+                drives.append(fallback)
         else:
-            drives.append({"name": "Root (/)", "path": "/"})
+            root_item = {"name": "Root (/)", "path": "/"}
+            root_item.update(_get_space_info("/"))
+            drives.append(root_item)
             home = os.path.expanduser("~")
             if os.path.exists(home):
-                drives.append({"name": "Home (~)", "path": home})
+                home_item = {"name": "Home (~)", "path": home}
+                home_item.update(_get_space_info(home))
+                drives.append(home_item)
         return drives
 
     @Slot(str)

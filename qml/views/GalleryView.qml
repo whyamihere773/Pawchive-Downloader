@@ -243,289 +243,347 @@ Item {
     // ── Main UI Layout ──────────────────────────────────────────────────────
     ColumnLayout {
         anchors.fill: parent
-        anchors.margins: 14
-        spacing: 12
+        anchors.margins: 10
+        spacing: 8
 
-        // 1. TOP HEADER BAR
+        // 1. DRIVES & TOOLBAR ACTIONS
         RowLayout {
             Layout.fillWidth: true
-            spacing: 12
+            spacing: 8
 
-            RowLayout {
-                spacing: 8
-                Text {
-                    text: "🖼️"
-                    font.pixelSize: 22
-                }
-                ColumnLayout {
-                    spacing: 1
-                    Text {
-                        text: root.tr("tab_gallery_title", "File Explorer & Media Gallery")
-                        font.family: "Segoe UI, Inter, sans-serif"
-                        font.pixelSize: 18
-                        font.weight: 700
-                        color: "#F8FAFC"
-                    }
-                    Text {
-                        text: root.currentPath || root.tr("gallery_subheading", "Browse, preview, and organize your downloaded collections")
-                        font.family: "Segoe UI, sans-serif"
-                        font.pixelSize: 11
-                        color: "#64748B"
-                        elide: Text.ElideMiddle
-                        Layout.maximumWidth: 420
+            // Drive quick selectors with live storage space
+            Row {
+                spacing: 6
+                Layout.alignment: Qt.AlignVCenter
+
+                Repeater {
+                    model: root.drives
+                    delegate: Rectangle {
+                        readonly property bool isCurrentDrive: {
+                            if (!root.currentPath || !modelData.name) return false
+                            var cp = root.currentPath.toUpperCase().replace(/\\/g, "/")
+                            var dn = modelData.name.toUpperCase().replace(/\\/g, "/")
+                            return cp.indexOf(dn) === 0
+                        }
+
+                        implicitHeight: 26
+                        implicitWidth: driveRow.implicitWidth + 16
+                        radius: 5
+                        color: isCurrentDrive ? "#1B283D" : (driveMouse.containsMouse ? "#182030" : "#111520")
+                        border.color: isCurrentDrive ? "#38BDF8" : (driveMouse.containsMouse ? "#60A5FA" : "#243046")
+                        border.width: 1
+                        clip: true
+
+                        Row {
+                            id: driveRow
+                            anchors.centerIn: parent
+                            spacing: 5
+
+                            Text {
+                                text: "💽 " + modelData.name
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 10
+                                font.weight: 700
+                                color: isCurrentDrive ? "#38BDF8" : "#E2E8F0"
+                            }
+
+                            Text {
+                                visible: !!modelData.space_label
+                                text: modelData.space_label
+                                font.family: "Segoe UI, monospace"
+                                font.pixelSize: 9
+                                color: isCurrentDrive ? "#7DD3FC" : ((modelData.percent_free < 10) ? "#F87171" : "#94A3B8")
+                            }
+                        }
+
+                        // Storage mini progress bar at bottom
+                        Rectangle {
+                            anchors.bottom: parent.bottom
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.margins: 1
+                            height: 2
+                            radius: 1
+                            color: "#1E2536"
+                            visible: !!modelData.total_bytes && modelData.total_bytes > 0
+
+                            Rectangle {
+                                height: parent.height
+                                width: Math.min(parent.width, parent.width * Math.max(0.02, 1.0 - (modelData.percent_free || 0) / 100.0))
+                                radius: 1
+                                color: (modelData.percent_free < 10) ? "#EF4444" : ((modelData.percent_free < 20) ? "#F59E0B" : (isCurrentDrive ? "#38BDF8" : "#64748B"))
+                            }
+                        }
+
+                        MouseArea {
+                            id: driveMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: navigateTo(modelData.path)
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 250
+                            ToolTip.text: "Drive " + (modelData.name || modelData.path) + (modelData.free_str ? ("\n" + modelData.free_str + " free of " + modelData.total_str + " (" + (100 - Math.round(modelData.percent_free)) + "% used)") : "")
+                        }
                     }
                 }
             }
 
             Item { Layout.fillWidth: true }
 
-            // Action: Jump to Downloads
-            Rectangle {
-                implicitHeight: 30
-                implicitWidth: dlBtnRow.implicitWidth + 16
-                radius: 6
-                color: dlBtnMouse.containsMouse ? "#1E293B" : "#141720"
-                border.color: dlBtnMouse.containsMouse ? "#38BDF8" : "#2E384D"
-                border.width: 1
+            // Compact Action Buttons on Right
+            Row {
+                spacing: 5
+                Layout.alignment: Qt.AlignVCenter
 
-                Row {
-                    id: dlBtnRow
-                    anchors.centerIn: parent
-                    spacing: 6
-                    Text { text: "🏠"; font.pixelSize: 12 }
-                    Text {
-                        text: root.tr("gallery_btn_downloads", "Downloads")
-                        font.family: "Segoe UI, sans-serif"
-                        font.pixelSize: 11
-                        font.weight: 600
-                        color: "#E2E8F0"
-                    }
-                }
-                MouseArea {
-                    id: dlBtnMouse
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                        if (root.bridge && root.bridge.getDownloadDir) {
-                            navigateTo(root.bridge.getDownloadDir())
+                // Action: Jump to Downloads
+                Rectangle {
+                    implicitHeight: 26
+                    implicitWidth: dlBtnRow.implicitWidth + 12
+                    radius: 5
+                    color: dlBtnMouse.containsMouse ? "#1E293B" : "#141720"
+                    border.color: dlBtnMouse.containsMouse ? "#38BDF8" : "#2E384D"
+                    border.width: 1
+
+                    Row {
+                        id: dlBtnRow
+                        anchors.centerIn: parent
+                        spacing: 4
+                        Text { text: "🏠"; font.pixelSize: 11 }
+                        Text {
+                            text: root.tr("gallery_btn_downloads", "Downloads")
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 10
+                            font.weight: 600
+                            color: "#E2E8F0"
                         }
                     }
-                    ToolTip.visible: containsMouse
-                    ToolTip.delay: 250
-                    ToolTip.text: "Jump to your default Downloads directory"
-                }
-            }
-
-            // Action: Open in OS Explorer
-            Rectangle {
-                implicitHeight: 30
-                implicitWidth: openBtnRow.implicitWidth + 16
-                radius: 6
-                color: openBtnMouse.containsMouse ? "#1E293B" : "#141720"
-                border.color: openBtnMouse.containsMouse ? "#38BDF8" : "#2E384D"
-                border.width: 1
-
-                Row {
-                    id: openBtnRow
-                    anchors.centerIn: parent
-                    spacing: 6
-                    Text { text: "📂"; font.pixelSize: 12 }
-                    Text {
-                        text: root.tr("gallery_btn_open_system", "Open Folder")
-                        font.family: "Segoe UI, sans-serif"
-                        font.pixelSize: 11
-                        font.weight: 600
-                        color: "#E2E8F0"
+                    MouseArea {
+                        id: dlBtnMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            if (root.bridge && root.bridge.getDownloadDir) {
+                                navigateTo(root.bridge.getDownloadDir())
+                            }
+                        }
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 250
+                        ToolTip.text: "Jump to your default Downloads directory"
                     }
                 }
-                MouseArea {
-                    id: openBtnMouse
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                        if (root.bridge && root.bridge.openFolder) {
-                            root.bridge.openFolder(root.currentPath)
+
+                // Action: Open in OS Explorer
+                Rectangle {
+                    implicitHeight: 26
+                    implicitWidth: openBtnRow.implicitWidth + 12
+                    radius: 5
+                    color: openBtnMouse.containsMouse ? "#1E293B" : "#141720"
+                    border.color: openBtnMouse.containsMouse ? "#38BDF8" : "#2E384D"
+                    border.width: 1
+
+                    Row {
+                        id: openBtnRow
+                        anchors.centerIn: parent
+                        spacing: 4
+                        Text { text: "📂"; font.pixelSize: 11 }
+                        Text {
+                            text: root.tr("gallery_btn_open_system", "Open Folder")
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 10
+                            font.weight: 600
+                            color: "#E2E8F0"
                         }
                     }
-                    ToolTip.visible: containsMouse
-                    ToolTip.delay: 250
-                    ToolTip.text: "Open current folder in File Explorer / OS file manager"
+                    MouseArea {
+                        id: openBtnMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            if (root.bridge && root.bridge.openFolder) {
+                                root.bridge.openFolder(root.currentPath)
+                            }
+                        }
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 250
+                        ToolTip.text: "Open current folder in File Explorer / OS file manager"
+                    }
                 }
-            }
 
-            // Action: Refresh
-            Rectangle {
-                width: 30
-                height: 30
-                radius: 6
-                color: refBtnMouse.containsMouse ? "#1E293B" : "#141720"
-                border.color: refBtnMouse.containsMouse ? "#38BDF8" : "#2E384D"
-                border.width: 1
+                // Action: Refresh
+                Rectangle {
+                    width: 26
+                    height: 26
+                    radius: 5
+                    color: refBtnMouse.containsMouse ? "#1E293B" : "#141720"
+                    border.color: refBtnMouse.containsMouse ? "#38BDF8" : "#2E384D"
+                    border.width: 1
 
-                Text {
-                    anchors.centerIn: parent
-                    text: "🔄"
-                    font.pixelSize: 13
-                }
-                MouseArea {
-                    id: refBtnMouse
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: navigateTo(root.currentPath)
-                    ToolTip.visible: containsMouse
-                    ToolTip.delay: 300
-                    ToolTip.text: "Refresh current directory contents"
-                }
-            }
-
-            // Action: Smart Batch Renamer
-            Rectangle {
-                implicitHeight: 30
-                implicitWidth: renameBtnRow.implicitWidth + 16
-                radius: 6
-                color: renameBtnMouse.containsMouse ? "#1E293B" : "#141720"
-                border.color: renameBtnMouse.containsMouse ? "#F59E0B" : "#2E384D"
-                border.width: 1
-
-                Row {
-                    id: renameBtnRow
-                    anchors.centerIn: parent
-                    spacing: 6
-                    Text { text: "🏷️"; font.pixelSize: 12 }
                     Text {
-                        text: "Batch Rename"
-                        font.family: "Segoe UI, sans-serif"
+                        anchors.centerIn: parent
+                        text: "🔄"
                         font.pixelSize: 11
-                        font.weight: 600
-                        color: "#E2E8F0"
+                    }
+                    MouseArea {
+                        id: refBtnMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: navigateTo(root.currentPath)
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 300
+                        ToolTip.text: "Refresh current directory contents"
                     }
                 }
-                MouseArea {
-                    id: renameBtnMouse
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                        batchRenameModal.open(root.currentPath, root.filteredItems)
-                    }
-                    ToolTip.visible: containsMouse
-                    ToolTip.delay: 300
-                    ToolTip.text: "Smart Batch Renamer\nBulk rename and organize files with metadata variables, sequential numbering, and flattening"
-                }
-            }
 
-            // Action: Cleaner & Deduplicator
-            Rectangle {
-                implicitHeight: 30
-                implicitWidth: cleanBtnRow.implicitWidth + 16
-                radius: 6
-                color: cleanBtnMouse.containsMouse ? "#1E293B" : "#141720"
-                border.color: cleanBtnMouse.containsMouse ? "#10B981" : "#2E384D"
-                border.width: 1
+                // Action: Smart Batch Renamer
+                Rectangle {
+                    implicitHeight: 26
+                    implicitWidth: renameBtnRow.implicitWidth + 12
+                    radius: 5
+                    color: renameBtnMouse.containsMouse ? "#1E293B" : "#141720"
+                    border.color: renameBtnMouse.containsMouse ? "#F59E0B" : "#2E384D"
+                    border.width: 1
 
-                Row {
-                    id: cleanBtnRow
-                    anchors.centerIn: parent
-                    spacing: 6
-                    Text { text: "🧹"; font.pixelSize: 12 }
-                    Text {
-                        text: "Clean & Organize"
-                        font.family: "Segoe UI, sans-serif"
-                        font.pixelSize: 11
-                        font.weight: 600
-                        color: "#E2E8F0"
-                    }
-                }
-                MouseArea {
-                    id: cleanBtnMouse
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                        galleryCleanerModal.open(root.currentPath)
-                    }
-                    ToolTip.visible: containsMouse
-                    ToolTip.delay: 300
-                    ToolTip.text: "Clean & Organize\nFind 0-byte broken files, detect duplicate downloads by SHA-256 hash, and auto-sort media into folders"
-                }
-            }
-
-            // View Mode Toggle (Grid vs List)
-            Rectangle {
-                implicitHeight: 30
-                implicitWidth: 64
-                radius: 6
-                color: "#12151E"
-                border.color: "#252C3D"
-                border.width: 1
-
-                Row {
-                    anchors.centerIn: parent
-                    spacing: 2
-
-                    Rectangle {
-                        width: 28
-                        height: 24
-                        radius: 4
-                        color: root.viewMode === "grid" ? "#222D42" : "transparent"
-                        border.color: root.viewMode === "grid" ? "#38BDF8" : "transparent"
-                        border.width: 1
-                        Text { anchors.centerIn: parent; text: "⊞"; font.pixelSize: 13; color: root.viewMode === "grid" ? "#38BDF8" : "#64748B" }
-                        MouseArea {
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: root.viewMode = "grid"
-                            ToolTip.visible: containsMouse
-                            ToolTip.delay: 250
-                            ToolTip.text: "Grid View\nDisplay files and folders as visual cards with thumbnails"
+                    Row {
+                        id: renameBtnRow
+                        anchors.centerIn: parent
+                        spacing: 4
+                        Text { text: "🏷️"; font.pixelSize: 11 }
+                        Text {
+                            text: "Batch Rename"
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 10
+                            font.weight: 600
+                            color: "#E2E8F0"
                         }
                     }
-                    Rectangle {
-                        width: 28
-                        height: 24
-                        radius: 4
-                        color: root.viewMode === "list" ? "#222D42" : "transparent"
-                        border.color: root.viewMode === "list" ? "#38BDF8" : "transparent"
-                        border.width: 1
-                        Text { anchors.centerIn: parent; text: "📑"; font.pixelSize: 12; color: root.viewMode === "list" ? "#38BDF8" : "#64748B" }
-                        MouseArea {
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: root.viewMode = "list"
-                            ToolTip.visible: containsMouse
-                            ToolTip.delay: 250
-                            ToolTip.text: "List View\nDisplay detailed file information: names, item counts, sizes, and modified dates"
+                    MouseArea {
+                        id: renameBtnMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            batchRenameModal.open(root.currentPath, root.filteredItems)
+                        }
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 300
+                        ToolTip.text: "Smart Batch Renamer\nBulk rename and organize files with metadata variables, sequential numbering, and flattening"
+                    }
+                }
+
+                // Action: Cleaner & Deduplicator
+                Rectangle {
+                    implicitHeight: 26
+                    implicitWidth: cleanBtnRow.implicitWidth + 12
+                    radius: 5
+                    color: cleanBtnMouse.containsMouse ? "#1E293B" : "#141720"
+                    border.color: cleanBtnMouse.containsMouse ? "#10B981" : "#2E384D"
+                    border.width: 1
+
+                    Row {
+                        id: cleanBtnRow
+                        anchors.centerIn: parent
+                        spacing: 4
+                        Text { text: "🧹"; font.pixelSize: 11 }
+                        Text {
+                            text: "Clean & Organize"
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 10
+                            font.weight: 600
+                            color: "#E2E8F0"
+                        }
+                    }
+                    MouseArea {
+                        id: cleanBtnMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            galleryCleanerModal.open(root.currentPath)
+                        }
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 300
+                        ToolTip.text: "Clean & Organize\nFind 0-byte broken files, detect duplicate downloads by SHA-256 hash, and auto-sort media into folders"
+                    }
+                }
+
+                // View Mode Toggle (Grid vs List)
+                Rectangle {
+                    implicitHeight: 26
+                    implicitWidth: 54
+                    radius: 5
+                    color: "#12151E"
+                    border.color: "#252C3D"
+                    border.width: 1
+
+                    Row {
+                        anchors.centerIn: parent
+                        spacing: 2
+
+                        Rectangle {
+                            width: 24
+                            height: 20
+                            radius: 3
+                            color: root.viewMode === "grid" ? "#222D42" : "transparent"
+                            border.color: root.viewMode === "grid" ? "#38BDF8" : "transparent"
+                            border.width: 1
+                            Text { anchors.centerIn: parent; text: "⊞"; font.pixelSize: 11; color: root.viewMode === "grid" ? "#38BDF8" : "#64748B" }
+                            MouseArea {
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.viewMode = "grid"
+                                ToolTip.visible: containsMouse
+                                ToolTip.delay: 250
+                                ToolTip.text: "Grid View\nDisplay files and folders as visual cards with thumbnails"
+                            }
+                        }
+                        Rectangle {
+                            width: 24
+                            height: 20
+                            radius: 3
+                            color: root.viewMode === "list" ? "#222D42" : "transparent"
+                            border.color: root.viewMode === "list" ? "#38BDF8" : "transparent"
+                            border.width: 1
+                            Text { anchors.centerIn: parent; text: "📑"; font.pixelSize: 10; color: root.viewMode === "list" ? "#38BDF8" : "#64748B" }
+                            MouseArea {
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.viewMode = "list"
+                                ToolTip.visible: containsMouse
+                                ToolTip.delay: 250
+                                ToolTip.text: "List View\nDisplay detailed file information: names, item counts, sizes, and modified dates"
+                            }
                         }
                     }
                 }
             }
         }
 
-        // 2. BREADCRUMBS & DRIVE SELECTOR BAR
+        // 2. BREADCRUMBS BAR
         Rectangle {
             Layout.fillWidth: true
-            implicitHeight: 38
-            radius: 8
+            implicitHeight: 32
+            radius: 6
             color: "#121622"
             border.color: "#232A3B"
             border.width: 1
 
             RowLayout {
                 anchors.fill: parent
-                anchors.leftMargin: 8
-                anchors.rightMargin: 8
+                anchors.leftMargin: 6
+                anchors.rightMargin: 6
                 spacing: 6
 
                 // Parent directory button
                 Rectangle {
-                    width: 28
-                    height: 28
-                    radius: 5
+                    width: 24
+                    height: 24
+                    radius: 4
                     color: (upBtnMouse.containsMouse && root.breadcrumbs.length > 1) ? "#1E273A" : "#161B29"
                     border.color: (upBtnMouse.containsMouse && root.breadcrumbs.length > 1) ? "#38BDF8" : "#2B354C"
                     border.width: 1
@@ -534,7 +592,7 @@ Item {
                     Text {
                         anchors.centerIn: parent
                         text: "⬆"
-                        font.pixelSize: 13
+                        font.pixelSize: 11
                         color: "#E2E8F0"
                     }
                     MouseArea {
@@ -549,45 +607,12 @@ Item {
                     }
                 }
 
-                // Drive quick selectors
-                Repeater {
-                    model: root.drives
-                    delegate: Rectangle {
-                        implicitHeight: 26
-                        implicitWidth: driveText.implicitWidth + 14
-                        radius: 5
-                        color: driveMouse.containsMouse ? "#1E273A" : "#171D2B"
-                        border.color: driveMouse.containsMouse ? "#38BDF8" : "#2B354C"
-                        border.width: 1
-
-                        Text {
-                            id: driveText
-                            anchors.centerIn: parent
-                            text: modelData.name || ""
-                            font.family: "Segoe UI, sans-serif"
-                            font.pixelSize: 11
-                            font.weight: 600
-                            color: "#94A3B8"
-                        }
-                        MouseArea {
-                            id: driveMouse
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: navigateTo(modelData.path)
-                            ToolTip.visible: containsMouse
-                            ToolTip.delay: 250
-                            ToolTip.text: "Switch to drive " + (modelData.name || modelData.path)
-                        }
-                    }
-                }
-
                 // Breadcrumbs strip (Flickable)
                 Flickable {
                     Layout.fillWidth: true
-                    implicitHeight: 28
+                    implicitHeight: 24
                     contentWidth: crumbRow.implicitWidth
-                    contentHeight: 28
+                    contentHeight: 24
                     flickableDirection: Flickable.HorizontalFlick
                     clip: true
 
@@ -603,8 +628,8 @@ Item {
                                 anchors.verticalCenter: parent.verticalCenter
 
                                 Rectangle {
-                                    implicitHeight: 24
-                                    implicitWidth: crumbText.implicitWidth + 12
+                                    implicitHeight: 22
+                                    implicitWidth: crumbText.implicitWidth + 10
                                     radius: 4
                                     color: (crumbMouse.containsMouse || index === (root.breadcrumbs.length - 1)) ? "#1E293D" : "transparent"
                                     border.color: index === (root.breadcrumbs.length - 1) ? "#38BDF8" : "transparent"
@@ -634,7 +659,7 @@ Item {
                                 Text {
                                     visible: index < (root.breadcrumbs.length - 1)
                                     text: "›"
-                                    font.pixelSize: 12
+                                    font.pixelSize: 11
                                     color: "#475569"
                                     anchors.verticalCenter: parent.verticalCenter
                                 }
