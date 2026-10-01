@@ -6398,7 +6398,81 @@ class AppBridge(QObject):
         from PySide6.QtCore import QUrl
         return QUrl.fromLocalFile(os.path.abspath(local_path)).toString()
 
+    @Slot(str, result=int)
+    def detectNextIndex(self, folder_path: str) -> int:
+        """
+        Scan folder for existing numbered files and detect the next sequential index.
+        E.g., if files end or contain 100, returns 101.
+        If current folder has no numbered files, checks previous sibling folder (e.g. Folder 1 before Folder 2).
+        If no numbers found anywhere, returns 1.
+        """
+        if not folder_path or not os.path.exists(folder_path):
+            return 1
+
+        def extract_max_num_from_dir(dpath: str) -> int:
+            if not os.path.isdir(dpath):
+                return 0
+            candidate_numbers = []
+            try:
+                for entry in os.scandir(dpath):
+                    if entry.is_file():
+                        base, _ = os.path.splitext(entry.name)
+                        # Match trailing number sequence first: e.g. file_100, 100, image (100)
+                        m = re.search(r'(\d+)\D*$', base)
+                        if m:
+                            try:
+                                val = int(m.group(1))
+                                if 0 < val < 1000000:
+                                    candidate_numbers.append(val)
+                            except ValueError:
+                                pass
+                        else:
+                            for n in re.findall(r'\d+', base):
+                                try:
+                                    val = int(n)
+                                    if 0 < val < 1000000:
+                                        candidate_numbers.append(val)
+                                except ValueError:
+                                    pass
+            except Exception:
+                pass
+            return max(candidate_numbers) if candidate_numbers else 0
+
+        # 1. Try folder_path itself
+        max_num = extract_max_num_from_dir(folder_path)
+        if max_num > 0:
+            return max_num + 1
+
+        # 2. If no numbers in folder_path, check previous sibling folder
+        try:
+            parent = os.path.dirname(os.path.normpath(folder_path))
+            cur_name = os.path.basename(os.path.normpath(folder_path))
+            if parent and os.path.isdir(parent):
+                def natural_sort_key(s):
+                    return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', str(s))]
+
+                siblings = []
+                for entry in os.scandir(parent):
+                    if entry.is_dir():
+                        siblings.append(entry.name)
+                siblings.sort(key=natural_sort_key)
+                if cur_name in siblings:
+                    cur_idx = siblings.index(cur_name)
+                    if cur_idx > 0:
+                        prev_sibling = os.path.join(parent, siblings[cur_idx - 1])
+                        prev_max = extract_max_num_from_dir(prev_sibling)
+                        if prev_max > 0:
+                            return prev_max + 1
+        except Exception:
+            pass
+
+        return 1
+
     @Slot(str, 'QVariantList', str, str, str, str, str, str, result='QVariantList')
+    @Slot(str, 'QVariantList', str, str, str, str, str, str, int, result='QVariantList')
+    @Slot(str, 'QVariantList', str, str, str, str, str, str, int, bool, result='QVariantList')
+    @Slot(str, 'QVariantList', str, str, str, str, str, str, int, bool, bool, result='QVariantList')
+    @Slot(str, 'QVariantList', str, str, str, str, str, str, int, bool, bool, str, result='QVariantList')
     def previewBatchRename(
         self,
         folder_path: str,
@@ -6408,11 +6482,16 @@ class AppBridge(QObject):
         replace_text: str = "",
         prefix: str = "",
         suffix: str = "",
-        case_mode: str = "keep"
+        case_mode: str = "keep",
+        start_index: int = 1,
+        include_subfolders: bool = False,
+        move_to_folder: bool = False,
+        destination_folder: str = ""
     ) -> list:
         """
         Preview batch renaming results for files with metadata variable interpolation.
-        Supports variables: {name}, {ext}, {artist}, {title}, {post_id}, {date}, {index}, {0index}, {00index}.
+        Supports variables: {name}, {ext}, {artist}, {title}, {post_id}, {date}, {index}, {0index}, {00index}, {000index}.
+        Supports custom start index, cross-folder continuous numbering, and moving/flattening to folder.
         """
         if not folder_path or not os.path.exists(folder_path):
             return []
@@ -6420,24 +6499,49 @@ class AppBridge(QObject):
         folder_name = os.path.basename(os.path.normpath(folder_path))
         parent_folder_name = os.path.basename(os.path.dirname(os.path.normpath(folder_path)))
 
-        if not files:
+        def natural_sort_key(s):
+            return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', str(s))]
+
+        if include_subfolders:
+            collected = []
+            for root_dir, dirs, filenames in os.walk(folder_path):
+                dirs.sort(key=natural_sort_key)
+                filenames.sort(key=natural_sort_key)
+                for fn in filenames:
+                    collected.append({
+                        "name": fn,
+                        "path": os.path.join(root_dir, fn)
+                    })
+            files = collected
+        elif not files:
             try:
                 files = [f for f in os.listdir(folder_path) if os.path.isfile(os.path.join(folder_path, f))]
             except OSError:
                 return []
+            try:
+                files = sorted(files, key=natural_sort_key)
+            except Exception:
+                pass
+        else:
+            try:
+                def file_sort_val(x):
+                    if isinstance(x, dict):
+                        return x.get("path", x.get("name", ""))
+                    return str(x)
+                files = sorted(files, key=lambda x: natural_sort_key(file_sort_val(x)))
+            except Exception:
+                pass
 
-        def natural_sort_key(s):
-            return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', str(s))]
-
-        try:
-            files = sorted(files, key=natural_sort_key)
-        except Exception:
-            pass
-
+        dest_dir = destination_folder.strip() if (destination_folder and destination_folder.strip()) else folder_path
         results = []
         new_names_seen = {}
 
-        for idx, item in enumerate(files, start=1):
+        try:
+            start_idx = max(0, int(start_index))
+        except (ValueError, TypeError):
+            start_idx = 1
+
+        for idx, item in enumerate(files, start=start_idx):
             if isinstance(item, dict):
                 filename = item.get("name", "")
                 filepath = item.get("path", os.path.join(folder_path, filename))
@@ -6449,11 +6553,16 @@ class AppBridge(QObject):
             base_name, ext = os.path.splitext(filename)
             raw_ext = ext.lstrip(".").lower()
 
+            item_dir = os.path.dirname(filepath)
+            item_folder_name = os.path.basename(item_dir)
+
             # Metadata extraction
             artist_match = re.search(r'\[([^\]]+)\]', base_name)
-            artist = artist_match.group(1).strip() if artist_match else (folder_name if folder_name else parent_folder_name)
+            artist = artist_match.group(1).strip() if artist_match else (item_folder_name if item_folder_name else (folder_name if folder_name else parent_folder_name))
 
             post_id_match = re.search(r'\b(\d{5,10})\b', base_name)
+            if not post_id_match:
+                post_id_match = re.search(r'\b(\d{5,10})\b', item_folder_name)
             if not post_id_match:
                 post_id_match = re.search(r'\b(\d{5,10})\b', folder_name)
             post_id = post_id_match.group(1) if post_id_match else ""
@@ -6485,6 +6594,7 @@ class AppBridge(QObject):
             new_name = new_name.replace("{index}", str(idx))
             new_name = new_name.replace("{0index}", f"{idx:02d}")
             new_name = new_name.replace("{00index}", f"{idx:03d}")
+            new_name = new_name.replace("{000index}", f"{idx:04d}")
 
             if find_text:
                 new_name = new_name.replace(find_text, replace_text)
@@ -6507,21 +6617,27 @@ class AppBridge(QObject):
             if not sanitized_name:
                 sanitized_name = filename
 
-            new_filepath = os.path.join(folder_path, sanitized_name)
+            if move_to_folder:
+                new_filepath = os.path.join(dest_dir, sanitized_name)
+            else:
+                new_filepath = os.path.join(item_dir, sanitized_name)
+
+            norm_dest = os.path.normcase(os.path.normpath(new_filepath))
+            norm_src = os.path.normcase(os.path.normpath(filepath))
 
             status = "ready"
             err = ""
 
-            if sanitized_name == filename or os.path.normcase(filepath) == os.path.normcase(new_filepath):
+            if norm_dest == norm_src:
                 status = "unchanged"
-            elif sanitized_name.lower() in new_names_seen:
+            elif norm_dest in new_names_seen:
                 status = "collision"
-                err = f"Duplicates another planned name: {sanitized_name}"
-            elif os.path.exists(new_filepath) and os.path.normcase(filepath) != os.path.normcase(new_filepath):
+                err = f"Duplicates another planned file: {sanitized_name}"
+            elif os.path.exists(new_filepath) and norm_dest != norm_src:
                 status = "collision"
                 err = f"File already exists on disk: {sanitized_name}"
 
-            new_names_seen[sanitized_name.lower()] = filepath
+            new_names_seen[norm_dest] = filepath
 
             results.append({
                 "old_name": filename,
@@ -6530,15 +6646,17 @@ class AppBridge(QObject):
                 "new_path": new_filepath,
                 "status": status,
                 "error": err,
-                "valid": status in ("ready", "unchanged")
+                "valid": status in ("ready", "unchanged"),
+                "is_move": move_to_folder and (os.path.normcase(os.path.dirname(filepath)) != os.path.normcase(dest_dir))
             })
 
         return results
 
     @Slot('QVariantList', result='QVariantMap')
     def executeBatchRename(self, plan: list) -> dict:
-        """Execute a batch renaming plan safely with two-phase rename for circular collisions."""
+        """Execute a batch renaming/moving plan safely with two-phase rename for circular collisions."""
         import uuid
+        import shutil
         renamed = 0
         failed = 0
         errors = []
@@ -6556,6 +6674,15 @@ class AppBridge(QObject):
                 errors.append(f"Source file not found: {os.path.basename(src)}")
                 continue
 
+            dst_dir = os.path.dirname(dst)
+            if not os.path.exists(dst_dir):
+                try:
+                    os.makedirs(dst_dir, exist_ok=True)
+                except Exception as e:
+                    failed += 1
+                    errors.append(f"Cannot create destination directory {dst_dir}: {e}")
+                    continue
+
             needs_temp = False
             if os.path.normcase(src) == os.path.normcase(dst):
                 needs_temp = True
@@ -6565,14 +6692,14 @@ class AppBridge(QObject):
             if needs_temp:
                 temp_path = f"{src}.tmp_batch_{uuid.uuid4().hex[:6]}"
                 try:
-                    os.rename(src, temp_path)
+                    shutil.move(src, temp_path)
                     temp_renames.append((temp_path, dst, src))
                 except Exception as e:
                     failed += 1
                     errors.append(f"Cannot temp-rename {os.path.basename(src)}: {e}")
             else:
                 try:
-                    os.rename(src, dst)
+                    shutil.move(src, dst)
                     renamed += 1
                 except Exception as e:
                     failed += 1
@@ -6580,13 +6707,14 @@ class AppBridge(QObject):
 
         for temp_src, final_dst, orig_src in temp_renames:
             try:
-                os.rename(temp_src, final_dst)
+                os.makedirs(os.path.dirname(final_dst), exist_ok=True)
+                shutil.move(temp_src, final_dst)
                 renamed += 1
             except Exception as e:
                 failed += 1
                 errors.append(f"Cannot finalize rename to {os.path.basename(final_dst)}: {e}")
                 try:
-                    os.rename(temp_src, orig_src)
+                    shutil.move(temp_src, orig_src)
                 except Exception:
                     pass
 

@@ -22,6 +22,10 @@ Item {
     property string suffixText: ""
     property string caseMode: "keep"
     property bool filesOnly: true
+    property int startIndex: 1
+    property bool includeSubfolders: false
+    property bool moveToFolder: false
+    property string destinationFolder: ""
 
     // Live preview plan
     property var previewPlan: []
@@ -34,6 +38,7 @@ Item {
 
     function open(currentFolder, files) {
         folderPath = currentFolder || ""
+        destinationFolder = currentFolder || ""
         targetFiles = files || []
         renamePattern = "{name}.{ext}"
         findText = ""
@@ -42,6 +47,9 @@ Item {
         suffixText = ""
         caseMode = "keep"
         filesOnly = true
+        startIndex = 1
+        includeSubfolders = false
+        moveToFolder = false
         isOpen = true
         updatePreview()
     }
@@ -59,7 +67,7 @@ Item {
     function updatePreview() {
         if (!isOpen || !bridge || !bridge.previewBatchRename) return
         var filteredList = targetFiles || []
-        if (filesOnly) {
+        if (filesOnly && !includeSubfolders) {
             filteredList = filteredList.filter(function(it) {
                 return it && !it.is_dir
             })
@@ -72,7 +80,11 @@ Item {
             replaceText,
             prefixText,
             suffixText,
-            caseMode
+            caseMode,
+            startIndex,
+            includeSubfolders,
+            moveToFolder,
+            destinationFolder
         ) || []
         previewPlan = plan
 
@@ -174,7 +186,7 @@ Item {
                 // 1. Renaming Pattern
                 ColumnLayout {
                     Layout.fillWidth: true
-                    Layout.preferredWidth: 200
+                    Layout.preferredWidth: 170
                     spacing: 3
                     Text { text: "Pattern:"; font.pixelSize: 10; font.weight: 600; color: "#38BDF8" }
                     TextField {
@@ -200,7 +212,7 @@ Item {
 
                 // 2. Find
                 ColumnLayout {
-                    Layout.preferredWidth: 95
+                    Layout.preferredWidth: 85
                     spacing: 3
                     Text { text: "Find:"; font.pixelSize: 10; font.weight: 600; color: "#94A3B8" }
                     TextField {
@@ -215,7 +227,7 @@ Item {
 
                 // 3. Replace
                 ColumnLayout {
-                    Layout.preferredWidth: 95
+                    Layout.preferredWidth: 85
                     spacing: 3
                     Text { text: "Replace:"; font.pixelSize: 10; font.weight: 600; color: "#94A3B8" }
                     TextField {
@@ -230,7 +242,7 @@ Item {
 
                 // 4. Prefix
                 ColumnLayout {
-                    Layout.preferredWidth: 80
+                    Layout.preferredWidth: 70
                     spacing: 3
                     Text { text: "Prefix:"; font.pixelSize: 10; font.weight: 600; color: "#94A3B8" }
                     TextField {
@@ -245,7 +257,7 @@ Item {
 
                 // 5. Suffix
                 ColumnLayout {
-                    Layout.preferredWidth: 80
+                    Layout.preferredWidth: 70
                     spacing: 3
                     Text { text: "Suffix:"; font.pixelSize: 10; font.weight: 600; color: "#94A3B8" }
                     TextField {
@@ -258,7 +270,68 @@ Item {
                     }
                 }
 
-                // 6. Case Mode
+                // 6. Start # with ⚡ Auto Next button
+                ColumnLayout {
+                    Layout.preferredWidth: 90
+                    spacing: 3
+                    RowLayout {
+                        spacing: 4
+                        Text { text: "Start #:"; font.pixelSize: 10; font.weight: 600; color: "#A78BFA" }
+                        Rectangle {
+                            implicitHeight: 14
+                            implicitWidth: autoTxt.implicitWidth + 8
+                            radius: 3
+                            color: autoMouse.containsMouse ? "#6366F1" : "#312E81"
+                            border.color: autoMouse.containsMouse ? "#A5B4FC" : "#6366F1"
+                            border.width: 1
+                            Text {
+                                id: autoTxt
+                                anchors.centerIn: parent
+                                text: "⚡ Auto"
+                                font.pixelSize: 8
+                                font.weight: 700
+                                color: "#E0E7FF"
+                            }
+                            MouseArea {
+                                id: autoMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    if (root.bridge && root.bridge.detectNextIndex) {
+                                        var scanTarget = (root.moveToFolder && root.destinationFolder) ? root.destinationFolder : root.folderPath
+                                        var detected = root.bridge.detectNextIndex(scanTarget)
+                                        startField.text = "" + detected
+                                        root.startIndex = detected
+                                        root.updatePreview()
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    TextField {
+                        id: startField
+                        Layout.fillWidth: true
+                        text: "" + root.startIndex
+                        placeholderText: "1"
+                        font.pixelSize: 11
+                        color: "#F8FAFC"
+                        validator: IntValidator { bottom: 0; top: 9999999 }
+                        background: Rectangle {
+                            color: "#0B0E16"
+                            radius: 5
+                            border.color: startField.activeFocus ? "#A78BFA" : "#273349"
+                            border.width: 1
+                        }
+                        onTextEdited: {
+                            var val = parseInt(text)
+                            root.startIndex = isNaN(val) ? 1 : val
+                            root.updatePreview()
+                        }
+                    }
+                }
+
+                // 7. Case Mode
                 ColumnLayout {
                     spacing: 3
                     Text { text: "Case Mode:"; font.pixelSize: 10; font.weight: 600; color: "#94A3B8" }
@@ -301,7 +374,7 @@ Item {
                 }
             }
 
-            // Quick Insertion Tokens & Files-Only Toggle
+            // Quick Insertion Tokens Row
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 6
@@ -316,8 +389,10 @@ Item {
                         { label: "{title}" },
                         { label: "{post_id}" },
                         { label: "{date}" },
+                        { label: "{index}" },
                         { label: "{0index}" },
-                        { label: "{index}" }
+                        { label: "{00index}" },
+                        { label: "{000index}" }
                     ]
                     delegate: Rectangle {
                         implicitHeight: 20
@@ -347,12 +422,17 @@ Item {
                 }
 
                 Item { Layout.fillWidth: true }
+            }
 
-                // Checkbox: only rename files (ignore subfolders)
+            // Advanced Options & Move-to-Folder Bar
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 14
+
+                // Option 1: Files only
                 RowLayout {
                     spacing: 5
                     Layout.alignment: Qt.AlignVCenter
-
                     Rectangle {
                         width: 14; height: 14; radius: 3
                         color: root.filesOnly ? "#38BDF8" : "#161D2B"
@@ -382,6 +462,136 @@ Item {
                         }
                     }
                 }
+
+                // Option 2: Include subfolders (continuous numbering)
+                RowLayout {
+                    spacing: 5
+                    Layout.alignment: Qt.AlignVCenter
+                    Rectangle {
+                        width: 14; height: 14; radius: 3
+                        color: root.includeSubfolders ? "#818CF8" : "#161D2B"
+                        border.color: "#374151"; border.width: 1
+                        Text { visible: root.includeSubfolders; anchors.centerIn: parent; text: "✓"; font.pixelSize: 9; font.weight: Font.Bold; color: "#0B0E14" }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                root.includeSubfolders = !root.includeSubfolders
+                                root.updatePreview()
+                            }
+                        }
+                    }
+                    Text {
+                        text: "Include subfolders (continuous sequence)"
+                        font.family: "Segoe UI, sans-serif"
+                        font.pixelSize: 10
+                        color: root.includeSubfolders ? "#C7D2FE" : "#94A3B8"
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                root.includeSubfolders = !root.includeSubfolders
+                                root.updatePreview()
+                            }
+                        }
+                    }
+                }
+
+                // Option 3: Move all into folder
+                RowLayout {
+                    spacing: 5
+                    Layout.alignment: Qt.AlignVCenter
+                    Rectangle {
+                        width: 14; height: 14; radius: 3
+                        color: root.moveToFolder ? "#10B981" : "#161D2B"
+                        border.color: "#374151"; border.width: 1
+                        Text { visible: root.moveToFolder; anchors.centerIn: parent; text: "✓"; font.pixelSize: 9; font.weight: Font.Bold; color: "#0B0E14" }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                root.moveToFolder = !root.moveToFolder
+                                root.updatePreview()
+                            }
+                        }
+                    }
+                    Text {
+                        text: "Move all into folder"
+                        font.family: "Segoe UI, sans-serif"
+                        font.pixelSize: 10
+                        color: root.moveToFolder ? "#6EE7B7" : "#94A3B8"
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                root.moveToFolder = !root.moveToFolder
+                                root.updatePreview()
+                            }
+                        }
+                    }
+                }
+
+                // Destination Folder Indicator & Picker
+                RowLayout {
+                    visible: root.moveToFolder
+                    spacing: 5
+                    Layout.alignment: Qt.AlignVCenter
+
+                    Rectangle {
+                        implicitHeight: 22
+                        implicitWidth: Math.min(220, destLabel.implicitWidth + 14)
+                        radius: 4
+                        color: "#0B1D15"
+                        border.color: "#059669"
+                        border.width: 1
+                        clip: true
+                        Text {
+                            id: destLabel
+                            anchors.centerIn: parent
+                            text: "📁 " + (root.destinationFolder ? root.destinationFolder : "Current Folder")
+                            elide: Text.ElideMiddle
+                            maximumLineCount: 1
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 9
+                            color: "#A7F3D0"
+                        }
+                    }
+
+                    Rectangle {
+                        implicitHeight: 22
+                        implicitWidth: changeDestTxt.implicitWidth + 12
+                        radius: 4
+                        color: changeDestMouse.containsMouse ? "#10B981" : "#065F46"
+                        border.color: "#059669"
+                        border.width: 1
+                        Text {
+                            id: changeDestTxt
+                            anchors.centerIn: parent
+                            text: "Change..."
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 9
+                            font.weight: 600
+                            color: "#FFFFFF"
+                        }
+                        MouseArea {
+                            id: changeDestMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                if (root.bridge && root.bridge.browseFolderDialog) {
+                                    var chosen = root.bridge.browseFolderDialog("Select Target Destination Folder", root.destinationFolder || root.folderPath)
+                                    if (chosen && chosen.length > 0) {
+                                        root.destinationFolder = chosen
+                                        root.updatePreview()
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Item { Layout.fillWidth: true }
             }
 
             // Preview Table Header
@@ -462,6 +672,27 @@ Item {
                                 Layout.fillWidth: true
                             }
 
+                            // Move badge
+                            Rectangle {
+                                visible: modelData.is_move === true
+                                implicitHeight: 18
+                                implicitWidth: moveBadgeTxt.implicitWidth + 8
+                                radius: 4
+                                color: "#064E3B"
+                                border.color: "#10B981"
+                                border.width: 1
+                                Layout.preferredWidth: implicitWidth
+
+                                Text {
+                                    id: moveBadgeTxt
+                                    anchors.centerIn: parent
+                                    text: "MOVE"
+                                    font.pixelSize: 8
+                                    font.weight: 700
+                                    color: "#6EE7B7"
+                                }
+                            }
+
                             Rectangle {
                                 implicitHeight: 18
                                 implicitWidth: statusTxt.implicitWidth + 10
@@ -481,6 +712,17 @@ Item {
                                 }
                             }
                         }
+
+                        // ToolTip on collision/error hover
+                        ToolTip.visible: (modelData.status === "collision" || (modelData.error && modelData.error.length > 0)) && itemMouse.containsMouse
+                        ToolTip.text: modelData.error || ""
+                        ToolTip.delay: 250
+
+                        MouseArea {
+                            id: itemMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                        }
                     }
                 }
             }
@@ -491,7 +733,7 @@ Item {
                 spacing: 12
 
                 Text {
-                    text: root.readyCount + " of " + root.previewPlan.length + " files ready to rename"
+                    text: root.readyCount + " of " + root.previewPlan.length + " files ready to " + (root.moveToFolder ? "rename & move" : "rename")
                     font.family: "Segoe UI, sans-serif"
                     font.pixelSize: 11
                     font.weight: 600
@@ -532,7 +774,7 @@ Item {
                     Text {
                         id: applyText
                         anchors.centerIn: parent
-                        text: root.isExecuting ? "Renaming..." : ("Apply Rename (" + root.readyCount + ")")
+                        text: root.isExecuting ? (root.moveToFolder ? "Moving..." : "Renaming...") : ((root.moveToFolder ? "Apply Rename & Move (" : "Apply Rename (") + root.readyCount + ")")
                         font.family: "Segoe UI, sans-serif"
                         font.pixelSize: 11
                         font.weight: 700

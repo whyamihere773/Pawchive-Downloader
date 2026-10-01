@@ -157,6 +157,116 @@ class TestFileExplorer(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(sort_dir, "Images", "photo.png")))
         self.assertTrue(os.path.exists(os.path.join(sort_dir, "Videos", "clip.mp4")))
 
+    def test_detect_next_index(self):
+        bridge = AppBridge()
+        folder1 = os.path.join(self.temp_dir, "Folder 1")
+        folder2 = os.path.join(self.temp_dir, "Folder 2")
+        os.makedirs(folder1, exist_ok=True)
+        os.makedirs(folder2, exist_ok=True)
+
+        # Empty folder returns 1
+        self.assertEqual(bridge.detectNextIndex(folder1), 1)
+
+        # Create files 1 to 100 in folder 1
+        with open(os.path.join(folder1, "file_001.png"), "w") as f:
+            f.write("a")
+        with open(os.path.join(folder1, "file_100.png"), "w") as f:
+            f.write("b")
+
+        # Scanning folder 1 directly detects next index 101
+        self.assertEqual(bridge.detectNextIndex(folder1), 101)
+
+        # Folder 2 has unnumbered files, but previous sibling is Folder 1 (ending at 100) -> detects 101
+        with open(os.path.join(folder2, "image_raw.png"), "w") as f:
+            f.write("c")
+        self.assertEqual(bridge.detectNextIndex(folder2), 101)
+
+    def test_batch_rename_start_index(self):
+        bridge = AppBridge()
+        test_file_1 = os.path.join(self.temp_dir, "a.jpg")
+        test_file_2 = os.path.join(self.temp_dir, "b.jpg")
+        with open(test_file_1, "w") as f:
+            f.write("1")
+        with open(test_file_2, "w") as f:
+            f.write("2")
+
+        plan = bridge.previewBatchRename(
+            self.temp_dir,
+            files=["a.jpg", "b.jpg"],
+            pattern="Photo_{00index}.{ext}",
+            start_index=101
+        )
+        self.assertEqual(len(plan), 2)
+        self.assertEqual(plan[0]["new_name"], "Photo_101.jpg")
+        self.assertEqual(plan[1]["new_name"], "Photo_102.jpg")
+
+    def test_batch_rename_multi_folder_continuous_sequence(self):
+        bridge = AppBridge()
+        multi_dir = os.path.join(self.temp_dir, "MultiSet")
+        f1 = os.path.join(multi_dir, "Set1")
+        f2 = os.path.join(multi_dir, "Set2")
+        os.makedirs(f1, exist_ok=True)
+        os.makedirs(f2, exist_ok=True)
+        with open(os.path.join(f1, "img_a.png"), "w") as f:
+            f.write("1")
+        with open(os.path.join(f1, "img_b.png"), "w") as f:
+            f.write("2")
+        with open(os.path.join(f2, "img_c.png"), "w") as f:
+            f.write("3")
+        with open(os.path.join(f2, "img_d.png"), "w") as f:
+            f.write("4")
+
+        # Recursive preview across subfolders with continuous index starting at 1
+        plan = bridge.previewBatchRename(
+            multi_dir,
+            files=[],
+            pattern="Pic_{index}.{ext}",
+            start_index=1,
+            include_subfolders=True
+        )
+        self.assertEqual(len(plan), 4)
+        indices = [int(p["new_name"].replace("Pic_", "").replace(".png", "")) for p in plan]
+        self.assertEqual(indices, [1, 2, 3, 4])
+        self.assertEqual(plan[0]["new_name"], "Pic_1.png")
+        self.assertEqual(plan[1]["new_name"], "Pic_2.png")
+        self.assertEqual(plan[2]["new_name"], "Pic_3.png")
+        self.assertEqual(plan[3]["new_name"], "Pic_4.png")
+
+    def test_batch_rename_move_to_folder(self):
+        bridge = AppBridge()
+        sub_dir = os.path.join(self.temp_dir, "SubPack")
+        dest_dir = os.path.join(self.temp_dir, "Flattened")
+        os.makedirs(sub_dir, exist_ok=True)
+        os.makedirs(dest_dir, exist_ok=True)
+
+        f1 = os.path.join(sub_dir, "file1.txt")
+        f2 = os.path.join(sub_dir, "file2.txt")
+        with open(f1, "w") as f:
+            f.write("content 1")
+        with open(f2, "w") as f:
+            f.write("content 2")
+
+        plan = bridge.previewBatchRename(
+            sub_dir,
+            files=["file1.txt", "file2.txt"],
+            pattern="Item_{0index}.{ext}",
+            start_index=1,
+            move_to_folder=True,
+            destination_folder=dest_dir
+        )
+        self.assertEqual(len(plan), 2)
+        self.assertTrue(plan[0]["is_move"])
+        self.assertEqual(os.path.normpath(plan[0]["new_path"]), os.path.normpath(os.path.join(dest_dir, "Item_01.txt")))
+        self.assertEqual(os.path.normpath(plan[1]["new_path"]), os.path.normpath(os.path.join(dest_dir, "Item_02.txt")))
+
+        res = bridge.executeBatchRename(plan)
+        self.assertTrue(res["success"])
+        self.assertEqual(res["renamed"], 2)
+        self.assertTrue(os.path.exists(os.path.join(dest_dir, "Item_01.txt")))
+        self.assertTrue(os.path.exists(os.path.join(dest_dir, "Item_02.txt")))
+        self.assertFalse(os.path.exists(f1))
+        self.assertFalse(os.path.exists(f2))
+
 
 if __name__ == "__main__":
     unittest.main()
