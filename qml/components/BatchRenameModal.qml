@@ -178,6 +178,9 @@ Item {
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: root.close()
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 300
+                        ToolTip.text: "Close batch renamer without applying changes"
                     }
                 }
             }
@@ -213,6 +216,9 @@ Item {
                             root.renamePattern = text
                             root.updatePreview()
                         }
+                        ToolTip.visible: hovered
+                        ToolTip.delay: 350
+                        ToolTip.text: "Rename Pattern\nTemplate used to generate new filenames.\nInsert variables such as {name}, {ext}, {artist}, {index}, etc."
                     }
                 }
 
@@ -229,6 +235,9 @@ Item {
                         color: "#F8FAFC"
                         background: Rectangle { color: "#0B0E16"; radius: 5; border.color: "#273349"; border.width: 1 }
                         onTextEdited: { root.findText = text; root.updatePreview() }
+                        ToolTip.visible: hovered
+                        ToolTip.delay: 350
+                        ToolTip.text: "Find Text\nSubstring to search for in filenames to replace."
                     }
                 }
 
@@ -245,6 +254,9 @@ Item {
                         color: "#F8FAFC"
                         background: Rectangle { color: "#0B0E16"; radius: 5; border.color: "#273349"; border.width: 1 }
                         onTextEdited: { root.replaceText = text; root.updatePreview() }
+                        ToolTip.visible: hovered
+                        ToolTip.delay: 350
+                        ToolTip.text: "Replace Text\nNew text to insert in place of the matched find text."
                     }
                 }
 
@@ -261,6 +273,9 @@ Item {
                         color: "#F8FAFC"
                         background: Rectangle { color: "#0B0E16"; radius: 5; border.color: "#273349"; border.width: 1 }
                         onTextEdited: { root.prefixText = text; root.updatePreview() }
+                        ToolTip.visible: hovered
+                        ToolTip.delay: 350
+                        ToolTip.text: "Prefix\nText prepended to the start of each file or folder name."
                     }
                 }
 
@@ -277,6 +292,9 @@ Item {
                         color: "#F8FAFC"
                         background: Rectangle { color: "#0B0E16"; radius: 5; border.color: "#273349"; border.width: 1 }
                         onTextEdited: { root.suffixText = text; root.updatePreview() }
+                        ToolTip.visible: hovered
+                        ToolTip.delay: 350
+                        ToolTip.text: "Suffix\nText appended to the end of each name before the extension."
                     }
                 }
 
@@ -316,6 +334,9 @@ Item {
                                         root.updatePreview()
                                     }
                                 }
+                                ToolTip.visible: containsMouse
+                                ToolTip.delay: 250
+                                ToolTip.text: "Auto-detect Next Number\nScans existing files in target folder or previous numbered volume (e.g. Folder 1 ending at 100) to continue numbering."
                             }
                         }
                     }
@@ -338,6 +359,9 @@ Item {
                             root.startIndex = isNaN(val) ? 1 : val
                             root.updatePreview()
                         }
+                        ToolTip.visible: hovered
+                        ToolTip.delay: 350
+                        ToolTip.text: "Start Number\nStarting sequential index for {index}, {0index}, {00index}, and {000index}.\nIncrements by 1 for each file in sequence."
                     }
                 }
 
@@ -349,10 +373,10 @@ Item {
                         spacing: 2
                         Repeater {
                             model: [
-                                { mode: "keep", label: "Keep" },
-                                { mode: "lower", label: "lower" },
-                                { mode: "upper", label: "UPPER" },
-                                { mode: "title", label: "Title" }
+                                { mode: "keep", label: "Keep", tip: "Preserve original character casing as-is" },
+                                { mode: "lower", label: "lower", tip: "Convert all characters to lowercase (e.g. photo.jpg)" },
+                                { mode: "upper", label: "UPPER", tip: "Convert all characters to uppercase (e.g. PHOTO.JPG)" },
+                                { mode: "title", label: "Title", tip: "Capitalize the first letter of each word (e.g. Photo Title.jpg)" }
                             ]
                             delegate: Rectangle {
                                 implicitHeight: 28
@@ -371,12 +395,17 @@ Item {
                                     color: root.caseMode === modelData.mode ? "#38BDF8" : "#94A3B8"
                                 }
                                 MouseArea {
+                                    id: cmMouse
                                     anchors.fill: parent
+                                    hoverEnabled: true
                                     cursorShape: Qt.PointingHandCursor
                                     onClicked: {
                                         root.caseMode = modelData.mode
                                         root.updatePreview()
                                     }
+                                    ToolTip.visible: containsMouse
+                                    ToolTip.delay: 250
+                                    ToolTip.text: modelData.tip
                                 }
                             }
                         }
@@ -393,16 +422,16 @@ Item {
 
                 Repeater {
                     model: [
-                        { label: "{name}" },
-                        { label: "{ext}" },
-                        { label: "{artist}" },
-                        { label: "{title}" },
-                        { label: "{post_id}" },
-                        { label: "{date}" },
-                        { label: "{index}" },
-                        { label: "{0index}" },
-                        { label: "{00index}" },
-                        { label: "{000index}" }
+                        { label: "{name}", tip: "Original filename without extension (e.g. 'preview_01')" },
+                        { label: "{ext}", tip: "File extension without dot (e.g. 'jpg', 'png', 'mp4')" },
+                        { label: "{artist}", tip: "Creator/artist name extracted from [Artist] tag or parent folder" },
+                        { label: "{title}", tip: "Clean post or file title with IDs and brackets removed" },
+                        { label: "{post_id}", tip: "Numeric post ID (5-10 digits) if found in name or folder" },
+                        { label: "{date}", tip: "File modification date formatted as YYYY-MM-DD" },
+                        { label: "{index}", tip: "Sequential number starting from Start # (e.g. 1, 2, ..., 101)" },
+                        { label: "{0index}", tip: "2-digit zero-padded index (e.g. 01, 02, ..., 99, 100)" },
+                        { label: "{00index}", tip: "3-digit zero-padded index (e.g. 001, 002, ..., 100)" },
+                        { label: "{000index}", tip: "4-digit zero-padded index (e.g. 0001, 0002, ..., 1000)" }
                     ]
                     delegate: Rectangle {
                         implicitHeight: 20
@@ -427,6 +456,9 @@ Item {
                             hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
                             onClicked: insertToken(modelData.label)
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 250
+                            ToolTip.text: modelData.tip + "\nClick to insert into pattern"
                         }
                     }
                 }
@@ -449,12 +481,17 @@ Item {
                         border.color: "#374151"; border.width: 1
                         Text { visible: root.filesOnly; anchors.centerIn: parent; text: "✓"; font.pixelSize: 9; font.weight: Font.Bold; color: "#0B0E14" }
                         MouseArea {
+                            id: filesOnlyMouse
                             anchors.fill: parent
+                            hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
                             onClicked: {
                                 root.filesOnly = !root.filesOnly
                                 root.updatePreview()
                             }
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 250
+                            ToolTip.text: "When checked, only renames individual files and skips modifying subfolder names."
                         }
                     }
                     Text {
@@ -464,11 +501,15 @@ Item {
                         color: "#94A3B8"
                         MouseArea {
                             anchors.fill: parent
+                            hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
                             onClicked: {
                                 root.filesOnly = !root.filesOnly
                                 root.updatePreview()
                             }
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 250
+                            ToolTip.text: "When checked, only renames individual files and skips modifying subfolder names."
                         }
                     }
                 }
@@ -483,12 +524,17 @@ Item {
                         border.color: "#374151"; border.width: 1
                         Text { visible: root.includeSubfolders; anchors.centerIn: parent; text: "✓"; font.pixelSize: 9; font.weight: Font.Bold; color: "#0B0E14" }
                         MouseArea {
+                            id: subfoldersMouse
                             anchors.fill: parent
+                            hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
                             onClicked: {
                                 root.includeSubfolders = !root.includeSubfolders
                                 root.updatePreview()
                             }
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 250
+                            ToolTip.text: "Recursively scans files in all subfolders and numbers them continuously across folders\n(e.g. Folder 1 gets 1-100, Folder 2 starts at 101)."
                         }
                     }
                     Text {
@@ -498,11 +544,15 @@ Item {
                         color: root.includeSubfolders ? "#C7D2FE" : "#94A3B8"
                         MouseArea {
                             anchors.fill: parent
+                            hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
                             onClicked: {
                                 root.includeSubfolders = !root.includeSubfolders
                                 root.updatePreview()
                             }
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 250
+                            ToolTip.text: "Recursively scans files in all subfolders and numbers them continuously across folders\n(e.g. Folder 1 gets 1-100, Folder 2 starts at 101)."
                         }
                     }
                 }
@@ -517,12 +567,17 @@ Item {
                         border.color: "#374151"; border.width: 1
                         Text { visible: root.moveToFolder; anchors.centerIn: parent; text: "✓"; font.pixelSize: 9; font.weight: Font.Bold; color: "#0B0E14" }
                         MouseArea {
+                            id: moveFolderMouse
                             anchors.fill: parent
+                            hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
                             onClicked: {
                                 root.moveToFolder = !root.moveToFolder
                                 root.updatePreview()
                             }
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 250
+                            ToolTip.text: "Flattens and moves all renamed files into a single destination folder."
                         }
                     }
                     Text {
@@ -532,11 +587,15 @@ Item {
                         color: root.moveToFolder ? "#6EE7B7" : "#94A3B8"
                         MouseArea {
                             anchors.fill: parent
+                            hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
                             onClicked: {
                                 root.moveToFolder = !root.moveToFolder
                                 root.updatePreview()
                             }
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 250
+                            ToolTip.text: "Flattens and moves all renamed files into a single destination folder."
                         }
                     }
                 }
@@ -564,6 +623,14 @@ Item {
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 9
                             color: "#A7F3D0"
+                        }
+                        MouseArea {
+                            id: destPillMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 250
+                            ToolTip.text: "Target destination folder where renamed files will be moved:\n" + (root.destinationFolder || root.folderPath)
                         }
                     }
 
@@ -597,6 +664,9 @@ Item {
                                     }
                                 }
                             }
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 250
+                            ToolTip.text: "Browse and select a different target folder or drive to move renamed files into."
                         }
                     }
                 }
@@ -723,10 +793,22 @@ Item {
                             }
                         }
 
-                        // ToolTip on collision/error hover
-                        ToolTip.visible: (modelData.status === "collision" || (modelData.error && modelData.error.length > 0)) && itemMouse.containsMouse
-                        ToolTip.text: modelData.error || ""
-                        ToolTip.delay: 250
+                        // ToolTip on hover for row
+                        ToolTip.visible: itemMouse.containsMouse
+                        ToolTip.delay: 350
+                        ToolTip.text: {
+                            var tip = "Original: " + modelData.old_path + "\n➔ Target: " + modelData.new_path
+                            if (modelData.error) {
+                                tip += "\n⚠️ " + modelData.error
+                            } else if (modelData.is_move) {
+                                tip += "\n📦 Move to destination folder"
+                            } else if (modelData.status === "ready") {
+                                tip += "\n✅ Ready to rename"
+                            } else if (modelData.status === "unchanged") {
+                                tip += "\nℹ️ Filename is unchanged"
+                            }
+                            return tip
+                        }
 
                         MouseArea {
                             id: itemMouse
@@ -768,6 +850,9 @@ Item {
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: root.close()
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 300
+                        ToolTip.text: "Close this dialog without making any changes"
                     }
                 }
 
@@ -800,6 +885,9 @@ Item {
                                 executeRename()
                             }
                         }
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 250
+                        ToolTip.text: root.readyCount > 0 ? ("Execute " + (root.moveToFolder ? "renaming and moving" : "renaming") + " for " + root.readyCount + " files.") : "No files are ready to rename. Adjust your rules or pattern."
                     }
                 }
             }

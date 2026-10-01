@@ -369,6 +369,9 @@ Item {
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
                     onClicked: navigateTo(root.currentPath)
+                    ToolTip.visible: containsMouse
+                    ToolTip.delay: 300
+                    ToolTip.text: "Refresh current directory contents"
                 }
             }
 
@@ -402,6 +405,9 @@ Item {
                     onClicked: {
                         batchRenameModal.open(root.currentPath, root.filteredItems)
                     }
+                    ToolTip.visible: containsMouse
+                    ToolTip.delay: 300
+                    ToolTip.text: "Smart Batch Renamer\nBulk rename and organize files with metadata variables, sequential numbering, and flattening"
                 }
             }
 
@@ -435,6 +441,9 @@ Item {
                     onClicked: {
                         galleryCleanerModal.open(root.currentPath)
                     }
+                    ToolTip.visible: containsMouse
+                    ToolTip.delay: 300
+                    ToolTip.text: "Clean & Organize\nFind 0-byte broken files, detect duplicate downloads by SHA-256 hash, and auto-sort media into folders"
                 }
             }
 
