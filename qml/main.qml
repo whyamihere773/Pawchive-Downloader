@@ -29,7 +29,7 @@ ApplicationWindow {
     }
 
     property bool showConsole: true
-    property int currentTab: 0 // 0: Downloader, 1: Queue, 2: Watchlist, 3: Decompressor, 4: Link Vault, 5: Scheduler, 6: Known, 7: History, 8: Archive, 9: Settings
+    property int currentTab: 0 // 0: Downloader, 1: Queue, 2: Watchlist, 3: Decompressor, 4: Link Vault, 5: Scheduler, 6: Gallery, 7: Known, 8: Archive, 9: History, 10: Settings
 
     onCurrentTabChanged: {
         if (typeof tabsFlickable !== "undefined" && tabsFlickable && tabsFlickable.ensureIndexVisible) {
@@ -57,7 +57,7 @@ ApplicationWindow {
     }
 
     function openSettingsTab(subTabIndex) {
-        appWindow.currentTab = 9;
+        appWindow.currentTab = 10;
         if (typeof settingsViewTab !== "undefined" && settingsViewTab) {
             settingsViewTab.currentSubTab = (subTabIndex !== undefined ? subTabIndex : 0);
         }
@@ -435,13 +435,13 @@ ApplicationWindow {
                     }
                 }
 
-                // Tab: Known Characters (6th)
+                // Tab: File Explorer & Media Gallery (6th — after Scheduler)
                 Rectangle {
                     width: tab6Row.implicitWidth + 18
                     height: 30
                     radius: 6
                     color: appWindow.currentTab === 6 ? "#181B22" : (tab6Mouse.containsMouse ? "#141720" : "transparent")
-                    border.color: appWindow.currentTab === 6 ? "#38BDF8" : "transparent"
+                    border.color: appWindow.currentTab === 6 ? "#EC4899" : "transparent"
                     border.width: 1
 
                     scale: tab6Mouse.pressed ? 0.94 : (tab6Mouse.containsMouse ? 1.035 : 1.0)
@@ -457,9 +457,9 @@ ApplicationWindow {
                         id: tab6Row
                         anchors.centerIn: parent
                         spacing: 6
-                        Text { text: "🏷️"; font.pixelSize: 12 }
+                        Text { text: "🖼️"; font.pixelSize: 12 }
                         Text {
-                            text: appWindow.tr("tab_known", "Known Series")
+                            text: appWindow.tr("tab_gallery", "Gallery")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
                             font.weight: appWindow.currentTab === 6 ? 600 : Font.Normal
@@ -474,18 +474,18 @@ ApplicationWindow {
                         cursorShape: Qt.PointingHandCursor
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
-                        ToolTip.text: appWindow.tr("tab_known_tip", "Known character and series directory rules (Known.txt)")
+                        ToolTip.text: appWindow.tr("tab_gallery_tip", "File Explorer & Media Gallery — browse downloads, preview media, and organize your collection")
                         onClicked: appWindow.currentTab = 6
                     }
                 }
 
-                // Tab: Archive (7th — gallery-dl download archive database)
+                // Tab: Known Characters (7th)
                 Rectangle {
                     width: tab7Row.implicitWidth + 18
                     height: 30
                     radius: 6
                     color: appWindow.currentTab === 7 ? "#181B22" : (tab7Mouse.containsMouse ? "#141720" : "transparent")
-                    border.color: appWindow.currentTab === 7 ? "#2DD4BF" : "transparent"
+                    border.color: appWindow.currentTab === 7 ? "#38BDF8" : "transparent"
                     border.width: 1
 
                     scale: tab7Mouse.pressed ? 0.94 : (tab7Mouse.containsMouse ? 1.035 : 1.0)
@@ -501,9 +501,9 @@ ApplicationWindow {
                         id: tab7Row
                         anchors.centerIn: parent
                         spacing: 6
-                        Text { text: "🗃️"; font.pixelSize: 12 }
+                        Text { text: "🏷️"; font.pixelSize: 12 }
                         Text {
-                            text: appWindow.tr("tab_archive", "Archive")
+                            text: appWindow.tr("tab_known", "Known Series")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
                             font.weight: appWindow.currentTab === 7 ? 600 : Font.Normal
@@ -518,18 +518,18 @@ ApplicationWindow {
                         cursorShape: Qt.PointingHandCursor
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
-                        ToolTip.text: appWindow.tr("tab_archive_tip", "Download archive database — persistent record of all downloaded files")
+                        ToolTip.text: appWindow.tr("tab_known_tip", "Known character and series directory rules (Known.txt)")
                         onClicked: appWindow.currentTab = 7
                     }
                 }
 
-                // Tab: History (8th)
+                // Tab: Archive (8th — gallery-dl download archive database)
                 Rectangle {
                     width: tab8Row.implicitWidth + 18
                     height: 30
                     radius: 6
                     color: appWindow.currentTab === 8 ? "#181B22" : (tab8Mouse.containsMouse ? "#141720" : "transparent")
-                    border.color: appWindow.currentTab === 8 ? "#38BDF8" : "transparent"
+                    border.color: appWindow.currentTab === 8 ? "#2DD4BF" : "transparent"
                     border.width: 1
 
                     scale: tab8Mouse.pressed ? 0.94 : (tab8Mouse.containsMouse ? 1.035 : 1.0)
@@ -545,9 +545,9 @@ ApplicationWindow {
                         id: tab8Row
                         anchors.centerIn: parent
                         spacing: 6
-                        Text { text: "📜"; font.pixelSize: 12 }
+                        Text { text: "🗃️"; font.pixelSize: 12 }
                         Text {
-                            text: appWindow.tr("tab_history", "History")
+                            text: appWindow.tr("tab_archive", "Archive")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
                             font.weight: appWindow.currentTab === 8 ? 600 : Font.Normal
@@ -562,12 +562,12 @@ ApplicationWindow {
                         cursorShape: Qt.PointingHandCursor
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
-                        ToolTip.text: appWindow.tr("tab_history_tip", "Completed downloads and past batch sessions")
+                        ToolTip.text: appWindow.tr("tab_archive_tip", "Download archive database — persistent record of all downloaded files")
                         onClicked: appWindow.currentTab = 8
                     }
                 }
 
-                // Tab: Settings (9th — terminal tab)
+                // Tab: History (9th)
                 Rectangle {
                     width: tab9Row.implicitWidth + 18
                     height: 30
@@ -589,9 +589,9 @@ ApplicationWindow {
                         id: tab9Row
                         anchors.centerIn: parent
                         spacing: 6
-                        Text { text: "⚙️"; font.pixelSize: 12 }
+                        Text { text: "📜"; font.pixelSize: 12 }
                         Text {
-                            text: appWindow.tr("tab_settings", "Settings")
+                            text: appWindow.tr("tab_history", "History")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
                             font.weight: appWindow.currentTab === 9 ? 600 : Font.Normal
@@ -606,8 +606,52 @@ ApplicationWindow {
                         cursorShape: Qt.PointingHandCursor
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
-                        ToolTip.text: appWindow.tr("tab_settings_tip", "Global application and network configuration")
+                        ToolTip.text: appWindow.tr("tab_history_tip", "Completed downloads and past batch sessions")
                         onClicked: appWindow.currentTab = 9
+                    }
+                }
+
+                // Tab: Settings (10th — terminal tab)
+                Rectangle {
+                    width: tab10Row.implicitWidth + 18
+                    height: 30
+                    radius: 6
+                    color: appWindow.currentTab === 10 ? "#181B22" : (tab10Mouse.containsMouse ? "#141720" : "transparent")
+                    border.color: appWindow.currentTab === 10 ? "#38BDF8" : "transparent"
+                    border.width: 1
+
+                    scale: tab10Mouse.pressed ? 0.94 : (tab10Mouse.containsMouse ? 1.035 : 1.0)
+                    transformOrigin: Item.Center
+
+                    Behavior on scale {
+                        NumberAnimation { duration: 180; easing.type: Easing.OutBack; easing.overshoot: 1.5 }
+                    }
+                    Behavior on color { ColorAnimation { duration: 150; easing.type: Easing.OutCubic } }
+                    Behavior on border.color { ColorAnimation { duration: 150; easing.type: Easing.OutCubic } }
+
+                    Row {
+                        id: tab10Row
+                        anchors.centerIn: parent
+                        spacing: 6
+                        Text { text: "⚙️"; font.pixelSize: 12 }
+                        Text {
+                            text: appWindow.tr("tab_settings", "Settings")
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 12
+                            font.weight: appWindow.currentTab === 10 ? 600 : Font.Normal
+                            color: appWindow.currentTab === 10 ? "#F8FAFC" : "#94A3B8"
+                        }
+                    }
+
+                    MouseArea {
+                        id: tab10Mouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 400
+                        ToolTip.text: appWindow.tr("tab_settings_tip", "Global application and network configuration")
+                        onClicked: appWindow.currentTab = 10
                     }
                 }
             } // tabsRow
@@ -980,7 +1024,7 @@ ApplicationWindow {
                 if (appBridge) appBridge.addToQueue()
             }
             onSettingsRequested: {
-                appWindow.currentTab = 9
+                appWindow.currentTab = 10
             }
         }
 
@@ -2054,7 +2098,7 @@ ApplicationWindow {
                             SchedulerView { anchors.fill: parent; bridge: appBridge }
                         }
 
-                        // Tab 6: Known Manager View with Newtonian slide & fade transition
+                        // Tab 6: File Explorer & Media Gallery View with Newtonian slide & fade transition
                         Item {
                             visible: opacity > 0.001
                             opacity: appWindow.currentTab === 6 ? 1.0 : 0.0
@@ -2065,15 +2109,29 @@ ApplicationWindow {
                             Behavior on y { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
                             Behavior on scale { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
 
-                            KnownManagerView { anchors.fill: parent; bridge: appBridge }
+                            GalleryView { anchors.fill: parent; bridge: appBridge }
                         }
 
-                        // Tab 7: Archive View with Newtonian slide & fade transition
+                        // Tab 7: Known Manager View with Newtonian slide & fade transition
                         Item {
                             visible: opacity > 0.001
                             opacity: appWindow.currentTab === 7 ? 1.0 : 0.0
                             y: appWindow.currentTab === 7 ? 0 : 10
                             scale: appWindow.currentTab === 7 ? 1.0 : 0.985
+                            transformOrigin: Item.Center
+                            Behavior on opacity { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+                            Behavior on y { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
+                            Behavior on scale { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
+
+                            KnownManagerView { anchors.fill: parent; bridge: appBridge }
+                        }
+
+                        // Tab 8: Archive View with Newtonian slide & fade transition
+                        Item {
+                            visible: opacity > 0.001
+                            opacity: appWindow.currentTab === 8 ? 1.0 : 0.0
+                            y: appWindow.currentTab === 8 ? 0 : 10
+                            scale: appWindow.currentTab === 8 ? 1.0 : 0.985
                             transformOrigin: Item.Center
                             Behavior on opacity { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
                             Behavior on y { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
@@ -2086,12 +2144,12 @@ ApplicationWindow {
                             }
                         }
 
-                        // Tab 8: History View with Newtonian slide & fade transition
+                        // Tab 9: History View with Newtonian slide & fade transition
                         Item {
                             visible: opacity > 0.001
-                            opacity: appWindow.currentTab === 8 ? 1.0 : 0.0
-                            y: appWindow.currentTab === 8 ? 0 : 10
-                            scale: appWindow.currentTab === 8 ? 1.0 : 0.985
+                            opacity: appWindow.currentTab === 9 ? 1.0 : 0.0
+                            y: appWindow.currentTab === 9 ? 0 : 10
+                            scale: appWindow.currentTab === 9 ? 1.0 : 0.985
                             transformOrigin: Item.Center
                             Behavior on opacity { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
                             Behavior on y { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
@@ -2100,12 +2158,12 @@ ApplicationWindow {
                             HistoryView { anchors.fill: parent; bridge: appBridge }
                         }
 
-                        // Tab 9: Settings View with Newtonian slide & fade transition
+                        // Tab 10: Settings View with Newtonian slide & fade transition
                         Item {
                             visible: opacity > 0.001
-                            opacity: appWindow.currentTab === 9 ? 1.0 : 0.0
-                            y: appWindow.currentTab === 9 ? 0 : 10
-                            scale: appWindow.currentTab === 9 ? 1.0 : 0.985
+                            opacity: appWindow.currentTab === 10 ? 1.0 : 0.0
+                            y: appWindow.currentTab === 10 ? 0 : 10
+                            scale: appWindow.currentTab === 10 ? 1.0 : 0.985
                             transformOrigin: Item.Center
                             Behavior on opacity { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
                             Behavior on y { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }

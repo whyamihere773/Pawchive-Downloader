@@ -2317,7 +2317,7 @@ SmoothFlickable {
                                     implicitHeight: 28
                                     onClicked: {
                                         if (typeof appWindow !== "undefined" && appWindow) {
-                                            appWindow.currentTab = 7
+                                            appWindow.currentTab = 8
                                         }
                                     }
                                 }

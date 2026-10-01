@@ -124,7 +124,7 @@ Rectangle {
                         if (typeof appWindow !== "undefined" && typeof appWindow.openSettingsTab === "function") {
                             appWindow.openSettingsTab(3)
                         } else if (typeof appWindow !== "undefined") {
-                            appWindow.currentTab = 9
+                            appWindow.currentTab = 10
                         }
                     }
                 }

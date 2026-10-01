@@ -6144,4 +6144,121 @@ class AppBridge(QObject):
             self.currentUrl = url
             self.startDownload()
 
+    # ── Integrated File Explorer & Media Gallery ─────────────────────────────
+
+    @Slot(result=str)
+    def getDownloadDir(self) -> str:
+        """Return the user's active download directory."""
+        return self._download_dir or os.path.expanduser("~")
+
+    @Slot(str, int, result='QVariantList')
+    def listDirectory(self, path: str = "", max_entries: int = 1500) -> list:
+        """
+        High-performance on-demand lazy directory listing.
+        Engineered for libraries with millions of files:
+        - Only scans immediate directory children (never recurses).
+        - Uses os.scandir for direct cached stat retrieval.
+        - Caps return count to max_entries to guarantee 0 UI lag.
+        """
+        if not path:
+            path = self._download_dir or os.path.expanduser("~")
+
+        path = os.path.normpath(os.path.abspath(path))
+        if not os.path.exists(path) or not os.path.isdir(path):
+            return []
+
+        items = []
+        try:
+            with os.scandir(path) as it:
+                count = 0
+                for entry in it:
+                    if count >= max_entries:
+                        break
+                    try:
+                        is_dir = entry.is_dir(follow_symlinks=False)
+                        st = entry.stat(follow_symlinks=False) if not is_dir else None
+                        size = st.st_size if st else 0
+                        mtime = st.st_mtime if st else 0
+                        ext = "" if is_dir else os.path.splitext(entry.name)[1].lower()
+                        items.append({
+                            "name": entry.name,
+                            "path": os.path.normpath(entry.path),
+                            "is_dir": is_dir,
+                            "size": size,
+                            "mtime": mtime,
+                            "ext": ext
+                        })
+                        count += 1
+                    except (PermissionError, OSError):
+                        continue
+        except (PermissionError, OSError):
+            return []
+
+        # Sort folders first, then alphabetical by name
+        items.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
+        return items
+
+    @Slot(str, result='QVariantList')
+    def getBreadcrumbs(self, path: str = "") -> list:
+        """Return list of breadcrumb segments for the given path."""
+        if not path:
+            path = self._download_dir or os.path.expanduser("~")
+        path = os.path.normpath(os.path.abspath(path))
+        crumbs = []
+        curr = path
+        while curr:
+            parent = os.path.dirname(curr)
+            name = os.path.basename(curr)
+            if not name:
+                name = curr  # Root drive (e.g. C:\ or /)
+            crumbs.append({"name": name, "path": curr})
+            if parent == curr or not parent:
+                break
+            curr = parent
+        crumbs.reverse()
+        return crumbs
+
+    @Slot(result='QVariantList')
+    def getSystemDrives(self) -> list:
+        """Return available system root drives or volumes for quick navigation."""
+        drives = []
+        if sys.platform == "win32":
+            import string
+            from ctypes import windll
+            try:
+                bitmask = windll.kernel32.GetLogicalDrives()
+                for letter in string.ascii_uppercase:
+                    if bitmask & 1:
+                        drive_path = f"{letter}:\\"
+                        drives.append({"name": f"{letter}:", "path": drive_path})
+                    bitmask >>= 1
+            except Exception:
+                drives.append({"name": "C:", "path": "C:\\"})
+        else:
+            drives.append({"name": "Root (/)", "path": "/"})
+            home = os.path.expanduser("~")
+            if os.path.exists(home):
+                drives.append({"name": "Home (~)", "path": home})
+        return drives
+
+    @Slot(str)
+    def openPathInSystem(self, path: str):
+        """Open the given file or folder with the OS default application."""
+        if not path:
+            path = self._download_dir
+        if not os.path.exists(path):
+            return
+        if os.path.isdir(path):
+            self.openFolder(path)
+        else:
+            try:
+                if sys.platform == "win32":
+                    os.startfile(os.path.normpath(path))
+                elif sys.platform == "darwin":
+                    subprocess.Popen(["open", path])
+                else:
+                    subprocess.Popen(["xdg-open", path])
+            except Exception as e:
+                logger.warning(f"Could not open file in system: {e}", category="system")
+
 
