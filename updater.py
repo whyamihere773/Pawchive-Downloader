@@ -24,6 +24,84 @@ try:
 except (ImportError, Exception):
     HAS_TKINTER = False
 
+try:
+    from PIL import Image, ImageTk
+    HAS_PIL = True
+except Exception:
+    HAS_PIL = False
+
+
+def set_dark_title_bar(window):
+    """Enables Windows 10/11 native immersive dark mode on the window frame."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        window.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
+        if not hwnd:
+            hwnd = window.winfo_id()
+        value = ctypes.c_int(1)
+        for attr in (20, 19):  # 20 on Win11/modern Win10, 19 on earlier builds
+            res = ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, attr, ctypes.byref(value), ctypes.sizeof(value)
+            )
+            if res == 0:
+                break
+    except Exception:
+        pass
+
+
+class ModernProgressBar(tk.Canvas):
+    """Smooth, antialiased pill-shaped progress bar built with native Tkinter Canvas."""
+    def __init__(self, parent, bg="#131722", trough="#1A2130", fill="#38BDF8", height=8, radius=4, **kwargs):
+        super().__init__(parent, height=height, bg=bg, highlightthickness=0, bd=0, **kwargs)
+        self.trough_color = trough
+        self.fill_color = fill
+        self.radius = radius
+        self.progress = 0.0
+        self.bind("<Configure>", self._draw)
+
+    def set(self, value):
+        self.progress = max(0.0, min(100.0, float(value)))
+        self._draw()
+
+    def set_color(self, fill):
+        self.fill_color = fill
+        self._draw()
+
+    def _draw(self, event=None):
+        self.delete("all")
+        w = self.winfo_width()
+        h = self.winfo_height()
+        if w <= 4 or h <= 2:
+            return
+        r = min(self.radius, h // 2)
+        # Background pill track
+        self._create_rounded_rect(0, 0, w, h, r, fill=self.trough_color)
+        # Active filled progress pill
+        if self.progress > 0:
+            fill_w = max(r * 2, int(w * (self.progress / 100.0)))
+            fill_w = min(w, fill_w)
+            self._create_rounded_rect(0, 0, fill_w, h, r, fill=self.fill_color)
+
+    def _create_rounded_rect(self, x1, y1, x2, y2, r, fill):
+        points = [
+            x1 + r, y1,
+            x2 - r, y1,
+            x2, y1,
+            x2, y1 + r,
+            x2, y2 - r,
+            x2, y2,
+            x2 - r, y2,
+            x1 + r, y2,
+            x1, y2,
+            x1, y2 - r,
+            x1, y1 + r,
+            x1, y1
+        ]
+        return self.create_polygon(points, fill=fill, smooth=True)
+
 # Files and folders that must NEVER be touched during an update
 PROTECTED_DIRS = {"config", "downloads", "temp", "logs", "venv", ".venv", "__pycache__", ".git"}
 PROTECTED_FILES = {
@@ -69,6 +147,7 @@ class UpdaterApp:
         self.download_url = download_url
         self.version = version or "Latest"
         self._cancel_requested = False
+        self._icon_img = None
 
         self._setup_window()
         self._setup_styles()
@@ -79,9 +158,10 @@ class UpdaterApp:
 
     def _setup_window(self):
         self.root.title("Pawchive Downloader Updater")
-        self.root.geometry("480x280")
+        self.root.geometry("520x330")
         self.root.resizable(False, False)
-        self.root.configure(bg="#121214")
+        self.root.configure(bg="#0B0D12")
+        set_dark_title_bar(self.root)
 
         # Center on screen
         self.root.update_idletasks()
@@ -103,110 +183,190 @@ class UpdaterApp:
         self.style = ttk.Style(self.root)
         self.style.theme_use("clam")
 
-        # Custom purple progressbar
-        self.style.configure(
-            "Purple.Horizontal.TProgressbar",
-            troughcolor="#1e1e24",
-            background="#a855f7",
-            darkcolor="#9333ea",
-            lightcolor="#c084fc",
-            bordercolor="#1e1e24",
-            thickness=10
-        )
-
     def _create_widgets(self):
-        # Outer Card
-        card = tk.Frame(self.root, bg="#18181b", bd=1, relief="flat", highlightbackground="#27272a", highlightthickness=1)
+        # Outer Card with crisp border
+        card = tk.Frame(self.root, bg="#131722", bd=0, highlightbackground="#2A303F", highlightthickness=1)
         card.pack(fill="both", expand=True, padx=16, pady=16)
 
-        # Header with Logo & Title
-        header_frame = tk.Frame(card, bg="#18181b")
-        header_frame.pack(fill="x", padx=20, pady=(18, 10))
+        # Top vibrant accent gradient line
+        top_accent = tk.Canvas(card, height=3, bg="#131722", highlightthickness=0, bd=0)
+        top_accent.pack(fill="x", side="top")
+        top_accent.create_rectangle(0, 0, 600, 3, fill="#38BDF8", outline="")
+
+        # Header Frame
+        header_frame = tk.Frame(card, bg="#131722")
+        header_frame.pack(fill="x", padx=22, pady=(16, 12))
+
+        # Brand Icon + Title block
+        brand_frame = tk.Frame(header_frame, bg="#131722")
+        brand_frame.pack(side="left", fill="y")
+
+        icon_path = os.path.join(self.target_dir, "assets", "icon.png")
+        if HAS_PIL and os.path.exists(icon_path):
+            try:
+                pil_img = Image.open(icon_path).resize((36, 36), Image.Resampling.LANCZOS)
+                self._icon_img = ImageTk.PhotoImage(pil_img)
+                icon_lbl = tk.Label(brand_frame, image=self._icon_img, bg="#131722")
+                icon_lbl.pack(side="left", padx=(0, 10))
+            except Exception:
+                pass
+
+        title_col = tk.Frame(brand_frame, bg="#131722")
+        title_col.pack(side="left", fill="y")
 
         title_label = tk.Label(
-            header_frame,
+            title_col,
             text="Pawchive Downloader",
-            font=("Segoe UI", 14, "bold"),
-            fg="#f4f4f5",
-            bg="#18181b"
+            font=("Segoe UI", 13, "bold"),
+            fg="#F8FAFC",
+            bg="#131722"
         )
-        title_label.pack(side="left")
+        title_label.pack(anchor="w")
 
+        sub_label = tk.Label(
+            title_col,
+            text="Companion Auto-Updater",
+            font=("Segoe UI", 9),
+            fg="#64748B",
+            bg="#131722"
+        )
+        sub_label.pack(anchor="w", pady=(1, 0))
+
+        # Version Pill Badge
+        badge_frame = tk.Frame(header_frame, bg="#1E293B", highlightbackground="#2A303F", highlightthickness=1)
+        badge_frame.pack(side="right", pady=4)
+
+        v_text = self.version if str(self.version).startswith("v") else f"v{self.version}"
         self.ver_badge = tk.Label(
-            header_frame,
-            text=f"Updating to {self.version}",
-            font=("Segoe UI", 9, "bold"),
-            fg="#a855f7",
-            bg="#27272a",
-            padx=8,
-            pady=2
+            badge_frame,
+            text=v_text,
+            font=("Cascadia Code", 9, "bold"),
+            fg="#38BDF8",
+            bg="#1E293B",
+            padx=10,
+            pady=3
         )
-        self.ver_badge.pack(side="right")
+        self.ver_badge.pack()
 
-        # Status text
+        # Divider
+        sep = tk.Frame(card, height=1, bg="#1E2433")
+        sep.pack(fill="x", padx=22, pady=(2, 14))
+
+        # Status & Percentage Header Row
+        status_row = tk.Frame(card, bg="#131722")
+        status_row.pack(fill="x", padx=22, pady=(0, 8))
+
         self.status_label = tk.Label(
-            card,
-            text="Preparing update...",
-            font=("Segoe UI", 10),
-            fg="#e4e4e7",
-            bg="#18181b",
-            anchor="w"
+            status_row,
+            text="Preparing update pipeline...",
+            font=("Segoe UI", 10, "bold"),
+            fg="#F8FAFC",
+            bg="#131722"
         )
-        self.status_label.pack(fill="x", padx=20, pady=(14, 6))
+        self.status_label.pack(side="left")
 
-        # Progress bar
+        self.pct_label = tk.Label(
+            status_row,
+            text="0%",
+            font=("Cascadia Code", 10, "bold"),
+            fg="#38BDF8",
+            bg="#131722"
+        )
+        self.pct_label.pack(side="right")
+
+        # Smooth Canvas Progress Bar
         self.progress_var = tk.DoubleVar(value=0.0)
-        self.progress_bar = ttk.Progressbar(
+        self.progress_bar = ModernProgressBar(
             card,
-            variable=self.progress_var,
-            maximum=100.0,
-            style="Purple.Horizontal.TProgressbar"
+            bg="#131722",
+            trough="#1A2130",
+            fill="#38BDF8",
+            height=8,
+            radius=4
         )
-        self.progress_bar.pack(fill="x", padx=20, pady=(0, 6))
+        self.progress_bar.pack(fill="x", padx=22, pady=(0, 10))
 
-        # Sub-status / Speed details
+        # Details / Transfer Statistics Card
+        detail_card = tk.Frame(card, bg="#0E1118", highlightbackground="#1E2433", highlightthickness=1)
+        detail_card.pack(fill="x", padx=22, pady=(0, 16))
+
         self.detail_label = tk.Label(
-            card,
-            text="Please wait while the update is applied...",
-            font=("Segoe UI", 8),
-            fg="#71717a",
-            bg="#18181b",
+            detail_card,
+            text="● Initializing release synchronization...",
+            font=("Cascadia Code", 8),
+            fg="#94A3B8",
+            bg="#0E1118",
+            padx=10,
+            pady=7,
             anchor="w"
         )
-        self.detail_label.pack(fill="x", padx=20, pady=(0, 16))
+        self.detail_label.pack(fill="x")
 
-        # Footer button area
-        btn_frame = tk.Frame(card, bg="#18181b")
-        btn_frame.pack(fill="x", padx=20, pady=(0, 12))
+        # Footer Action Area
+        footer_frame = tk.Frame(card, bg="#131722")
+        footer_frame.pack(fill="x", padx=22, pady=(0, 14), side="bottom")
+
+        safe_lbl = tk.Label(
+            footer_frame,
+            text="🔒 Safe zero-lock atomic deployment",
+            font=("Segoe UI", 8),
+            fg="#475569",
+            bg="#131722"
+        )
+        safe_lbl.pack(side="left", pady=4)
 
         self.cancel_btn = tk.Button(
-            btn_frame,
+            footer_frame,
             text="Cancel",
-            font=("Segoe UI", 9),
-            fg="#a1a1aa",
-            bg="#27272a",
-            activebackground="#3f3f46",
-            activeforeground="#f4f4f5",
+            font=("Segoe UI", 9, "bold"),
+            fg="#94A3B8",
+            bg="#1E2430",
+            activebackground="#283244",
+            activeforeground="#F8FAFC",
             bd=0,
-            padx=14,
-            pady=4,
+            padx=16,
+            pady=5,
             cursor="hand2",
+            highlightbackground="#2A303F",
+            highlightthickness=1,
+            relief="flat",
             command=self._on_cancel
         )
         self.cancel_btn.pack(side="right")
+
+        def _on_btn_enter(e):
+            if str(self.cancel_btn["state"]) != "disabled":
+                self.cancel_btn.config(bg="#283244", fg="#F8FAFC", highlightbackground="#38BDF8")
+
+        def _on_btn_leave(e):
+            if str(self.cancel_btn["state"]) != "disabled":
+                self.cancel_btn.config(bg="#1E2430", fg="#94A3B8", highlightbackground="#2A303F")
+
+        self.cancel_btn.bind("<Enter>", _on_btn_enter)
+        self.cancel_btn.bind("<Leave>", _on_btn_leave)
 
     def _set_status(self, status: str, detail: str = "", progress: Optional[float] = None):
         def _update():
             self.status_label.config(text=status)
             if detail is not None:
-                self.detail_label.config(text=detail)
+                d_text = detail
+                if d_text and not d_text.startswith("●"):
+                    d_text = f"● {d_text}"
+                self.detail_label.config(text=d_text)
             if progress is not None:
-                self.progress_var.set(progress)
+                p_val = max(0.0, min(100.0, float(progress)))
+                self.progress_var.set(p_val)
+                self.progress_bar.set(p_val)
+                self.pct_label.config(text=f"{int(p_val)}%")
+                if p_val >= 99.5:
+                    self.progress_bar.set_color("#10B981")
+                    self.pct_label.config(fg="#10B981", text="100%")
+                    self.status_label.config(fg="#10B981")
         self.root.after(0, _update)
 
     def _on_cancel(self):
         self._cancel_requested = True
-        self._set_status("Cancelling update...", "Cleaning up temporary files...")
+        self._set_status("Cancelling update...", "Cleaning up temporary files...", progress=0.0)
         self.root.after(1000, self.root.destroy)
 
     def _clean_stale_old_files(self):
@@ -320,46 +480,61 @@ class UpdaterApp:
         """
         def _build():
             dlg = tk.Toplevel(self.root)
-            dlg.title("Update could not finish")
-            dlg.geometry("460x290")
+            dlg.title("Pawchive Updater — Action Required")
+            dlg.geometry("500x340")
             dlg.resizable(False, False)
-            dlg.configure(bg="#121214")
+            dlg.configure(bg="#0B0D12")
+            set_dark_title_bar(dlg)
             dlg.grab_set()  # Modal
             dlg.transient(self.root)
 
             # Center on parent
             dlg.update_idletasks()
-            px = self.root.winfo_x() + (self.root.winfo_width()  - 460) // 2
-            py = self.root.winfo_y() + (self.root.winfo_height() - 290) // 2
+            px = self.root.winfo_x() + (self.root.winfo_width() - 500) // 2
+            py = self.root.winfo_y() + (self.root.winfo_height() - 340) // 2
             dlg.geometry(f"+{px}+{py}")
 
-            card = tk.Frame(dlg, bg="#18181b", highlightbackground="#27272a", highlightthickness=1)
-            card.pack(fill="both", expand=True, padx=14, pady=14)
+            card = tk.Frame(dlg, bg="#131722", highlightbackground="#2A303F", highlightthickness=1)
+            card.pack(fill="both", expand=True, padx=16, pady=16)
+
+            # Top warning amber line
+            top_bar = tk.Canvas(card, height=3, bg="#131722", highlightthickness=0, bd=0)
+            top_bar.pack(fill="x", side="top")
+            top_bar.create_rectangle(0, 0, 500, 3, fill="#F59E0B", outline="")
+
+            hdr = tk.Frame(card, bg="#131722")
+            hdr.pack(fill="x", padx=20, pady=(16, 6))
 
             tk.Label(
-                card,
-                text="The app didn't fully close in time",
-                font=("Segoe UI", 11, "bold"),
-                fg="#f4f4f5", bg="#18181b"
-            ).pack(pady=(16, 8))
+                hdr,
+                text="⚠️ Application Files Still in Use",
+                font=("Segoe UI", 12, "bold"),
+                fg="#F8FAFC", bg="#131722"
+            ).pack(side="left")
+
+            badge = tk.Frame(hdr, bg="#2E1F0A", highlightbackground="#F59E0B", highlightthickness=1)
+            badge.pack(side="right")
+            tk.Label(
+                badge, text=f"{len(failed_files)} locked file(s)",
+                font=("Cascadia Code", 8, "bold"),
+                fg="#F59E0B", bg="#2E1F0A", padx=6, pady=2
+            ).pack()
 
             explanation = (
-                "Windows is still holding on to some of the old app files — "
-                "this usually happens when your antivirus is scanning them or "
-                "Windows is slow releasing them after the app closed.\n\n"
-                "The update has been downloaded and is ready to install. "
-                "You just need to choose how to finish it:"
+                "Windows is holding a lock on old app files — this usually occurs when your "
+                "antivirus is scanning the folder or Windows takes longer to release handles.\n\n"
+                "The update package is already downloaded and verified. Choose how to apply it:"
             )
             tk.Label(
                 card,
                 text=explanation,
                 font=("Segoe UI", 9),
-                fg="#a1a1aa", bg="#18181b",
-                justify="left", wraplength=410, anchor="w"
-            ).pack(padx=16, pady=(0, 14), fill="x")
+                fg="#94A3B8", bg="#131722",
+                justify="left", wraplength=440, anchor="w"
+            ).pack(padx=20, pady=(0, 14), fill="x")
 
-            btn_row = tk.Frame(card, bg="#18181b")
-            btn_row.pack(padx=16, fill="x")
+            btn_row = tk.Frame(card, bg="#131722")
+            btn_row.pack(padx=20, fill="x")
 
             def on_admin():
                 dlg.destroy()
@@ -379,21 +554,22 @@ class UpdaterApp:
             # Primary action
             admin_btn = tk.Button(
                 btn_row,
-                text="Retry as Administrator  (Recommended)",
+                text="⚡ Retry as Administrator  (Recommended)",
                 font=("Segoe UI", 9, "bold"),
-                fg="#ffffff", bg="#a855f7",
-                activebackground="#9333ea", activeforeground="#ffffff",
-                bd=0, padx=16, pady=7, cursor="hand2",
-                command=on_admin, anchor="w"
+                fg="#FFFFFF", bg="#0284C7",
+                activebackground="#0369A1", activeforeground="#FFFFFF",
+                bd=0, padx=16, pady=8, cursor="hand2",
+                command=on_admin, anchor="w",
+                highlightbackground="#38BDF8", highlightthickness=1
             )
-            admin_btn.pack(fill="x", pady=(0, 6))
+            admin_btn.pack(fill="x", pady=(0, 4))
 
             # Hint under primary button
             tk.Label(
                 btn_row,
-                text="Windows will ask if you want to allow the update — click Yes to continue.",
+                text="Windows will display a standard UAC prompt — click 'Yes' to overwrite locked files.",
                 font=("Segoe UI", 8),
-                fg="#52525b", bg="#18181b",
+                fg="#64748B", bg="#131722",
                 anchor="w"
             ).pack(fill="x", pady=(0, 10))
 
@@ -402,10 +578,11 @@ class UpdaterApp:
                 btn_row,
                 text="I'll do it later",
                 font=("Segoe UI", 9),
-                fg="#a1a1aa", bg="#27272a",
-                activebackground="#3f3f46", activeforeground="#f4f4f5",
+                fg="#94A3B8", bg="#1E2430",
+                activebackground="#283244", activeforeground="#F8FAFC",
                 bd=0, padx=16, pady=6, cursor="hand2",
-                command=on_later, anchor="w"
+                command=on_later, anchor="w",
+                highlightbackground="#2A303F", highlightthickness=1
             )
             later_btn.pack(fill="x")
 
@@ -414,7 +591,7 @@ class UpdaterApp:
                 btn_row,
                 text="Run 'updater.exe' from the app folder whenever you're ready.",
                 font=("Segoe UI", 8),
-                fg="#52525b", bg="#18181b",
+                fg="#64748B", bg="#131722",
                 anchor="w"
             ).pack(fill="x", pady=(2, 0))
 
