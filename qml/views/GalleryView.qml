@@ -26,11 +26,27 @@ Item {
 
     // Counts
     property int folderCount: 0
+    property int fileCount: 0
+    property real currentFolderFilesSize: 0
     property int imageCount: 0
     property int videoCount: 0
     property int archiveCount: 0
     property int audioCount: 0
     property int otherCount: 0
+
+    readonly property var currentDisk: {
+        if (!root.currentPath || !root.drives) return null
+        var cp = root.currentPath.toUpperCase().replace(/\\/g, "/")
+        for (var i = 0; i < root.drives.length; i++) {
+            var d = root.drives[i]
+            if (!d) continue
+            var dp = (d.path || "").toUpperCase().replace(/\\/g, "/")
+            var dn = (d.name || "").toUpperCase().replace(/\\/g, "/")
+            if (dp && cp.indexOf(dp) === 0) return d
+            if (dn && cp.indexOf(dn) === 0) return d
+        }
+        return root.drives.length > 0 ? root.drives[0] : null
+    }
 
     // ── Helper formatters ───────────────────────────────────────────────────
     function formatBytes(bytes) {
@@ -189,11 +205,13 @@ Item {
 
     function updateCounts(items) {
         var fc = 0, ic = 0, vc = 0, ac = 0, auc = 0, oc = 0
+        var totalFilesSize = 0
         for (var i = 0; i < items.length; i++) {
             var it = items[i]
             if (it.is_dir) {
                 fc++
             } else {
+                if (it.size > 0) totalFilesSize += it.size
                 var cat = getCategory(it.ext)
                 if (cat === "image") ic++
                 else if (cat === "video") vc++
@@ -203,6 +221,8 @@ Item {
             }
         }
         root.folderCount = fc
+        root.fileCount = Math.max(0, items.length - fc)
+        root.currentFolderFilesSize = totalFilesSize
         root.imageCount = ic
         root.videoCount = vc
         root.archiveCount = ac
@@ -1180,7 +1200,7 @@ Item {
             }
         }
 
-        // 6. BOTTOM TELEMETRY / STATUS BAR
+        // 4. BOTTOM STATUS BAR
         Rectangle {
             Layout.fillWidth: true
             implicitHeight: 28
@@ -1191,36 +1211,116 @@ Item {
 
             RowLayout {
                 anchors.fill: parent
-                anchors.leftMargin: 10
-                anchors.rightMargin: 10
+                anchors.leftMargin: 12
+                anchors.rightMargin: 12
                 spacing: 12
 
-                Text {
-                    text: root.filteredItems.length + " of " + root.rawItems.length + " items"
-                    font.family: "Segoe UI, sans-serif"
-                    font.pixelSize: 10
-                    font.weight: 600
-                    color: "#94A3B8"
-                }
+                // Left: Counts of folders and files
+                Row {
+                    spacing: 8
+                    Layout.alignment: Qt.AlignVCenter
 
-                Rectangle { width: 1; height: 12; color: "#2B354C" }
+                    // Folders count
+                    Row {
+                        spacing: 4
+                        Text { text: "📁"; font.pixelSize: 11 }
+                        Text {
+                            text: root.folderCount + (root.folderCount === 1 ? " folder" : " folders")
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 10
+                            font.weight: 600
+                            color: "#38BDF8"
+                        }
+                    }
 
-                Text {
-                    text: "⚡ Zero-Lag Virtualized Engine — On-Demand Traversal"
-                    font.family: "Segoe UI, sans-serif"
-                    font.pixelSize: 10
-                    color: "#38BDF8"
+                    Text { text: "•"; font.pixelSize: 10; color: "#475569" }
+
+                    // Files count + total file size
+                    Row {
+                        spacing: 4
+                        Text { text: "📄"; font.pixelSize: 11 }
+                        Text {
+                            text: {
+                                var txt = root.fileCount + (root.fileCount === 1 ? " file" : " files")
+                                if (root.currentFolderFilesSize > 0) {
+                                    txt += " (" + root.formatBytes(root.currentFolderFilesSize) + ")"
+                                }
+                                return txt
+                            }
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 10
+                            font.weight: 600
+                            color: "#E2E8F0"
+                        }
+                    }
+
+                    // Filtered count (if user searched or picked a category)
+                    Text {
+                        visible: root.filteredItems.length !== root.rawItems.length
+                        text: "— showing " + root.filteredItems.length + " of " + root.rawItems.length
+                        font.family: "Segoe UI, sans-serif"
+                        font.pixelSize: 10
+                        color: "#94A3B8"
+                    }
                 }
 
                 Item { Layout.fillWidth: true }
 
-                Text {
-                    text: root.currentPath
-                    font.family: "Segoe UI, sans-serif"
-                    font.pixelSize: 10
-                    color: "#64748B"
-                    elide: Text.ElideMiddle
-                    Layout.maximumWidth: 400
+                // Right: Space on current disk
+                Row {
+                    visible: !!root.currentDisk
+                    spacing: 6
+                    Layout.alignment: Qt.AlignVCenter
+
+                    Text { text: "💽"; font.pixelSize: 11 }
+
+                    Text {
+                        text: {
+                            if (!root.currentDisk) return ""
+                            var dName = root.currentDisk.name || ""
+                            var sLabel = root.currentDisk.space_label || (root.currentDisk.free_str ? (root.currentDisk.free_str + " free") : "")
+                            return dName + (sLabel ? ("  " + sLabel) : "")
+                        }
+                        font.family: "Segoe UI, monospace"
+                        font.pixelSize: 10
+                        font.weight: 600
+                        color: (root.currentDisk && root.currentDisk.percent_free < 10) ? "#F87171" : "#38BDF8"
+                    }
+
+                    // Mini disk usage bar
+                    Rectangle {
+                        visible: !!root.currentDisk && root.currentDisk.total_bytes > 0
+                        width: 44
+                        height: 6
+                        radius: 3
+                        color: "#1E2536"
+                        anchors.verticalCenter: parent.verticalCenter
+
+                        Rectangle {
+                            height: parent.height
+                            width: Math.min(parent.width, parent.width * Math.max(0.02, 1.0 - ((root.currentDisk ? root.currentDisk.percent_free : 0) / 100.0)))
+                            radius: 3
+                            color: (root.currentDisk && root.currentDisk.percent_free < 10) ? "#EF4444" : ((root.currentDisk && root.currentDisk.percent_free < 20) ? "#F59E0B" : "#38BDF8")
+                        }
+                    }
+                }
+            }
+
+            // Hover tooltip on the entire status bar
+            MouseArea {
+                anchors.fill: parent
+                hoverEnabled: true
+                acceptedButtons: Qt.NoButton
+                ToolTip.visible: containsMouse
+                ToolTip.delay: 300
+                ToolTip.text: {
+                    var tip = "Current Directory:\n" + root.currentPath
+                    tip += "\n• Folders: " + root.folderCount
+                    tip += "\n• Files: " + root.fileCount + (root.currentFolderFilesSize > 0 ? (" (" + root.formatBytes(root.currentFolderFilesSize) + ")") : "")
+                    if (root.currentDisk) {
+                        tip += "\n• Disk " + root.currentDisk.name + ": " + (root.currentDisk.free_str || "") + " free of " + (root.currentDisk.total_str || "")
+                    }
+                    return tip
                 }
             }
         }
