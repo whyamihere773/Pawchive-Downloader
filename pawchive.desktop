@@ -1,0 +1,13 @@
+[Desktop Entry]
+Name=Pawchive Downloader
+GenericName=Media Downloader & Archival Suite
+Comment=Universal Cross-Platform Kemono, Coomer, Bunkr & Fanbox Archival Suite
+Exec=pawchive %U
+Icon=pawchive
+Terminal=false
+Type=Application
+Categories=Network;FileTransfer;Utility;Archiving;
+StartupNotify=true
+StartupWMClass=PawchiveDownloader
+MimeType=x-scheme-handler/pawchive;
+Keywords=kemono;coomer;bunkr;fanbox;downloader;archival;

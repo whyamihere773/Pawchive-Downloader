@@ -646,7 +646,7 @@ class UpdaterApp:
 
             # Restore execution bits on Linux for executables
             if sys.platform != "win32":
-                for bin_name in ["pawchive", "updater", "7za", "yt-dlp"]:
+                for bin_name in ["pawchive", "updater", "7za", "yt-dlp", "pawchive.desktop"]:
                     bp = os.path.join(self.target_dir, bin_name)
                     if os.path.exists(bp):
                         try:
@@ -756,7 +756,7 @@ def run_headless_update(target_dir: str, pid: int, download_url: str, version: s
 
         # Restore Linux permissions
         if sys.platform != "win32":
-            for bin_name in ["pawchive", "updater", "7za", "yt-dlp"]:
+            for bin_name in ["pawchive", "updater", "7za", "yt-dlp", "pawchive.desktop"]:
                 bp = os.path.join(target_dir, bin_name)
                 if os.path.exists(bp):
                     try:

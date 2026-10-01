@@ -22,6 +22,8 @@ def main():
     app.setApplicationName("PawchiveDownloader")
     app.setOrganizationName("PawchiveProject")
     app.setApplicationDisplayName("Pawchive Downloader")
+    if hasattr(app, "setDesktopFileName"):
+        app.setDesktopFileName("pawchive.desktop")
 
     # Periodic heartbeat timer to allow Python signal handling in Qt event loop
     sig_timer = QTimer()
@@ -31,9 +33,17 @@ def main():
     from core.path_utils import get_base_dir
     base_dir = get_base_dir()
 
-    icon_path = os.path.join(base_dir, "assets", "icon.png")
-    if os.path.exists(icon_path):
-        app.setWindowIcon(QIcon(icon_path))
+    # Search for app icon (prefer pawchive.png for Linux desktop integration, fallback to icon.png)
+    icon_candidates = [
+        os.path.join(base_dir, "assets", "pawchive.png"),
+        os.path.join(base_dir, "assets", "icon.png"),
+        os.path.join(base_dir, "pawchive.png"),
+        os.path.join(base_dir, "icon.png"),
+    ]
+    for icp in icon_candidates:
+        if os.path.exists(icp):
+            app.setWindowIcon(QIcon(icp))
+            break
 
     from bridge.translation_manager import TranslationManager
     app_bridge = AppBridge()

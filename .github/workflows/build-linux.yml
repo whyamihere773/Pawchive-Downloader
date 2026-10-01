@@ -52,9 +52,12 @@ jobs:
         python -m PyInstaller --noconfirm PawchiveDownloader_linux.spec
         mkdir -p "dist/Pawchive Downloader/config" "dist/Pawchive Downloader/data" "dist/Pawchive Downloader/dependencies"
         cp config/settings.example.json "dist/Pawchive Downloader/config/" 2>/dev/null || true
+        cp assets/pawchive.png "dist/Pawchive Downloader/" 2>/dev/null || true
         cp assets/icon.png "dist/Pawchive Downloader/" 2>/dev/null || true
+        cp pawchive.desktop "dist/Pawchive Downloader/" 2>/dev/null || true
         chmod +x "dist/Pawchive Downloader/pawchive"
         chmod +x "dist/Pawchive Downloader/updater" 2>/dev/null || true
+        chmod +x "dist/Pawchive Downloader/pawchive.desktop" 2>/dev/null || true
 
 
 
