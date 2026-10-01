@@ -12,6 +12,7 @@ import json
 import shutil
 import zipfile
 import tarfile
+import tempfile
 import urllib.request
 import subprocess
 import threading
@@ -113,18 +114,37 @@ def get_app_dir() -> str:
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def get_local_version_info() -> Dict[str, str]:
-    """Retrieve currently installed version or commit SHA."""
+def get_local_version_info() -> Dict[str, Any]:
+    """
+    Retrieve currently installed version or commit SHA.
+    - If running as compiled binary: loads version.json.
+    - If running from source with Git: inspects git HEAD for live commit SHA.
+    - If running from source without Git: loads version.json.
+    """
     app_dir = get_app_dir()
+    info = {
+        "commit": "",
+        "short_commit": "",
+        "version": "1.0.0",
+        "date": "",
+        "is_git": False
+    }
+
+    # Load version.json for base version metadata
     version_file = os.path.join(app_dir, "version.json")
     if os.path.exists(version_file):
         try:
             with open(version_file, "r", encoding="utf-8") as f:
-                return json.load(f)
+                vdata = json.load(f)
+                info.update(vdata)
         except Exception:
             pass
 
-    # Fallback to local git if running from source with .git
+    # If running compiled, version.json is the authoritative release reference
+    if is_compiled():
+        return info
+
+    # Running from source: check local git repository for accurate live SHA
     git_dir = os.path.join(app_dir, ".git")
     if os.path.exists(git_dir):
         try:
@@ -136,12 +156,11 @@ def get_local_version_info() -> Dict[str, str]:
                 timeout=3
             )
             if res.returncode == 0 and res.stdout.strip():
-                return {
-                    "commit": res.stdout.strip(),
-                    "short_commit": res.stdout.strip()[:7],
-                    "version": "source-dev",
-                    "date": ""
-                }
+                sha = res.stdout.strip()
+                info["commit"] = sha
+                info["short_commit"] = sha[:7]
+                info["is_git"] = True
+                return info
         except Exception:
             pass
 
@@ -158,35 +177,30 @@ def get_local_version_info() -> Dict[str, str]:
                         with open(ref_path, "r", encoding="utf-8") as rf:
                             sha = rf.read().strip()
                             if sha:
-                                return {
-                                    "commit": sha,
-                                    "short_commit": sha[:7],
-                                    "version": "source-dev",
-                                    "date": ""
-                                }
+                                info["commit"] = sha
+                                info["short_commit"] = sha[:7]
+                                info["is_git"] = True
+                                return info
                 elif len(head_content) == 40:
-                    return {
-                        "commit": head_content,
-                        "short_commit": head_content[:7],
-                        "version": "source-dev",
-                        "date": ""
-                    }
+                    info["commit"] = head_content
+                    info["short_commit"] = head_content[:7]
+                    info["is_git"] = True
+                    return info
             except Exception:
                 pass
 
-    return {
-        "commit": "",
-        "short_commit": "current",
-        "version": "1.0.0",
-        "date": ""
-    }
+    if not info.get("short_commit"):
+        info["short_commit"] = info.get("version", "source")
+
+    return info
 
 
 def check_for_updates(timeout: int = 8) -> Dict[str, Any]:
     """
     Check GitHub API for updates.
-    - If running from source: checks latest commit on default branch.
-    - If running as compiled: checks latest release.
+    - If running as compiled: checks latest release tag.
+    - If running from source with Git: checks latest commit on default branch.
+    - If running from source without Git: checks latest release tag against version.json.
     """
     local_info = get_local_version_info()
     compiled = is_compiled()
@@ -228,40 +242,79 @@ def check_for_updates(timeout: int = 8) -> Dict[str, Any]:
         }
 
     else:
-        # Running from source: check commits on main branch
-        api_url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/commits/{GITHUB_BRANCH}"
-        req = urllib.request.Request(api_url, headers={"User-Agent": USER_AGENT})
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-        except Exception as e:
-            return {
-                "update_available": False,
-                "error": f"Could not check commits: {e}",
-                "compiled": False,
-                "local_commit": local_info.get("short_commit", "")
-            }
-
-        remote_sha = data.get("sha", "").strip()
-        remote_short = remote_sha[:7] if remote_sha else ""
-        commit_msg = data.get("commit", {}).get("message", "").split("\n")[0]
-        commit_date = data.get("commit", {}).get("author", {}).get("date", "")
-        download_url = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/archive/refs/heads/{GITHUB_BRANCH}.zip"
-
+        # Running from source:
         local_sha = local_info.get("commit", "").strip()
-        # Require a valid local commit SHA to prevent endless update loops if git is unavailable
-        update_available = bool(remote_sha and local_sha and remote_sha != local_sha)
 
-        return {
-            "update_available": update_available,
-            "compiled": False,
-            "local_commit": local_info.get("short_commit", "") or local_sha[:7],
-            "remote_commit": remote_short,
-            "full_remote_sha": remote_sha,
-            "commit_message": commit_msg,
-            "download_url": download_url,
-            "published_at": commit_date
-        }
+        if local_sha:
+            # Source with Git commit: check commits on main branch
+            api_url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/commits/{GITHUB_BRANCH}"
+            req = urllib.request.Request(api_url, headers={"User-Agent": USER_AGENT})
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+            except Exception as e:
+                return {
+                    "update_available": False,
+                    "error": f"Could not check commits: {e}",
+                    "compiled": False,
+                    "local_commit": local_info.get("short_commit", "")
+                }
+
+            remote_sha = data.get("sha", "").strip()
+            remote_short = remote_sha[:7] if remote_sha else ""
+            commit_msg = data.get("commit", {}).get("message", "").split("\n")[0]
+            commit_date = data.get("commit", {}).get("author", {}).get("date", "")
+            download_url = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/archive/refs/heads/{GITHUB_BRANCH}.zip"
+
+            update_available = bool(remote_sha and remote_sha != local_sha)
+
+            return {
+                "update_available": update_available,
+                "compiled": False,
+                "is_source": True,
+                "is_git": local_info.get("is_git", False),
+                "local_commit": local_info.get("short_commit", "") or local_sha[:7],
+                "remote_commit": remote_short,
+                "full_remote_sha": remote_sha,
+                "commit_message": commit_msg,
+                "download_url": download_url,
+                "published_at": commit_date
+            }
+        else:
+            # Source downloaded without Git: check latest release
+            api_url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
+            req = urllib.request.Request(api_url, headers={"User-Agent": USER_AGENT})
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+            except Exception as e:
+                return {
+                    "update_available": False,
+                    "error": f"Could not check releases: {e}",
+                    "compiled": False,
+                    "local_version": local_info.get("version", "1.0.0")
+                }
+
+            remote_tag = data.get("tag_name", "").strip().lstrip("v")
+            local_ver = local_info.get("version", "").strip().lstrip("v")
+            body = data.get("body", "")
+            release_url = data.get("html_url", "")
+            download_url = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/archive/refs/heads/{GITHUB_BRANCH}.zip"
+
+            update_available = bool(remote_tag and remote_tag != local_ver)
+            return {
+                "update_available": update_available,
+                "compiled": False,
+                "is_source": True,
+                "is_git": False,
+                "local_version": local_info.get("version", "1.0.0"),
+                "remote_version": data.get("tag_name", ""),
+                "commit_message": data.get("name", "") or data.get("tag_name", ""),
+                "release_notes": body,
+                "download_url": download_url,
+                "release_url": release_url,
+                "published_at": data.get("published_at", "")
+            }
 
 
 class UpdateDownloader:
@@ -414,13 +467,26 @@ def launch_external_updater(update_info: Dict[str, Any]):
     else:
         # Running from source or fallback
         python_exe = sys.executable if not is_compiled() else ("python.exe" if sys.platform == "win32" else "python3")
+        
+        # Self-relocate updater.py to tempdir so updater.py in project dir is never locked by Python
+        temp_dir = tempfile.gettempdir()
+        temp_script = os.path.join(temp_dir, f"pawchive_updater_run_{int(time.time())}.py")
+        try:
+            shutil.copy2(updater_script, temp_script)
+            target_script = temp_script
+        except Exception:
+            target_script = updater_script
+
         cmd = [
             python_exe,
-            updater_script,
+            target_script,
             "--target-dir", app_dir,
             "--pid", str(current_pid),
             "--download-url", download_url,
-            "--version", version
+            "--version", version,
+            "--source",
+            "--python-exe", python_exe,
+            "--temp-runner"
         ]
 
     if sys.platform == "win32":

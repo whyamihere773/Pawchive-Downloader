@@ -102,10 +102,14 @@ def extract_archive(archive_file: str, dest_dir: str):
 
 
 # Files and folders that must NEVER be touched during an update
-PROTECTED_DIRS = {"config", "downloads", "temp", "logs", "venv", ".venv", "__pycache__", ".git"}
+PROTECTED_DIRS = {
+    "config", "downloads", "temp", "logs", "venv", ".venv", "env",
+    "__pycache__", ".git", ".idea", ".vscode", "scratch", "data", "models"
+}
 PROTECTED_FILES = {
     "settings.json", "watchlist.json", "known.txt", "cookies.txt",
-    "link_vault.json", "link_vault.json.bak", "storage_pools.json", "schedules.json"
+    "link_vault.json", "link_vault.json.bak", "storage_pools.json", "schedules.json",
+    "download_archive.db", ".env", ".env.local"
 }
 
 # Extra wait time after PID exits before touching exe files (Windows handle-release delay)
@@ -139,12 +143,23 @@ def is_pid_running(pid: int) -> bool:
 
 
 class UpdaterApp:
-    def __init__(self, root: tk.Tk, target_dir: str, pid: int, download_url: str, version: str):
+    def __init__(
+        self,
+        root: tk.Tk,
+        target_dir: str,
+        pid: int,
+        download_url: str,
+        version: str,
+        is_source: bool = False,
+        python_exe: str = ""
+    ):
         self.root = root
         self.target_dir = os.path.abspath(target_dir)
         self.pid = pid
         self.download_url = download_url
         self.version = version or "Latest"
+        self.is_source = is_source
+        self.python_exe = python_exe or sys.executable
         self._cancel_requested = False
 
         self._setup_window()
@@ -359,19 +374,29 @@ class UpdaterApp:
         UAC prompt — we never store or request credentials ourselves.
         """
         import ctypes
-        # Build the exe path: we are already a temp copy in %TEMP%
         if getattr(sys, "frozen", False):
             exe = os.path.abspath(sys.executable)
+            params = (
+                f'--target-dir "{self.target_dir}" '
+                f'--pid 0 '
+                f'--download-url "{self.download_url}" '
+                f'--version "{self.version}" '
+                f'--temp-runner'
+            )
         else:
-            exe = sys.executable
-
-        params = (
-            f'--target-dir "{self.target_dir}" '
-            f'--pid 0 '
-            f'--download-url "{self.download_url}" '
-            f'--version "{self.version}" '
-            f'--temp-runner'
-        )
+            exe = self.python_exe or sys.executable
+            script_path = os.path.abspath(__file__)
+            source_flag = "--source " if self.is_source else ""
+            params = (
+                f'"{script_path}" '
+                f'--target-dir "{self.target_dir}" '
+                f'--pid 0 '
+                f'--download-url "{self.download_url}" '
+                f'--version "{self.version}" '
+                f'{source_flag}'
+                f'--python-exe "{exe}" '
+                f'--temp-runner'
+            )
         try:
             ctypes.windll.shell32.ShellExecuteW(
                 None,       # hwnd
@@ -519,6 +544,106 @@ class UpdaterApp:
             else:
                 self._safe_delete(full_path)
 
+    def _try_git_update(self) -> bool:
+        """
+        Attempts to update a source Git repository using native git commands.
+        Returns True if successful and the application was relaunched; False to fall back to archive download.
+        """
+        try:
+            ver_res = subprocess.run(
+                ["git", "--version"],
+                cwd=self.target_dir,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if ver_res.returncode != 0:
+                return False
+
+            self._set_status("Fetching latest Git updates...", "Connecting to remote repository...", progress=25.0)
+
+            branch_res = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=self.target_dir,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            branch = branch_res.stdout.strip() if branch_res.returncode == 0 and branch_res.stdout.strip() else "main"
+
+            self._set_status(f"Updating branch '{branch}'...", "Pulling latest changes...", progress=50.0)
+
+            # Pull latest changes
+            pull_res = subprocess.run(
+                ["git", "pull", "--rebase", "origin", branch],
+                cwd=self.target_dir,
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            if pull_res.returncode != 0:
+                pull_res = subprocess.run(
+                    ["git", "pull", "origin", branch],
+                    cwd=self.target_dir,
+                    capture_output=True,
+                    text=True,
+                    timeout=60
+                )
+
+            if pull_res.returncode == 0:
+                self._set_status("Git sync complete!", "Checking requirements...", progress=85.0)
+                req_path = os.path.join(self.target_dir, "requirements.txt")
+                if os.path.exists(req_path) and self.python_exe:
+                    try:
+                        self._set_status("Installing dependencies...", "pip install -r requirements.txt", progress=90.0)
+                        subprocess.run(
+                            [self.python_exe, "-m", "pip", "install", "-r", req_path],
+                            cwd=self.target_dir,
+                            capture_output=True,
+                            timeout=60
+                        )
+                    except Exception:
+                        pass
+
+                self._set_status("Update complete!", "Relaunching Pawchive Downloader...", progress=100.0)
+                time.sleep(0.8)
+                self._relaunch()
+                self.root.after(500, self.root.destroy)
+                return True
+        except Exception as e:
+            print(f"[!] Git update failed, falling back to archive: {e}")
+        return False
+
+    def _relaunch(self):
+        """Relaunch the updated application."""
+        if self.is_source:
+            main_py = os.path.join(self.target_dir, "main.py")
+            if os.path.exists(main_py):
+                py_exe = self.python_exe or sys.executable
+                subprocess.Popen([py_exe, main_py], cwd=self.target_dir)
+                return
+
+        exe_path = ""
+        if sys.platform == "win32":
+            cand = os.path.join(self.target_dir, "Pawchive Downloader.exe")
+            if os.path.exists(cand):
+                exe_path = cand
+            else:
+                for f in os.listdir(self.target_dir):
+                    f_l = f.lower()
+                    if f_l.endswith(".exe") and "updater" not in f_l and not f_l.startswith("7z") and not f_l.startswith("yt-dlp"):
+                        exe_path = os.path.join(self.target_dir, f)
+                        break
+        else:
+            for name in ["pawchive", "Pawchive Downloader"]:
+                cand = os.path.join(self.target_dir, name)
+                if os.path.exists(cand):
+                    exe_path = cand
+                    break
+
+        if exe_path and os.path.exists(exe_path):
+            subprocess.Popen([exe_path], cwd=self.target_dir)
+
     def _run_update_pipeline(self):
         try:
             # 1. Wait for Pawchive Downloader to completely terminate
@@ -534,6 +659,12 @@ class UpdaterApp:
 
             # Extra buffer for Windows to fully release file handles (no admin needed)
             time.sleep(_EXE_RELEASE_WAIT)
+
+            # Fast path for Git source checkouts
+            git_dir = os.path.join(self.target_dir, ".git")
+            if self.is_source and os.path.isdir(git_dir):
+                if self._try_git_update():
+                    return
 
             # 2. Prepare directories in temporary directory
             temp_base = tempfile.gettempdir()
@@ -596,9 +727,11 @@ class UpdaterApp:
             self._set_status("Preparing installation...", "Cleaning up previous update debris...", progress=84.0)
             self._clean_stale_old_files()
 
-            # 6. Delete all non-protected items from target dir (clean slate)
-            self._set_status("Clearing old version...", "Removing outdated application files...", progress=87.0)
-            self._delete_non_protected()
+            # 6. For compiled builds: clean slate non-protected files
+            # For source mode: NEVER wipe directory; copy updated files directly!
+            if not self.is_source:
+                self._set_status("Clearing old version...", "Removing outdated application files...", progress=87.0)
+                self._delete_non_protected()
 
             # 7. Copy fresh files into target directory
             self._set_status("Installing update...", "Copying new application files...", progress=91.0)
@@ -638,6 +771,21 @@ class UpdaterApp:
                 shutil.rmtree(updater_work_dir, ignore_errors=True)
                 return  # Do not relaunch until user decides
 
+            # Synchronize dependencies if running from source
+            if self.is_source:
+                req_path = os.path.join(self.target_dir, "requirements.txt")
+                if os.path.exists(req_path) and self.python_exe:
+                    try:
+                        self._set_status("Checking dependencies...", "pip install -r requirements.txt", progress=95.0)
+                        subprocess.run(
+                            [self.python_exe, "-m", "pip", "install", "-r", req_path],
+                            cwd=self.target_dir,
+                            capture_output=True,
+                            timeout=60
+                        )
+                    except Exception:
+                        pass
+
             self._set_status("Finalizing update...", f"Installed {copied_count} files successfully.", progress=98.0)
             time.sleep(0.5)
 
@@ -659,37 +807,7 @@ class UpdaterApp:
             self._set_status("Update complete!", "Relaunching Pawchive Downloader...", progress=100.0)
             time.sleep(0.8)
 
-            exe_path = ""
-            if sys.platform == "win32":
-                cand = os.path.join(self.target_dir, "Pawchive Downloader.exe")
-                if os.path.exists(cand):
-                    exe_path = cand
-                else:
-                    for f in os.listdir(self.target_dir):
-                        if f.lower().endswith(".exe") and "updater" not in f.lower():
-                            exe_path = os.path.join(self.target_dir, f)
-                            break
-            else:
-                for name in ["pawchive", "Pawchive Downloader"]:
-                    cand = os.path.join(self.target_dir, name)
-                    if os.path.exists(cand):
-                        exe_path = cand
-                        break
-                if not exe_path:
-                    for f in os.listdir(self.target_dir):
-                        p = os.path.join(self.target_dir, f)
-                        if os.path.isfile(p) and "updater" not in f.lower() and not f.endswith(".sh"):
-                            exe_path = p
-                            break
-
-            if exe_path and os.path.exists(exe_path):
-                subprocess.Popen([exe_path], cwd=self.target_dir)
-            elif not getattr(sys, "frozen", False):
-                main_py = os.path.join(self.target_dir, "main.py")
-                if os.path.exists(main_py):
-                    subprocess.Popen([sys.executable, main_py], cwd=self.target_dir)
-
-
+            self._relaunch()
             self.root.after(500, self.root.destroy)
 
         except Exception as err:
@@ -697,9 +815,18 @@ class UpdaterApp:
             self.root.after(0, lambda: self.cancel_btn.config(text="Close", state="normal", command=self.root.destroy))
 
 
-def run_headless_update(target_dir: str, pid: int, download_url: str, version: str):
+def run_headless_update(
+    target_dir: str,
+    pid: int,
+    download_url: str,
+    version: str,
+    is_source: bool = False,
+    python_exe: str = ""
+):
     """Fallback CLI update pipeline when Tkinter is not available (common on minimal Linux/Docker)."""
     print(f"[*] Starting Pawchive Downloader CLI updater (Target: {version or 'latest'})...")
+    python_exe = python_exe or sys.executable
+
     if pid > 0:
         print("[*] Waiting for previous application process to exit...")
         start_wait = time.time()
@@ -708,6 +835,37 @@ def run_headless_update(target_dir: str, pid: int, download_url: str, version: s
                 break
             time.sleep(0.3)
     time.sleep(_EXE_RELEASE_WAIT)
+
+    # Git-native update fast path
+    git_dir = os.path.join(target_dir, ".git")
+    if is_source and os.path.isdir(git_dir):
+        try:
+            ver_res = subprocess.run(["git", "--version"], cwd=target_dir, capture_output=True, text=True, timeout=5)
+            if ver_res.returncode == 0:
+                print("[*] Detected Git repository. Running git pull...")
+                branch_res = subprocess.run(
+                    ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                    cwd=target_dir, capture_output=True, text=True, timeout=5
+                )
+                branch = branch_res.stdout.strip() if branch_res.returncode == 0 and branch_res.stdout.strip() else "main"
+                pull_res = subprocess.run(["git", "pull", "--rebase", "origin", branch], cwd=target_dir, capture_output=True, text=True, timeout=60)
+                if pull_res.returncode != 0:
+                    pull_res = subprocess.run(["git", "pull", "origin", branch], cwd=target_dir, capture_output=True, text=True, timeout=60)
+                if pull_res.returncode == 0:
+                    print("[+] Git pull successful!")
+                    req_path = os.path.join(target_dir, "requirements.txt")
+                    if os.path.exists(req_path) and python_exe:
+                        try:
+                            subprocess.run([python_exe, "-m", "pip", "install", "-r", req_path], cwd=target_dir, capture_output=True, timeout=60)
+                        except Exception:
+                            pass
+                    main_py = os.path.join(target_dir, "main.py")
+                    if os.path.exists(main_py):
+                        print(f"[*] Relaunching: {main_py}")
+                        subprocess.Popen([python_exe, main_py], cwd=target_dir)
+                    return
+        except Exception as e:
+            print(f"[!] Git update error, falling back to archive: {e}")
 
     temp_base = tempfile.gettempdir()
     updater_work_dir = os.path.join(temp_base, f"pawchive_update_{int(time.time())}")
@@ -766,11 +924,24 @@ def run_headless_update(target_dir: str, pid: int, download_url: str, version: s
                         pass
 
         # Relaunch
+        if is_source:
+            main_py = os.path.join(target_dir, "main.py")
+            if os.path.exists(main_py):
+                print(f"[*] Relaunching source: {main_py}...")
+                subprocess.Popen([python_exe, main_py], cwd=target_dir)
+                return
+
         exe_path = ""
         if sys.platform == "win32":
             cand = os.path.join(target_dir, "Pawchive Downloader.exe")
             if os.path.exists(cand):
                 exe_path = cand
+            else:
+                for f in os.listdir(target_dir):
+                    f_l = f.lower()
+                    if f_l.endswith(".exe") and "updater" not in f_l and not f_l.startswith("7z") and not f_l.startswith("yt-dlp"):
+                        exe_path = os.path.join(target_dir, f)
+                        break
         else:
             for name in ["pawchive", "Pawchive Downloader"]:
                 cand = os.path.join(target_dir, name)
@@ -781,11 +952,7 @@ def run_headless_update(target_dir: str, pid: int, download_url: str, version: s
         if exe_path and os.path.exists(exe_path):
             print(f"[*] Relaunching {exe_path}...")
             subprocess.Popen([exe_path], cwd=target_dir)
-        elif not getattr(sys, "frozen", False):
-            main_py = os.path.join(target_dir, "main.py")
-            if os.path.exists(main_py):
-                print(f"[*] Relaunching source: {main_py}...")
-                subprocess.Popen([sys.executable, main_py], cwd=target_dir)
+
     except Exception as e:
         print(f"[!] Update error: {e}")
         shutil.rmtree(updater_work_dir, ignore_errors=True)
@@ -798,6 +965,8 @@ def main():
     parser.add_argument("--download-url", default="", help="Direct download URL for the update package")
     parser.add_argument("--version", default="", help="Target version string to display")
     parser.add_argument("--temp-runner", action="store_true", help="Internal flag: running from temp location")
+    parser.add_argument("--source", action="store_true", help="Running from source code repository/tree")
+    parser.add_argument("--python-exe", default="", help="Python interpreter to use for source execution")
 
     args = parser.parse_args()
 
@@ -807,6 +976,9 @@ def main():
             target_dir = os.path.dirname(os.path.abspath(sys.executable))
         else:
             target_dir = os.path.dirname(os.path.abspath(__file__))
+
+    is_source = args.source or (not getattr(sys, "frozen", False))
+    python_exe = args.python_exe or sys.executable
 
     download_url = args.download_url
     version = args.version
@@ -824,41 +996,61 @@ def main():
         except Exception:
             pass
 
-
     if not download_url:
         print("❌ Error: No download package URL provided and could not query GitHub releases.")
         sys.exit(1)
 
     # Self-relocation:
-    # If running from inside target_dir as a compiled exe, copy self to tempdir
-    # so target_dir/updater itself is not locked and can be cleanly updated!
-    if getattr(sys, "frozen", False) and not args.temp_runner:
-        my_exe = os.path.abspath(sys.executable)
+    # If running from inside target_dir, copy self to tempdir
+    # so target_dir/updater.exe or updater.py is not locked and can be cleanly updated!
+    if not args.temp_runner:
         temp_dir = tempfile.gettempdir()
-        ext = ".exe" if sys.platform == "win32" else ""
-        temp_updater = os.path.join(temp_dir, f"pawchive_updater_run_{int(time.time())}{ext}")
-        try:
-            shutil.copy2(my_exe, temp_updater)
-            if sys.platform != "win32":
-                try:
-                    os.chmod(temp_updater, 0o755)
-                except Exception:
-                    pass
-            cmd = [
-                temp_updater,
-                "--target-dir", target_dir,
-                "--pid", str(args.pid),
-                "--download-url", download_url,
-                "--version", version,
-                "--temp-runner"
-            ]
-            subprocess.Popen(cmd)
-            sys.exit(0)
-        except Exception:
-            pass  # Fall back to running in-place
+        if getattr(sys, "frozen", False):
+            my_exe = os.path.abspath(sys.executable)
+            ext = ".exe" if sys.platform == "win32" else ""
+            temp_updater = os.path.join(temp_dir, f"pawchive_updater_run_{int(time.time())}{ext}")
+            try:
+                shutil.copy2(my_exe, temp_updater)
+                if sys.platform != "win32":
+                    try:
+                        os.chmod(temp_updater, 0o755)
+                    except Exception:
+                        pass
+                cmd = [
+                    temp_updater,
+                    "--target-dir", target_dir,
+                    "--pid", str(args.pid),
+                    "--download-url", download_url,
+                    "--version", version,
+                    "--temp-runner"
+                ]
+                subprocess.Popen(cmd)
+                sys.exit(0)
+            except Exception:
+                pass  # Fall back to running in-place
+        else:
+            my_script = os.path.abspath(__file__)
+            temp_script = os.path.join(temp_dir, f"pawchive_updater_run_{int(time.time())}.py")
+            try:
+                shutil.copy2(my_script, temp_script)
+                cmd = [
+                    python_exe,
+                    temp_script,
+                    "--target-dir", target_dir,
+                    "--pid", str(args.pid),
+                    "--download-url", download_url,
+                    "--version", version,
+                    "--source",
+                    "--python-exe", python_exe,
+                    "--temp-runner"
+                ]
+                subprocess.Popen(cmd)
+                sys.exit(0)
+            except Exception:
+                pass  # Fall back to running in-place
 
     if not HAS_TKINTER:
-        run_headless_update(target_dir, args.pid, download_url, version)
+        run_headless_update(target_dir, args.pid, download_url, version, is_source=is_source, python_exe=python_exe)
         sys.exit(0)
 
     root = tk.Tk()
@@ -867,7 +1059,9 @@ def main():
         target_dir=target_dir,
         pid=args.pid,
         download_url=download_url,
-        version=version
+        version=version,
+        is_source=is_source,
+        python_exe=python_exe
     )
     root.mainloop()
 
