@@ -202,6 +202,7 @@ class AppBridge(QObject):
 
     # File Explorer & Media Gallery signals
     folderStatsCalculated     = Signal(str, 'qint64', 'qint64', 'qint64')  # (path, total_size, file_count, folder_count)
+    galleryBookmarksChanged   = Signal()
 
     _progressSignal    = Signal(dict)    # carries progress info dict
     _taskSignal        = Signal(object)  # carries a DownloadTask object
@@ -300,6 +301,9 @@ class AppBridge(QObject):
         self._selection_cached_posts = []
         self._selection_parsed = None
         self._selection_creator_name = ""
+        self._gallery_bookmarks = list(saved_settings.get("gallery_bookmarks", []) or [])
+        if not self._gallery_bookmarks:
+            self._gallery_bookmarks = self._get_default_gallery_bookmarks()
         self._proxy_url = saved_settings.get("proxy_url", "")
         self._max_cpu_threads = max(4, os.cpu_count() or 16)
         self._threads_count = int(saved_settings.get("threads", min(8, self._max_cpu_threads)))
@@ -4450,6 +4454,7 @@ class AppBridge(QObject):
             "max_file_size": self._max_file_size,
             "exact_extensions": self._exact_extensions,
             "saved_custom_extensions": self._saved_custom_extensions,
+            "gallery_bookmarks": self._gallery_bookmarks,
             "write_audio_metadata": self._write_audio_metadata,
             "telegram_safety_acknowledged": self._telegram_safety_acknowledged,
             "telegram_liability_acknowledged": self._telegram_liability_acknowledged,
@@ -6421,6 +6426,76 @@ class AppBridge(QObject):
                 home_item.update(_get_space_info(home))
                 drives.append(home_item)
         return drives
+
+    def _get_default_gallery_bookmarks(self) -> list:
+        defaults = []
+        if self._download_dir and os.path.exists(self._download_dir):
+            defaults.append({"name": "Downloads", "path": os.path.normpath(self._download_dir), "icon": "📥"})
+        home = os.path.expanduser("~")
+        sys_dl = os.path.join(home, "Downloads")
+        if os.path.exists(sys_dl) and (not self._download_dir or os.path.normpath(sys_dl) != os.path.normpath(self._download_dir)):
+            defaults.append({"name": "System Downloads", "path": os.path.normpath(sys_dl), "icon": "📁"})
+        sys_pics = os.path.join(home, "Pictures")
+        if os.path.exists(sys_pics):
+            defaults.append({"name": "Pictures", "path": os.path.normpath(sys_pics), "icon": "🖼️"})
+        sys_vids = os.path.join(home, "Videos")
+        if os.path.exists(sys_vids):
+            defaults.append({"name": "Videos", "path": os.path.normpath(sys_vids), "icon": "🎬"})
+        return defaults
+
+    @Property('QVariantList', notify=galleryBookmarksChanged)
+    def galleryBookmarks(self) -> list:
+        return self._gallery_bookmarks
+
+    @Slot(result='QVariantList')
+    def getGalleryBookmarks(self) -> list:
+        return self._gallery_bookmarks
+
+    @Slot(str, str, result=bool)
+    def addGalleryBookmark(self, path: str, name: str = "") -> bool:
+        if not path:
+            return False
+        norm = os.path.normpath(path)
+        for b in self._gallery_bookmarks:
+            if os.path.normpath(b.get("path", "")) == norm:
+                return False
+        b_name = name.strip() if name and name.strip() else os.path.basename(norm)
+        if not b_name:
+            b_name = norm
+        self._gallery_bookmarks.append({
+            "name": b_name,
+            "path": norm,
+            "icon": "⭐"
+        })
+        self.saveSettings()
+        self.galleryBookmarksChanged.emit()
+        return True
+
+    @Slot(str, result=bool)
+    def removeGalleryBookmark(self, path: str) -> bool:
+        if not path:
+            return False
+        norm = os.path.normpath(path)
+        before_len = len(self._gallery_bookmarks)
+        self._gallery_bookmarks = [
+            b for b in self._gallery_bookmarks
+            if os.path.normpath(b.get("path", "")) != norm
+        ]
+        if len(self._gallery_bookmarks) != before_len:
+            self.saveSettings()
+            self.galleryBookmarksChanged.emit()
+            return True
+        return False
+
+    @Slot(str, result=bool)
+    def isGalleryBookmarked(self, path: str) -> bool:
+        if not path:
+            return False
+        norm = os.path.normpath(path)
+        for b in self._gallery_bookmarks:
+            if os.path.normpath(b.get("path", "")) == norm:
+                return True
+        return False
 
     @Slot(str)
     def openPathInSystem(self, path: str):

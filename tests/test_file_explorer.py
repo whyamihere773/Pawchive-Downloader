@@ -267,6 +267,37 @@ class TestFileExplorer(unittest.TestCase):
         self.assertFalse(os.path.exists(f1))
         self.assertFalse(os.path.exists(f2))
 
+    def test_gallery_bookmarks(self):
+        bridge = AppBridge()
+        # Initial bookmarks should contain defaults
+        initial_bms = bridge.getGalleryBookmarks()
+        self.assertIsInstance(initial_bms, list)
+
+        # Add a bookmark
+        folder_a = os.path.join(self.temp_dir, "FolderA")
+        added = bridge.addGalleryBookmark(folder_a, "My Folder A")
+        self.assertTrue(added)
+        self.assertTrue(bridge.isGalleryBookmarked(folder_a))
+
+        # Adding same bookmark again should return False
+        added_duplicate = bridge.addGalleryBookmark(folder_a, "Duplicate")
+        self.assertFalse(added_duplicate)
+
+        # Verify it appears in bookmarks list
+        bms = bridge.getGalleryBookmarks()
+        match = [b for b in bms if os.path.normpath(b.get("path", "")) == os.path.normpath(folder_a)]
+        self.assertEqual(len(match), 1)
+        self.assertEqual(match[0]["name"], "My Folder A")
+
+        # Remove the bookmark
+        removed = bridge.removeGalleryBookmark(folder_a)
+        self.assertTrue(removed)
+        self.assertFalse(bridge.isGalleryBookmarked(folder_a))
+
+        # Removing non-existent returns False
+        removed_again = bridge.removeGalleryBookmark(folder_a)
+        self.assertFalse(removed_again)
+
 
 if __name__ == "__main__":
     unittest.main()

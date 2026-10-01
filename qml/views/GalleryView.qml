@@ -18,11 +18,22 @@ Item {
     property var filteredItems: []
     property var breadcrumbs: []
     property var drives: []
+    property var bookmarks: []
     property string activeCategory: "all"
     property string searchFilter: ""
     property string viewMode: "grid" // "grid" | "list"
     property bool pathEditMode: false
     property bool isLoading: false
+
+    readonly property bool isCurrentFolderBookmarked: {
+        if (!root.currentPath || !root.bookmarks) return false
+        var cp = root.currentPath.toUpperCase().replace(/\\/g, "/")
+        for (var i = 0; i < root.bookmarks.length; i++) {
+            var bp = (root.bookmarks[i].path || "").toUpperCase().replace(/\\/g, "/")
+            if (bp === cp) return true
+        }
+        return false
+    }
 
     // Counts
     property int folderCount: 0
@@ -62,7 +73,12 @@ Item {
     function formatDate(ts) {
         if (!ts || ts <= 0) return ""
         var d = new Date(ts * 1000)
-        return d.toLocaleDateString() + " " + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        var yr = d.getFullYear()
+        var mo = ("0" + (d.getMonth() + 1)).slice(-2)
+        var da = ("0" + d.getDate()).slice(-2)
+        var hr = ("0" + d.getHours()).slice(-2)
+        var mn = ("0" + d.getMinutes()).slice(-2)
+        return yr + "-" + mo + "-" + da + "  " + hr + ":" + mn
     }
 
     function getCategory(ext) {
@@ -122,11 +138,20 @@ Item {
         return "Folder • Calculating size…"
     }
 
-    // ── Live background folder stats updates ────────────────────────────────
+    // ── Live background folder stats & bookmarks updates ────────────────────
     Connections {
         target: root.bridge
         function onFolderStatsCalculated(path, size, fileCount, folderCount) {
             updateFolderStats(path, size, fileCount, folderCount)
+        }
+        function onGalleryBookmarksChanged() {
+            refreshBookmarks()
+        }
+    }
+
+    function refreshBookmarks() {
+        if (root.bridge && root.bridge.getGalleryBookmarks) {
+            root.bookmarks = root.bridge.getGalleryBookmarks()
         }
     }
 
@@ -184,6 +209,7 @@ Item {
         if (root.bridge.getBreadcrumbs) {
             root.breadcrumbs = root.bridge.getBreadcrumbs(targetPath)
         }
+        refreshBookmarks()
 
         // On-demand lazy directory list
         if (root.bridge.listDirectory) {
@@ -687,6 +713,179 @@ Item {
                         }
                     }
                 }
+
+                // Star / Pin Current Folder Button
+                Rectangle {
+                    implicitHeight: 24
+                    implicitWidth: bkmBtnRow.implicitWidth + 12
+                    radius: 4
+                    color: bkmBtnMouse.containsMouse ? "#1E293B" : (root.isCurrentFolderBookmarked ? "#241D12" : "#141824")
+                    border.color: root.isCurrentFolderBookmarked ? "#F59E0B" : (bkmBtnMouse.containsMouse ? "#38BDF8" : "#2E384D")
+                    border.width: 1
+
+                    Row {
+                        id: bkmBtnRow
+                        anchors.centerIn: parent
+                        spacing: 4
+                        Text {
+                            text: root.isCurrentFolderBookmarked ? "⭐" : "☆"
+                            font.pixelSize: 11
+                        }
+                        Text {
+                            text: root.isCurrentFolderBookmarked ? "Bookmarked" : "Bookmark"
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 10
+                            font.weight: 600
+                            color: root.isCurrentFolderBookmarked ? "#F59E0B" : "#E2E8F0"
+                        }
+                    }
+                    MouseArea {
+                        id: bkmBtnMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            if (!root.bridge) return
+                            if (root.isCurrentFolderBookmarked) {
+                                root.bridge.removeGalleryBookmark(root.currentPath)
+                            } else {
+                                root.bridge.addGalleryBookmark(root.currentPath)
+                            }
+                            refreshBookmarks()
+                        }
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 250
+                        ToolTip.text: root.isCurrentFolderBookmarked ? ("Bookmarked!\nClick to remove '" + root.currentPath + "' from Quick Shortcuts") : ("Bookmark Folder\nPin '" + root.currentPath + "' as a Quick Shortcut")
+                    }
+                }
+            }
+        }
+
+        // 3. QUICK SHORTCUTS / BOOKMARKS BAR
+        Rectangle {
+            Layout.fillWidth: true
+            implicitHeight: 28
+            visible: root.bookmarks.length > 0
+            radius: 5
+            color: "#0E121B"
+            border.color: "#1C2333"
+            border.width: 1
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 8
+                anchors.rightMargin: 8
+                spacing: 8
+
+                // Label
+                Row {
+                    spacing: 4
+                    Layout.alignment: Qt.AlignVCenter
+                    Text { text: "🔖"; font.pixelSize: 11 }
+                    Text {
+                        text: "Shortcuts:"
+                        font.family: "Segoe UI, sans-serif"
+                        font.pixelSize: 10
+                        font.weight: 700
+                        color: "#64748B"
+                    }
+                }
+
+                // Flickable row of bookmark chips
+                Flickable {
+                    Layout.fillWidth: true
+                    implicitHeight: 24
+                    contentWidth: bookmarksRow.implicitWidth
+                    contentHeight: 24
+                    flickableDirection: Flickable.HorizontalFlick
+                    clip: true
+
+                    Row {
+                        id: bookmarksRow
+                        spacing: 6
+                        anchors.verticalCenter: parent.verticalCenter
+
+                        Repeater {
+                            model: root.bookmarks
+                            delegate: Rectangle {
+                                id: bChip
+                                property bool isCurrent: root.currentPath && modelData.path && (root.currentPath.toUpperCase().replace(/\\/g, "/") === modelData.path.toUpperCase().replace(/\\/g, "/"))
+                                implicitHeight: 22
+                                implicitWidth: bChipRow.implicitWidth + 14
+                                radius: 11
+                                color: bChipMouse.containsMouse ? "#1E293D" : (isCurrent ? "#1E273A" : "#131722")
+                                border.color: isCurrent ? "#38BDF8" : (bChipMouse.containsMouse ? "#475569" : "#222B3D")
+                                border.width: 1
+
+                                Row {
+                                    id: bChipRow
+                                    anchors.centerIn: parent
+                                    spacing: 5
+
+                                    Text {
+                                        text: modelData.icon || "⭐"
+                                        font.pixelSize: 10
+                                        anchors.verticalCenter: parent.verticalCenter
+                                    }
+
+                                    Text {
+                                        text: modelData.name || ""
+                                        font.family: "Segoe UI, sans-serif"
+                                        font.pixelSize: 10
+                                        font.weight: isCurrent ? 700 : Font.Normal
+                                        color: isCurrent ? "#38BDF8" : (bChipMouse.containsMouse ? "#F8FAFC" : "#94A3B8")
+                                        anchors.verticalCenter: parent.verticalCenter
+                                    }
+
+                                    // Remove button (appears on hover)
+                                    Rectangle {
+                                        width: 14
+                                        height: 14
+                                        radius: 7
+                                        color: bDelMouse.containsMouse ? "#EF4444" : "#1E2536"
+                                        visible: bChipMouse.containsMouse
+                                        anchors.verticalCenter: parent.verticalCenter
+
+                                        Text {
+                                            anchors.centerIn: parent
+                                            text: "×"
+                                            font.pixelSize: 11
+                                            font.bold: true
+                                            color: "#E2E8F0"
+                                        }
+
+                                        MouseArea {
+                                            id: bDelMouse
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                if (root.bridge && root.bridge.removeGalleryBookmark) {
+                                                    root.bridge.removeGalleryBookmark(modelData.path)
+                                                    refreshBookmarks()
+                                                }
+                                            }
+                                            ToolTip.visible: containsMouse
+                                            ToolTip.delay: 200
+                                            ToolTip.text: "Remove bookmark"
+                                        }
+                                    }
+                                }
+
+                                MouseArea {
+                                    id: bChipMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: navigateTo(modelData.path)
+                                    ToolTip.visible: containsMouse && !bDelMouse.containsMouse
+                                    ToolTip.delay: 300
+                                    ToolTip.text: "Quick Shortcut: " + modelData.name + "\n" + modelData.path + "\n• Click to navigate\n• Hover '×' to unpin"
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -1066,134 +1265,224 @@ Item {
                 }
             }
 
-            // LIST VIEW
-            ListView {
-                id: explorerListView
+            // LIST VIEW CONTAINER
+            Item {
+                id: listContainer
                 visible: root.viewMode === "list"
                 anchors.fill: parent
                 anchors.margins: 6
-                spacing: 2
-                model: root.filteredItems
-                clip: true
 
-                delegate: Rectangle {
-                    width: explorerListView.width
-                    height: 32
-                    radius: 5
-                    color: listRowMouse.containsMouse ? "#1B2336" : (index % 2 === 0 ? "#111622" : "#0E121B")
-                    border.color: listRowMouse.containsMouse ? "#38BDF8" : "transparent"
-                    border.width: 1
+                // Column Header
+                Rectangle {
+                    id: listHeader
+                    anchors.top: parent.top
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    height: 22
+                    color: "transparent"
 
-                    RowLayout {
-                        anchors.fill: parent
-                        anchors.leftMargin: 10
-                        anchors.rightMargin: 10
-                        spacing: 10
+                    Text {
+                        anchors.left: parent.left
+                        anchors.leftMargin: 34
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "NAME"
+                        font.family: "Segoe UI, sans-serif"
+                        font.pixelSize: 9
+                        font.weight: 700
+                        color: "#64748B"
+                    }
+
+                    Row {
+                        anchors.right: parent.right
+                        anchors.rightMargin: 12
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 12
 
                         Text {
+                            width: 130
+                            text: "ITEMS / TYPE"
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 9
+                            font.weight: 700
+                            color: "#64748B"
+                            horizontalAlignment: Text.AlignRight
+                        }
+                        Text {
+                            width: 85
+                            text: "SIZE"
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 9
+                            font.weight: 700
+                            color: "#64748B"
+                            horizontalAlignment: Text.AlignRight
+                        }
+                        Text {
+                            width: 140
+                            text: "DATE MODIFIED"
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 9
+                            font.weight: 700
+                            color: "#64748B"
+                            horizontalAlignment: Text.AlignRight
+                        }
+                    }
+
+                    Rectangle {
+                        anchors.bottom: parent.bottom
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        height: 1
+                        color: "#1E2536"
+                    }
+                }
+
+                ListView {
+                    id: explorerListView
+                    anchors.top: listHeader.bottom
+                    anchors.topMargin: 4
+                    anchors.bottom: parent.bottom
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    spacing: 2
+                    model: root.filteredItems
+                    clip: true
+
+                    delegate: Rectangle {
+                        width: explorerListView.width
+                        height: 32
+                        radius: 5
+                        color: listRowMouse.containsMouse ? "#1B2336" : (index % 2 === 0 ? "#111622" : "#0E121B")
+                        border.color: listRowMouse.containsMouse ? "#38BDF8" : "transparent"
+                        border.width: 1
+
+                        Text {
+                            id: rowIcon
+                            anchors.left: parent.left
+                            anchors.leftMargin: 10
+                            anchors.verticalCenter: parent.verticalCenter
                             text: getItemIcon(modelData)
                             font.pixelSize: 14
                         }
 
+                        // Right-side columns (Fixed width, right aligned, strict spacing)
+                        Row {
+                            id: rightCols
+                            anchors.right: parent.right
+                            anchors.rightMargin: 12
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: 12
+
+                            // Files / Child count column
+                            Text {
+                                width: 130
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: {
+                                    if (modelData.is_dir) {
+                                        if (modelData.file_count >= 0) {
+                                            var cnt = modelData.file_count + (modelData.file_count === 1 ? " file" : " files")
+                                            if (modelData.folder_count > 0) {
+                                                cnt += " (" + modelData.folder_count + " dirs)"
+                                            }
+                                            return cnt
+                                        }
+                                        return modelData.child_count + (modelData.child_count === 1 ? " item" : " items")
+                                    }
+                                    return modelData.ext ? modelData.ext.toUpperCase() : "FILE"
+                                }
+                                font.family: "Segoe UI, monospace"
+                                font.pixelSize: 10
+                                font.weight: modelData.is_dir ? 600 : Font.Normal
+                                color: modelData.is_dir ? "#A78BFA" : "#64748B"
+                                horizontalAlignment: Text.AlignRight
+                                elide: Text.ElideRight
+                            }
+
+                            // Size column
+                            Text {
+                                width: 85
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: formatFolderSize(modelData)
+                                font.family: "Segoe UI, monospace"
+                                font.pixelSize: 10
+                                font.weight: (modelData.is_dir && modelData.size >= 0) ? 600 : Font.Normal
+                                color: modelData.is_dir ? (modelData.size >= 0 ? "#38BDF8" : "#818CF8") : "#94A3B8"
+                                horizontalAlignment: Text.AlignRight
+                                elide: Text.ElideRight
+                            }
+
+                            // Date Modified column
+                            Text {
+                                width: 140
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: formatDate(modelData.mtime)
+                                font.family: "Segoe UI, monospace"
+                                font.pixelSize: 10
+                                color: "#64748B"
+                                horizontalAlignment: Text.AlignRight
+                                elide: Text.ElideRight
+                            }
+                        }
+
+                        // Filename fills between icon and right columns
                         Text {
+                            anchors.left: rowIcon.right
+                            anchors.leftMargin: 10
+                            anchors.right: rightCols.left
+                            anchors.rightMargin: 16
+                            anchors.verticalCenter: parent.verticalCenter
                             text: modelData.name || ""
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 11
                             font.weight: modelData.is_dir ? 600 : Font.Normal
                             color: modelData.is_dir ? "#38BDF8" : "#E2E8F0"
                             elide: Text.ElideMiddle
-                            Layout.fillWidth: true
                         }
 
-                        // Files / Child count column
-                        Text {
-                            text: {
+                        MouseArea {
+                            id: listRowMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onDoubleClicked: {
                                 if (modelData.is_dir) {
-                                    if (modelData.file_count >= 0) {
-                                        var cnt = modelData.file_count + (modelData.file_count === 1 ? " file" : " files")
-                                        if (modelData.folder_count > 0) {
-                                            cnt += " (" + modelData.folder_count + " dirs)"
-                                        }
-                                        return cnt
-                                    }
-                                    return modelData.child_count + (modelData.child_count === 1 ? " item" : " items")
-                                }
-                                return modelData.ext ? modelData.ext.toUpperCase() : "FILE"
-                            }
-                            font.family: "Segoe UI, monospace"
-                            font.pixelSize: 10
-                            font.weight: modelData.is_dir ? 600 : Font.Normal
-                            color: modelData.is_dir ? "#A78BFA" : "#64748B"
-                            Layout.preferredWidth: 110
-                            horizontalAlignment: Text.AlignRight
-                        }
-
-                        // Size column
-                        Text {
-                            text: formatFolderSize(modelData)
-                            font.family: "Segoe UI, monospace"
-                            font.pixelSize: 10
-                            font.weight: (modelData.is_dir && modelData.size >= 0) ? 600 : Font.Normal
-                            color: modelData.is_dir ? (modelData.size >= 0 ? "#38BDF8" : "#818CF8") : "#94A3B8"
-                            Layout.preferredWidth: 90
-                            horizontalAlignment: Text.AlignRight
-                        }
-
-                        // Date Modified column
-                        Text {
-                            text: formatDate(modelData.mtime)
-                            font.family: "Segoe UI, sans-serif"
-                            font.pixelSize: 10
-                            color: "#64748B"
-                            Layout.preferredWidth: 120
-                            horizontalAlignment: Text.AlignRight
-                        }
-                    }
-
-                    MouseArea {
-                        id: listRowMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onDoubleClicked: {
-                            if (modelData.is_dir) {
-                                navigateTo(modelData.path)
-                            } else {
-                                var cat = getCategory(modelData.ext)
-                                if (cat === "image" || cat === "video" || cat === "audio") {
-                                    openLightbox(modelData)
-                                } else if (root.bridge && root.bridge.openPathInSystem) {
-                                    root.bridge.openPathInSystem(modelData.path)
-                                }
-                            }
-                        }
-                        onClicked: {
-                            if (modelData.is_dir) {
-                                navigateTo(modelData.path)
-                            } else {
-                                var cat = getCategory(modelData.ext)
-                                if (cat === "image" || cat === "video" || cat === "audio") {
-                                    openLightbox(modelData)
-                                }
-                            }
-                        }
-                        ToolTip.visible: containsMouse
-                        ToolTip.delay: 350
-                        ToolTip.text: {
-                            var tip = (modelData.is_dir ? "📁 " : "📄 ") + (modelData.name || "")
-                            if (modelData.is_dir) {
-                                tip += "\n" + root.formatFolderSubtitle(modelData)
-                                tip += "\n• Click or Double-click to open folder"
-                            } else {
-                                tip += "\nSize: " + root.formatBytes(modelData.size) + "\nModified: " + root.formatDate(modelData.mtime)
-                                var cat = root.getCategory(modelData.ext)
-                                if (cat === "image" || cat === "video" || cat === "audio") {
-                                    tip += "\n• Click or Double-click to preview in Lightbox"
+                                    navigateTo(modelData.path)
                                 } else {
-                                    tip += "\n• Double-click to open in default app"
+                                    var cat = getCategory(modelData.ext)
+                                    if (cat === "image" || cat === "video" || cat === "audio") {
+                                        openLightbox(modelData)
+                                    } else if (root.bridge && root.bridge.openPathInSystem) {
+                                        root.bridge.openPathInSystem(modelData.path)
+                                    }
                                 }
                             }
-                            return tip
+                            onClicked: {
+                                if (modelData.is_dir) {
+                                    navigateTo(modelData.path)
+                                } else {
+                                    var cat = getCategory(modelData.ext)
+                                    if (cat === "image" || cat === "video" || cat === "audio") {
+                                        openLightbox(modelData)
+                                    }
+                                }
+                            }
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 350
+                            ToolTip.text: {
+                                var tip = (modelData.is_dir ? "📁 " : "📄 ") + (modelData.name || "")
+                                if (modelData.is_dir) {
+                                    tip += "\n" + root.formatFolderSubtitle(modelData)
+                                    tip += "\n• Click or Double-click to open folder"
+                                } else {
+                                    tip += "\nSize: " + root.formatBytes(modelData.size) + "\nModified: " + root.formatDate(modelData.mtime)
+                                    var cat = root.getCategory(modelData.ext)
+                                    if (cat === "image" || cat === "video" || cat === "audio") {
+                                        tip += "\n• Click or Double-click to preview in Lightbox"
+                                    } else {
+                                        tip += "\n• Double-click to open in default app"
+                                    }
+                                }
+                                return tip
+                            }
                         }
                     }
                 }

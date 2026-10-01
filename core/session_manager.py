@@ -167,7 +167,8 @@ class SessionManager:
             "scheduler_sweep_retry": True,
             "cookie_watchdog_enabled": True,
             "exact_extensions": "",
-            "saved_custom_extensions": []
+            "saved_custom_extensions": [],
+            "gallery_bookmarks": []
         }
 
         if os.path.exists(self.settings_file):
