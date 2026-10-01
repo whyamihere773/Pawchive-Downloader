@@ -11,6 +11,7 @@ import sys
 import json
 import shutil
 import zipfile
+import tarfile
 import urllib.request
 import subprocess
 import threading
@@ -22,6 +23,81 @@ GITHUB_REPO = "Pawchive-Downloader"
 GITHUB_BRANCH = "main"
 
 USER_AGENT = "Pawchive-Downloader-Updater/1.0"
+
+
+def find_matching_release_asset(assets: list, platform_name: str = sys.platform) -> str:
+    """
+    Selects the best release asset for the current OS platform.
+    - On Linux: prefers archives matching 'linux', 'cachyos', 'arch', 'ubuntu' ending in .tar.gz, .tgz, or .zip.
+    - On Windows: prefers archives matching 'win' or 'windows' ending in .zip or .exe.
+    - On macOS: prefers archives matching 'darwin', 'mac', 'osx' ending in .dmg, .zip, or .tar.gz.
+    """
+    is_win = platform_name == "win32"
+    is_linux = platform_name.startswith("linux")
+    is_mac = platform_name == "darwin"
+
+    candidates = []
+    for asset in assets:
+        name = asset.get("name", "").lower()
+        url = asset.get("browser_download_url", "")
+        if not url:
+            continue
+
+        score = 0
+        if is_linux:
+            if any(k in name for k in ("linux", "cachyos", "ubuntu", "arch", "debian", "x86_64")):
+                score += 15
+            if "win" in name or name.endswith(".exe"):
+                score -= 30
+            if name.endswith((".tar.gz", ".tgz")):
+                score += 8
+            elif name.endswith(".zip"):
+                score += 3
+        elif is_win:
+            if "win" in name or "windows" in name:
+                score += 15
+            if "linux" in name or "darwin" in name or "mac" in name:
+                score -= 30
+            if name.endswith(".zip"):
+                score += 8
+            elif name.endswith(".exe"):
+                score += 5
+        elif is_mac:
+            if any(k in name for k in ("mac", "darwin", "osx")):
+                score += 15
+            if "win" in name or "linux" in name:
+                score -= 30
+            if name.endswith((".dmg", ".zip", ".tar.gz")):
+                score += 8
+
+        if score > 0:
+            candidates.append((score, url))
+
+    if candidates:
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        return candidates[0][1]
+
+    # Fallback matching based strictly on file extensions and safety checks
+    for asset in assets:
+        name = asset.get("name", "").lower()
+        url = asset.get("browser_download_url", "")
+        if is_linux and (name.endswith((".tar.gz", ".tgz")) or ("linux" in name and name.endswith(".zip"))):
+            return url
+        if is_win and (name.endswith(".zip") or name.endswith(".exe")) and "linux" not in name:
+            return url
+
+    return ""
+
+
+def extract_archive(archive_path: str, destination_dir: str):
+    """Safely extracts both .zip and .tar.gz / .tgz / .tar archives."""
+    if tarfile.is_tarfile(archive_path) or archive_path.lower().endswith((".tar.gz", ".tgz", ".tar.bz2", ".tar")):
+        with tarfile.open(archive_path, "r:*") as t:
+            t.extractall(destination_dir)
+    else:
+        with zipfile.ZipFile(archive_path, "r") as z:
+            z.extractall(destination_dir)
+
 
 
 def is_compiled() -> bool:
@@ -135,13 +211,8 @@ def check_for_updates(timeout: int = 8) -> Dict[str, Any]:
         body = data.get("body", "")
         release_url = data.get("html_url", "")
 
-        # Look for zip or exe asset
-        download_url = ""
-        for asset in data.get("assets", []):
-            name = asset.get("name", "").lower()
-            if name.endswith(".zip") or name.endswith(".exe"):
-                download_url = asset.get("browser_download_url", "")
-                break
+        # Select platform-specific release asset (Linux .tar.gz vs Windows .zip)
+        download_url = find_matching_release_asset(data.get("assets", []))
 
         update_available = bool(remote_tag and remote_tag != local_ver)
         return {
@@ -201,7 +272,11 @@ class UpdateDownloader:
         self.update_info = update_info
         self.app_dir = get_app_dir()
         self.temp_dir = os.path.join(self.app_dir, "temp", "update")
-        self.zip_path = os.path.join(self.temp_dir, "update.zip")
+        
+        # Determine archive file extension (.tar.gz vs .zip)
+        ext = ".tar.gz" if ".tar" in download_url.lower() else ".zip"
+        self.archive_path = os.path.join(self.temp_dir, f"update{ext}")
+        self.zip_path = self.archive_path  # Backwards compatibility alias
         self.staging_dir = os.path.join(self.temp_dir, "staging")
 
         self.is_downloading = False
@@ -245,7 +320,7 @@ class UpdateDownloader:
                     start_time = time.time()
                     last_time = start_time
 
-                    with open(self.zip_path, "wb") as out_f:
+                    with open(self.archive_path, "wb") as out_f:
                         while True:
                             if self._cancel_event.is_set():
                                 self.status_text = "Cancelled"
@@ -276,9 +351,8 @@ class UpdateDownloader:
                 if on_progress:
                     on_progress(0.95, self.status_text)
 
-                # Extract zip to staging
-                with zipfile.ZipFile(self.zip_path, "r") as z:
-                    z.extractall(self.staging_dir)
+                # Extract archive (supports both .zip and .tar.gz)
+                extract_archive(self.archive_path, self.staging_dir)
 
                 # If extracted folder has a single root directory (e.g. Pawchive-Downloader-main/),
                 # locate that inner root
@@ -309,21 +383,29 @@ class UpdateDownloader:
 
 def launch_external_updater(update_info: Dict[str, Any]):
     """
-    Launches the standalone updater.exe (or updater.py in source mode)
-    and exits the main application immediately so all files are unlocked.
+    Launches the standalone updater (updater.exe on Windows, updater on Linux)
+    or updater.py in source mode and exits the main application immediately
+    so all files are unlocked.
     """
     app_dir = get_app_dir()
     current_pid = os.getpid()
     download_url = update_info.get("download_url", "")
     version = update_info.get("remote_version", "") or update_info.get("commit_message", "")
 
-    # 1. Locate updater.exe or updater.py
-    updater_exe = os.path.join(app_dir, "updater.exe")
+    # Locate updater binary or updater.py
+    bin_name = "updater.exe" if sys.platform == "win32" else "updater"
+    updater_bin = os.path.join(app_dir, bin_name)
     updater_script = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "updater.py")
 
-    if is_compiled() and os.path.exists(updater_exe):
+    if is_compiled() and os.path.exists(updater_bin):
+        if sys.platform != "win32":
+            try:
+                st = os.stat(updater_bin)
+                os.chmod(updater_bin, st.st_mode | 0o755)
+            except Exception:
+                pass
         cmd = [
-            updater_exe,
+            updater_bin,
             "--target-dir", app_dir,
             "--pid", str(current_pid),
             "--download-url", download_url,
@@ -346,6 +428,7 @@ def launch_external_updater(update_info: Dict[str, Any]):
         subprocess.Popen(cmd, creationflags=creationflags, close_fds=True)
     else:
         subprocess.Popen(cmd, start_new_session=True, close_fds=True)
+
 
     # Terminate the current application immediately
     os._exit(0)

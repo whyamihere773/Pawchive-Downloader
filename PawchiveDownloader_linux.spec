@@ -164,13 +164,62 @@ exe = EXE(
     contents_directory='_internal',
 )
 
+# 2. Companion updater standalone binary (shares _internal directory)
+a_updater = Analysis(
+    ['updater.py'],
+    pathex=[project_root],
+    binaries=[],
+    datas=[],
+    hiddenimports=['tkinter'],
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[
+        'matplotlib', 'scipy', 'pandas', 'unittest', 'pytest', 'IPython', 'notebook'
+    ],
+    win_no_prefer_redirects=False,
+    win_private_assemblies=False,
+    cipher=block_cipher,
+    noarchive=False,
+)
+
+pyz_updater = PYZ(
+    a_updater.pure,
+    a_updater.zipped_data,
+    cipher=block_cipher
+)
+
+exe_updater = EXE(
+    pyz_updater,
+    a_updater.scripts,
+    [],
+    exclude_binaries=True,
+    name='updater',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,
+    console=False,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    contents_directory='_internal',
+)
+
 coll = COLLECT(
     exe,
     a.binaries,
     a.zipfiles,
     a.datas,
+    exe_updater,
+    a_updater.binaries,
+    a_updater.zipfiles,
+    a_updater.datas,
     strip=False,
     upx=False,
     upx_exclude=[],
     name='Pawchive Downloader',
 )
+

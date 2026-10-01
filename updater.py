@@ -10,6 +10,8 @@ import time
 import json
 import shutil
 import zipfile
+import tarfile
+import tempfile
 import argparse
 import subprocess
 import threading
@@ -24,83 +26,80 @@ try:
 except (ImportError, Exception):
     HAS_TKINTER = False
 
-try:
-    from PIL import Image, ImageTk
-    HAS_PIL = True
-except Exception:
-    HAS_PIL = False
+
+def find_matching_release_asset(assets: list, platform_name: str = sys.platform) -> str:
+    """
+    Selects the best release asset for the current OS platform.
+    - On Linux: prefers archives matching 'linux', 'cachyos', 'arch', 'ubuntu' ending in .tar.gz, .tgz, or .zip.
+    - On Windows: prefers archives matching 'win' or 'windows' ending in .zip or .exe.
+    - On macOS: prefers archives matching 'darwin', 'mac', 'osx' ending in .dmg, .zip, or .tar.gz.
+    """
+    is_win = platform_name == "win32"
+    is_linux = platform_name.startswith("linux")
+    is_mac = platform_name == "darwin"
+
+    candidates = []
+    for asset in assets:
+        name = asset.get("name", "").lower()
+        url = asset.get("browser_download_url", "")
+        if not url:
+            continue
+
+        score = 0
+        if is_linux:
+            if any(k in name for k in ("linux", "cachyos", "ubuntu", "arch", "debian", "x86_64")):
+                score += 15
+            if "win" in name or name.endswith(".exe"):
+                score -= 30
+            if name.endswith((".tar.gz", ".tgz")):
+                score += 8
+            elif name.endswith(".zip"):
+                score += 3
+        elif is_win:
+            if "win" in name or "windows" in name:
+                score += 15
+            if "linux" in name or "darwin" in name or "mac" in name:
+                score -= 30
+            if name.endswith(".zip"):
+                score += 8
+            elif name.endswith(".exe"):
+                score += 5
+        elif is_mac:
+            if any(k in name for k in ("mac", "darwin", "osx")):
+                score += 15
+            if "win" in name or "linux" in name:
+                score -= 30
+            if name.endswith((".dmg", ".zip", ".tar.gz")):
+                score += 8
+
+        if score > 0:
+            candidates.append((score, url))
+
+    if candidates:
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        return candidates[0][1]
+
+    # Fallback matching
+    for asset in assets:
+        name = asset.get("name", "").lower()
+        url = asset.get("browser_download_url", "")
+        if is_linux and (name.endswith((".tar.gz", ".tgz")) or ("linux" in name and name.endswith(".zip"))):
+            return url
+        if is_win and (name.endswith(".zip") or name.endswith(".exe")) and "linux" not in name:
+            return url
+
+    return ""
 
 
-def set_dark_title_bar(window):
-    """Enables Windows 10/11 native immersive dark mode on the window frame."""
-    if sys.platform != "win32":
-        return
-    try:
-        import ctypes
-        window.update_idletasks()
-        hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
-        if not hwnd:
-            hwnd = window.winfo_id()
-        value = ctypes.c_int(1)
-        for attr in (20, 19):  # 20 on Win11/modern Win10, 19 on earlier builds
-            res = ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                hwnd, attr, ctypes.byref(value), ctypes.sizeof(value)
-            )
-            if res == 0:
-                break
-    except Exception:
-        pass
+def extract_archive(archive_file: str, dest_dir: str):
+    """Safely extracts both .zip and .tar.gz / .tgz / .tar archives."""
+    if tarfile.is_tarfile(archive_file) or archive_file.lower().endswith((".tar.gz", ".tgz", ".tar.bz2", ".tar")):
+        with tarfile.open(archive_file, "r:*") as tf:
+            tf.extractall(dest_dir)
+    else:
+        with zipfile.ZipFile(archive_file, "r") as zf:
+            zf.extractall(dest_dir)
 
-
-class ModernProgressBar(tk.Canvas):
-    """Smooth, antialiased pill-shaped progress bar built with native Tkinter Canvas."""
-    def __init__(self, parent, bg="#131722", trough="#1A2130", fill="#38BDF8", height=8, radius=4, **kwargs):
-        super().__init__(parent, height=height, bg=bg, highlightthickness=0, bd=0, **kwargs)
-        self.trough_color = trough
-        self.fill_color = fill
-        self.radius = radius
-        self.progress = 0.0
-        self.bind("<Configure>", self._draw)
-
-    def set(self, value):
-        self.progress = max(0.0, min(100.0, float(value)))
-        self._draw()
-
-    def set_color(self, fill):
-        self.fill_color = fill
-        self._draw()
-
-    def _draw(self, event=None):
-        self.delete("all")
-        w = self.winfo_width()
-        h = self.winfo_height()
-        if w <= 4 or h <= 2:
-            return
-        r = min(self.radius, h // 2)
-        # Background pill track
-        self._create_rounded_rect(0, 0, w, h, r, fill=self.trough_color)
-        # Active filled progress pill
-        if self.progress > 0:
-            fill_w = max(r * 2, int(w * (self.progress / 100.0)))
-            fill_w = min(w, fill_w)
-            self._create_rounded_rect(0, 0, fill_w, h, r, fill=self.fill_color)
-
-    def _create_rounded_rect(self, x1, y1, x2, y2, r, fill):
-        points = [
-            x1 + r, y1,
-            x2 - r, y1,
-            x2, y1,
-            x2, y1 + r,
-            x2, y2 - r,
-            x2, y2,
-            x2 - r, y2,
-            x1 + r, y2,
-            x1, y2,
-            x1, y2 - r,
-            x1, y1 + r,
-            x1, y1
-        ]
-        return self.create_polygon(points, fill=fill, smooth=True)
 
 # Files and folders that must NEVER be touched during an update
 PROTECTED_DIRS = {"config", "downloads", "temp", "logs", "venv", ".venv", "__pycache__", ".git"}
@@ -147,7 +146,6 @@ class UpdaterApp:
         self.download_url = download_url
         self.version = version or "Latest"
         self._cancel_requested = False
-        self._icon_img = None
 
         self._setup_window()
         self._setup_styles()
@@ -158,10 +156,9 @@ class UpdaterApp:
 
     def _setup_window(self):
         self.root.title("Pawchive Downloader Updater")
-        self.root.geometry("520x330")
+        self.root.geometry("480x280")
         self.root.resizable(False, False)
-        self.root.configure(bg="#0B0D12")
-        set_dark_title_bar(self.root)
+        self.root.configure(bg="#121214")
 
         # Center on screen
         self.root.update_idletasks()
@@ -183,190 +180,110 @@ class UpdaterApp:
         self.style = ttk.Style(self.root)
         self.style.theme_use("clam")
 
+        # Custom purple progressbar
+        self.style.configure(
+            "Purple.Horizontal.TProgressbar",
+            troughcolor="#1e1e24",
+            background="#a855f7",
+            darkcolor="#9333ea",
+            lightcolor="#c084fc",
+            bordercolor="#1e1e24",
+            thickness=10
+        )
+
     def _create_widgets(self):
-        # Outer Card with crisp border
-        card = tk.Frame(self.root, bg="#131722", bd=0, highlightbackground="#2A303F", highlightthickness=1)
+        # Outer Card
+        card = tk.Frame(self.root, bg="#18181b", bd=1, relief="flat", highlightbackground="#27272a", highlightthickness=1)
         card.pack(fill="both", expand=True, padx=16, pady=16)
 
-        # Top vibrant accent gradient line
-        top_accent = tk.Canvas(card, height=3, bg="#131722", highlightthickness=0, bd=0)
-        top_accent.pack(fill="x", side="top")
-        top_accent.create_rectangle(0, 0, 600, 3, fill="#38BDF8", outline="")
-
-        # Header Frame
-        header_frame = tk.Frame(card, bg="#131722")
-        header_frame.pack(fill="x", padx=22, pady=(16, 12))
-
-        # Brand Icon + Title block
-        brand_frame = tk.Frame(header_frame, bg="#131722")
-        brand_frame.pack(side="left", fill="y")
-
-        icon_path = os.path.join(self.target_dir, "assets", "icon.png")
-        if HAS_PIL and os.path.exists(icon_path):
-            try:
-                pil_img = Image.open(icon_path).resize((36, 36), Image.Resampling.LANCZOS)
-                self._icon_img = ImageTk.PhotoImage(pil_img)
-                icon_lbl = tk.Label(brand_frame, image=self._icon_img, bg="#131722")
-                icon_lbl.pack(side="left", padx=(0, 10))
-            except Exception:
-                pass
-
-        title_col = tk.Frame(brand_frame, bg="#131722")
-        title_col.pack(side="left", fill="y")
+        # Header with Logo & Title
+        header_frame = tk.Frame(card, bg="#18181b")
+        header_frame.pack(fill="x", padx=20, pady=(18, 10))
 
         title_label = tk.Label(
-            title_col,
+            header_frame,
             text="Pawchive Downloader",
-            font=("Segoe UI", 13, "bold"),
-            fg="#F8FAFC",
-            bg="#131722"
+            font=("Segoe UI", 14, "bold"),
+            fg="#f4f4f5",
+            bg="#18181b"
         )
-        title_label.pack(anchor="w")
+        title_label.pack(side="left")
 
-        sub_label = tk.Label(
-            title_col,
-            text="Companion Auto-Updater",
-            font=("Segoe UI", 9),
-            fg="#64748B",
-            bg="#131722"
-        )
-        sub_label.pack(anchor="w", pady=(1, 0))
-
-        # Version Pill Badge
-        badge_frame = tk.Frame(header_frame, bg="#1E293B", highlightbackground="#2A303F", highlightthickness=1)
-        badge_frame.pack(side="right", pady=4)
-
-        v_text = self.version if str(self.version).startswith("v") else f"v{self.version}"
         self.ver_badge = tk.Label(
-            badge_frame,
-            text=v_text,
-            font=("Cascadia Code", 9, "bold"),
-            fg="#38BDF8",
-            bg="#1E293B",
-            padx=10,
-            pady=3
+            header_frame,
+            text=f"Updating to {self.version}",
+            font=("Segoe UI", 9, "bold"),
+            fg="#a855f7",
+            bg="#27272a",
+            padx=8,
+            pady=2
         )
-        self.ver_badge.pack()
+        self.ver_badge.pack(side="right")
 
-        # Divider
-        sep = tk.Frame(card, height=1, bg="#1E2433")
-        sep.pack(fill="x", padx=22, pady=(2, 14))
-
-        # Status & Percentage Header Row
-        status_row = tk.Frame(card, bg="#131722")
-        status_row.pack(fill="x", padx=22, pady=(0, 8))
-
+        # Status text
         self.status_label = tk.Label(
-            status_row,
-            text="Preparing update pipeline...",
-            font=("Segoe UI", 10, "bold"),
-            fg="#F8FAFC",
-            bg="#131722"
-        )
-        self.status_label.pack(side="left")
-
-        self.pct_label = tk.Label(
-            status_row,
-            text="0%",
-            font=("Cascadia Code", 10, "bold"),
-            fg="#38BDF8",
-            bg="#131722"
-        )
-        self.pct_label.pack(side="right")
-
-        # Smooth Canvas Progress Bar
-        self.progress_var = tk.DoubleVar(value=0.0)
-        self.progress_bar = ModernProgressBar(
             card,
-            bg="#131722",
-            trough="#1A2130",
-            fill="#38BDF8",
-            height=8,
-            radius=4
-        )
-        self.progress_bar.pack(fill="x", padx=22, pady=(0, 10))
-
-        # Details / Transfer Statistics Card
-        detail_card = tk.Frame(card, bg="#0E1118", highlightbackground="#1E2433", highlightthickness=1)
-        detail_card.pack(fill="x", padx=22, pady=(0, 16))
-
-        self.detail_label = tk.Label(
-            detail_card,
-            text="● Initializing release synchronization...",
-            font=("Cascadia Code", 8),
-            fg="#94A3B8",
-            bg="#0E1118",
-            padx=10,
-            pady=7,
+            text="Preparing update...",
+            font=("Segoe UI", 10),
+            fg="#e4e4e7",
+            bg="#18181b",
             anchor="w"
         )
-        self.detail_label.pack(fill="x")
+        self.status_label.pack(fill="x", padx=20, pady=(14, 6))
 
-        # Footer Action Area
-        footer_frame = tk.Frame(card, bg="#131722")
-        footer_frame.pack(fill="x", padx=22, pady=(0, 14), side="bottom")
-
-        safe_lbl = tk.Label(
-            footer_frame,
-            text="🔒 Safe zero-lock atomic deployment",
-            font=("Segoe UI", 8),
-            fg="#475569",
-            bg="#131722"
+        # Progress bar
+        self.progress_var = tk.DoubleVar(value=0.0)
+        self.progress_bar = ttk.Progressbar(
+            card,
+            variable=self.progress_var,
+            maximum=100.0,
+            style="Purple.Horizontal.TProgressbar"
         )
-        safe_lbl.pack(side="left", pady=4)
+        self.progress_bar.pack(fill="x", padx=20, pady=(0, 6))
+
+        # Sub-status / Speed details
+        self.detail_label = tk.Label(
+            card,
+            text="Please wait while the update is applied...",
+            font=("Segoe UI", 8),
+            fg="#71717a",
+            bg="#18181b",
+            anchor="w"
+        )
+        self.detail_label.pack(fill="x", padx=20, pady=(0, 16))
+
+        # Footer button area
+        btn_frame = tk.Frame(card, bg="#18181b")
+        btn_frame.pack(fill="x", padx=20, pady=(0, 12))
 
         self.cancel_btn = tk.Button(
-            footer_frame,
+            btn_frame,
             text="Cancel",
-            font=("Segoe UI", 9, "bold"),
-            fg="#94A3B8",
-            bg="#1E2430",
-            activebackground="#283244",
-            activeforeground="#F8FAFC",
+            font=("Segoe UI", 9),
+            fg="#a1a1aa",
+            bg="#27272a",
+            activebackground="#3f3f46",
+            activeforeground="#f4f4f5",
             bd=0,
-            padx=16,
-            pady=5,
+            padx=14,
+            pady=4,
             cursor="hand2",
-            highlightbackground="#2A303F",
-            highlightthickness=1,
-            relief="flat",
             command=self._on_cancel
         )
         self.cancel_btn.pack(side="right")
-
-        def _on_btn_enter(e):
-            if str(self.cancel_btn["state"]) != "disabled":
-                self.cancel_btn.config(bg="#283244", fg="#F8FAFC", highlightbackground="#38BDF8")
-
-        def _on_btn_leave(e):
-            if str(self.cancel_btn["state"]) != "disabled":
-                self.cancel_btn.config(bg="#1E2430", fg="#94A3B8", highlightbackground="#2A303F")
-
-        self.cancel_btn.bind("<Enter>", _on_btn_enter)
-        self.cancel_btn.bind("<Leave>", _on_btn_leave)
 
     def _set_status(self, status: str, detail: str = "", progress: Optional[float] = None):
         def _update():
             self.status_label.config(text=status)
             if detail is not None:
-                d_text = detail
-                if d_text and not d_text.startswith("●"):
-                    d_text = f"● {d_text}"
-                self.detail_label.config(text=d_text)
+                self.detail_label.config(text=detail)
             if progress is not None:
-                p_val = max(0.0, min(100.0, float(progress)))
-                self.progress_var.set(p_val)
-                self.progress_bar.set(p_val)
-                self.pct_label.config(text=f"{int(p_val)}%")
-                if p_val >= 99.5:
-                    self.progress_bar.set_color("#10B981")
-                    self.pct_label.config(fg="#10B981", text="100%")
-                    self.status_label.config(fg="#10B981")
+                self.progress_var.set(progress)
         self.root.after(0, _update)
 
     def _on_cancel(self):
         self._cancel_requested = True
-        self._set_status("Cancelling update...", "Cleaning up temporary files...", progress=0.0)
+        self._set_status("Cancelling update...", "Cleaning up temporary files...")
         self.root.after(1000, self.root.destroy)
 
     def _clean_stale_old_files(self):
@@ -480,61 +397,46 @@ class UpdaterApp:
         """
         def _build():
             dlg = tk.Toplevel(self.root)
-            dlg.title("Pawchive Updater — Action Required")
-            dlg.geometry("500x340")
+            dlg.title("Update could not finish")
+            dlg.geometry("460x290")
             dlg.resizable(False, False)
-            dlg.configure(bg="#0B0D12")
-            set_dark_title_bar(dlg)
+            dlg.configure(bg="#121214")
             dlg.grab_set()  # Modal
             dlg.transient(self.root)
 
             # Center on parent
             dlg.update_idletasks()
-            px = self.root.winfo_x() + (self.root.winfo_width() - 500) // 2
-            py = self.root.winfo_y() + (self.root.winfo_height() - 340) // 2
+            px = self.root.winfo_x() + (self.root.winfo_width()  - 460) // 2
+            py = self.root.winfo_y() + (self.root.winfo_height() - 290) // 2
             dlg.geometry(f"+{px}+{py}")
 
-            card = tk.Frame(dlg, bg="#131722", highlightbackground="#2A303F", highlightthickness=1)
-            card.pack(fill="both", expand=True, padx=16, pady=16)
-
-            # Top warning amber line
-            top_bar = tk.Canvas(card, height=3, bg="#131722", highlightthickness=0, bd=0)
-            top_bar.pack(fill="x", side="top")
-            top_bar.create_rectangle(0, 0, 500, 3, fill="#F59E0B", outline="")
-
-            hdr = tk.Frame(card, bg="#131722")
-            hdr.pack(fill="x", padx=20, pady=(16, 6))
+            card = tk.Frame(dlg, bg="#18181b", highlightbackground="#27272a", highlightthickness=1)
+            card.pack(fill="both", expand=True, padx=14, pady=14)
 
             tk.Label(
-                hdr,
-                text="⚠️ Application Files Still in Use",
-                font=("Segoe UI", 12, "bold"),
-                fg="#F8FAFC", bg="#131722"
-            ).pack(side="left")
-
-            badge = tk.Frame(hdr, bg="#2E1F0A", highlightbackground="#F59E0B", highlightthickness=1)
-            badge.pack(side="right")
-            tk.Label(
-                badge, text=f"{len(failed_files)} locked file(s)",
-                font=("Cascadia Code", 8, "bold"),
-                fg="#F59E0B", bg="#2E1F0A", padx=6, pady=2
-            ).pack()
+                card,
+                text="The app didn't fully close in time",
+                font=("Segoe UI", 11, "bold"),
+                fg="#f4f4f5", bg="#18181b"
+            ).pack(pady=(16, 8))
 
             explanation = (
-                "Windows is holding a lock on old app files — this usually occurs when your "
-                "antivirus is scanning the folder or Windows takes longer to release handles.\n\n"
-                "The update package is already downloaded and verified. Choose how to apply it:"
+                "Windows is still holding on to some of the old app files — "
+                "this usually happens when your antivirus is scanning them or "
+                "Windows is slow releasing them after the app closed.\n\n"
+                "The update has been downloaded and is ready to install. "
+                "You just need to choose how to finish it:"
             )
             tk.Label(
                 card,
                 text=explanation,
                 font=("Segoe UI", 9),
-                fg="#94A3B8", bg="#131722",
-                justify="left", wraplength=440, anchor="w"
-            ).pack(padx=20, pady=(0, 14), fill="x")
+                fg="#a1a1aa", bg="#18181b",
+                justify="left", wraplength=410, anchor="w"
+            ).pack(padx=16, pady=(0, 14), fill="x")
 
-            btn_row = tk.Frame(card, bg="#131722")
-            btn_row.pack(padx=20, fill="x")
+            btn_row = tk.Frame(card, bg="#18181b")
+            btn_row.pack(padx=16, fill="x")
 
             def on_admin():
                 dlg.destroy()
@@ -554,22 +456,21 @@ class UpdaterApp:
             # Primary action
             admin_btn = tk.Button(
                 btn_row,
-                text="⚡ Retry as Administrator  (Recommended)",
+                text="Retry as Administrator  (Recommended)",
                 font=("Segoe UI", 9, "bold"),
-                fg="#FFFFFF", bg="#0284C7",
-                activebackground="#0369A1", activeforeground="#FFFFFF",
-                bd=0, padx=16, pady=8, cursor="hand2",
-                command=on_admin, anchor="w",
-                highlightbackground="#38BDF8", highlightthickness=1
+                fg="#ffffff", bg="#a855f7",
+                activebackground="#9333ea", activeforeground="#ffffff",
+                bd=0, padx=16, pady=7, cursor="hand2",
+                command=on_admin, anchor="w"
             )
-            admin_btn.pack(fill="x", pady=(0, 4))
+            admin_btn.pack(fill="x", pady=(0, 6))
 
             # Hint under primary button
             tk.Label(
                 btn_row,
-                text="Windows will display a standard UAC prompt — click 'Yes' to overwrite locked files.",
+                text="Windows will ask if you want to allow the update — click Yes to continue.",
                 font=("Segoe UI", 8),
-                fg="#64748B", bg="#131722",
+                fg="#52525b", bg="#18181b",
                 anchor="w"
             ).pack(fill="x", pady=(0, 10))
 
@@ -578,11 +479,10 @@ class UpdaterApp:
                 btn_row,
                 text="I'll do it later",
                 font=("Segoe UI", 9),
-                fg="#94A3B8", bg="#1E2430",
-                activebackground="#283244", activeforeground="#F8FAFC",
+                fg="#a1a1aa", bg="#27272a",
+                activebackground="#3f3f46", activeforeground="#f4f4f5",
                 bd=0, padx=16, pady=6, cursor="hand2",
-                command=on_later, anchor="w",
-                highlightbackground="#2A303F", highlightthickness=1
+                command=on_later, anchor="w"
             )
             later_btn.pack(fill="x")
 
@@ -591,7 +491,7 @@ class UpdaterApp:
                 btn_row,
                 text="Run 'updater.exe' from the app folder whenever you're ready.",
                 font=("Segoe UI", 8),
-                fg="#64748B", bg="#131722",
+                fg="#52525b", bg="#18181b",
                 anchor="w"
             ).pack(fill="x", pady=(2, 0))
 
@@ -638,11 +538,12 @@ class UpdaterApp:
             # 2. Prepare directories in temporary directory
             temp_base = tempfile.gettempdir()
             updater_work_dir = os.path.join(temp_base, f"pawchive_update_{int(time.time())}")
-            zip_dest = os.path.join(updater_work_dir, "update.zip")
+            ext = ".tar.gz" if ".tar" in self.download_url.lower() else ".zip"
+            zip_dest = os.path.join(updater_work_dir, f"update{ext}")
             staging_dir = os.path.join(updater_work_dir, "staging")
             os.makedirs(staging_dir, exist_ok=True)
 
-            # 3. Download Release ZIP
+            # 3. Download Release Package
             self._set_status("Connecting to GitHub...", "Resolving release package...", progress=5.0)
             req = urllib.request.Request(self.download_url, headers={"User-Agent": "Pawchive-Updater/1.0"})
 
@@ -679,14 +580,13 @@ class UpdaterApp:
                             detail = f"{mb_done:.1f} MB / {mb_total:.1f} MB • {speed_mb:.1f} MB/s • {eta_str}"
                             self._set_status(status, detail, progress=5.0 + (pct * 0.75))
 
-            # 4. Extract Package
+            # 4. Extract Package (supports both .zip and .tar.gz)
             self.root.after(0, lambda: self.cancel_btn.config(state="disabled"))
             self._set_status("Extracting update package...", "Verifying files...", progress=82.0)
 
-            with zipfile.ZipFile(zip_dest, "r") as zf:
-                zf.extractall(staging_dir)
+            extract_archive(zip_dest, staging_dir)
 
-            # Locate root directory inside zip if nested (zip has a single root folder)
+            # Locate root directory inside zip/tar if nested
             stage_root = staging_dir
             entries = [os.path.join(staging_dir, e) for e in os.listdir(staging_dir)]
             if len(entries) == 1 and os.path.isdir(entries[0]):
@@ -741,10 +641,21 @@ class UpdaterApp:
             self._set_status("Finalizing update...", f"Installed {copied_count} files successfully.", progress=98.0)
             time.sleep(0.5)
 
-            # 7. Clean up temporary work directory
+            # Clean up temporary work directory
             shutil.rmtree(updater_work_dir, ignore_errors=True)
 
-            # 7. Relaunch Application
+            # Restore execution bits on Linux for executables
+            if sys.platform != "win32":
+                for bin_name in ["pawchive", "updater", "7za", "yt-dlp"]:
+                    bp = os.path.join(self.target_dir, bin_name)
+                    if os.path.exists(bp):
+                        try:
+                            st = os.stat(bp)
+                            os.chmod(bp, st.st_mode | 0o755)
+                        except Exception:
+                            pass
+
+            # 8. Relaunch Application
             self._set_status("Update complete!", "Relaunching Pawchive Downloader...", progress=100.0)
             time.sleep(0.8)
 
@@ -759,13 +670,15 @@ class UpdaterApp:
                             exe_path = os.path.join(self.target_dir, f)
                             break
             else:
-                cand = os.path.join(self.target_dir, "Pawchive Downloader")
-                if os.path.exists(cand) and os.access(cand, os.X_OK):
-                    exe_path = cand
-                else:
+                for name in ["pawchive", "Pawchive Downloader"]:
+                    cand = os.path.join(self.target_dir, name)
+                    if os.path.exists(cand):
+                        exe_path = cand
+                        break
+                if not exe_path:
                     for f in os.listdir(self.target_dir):
                         p = os.path.join(self.target_dir, f)
-                        if os.path.isfile(p) and os.access(p, os.X_OK) and "updater" not in f.lower() and not f.endswith(".sh"):
+                        if os.path.isfile(p) and "updater" not in f.lower() and not f.endswith(".sh"):
                             exe_path = p
                             break
 
@@ -775,6 +688,7 @@ class UpdaterApp:
                 main_py = os.path.join(self.target_dir, "main.py")
                 if os.path.exists(main_py):
                     subprocess.Popen([sys.executable, main_py], cwd=self.target_dir)
+
 
             self.root.after(500, self.root.destroy)
 
@@ -797,7 +711,8 @@ def run_headless_update(target_dir: str, pid: int, download_url: str, version: s
 
     temp_base = tempfile.gettempdir()
     updater_work_dir = os.path.join(temp_base, f"pawchive_update_{int(time.time())}")
-    zip_dest = os.path.join(updater_work_dir, "update.zip")
+    ext = ".tar.gz" if ".tar" in download_url.lower() else ".zip"
+    zip_dest = os.path.join(updater_work_dir, f"update{ext}")
     staging_dir = os.path.join(updater_work_dir, "staging")
     os.makedirs(staging_dir, exist_ok=True)
 
@@ -808,8 +723,7 @@ def run_headless_update(target_dir: str, pid: int, download_url: str, version: s
             shutil.copyfileobj(resp, out_f)
 
         print("[*] Extracting update package...")
-        with zipfile.ZipFile(zip_dest, "r") as zf:
-            zf.extractall(staging_dir)
+        extract_archive(zip_dest, staging_dir)
 
         stage_root = staging_dir
         entries = [os.path.join(staging_dir, e) for e in os.listdir(staging_dir)]
@@ -840,6 +754,17 @@ def run_headless_update(target_dir: str, pid: int, download_url: str, version: s
         print(f"[+] Update complete! Installed {copied} files.")
         shutil.rmtree(updater_work_dir, ignore_errors=True)
 
+        # Restore Linux permissions
+        if sys.platform != "win32":
+            for bin_name in ["pawchive", "updater", "7za", "yt-dlp"]:
+                bp = os.path.join(target_dir, bin_name)
+                if os.path.exists(bp):
+                    try:
+                        st = os.stat(bp)
+                        os.chmod(bp, st.st_mode | 0o755)
+                    except Exception:
+                        pass
+
         # Relaunch
         exe_path = ""
         if sys.platform == "win32":
@@ -847,9 +772,11 @@ def run_headless_update(target_dir: str, pid: int, download_url: str, version: s
             if os.path.exists(cand):
                 exe_path = cand
         else:
-            cand = os.path.join(target_dir, "Pawchive Downloader")
-            if os.path.exists(cand) and os.access(cand, os.X_OK):
-                exe_path = cand
+            for name in ["pawchive", "Pawchive Downloader"]:
+                cand = os.path.join(target_dir, name)
+                if os.path.exists(cand):
+                    exe_path = cand
+                    break
 
         if exe_path and os.path.exists(exe_path):
             print(f"[*] Relaunching {exe_path}...")
@@ -868,7 +795,7 @@ def main():
     parser = argparse.ArgumentParser(description="Pawchive Downloader Standalone Companion Updater")
     parser.add_argument("--target-dir", default="", help="Installation root of Pawchive Downloader")
     parser.add_argument("--pid", type=int, default=0, help="PID of the running main app to wait for")
-    parser.add_argument("--download-url", default="", help="Direct download URL for the update zip")
+    parser.add_argument("--download-url", default="", help="Direct download URL for the update package")
     parser.add_argument("--version", default="", help="Target version string to display")
     parser.add_argument("--temp-runner", action="store_true", help="Internal flag: running from temp location")
 
@@ -893,13 +820,10 @@ def main():
                 data = json.loads(resp.read().decode("utf-8"))
                 if not version:
                     version = data.get("tag_name", "")
-                for asset in data.get("assets", []):
-                    name = asset.get("name", "").lower()
-                    if name.endswith(".zip"):
-                        download_url = asset.get("browser_download_url", "")
-                        break
+                download_url = find_matching_release_asset(data.get("assets", []))
         except Exception:
             pass
+
 
     if not download_url:
         print("❌ Error: No download package URL provided and could not query GitHub releases.")
