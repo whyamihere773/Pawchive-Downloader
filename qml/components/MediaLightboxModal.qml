@@ -389,8 +389,8 @@ Item {
                 id: imageFlickable
                 visible: root.isImage
                 anchors.fill: parent
-                contentWidth: Math.max(parent.width, imgViewer.width * root.zoomFactor)
-                contentHeight: Math.max(parent.height, imgViewer.height * root.zoomFactor)
+                contentWidth: imageFlickable.width * Math.max(1.0, root.zoomFactor)
+                contentHeight: imageFlickable.height * Math.max(1.0, root.zoomFactor)
                 clip: true
 
                 Image {
@@ -399,8 +399,8 @@ Item {
                     source: root.isImage ? root.toUrl(root.itemPath) : ""
                     asynchronous: true
                     fillMode: Image.PreserveAspectFit
-                    width: parent.width
-                    height: parent.height
+                    width: imageFlickable.width
+                    height: imageFlickable.height
                     scale: root.zoomFactor
 
                     Behavior on scale {

@@ -6472,6 +6472,9 @@ class AppBridge(QObject):
             cleaned_title = cleaned_title.strip(" -_") or base_name
 
             working_pattern = pattern if pattern else "{name}.{ext}"
+            if not raw_ext:
+                working_pattern = working_pattern.replace(".{ext}", "").replace("{ext}", "")
+
             new_name = working_pattern
             new_name = new_name.replace("{name}", base_name)
             new_name = new_name.replace("{ext}", raw_ext)
@@ -6500,7 +6503,7 @@ class AppBridge(QObject):
                 n_base, n_ext = os.path.splitext(new_name)
                 new_name = f"{n_base.title()}{n_ext.lower()}"
 
-            sanitized_name = re.sub(r'[<>:"/\\|?*]', '_', new_name).strip()
+            sanitized_name = re.sub(r'[<>:"/\\|?*]', '_', new_name).strip(" .")
             if not sanitized_name:
                 sanitized_name = filename
 
@@ -6509,7 +6512,7 @@ class AppBridge(QObject):
             status = "ready"
             err = ""
 
-            if sanitized_name == filename:
+            if sanitized_name == filename or os.path.normcase(filepath) == os.path.normcase(new_filepath):
                 status = "unchanged"
             elif sanitized_name.lower() in new_names_seen:
                 status = "collision"

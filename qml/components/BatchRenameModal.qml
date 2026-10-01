@@ -21,6 +21,7 @@ Item {
     property string prefixText: ""
     property string suffixText: ""
     property string caseMode: "keep"
+    property bool filesOnly: true
 
     // Live preview plan
     property var previewPlan: []
@@ -40,6 +41,7 @@ Item {
         prefixText = ""
         suffixText = ""
         caseMode = "keep"
+        filesOnly = true
         isOpen = true
         updatePreview()
     }
@@ -56,9 +58,15 @@ Item {
 
     function updatePreview() {
         if (!isOpen || !bridge || !bridge.previewBatchRename) return
+        var filteredList = targetFiles || []
+        if (filesOnly) {
+            filteredList = filteredList.filter(function(it) {
+                return it && !it.is_dir
+            })
+        }
         var plan = bridge.previewBatchRename(
             folderPath,
-            targetFiles,
+            filteredList,
             renamePattern,
             findText,
             replaceText,
@@ -158,151 +166,104 @@ Item {
 
             Rectangle { Layout.fillWidth: true; height: 1; color: "#1F283B" }
 
-            // Pattern & Variable Tokens
-            ColumnLayout {
-                Layout.fillWidth: true
-                spacing: 6
-
-                Text {
-                    text: "Renaming Pattern:"
-                    font.family: "Segoe UI, sans-serif"
-                    font.pixelSize: 11
-                    font.weight: 600
-                    color: "#E2E8F0"
-                }
-
-                TextField {
-                    id: patternField
-                    Layout.fillWidth: true
-                    text: root.renamePattern
-                    placeholderText: "e.g. {artist} - {title} ({post_id}).{ext}"
-                    font.family: "Segoe UI, monospace"
-                    font.pixelSize: 12
-                    color: "#F8FAFC"
-                    background: Rectangle {
-                        color: "#0B0E16"
-                        radius: 6
-                        border.color: patternField.activeFocus ? "#38BDF8" : "#273349"
-                        border.width: 1
-                    }
-                    onTextEdited: {
-                        root.renamePattern = text
-                        root.updatePreview()
-                    }
-                }
-
-                // Quick insertion token chips
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 6
-
-                    Text { text: "Insert Token:"; font.pixelSize: 10; color: "#64748B" }
-
-                    Repeater {
-                        model: [
-                            { label: "{name}", desc: "Base filename" },
-                            { label: "{ext}", desc: "Extension" },
-                            { label: "{artist}", desc: "Artist name" },
-                            { label: "{title}", desc: "Clean title" },
-                            { label: "{post_id}", desc: "Post ID" },
-                            { label: "{date}", desc: "Date (YYYY-MM-DD)" },
-                            { label: "{0index}", desc: "Two-digit 01.." },
-                            { label: "{index}", desc: "Sequential 1.." }
-                        ]
-                        delegate: Rectangle {
-                            implicitHeight: 22
-                            implicitWidth: chipTxt.implicitWidth + 12
-                            radius: 4
-                            color: chipMouse.containsMouse ? "#2A364E" : "#171F2F"
-                            border.color: chipMouse.containsMouse ? "#38BDF8" : "#2B3852"
-                            border.width: 1
-
-                            Text {
-                                id: chipTxt
-                                anchors.centerIn: parent
-                                text: modelData.label
-                                font.family: "Segoe UI, monospace"
-                                font.pixelSize: 10
-                                font.weight: 600
-                                color: "#38BDF8"
-                            }
-                            MouseArea {
-                                id: chipMouse
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: insertToken(modelData.label)
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Find & Replace + Prefix/Suffix Row
+            // Unified Single-Row Controls Bar
             RowLayout {
                 Layout.fillWidth: true
-                spacing: 10
+                spacing: 8
 
-                // Find & Replace
+                // 1. Renaming Pattern
                 ColumnLayout {
                     Layout.fillWidth: true
-                    spacing: 4
-                    Text { text: "Find & Replace:"; font.pixelSize: 10; font.weight: 600; color: "#94A3B8" }
-                    RowLayout {
+                    Layout.preferredWidth: 200
+                    spacing: 3
+                    Text { text: "Pattern:"; font.pixelSize: 10; font.weight: 600; color: "#38BDF8" }
+                    TextField {
+                        id: patternField
                         Layout.fillWidth: true
-                        spacing: 6
-                        TextField {
-                            Layout.fillWidth: true
-                            placeholderText: "Find text..."
-                            font.pixelSize: 11
-                            color: "#F8FAFC"
-                            background: Rectangle { color: "#0B0E16"; radius: 5; border.color: "#273349"; border.width: 1 }
-                            onTextEdited: { root.findText = text; root.updatePreview() }
+                        text: root.renamePattern
+                        placeholderText: "{name}.{ext}"
+                        font.family: "Segoe UI, monospace"
+                        font.pixelSize: 11
+                        color: "#F8FAFC"
+                        background: Rectangle {
+                            color: "#0B0E16"
+                            radius: 5
+                            border.color: patternField.activeFocus ? "#38BDF8" : "#273349"
+                            border.width: 1
                         }
-                        TextField {
-                            Layout.fillWidth: true
-                            placeholderText: "Replace with..."
-                            font.pixelSize: 11
-                            color: "#F8FAFC"
-                            background: Rectangle { color: "#0B0E16"; radius: 5; border.color: "#273349"; border.width: 1 }
-                            onTextEdited: { root.replaceText = text; root.updatePreview() }
+                        onTextEdited: {
+                            root.renamePattern = text
+                            root.updatePreview()
                         }
                     }
                 }
 
-                // Prefix & Suffix
+                // 2. Find
                 ColumnLayout {
-                    Layout.fillWidth: true
-                    spacing: 4
-                    Text { text: "Prefix & Suffix:"; font.pixelSize: 10; font.weight: 600; color: "#94A3B8" }
-                    RowLayout {
+                    Layout.preferredWidth: 95
+                    spacing: 3
+                    Text { text: "Find:"; font.pixelSize: 10; font.weight: 600; color: "#94A3B8" }
+                    TextField {
                         Layout.fillWidth: true
-                        spacing: 6
-                        TextField {
-                            Layout.fillWidth: true
-                            placeholderText: "Prefix..."
-                            font.pixelSize: 11
-                            color: "#F8FAFC"
-                            background: Rectangle { color: "#0B0E16"; radius: 5; border.color: "#273349"; border.width: 1 }
-                            onTextEdited: { root.prefixText = text; root.updatePreview() }
-                        }
-                        TextField {
-                            Layout.fillWidth: true
-                            placeholderText: "Suffix..."
-                            font.pixelSize: 11
-                            color: "#F8FAFC"
-                            background: Rectangle { color: "#0B0E16"; radius: 5; border.color: "#273349"; border.width: 1 }
-                            onTextEdited: { root.suffixText = text; root.updatePreview() }
-                        }
+                        placeholderText: "Find text..."
+                        font.pixelSize: 11
+                        color: "#F8FAFC"
+                        background: Rectangle { color: "#0B0E16"; radius: 5; border.color: "#273349"; border.width: 1 }
+                        onTextEdited: { root.findText = text; root.updatePreview() }
                     }
                 }
 
-                // Case Mode
+                // 3. Replace
                 ColumnLayout {
-                    spacing: 4
+                    Layout.preferredWidth: 95
+                    spacing: 3
+                    Text { text: "Replace:"; font.pixelSize: 10; font.weight: 600; color: "#94A3B8" }
+                    TextField {
+                        Layout.fillWidth: true
+                        placeholderText: "Replace..."
+                        font.pixelSize: 11
+                        color: "#F8FAFC"
+                        background: Rectangle { color: "#0B0E16"; radius: 5; border.color: "#273349"; border.width: 1 }
+                        onTextEdited: { root.replaceText = text; root.updatePreview() }
+                    }
+                }
+
+                // 4. Prefix
+                ColumnLayout {
+                    Layout.preferredWidth: 80
+                    spacing: 3
+                    Text { text: "Prefix:"; font.pixelSize: 10; font.weight: 600; color: "#94A3B8" }
+                    TextField {
+                        Layout.fillWidth: true
+                        placeholderText: "Prefix..."
+                        font.pixelSize: 11
+                        color: "#F8FAFC"
+                        background: Rectangle { color: "#0B0E16"; radius: 5; border.color: "#273349"; border.width: 1 }
+                        onTextEdited: { root.prefixText = text; root.updatePreview() }
+                    }
+                }
+
+                // 5. Suffix
+                ColumnLayout {
+                    Layout.preferredWidth: 80
+                    spacing: 3
+                    Text { text: "Suffix:"; font.pixelSize: 10; font.weight: 600; color: "#94A3B8" }
+                    TextField {
+                        Layout.fillWidth: true
+                        placeholderText: "Suffix..."
+                        font.pixelSize: 11
+                        color: "#F8FAFC"
+                        background: Rectangle { color: "#0B0E16"; radius: 5; border.color: "#273349"; border.width: 1 }
+                        onTextEdited: { root.suffixText = text; root.updatePreview() }
+                    }
+                }
+
+                // 6. Case Mode
+                ColumnLayout {
+                    spacing: 3
                     Text { text: "Case Mode:"; font.pixelSize: 10; font.weight: 600; color: "#94A3B8" }
                     Row {
-                        spacing: 4
+                        spacing: 2
                         Repeater {
                             model: [
                                 { mode: "keep", label: "Keep" },
@@ -312,8 +273,8 @@ Item {
                             ]
                             delegate: Rectangle {
                                 implicitHeight: 28
-                                implicitWidth: cmText.implicitWidth + 12
-                                radius: 5
+                                implicitWidth: cmText.implicitWidth + 10
+                                radius: 4
                                 color: root.caseMode === modelData.mode ? "#202E47" : "#0E131E"
                                 border.color: root.caseMode === modelData.mode ? "#38BDF8" : "#232F45"
                                 border.width: 1
@@ -334,6 +295,89 @@ Item {
                                         root.updatePreview()
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Quick Insertion Tokens & Files-Only Toggle
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 6
+
+                Text { text: "Tokens:"; font.pixelSize: 10; font.weight: 600; color: "#64748B" }
+
+                Repeater {
+                    model: [
+                        { label: "{name}" },
+                        { label: "{ext}" },
+                        { label: "{artist}" },
+                        { label: "{title}" },
+                        { label: "{post_id}" },
+                        { label: "{date}" },
+                        { label: "{0index}" },
+                        { label: "{index}" }
+                    ]
+                    delegate: Rectangle {
+                        implicitHeight: 20
+                        implicitWidth: chipTxt.implicitWidth + 10
+                        radius: 4
+                        color: chipMouse.containsMouse ? "#2A364E" : "#171F2F"
+                        border.color: chipMouse.containsMouse ? "#38BDF8" : "#2B3852"
+                        border.width: 1
+
+                        Text {
+                            id: chipTxt
+                            anchors.centerIn: parent
+                            text: modelData.label
+                            font.family: "Segoe UI, monospace"
+                            font.pixelSize: 10
+                            font.weight: 600
+                            color: "#38BDF8"
+                        }
+                        MouseArea {
+                            id: chipMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: insertToken(modelData.label)
+                        }
+                    }
+                }
+
+                Item { Layout.fillWidth: true }
+
+                // Checkbox: only rename files (ignore subfolders)
+                RowLayout {
+                    spacing: 5
+                    Layout.alignment: Qt.AlignVCenter
+
+                    Rectangle {
+                        width: 14; height: 14; radius: 3
+                        color: root.filesOnly ? "#38BDF8" : "#161D2B"
+                        border.color: "#374151"; border.width: 1
+                        Text { visible: root.filesOnly; anchors.centerIn: parent; text: "✓"; font.pixelSize: 9; font.weight: Font.Bold; color: "#0B0E14" }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                root.filesOnly = !root.filesOnly
+                                root.updatePreview()
+                            }
+                        }
+                    }
+                    Text {
+                        text: "Files only (skip folders)"
+                        font.family: "Segoe UI, sans-serif"
+                        font.pixelSize: 10
+                        color: "#94A3B8"
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                root.filesOnly = !root.filesOnly
+                                root.updatePreview()
                             }
                         }
                     }

@@ -360,10 +360,10 @@ Item {
                 Item { Layout.fillWidth: true }
 
                 // Recursive Checkbox (for tabs 1 & 2)
-                Row {
+                RowLayout {
                     visible: root.activeTab !== "sort"
                     spacing: 6
-                    anchors.verticalCenter: parent.verticalCenter
+                    Layout.alignment: Qt.AlignVCenter
 
                     Rectangle {
                         width: 16; height: 16; radius: 3
