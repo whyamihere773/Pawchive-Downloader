@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import "../components"
 
 Item {
     id: root
@@ -20,7 +21,6 @@ Item {
     property string activeCategory: "all"
     property string searchFilter: ""
     property string viewMode: "grid" // "grid" | "list"
-    property bool heroCollapsed: false
     property bool pathEditMode: false
     property bool isLoading: false
 
@@ -129,6 +129,26 @@ Item {
         if (changed) {
             applyFilter()
         }
+    }
+
+    function getAllMediaItems() {
+        var media = []
+        var list = root.filteredItems || []
+        for (var i = 0; i < list.length; i++) {
+            var it = list[i]
+            if (!it.is_dir) {
+                var cat = getCategory(it.ext)
+                if (cat === "image" || cat === "video" || cat === "audio") {
+                    media.push(it)
+                }
+            }
+        }
+        return media
+    }
+
+    function openLightbox(item) {
+        var allMedia = getAllMediaItems()
+        lightboxModal.open(item, allMedia)
     }
 
     // ── Directory Navigation ────────────────────────────────────────────────
@@ -352,6 +372,72 @@ Item {
                 }
             }
 
+            // Action: Smart Batch Renamer
+            Rectangle {
+                implicitHeight: 30
+                implicitWidth: renameBtnRow.implicitWidth + 16
+                radius: 6
+                color: renameBtnMouse.containsMouse ? "#1E293B" : "#141720"
+                border.color: renameBtnMouse.containsMouse ? "#F59E0B" : "#2E384D"
+                border.width: 1
+
+                Row {
+                    id: renameBtnRow
+                    anchors.centerIn: parent
+                    spacing: 6
+                    Text { text: "🏷️"; font.pixelSize: 12 }
+                    Text {
+                        text: "Batch Rename"
+                        font.family: "Segoe UI, sans-serif"
+                        font.pixelSize: 11
+                        font.weight: 600
+                        color: "#E2E8F0"
+                    }
+                }
+                MouseArea {
+                    id: renameBtnMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                        batchRenameModal.open(root.currentPath, root.filteredItems)
+                    }
+                }
+            }
+
+            // Action: Cleaner & Deduplicator
+            Rectangle {
+                implicitHeight: 30
+                implicitWidth: cleanBtnRow.implicitWidth + 16
+                radius: 6
+                color: cleanBtnMouse.containsMouse ? "#1E293B" : "#141720"
+                border.color: cleanBtnMouse.containsMouse ? "#10B981" : "#2E384D"
+                border.width: 1
+
+                Row {
+                    id: cleanBtnRow
+                    anchors.centerIn: parent
+                    spacing: 6
+                    Text { text: "🧹"; font.pixelSize: 12 }
+                    Text {
+                        text: "Clean & Organize"
+                        font.family: "Segoe UI, sans-serif"
+                        font.pixelSize: 11
+                        font.weight: 600
+                        color: "#E2E8F0"
+                    }
+                }
+                MouseArea {
+                    id: cleanBtnMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                        galleryCleanerModal.open(root.currentPath)
+                    }
+                }
+            }
+
             // View Mode Toggle (Grid vs List)
             Rectangle {
                 implicitHeight: 30
@@ -397,224 +483,7 @@ Item {
             }
         }
 
-        // 2. HERO ANNOUNCEMENT CARD
-        Rectangle {
-            id: heroCard
-            Layout.fillWidth: true
-            implicitHeight: root.heroCollapsed ? 38 : heroColumn.implicitHeight + 24
-            radius: 10
-            clip: true
-
-            gradient: Gradient {
-                orientation: Gradient.Horizontal
-                GradientStop { position: 0.0; color: "#161928" }
-                GradientStop { position: 0.5; color: "#1E1933" }
-                GradientStop { position: 1.0; color: "#151B2A" }
-            }
-            border.color: "#6366F1"
-            border.width: 1
-
-            Behavior on implicitHeight {
-                NumberAnimation { duration: 240; easing.type: Easing.OutCubic }
-            }
-
-            ColumnLayout {
-                id: heroColumn
-                anchors.fill: parent
-                anchors.margins: 14
-                spacing: 10
-
-                // Header inside Hero
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 10
-
-                    Rectangle {
-                        implicitHeight: 20
-                        implicitWidth: devBadgeText.implicitWidth + 12
-                        radius: 10
-                        color: "#4F46E5"
-                        Text {
-                            id: devBadgeText
-                            anchors.centerIn: parent
-                            text: "✨ IN ACTIVE DEVELOPMENT"
-                            font.family: "Segoe UI, sans-serif"
-                            font.pixelSize: 9
-                            font.weight: Font.Bold
-                            color: "#FFFFFF"
-                        }
-                    }
-
-                    Text {
-                        text: "An integrated File Explorer & Media Gallery!"
-                        font.family: "Segoe UI, Inter, sans-serif"
-                        font.pixelSize: 14
-                        font.weight: 700
-                        color: "#FFFFFF"
-                        Layout.fillWidth: true
-                    }
-
-                    // Toggle collapse
-                    Rectangle {
-                        implicitHeight: 22
-                        implicitWidth: collapseRow.implicitWidth + 10
-                        radius: 4
-                        color: collapseMouse.containsMouse ? "#2A2E44" : "transparent"
-
-                        Row {
-                            id: collapseRow
-                            anchors.centerIn: parent
-                            spacing: 4
-                            Text {
-                                text: root.heroCollapsed ? "Expand ▾" : "Collapse ▴"
-                                font.family: "Segoe UI, sans-serif"
-                                font.pixelSize: 10
-                                color: "#94A3B8"
-                            }
-                        }
-                        MouseArea {
-                            id: collapseMouse
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: root.heroCollapsed = !root.heroCollapsed
-                        }
-                    }
-                }
-
-                // Subtitle description (Requested text)
-                Text {
-                    visible: !root.heroCollapsed
-                    text: "Soon, you’ll be able to browse downloads, preview media directly inside Pawchive, and organize your collection with automation tools, batch renaming, and more."
-                    font.family: "Segoe UI, sans-serif"
-                    font.pixelSize: 12
-                    color: "#CBD5E1"
-                    wrapMode: Text.WordWrap
-                    Layout.fillWidth: true
-                }
-
-                // Upcoming Feature Modules Grid
-                RowLayout {
-                    visible: !root.heroCollapsed
-                    Layout.fillWidth: true
-                    spacing: 8
-
-                    // Pillar 1: High Performance
-                    Rectangle {
-                        Layout.fillWidth: true
-                        implicitHeight: 64
-                        radius: 6
-                        color: "#0F1320"
-                        border.color: "#27314D"
-                        border.width: 1
-
-                        ColumnLayout {
-                            anchors.fill: parent
-                            anchors.margins: 8
-                            spacing: 2
-                            Row {
-                                spacing: 6
-                                Text { text: "⚡"; font.pixelSize: 12 }
-                                Text { text: "Extreme Performance"; font.bold: true; font.pixelSize: 11; color: "#38BDF8" }
-                            }
-                            Text {
-                                text: "Engineered for millions of files with lazy on-demand directory traversal and zero memory overhead."
-                                font.pixelSize: 9
-                                color: "#94A3B8"
-                                wrapMode: Text.WordWrap
-                                Layout.fillWidth: true
-                            }
-                        }
-                    }
-
-                    // Pillar 2: Media Gallery & Lightbox
-                    Rectangle {
-                        Layout.fillWidth: true
-                        implicitHeight: 64
-                        radius: 6
-                        color: "#0F1320"
-                        border.color: "#27314D"
-                        border.width: 1
-
-                        ColumnLayout {
-                            anchors.fill: parent
-                            anchors.margins: 8
-                            spacing: 2
-                            Row {
-                                spacing: 6
-                                Text { text: "🖼️"; font.pixelSize: 12 }
-                                Text { text: "Media Lightbox"; font.bold: true; font.pixelSize: 11; color: "#EC4899" }
-                            }
-                            Text {
-                                text: "Direct inline previews for images, animated GIFs, audio, and videos without opening external apps."
-                                font.pixelSize: 9
-                                color: "#94A3B8"
-                                wrapMode: Text.WordWrap
-                                Layout.fillWidth: true
-                            }
-                        }
-                    }
-
-                    // Pillar 3: Batch Renaming
-                    Rectangle {
-                        Layout.fillWidth: true
-                        implicitHeight: 64
-                        radius: 6
-                        color: "#0F1320"
-                        border.color: "#27314D"
-                        border.width: 1
-
-                        ColumnLayout {
-                            anchors.fill: parent
-                            anchors.margins: 8
-                            spacing: 2
-                            Row {
-                                spacing: 6
-                                Text { text: "🏷️"; font.pixelSize: 12 }
-                                Text { text: "Smart Batch Renaming"; font.bold: true; font.pixelSize: 11; color: "#F59E0B" }
-                            }
-                            Text {
-                                text: "Rule-based bulk file renaming using metadata variables ({artist}, {post_id}, {title}, {date})."
-                                font.pixelSize: 9
-                                color: "#94A3B8"
-                                wrapMode: Text.WordWrap
-                                Layout.fillWidth: true
-                            }
-                        }
-                    }
-
-                    // Pillar 4: Collection Organizer
-                    Rectangle {
-                        Layout.fillWidth: true
-                        implicitHeight: 64
-                        radius: 6
-                        color: "#0F1320"
-                        border.color: "#27314D"
-                        border.width: 1
-
-                        ColumnLayout {
-                            anchors.fill: parent
-                            anchors.margins: 8
-                            spacing: 2
-                            Row {
-                                spacing: 6
-                                Text { text: "🧹"; font.pixelSize: 12 }
-                                Text { text: "Cleaner & Deduplicator"; font.bold: true; font.pixelSize: 11; color: "#10B981" }
-                            }
-                            Text {
-                                text: "Identifies duplicate downloads, broken zero-byte files, and auto-sorts folders into clean hierarchies."
-                                font.pixelSize: 9
-                                color: "#94A3B8"
-                                wrapMode: Text.WordWrap
-                                Layout.fillWidth: true
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // 3. BREADCRUMBS & DRIVE SELECTOR BAR
+        // 2. BREADCRUMBS & DRIVE SELECTOR BAR
         Rectangle {
             Layout.fillWidth: true
             implicitHeight: 38
@@ -1028,7 +897,10 @@ Item {
                             if (modelData.is_dir) {
                                 navigateTo(modelData.path)
                             } else {
-                                if (root.bridge && root.bridge.openPathInSystem) {
+                                var cat = getCategory(modelData.ext)
+                                if (cat === "image" || cat === "video" || cat === "audio") {
+                                    openLightbox(modelData)
+                                } else if (root.bridge && root.bridge.openPathInSystem) {
                                     root.bridge.openPathInSystem(modelData.path)
                                 }
                             }
@@ -1036,6 +908,11 @@ Item {
                         onClicked: {
                             if (modelData.is_dir) {
                                 navigateTo(modelData.path)
+                            } else {
+                                var cat = getCategory(modelData.ext)
+                                if (cat === "image" || cat === "video" || cat === "audio") {
+                                    openLightbox(modelData)
+                                }
                             }
                         }
                     }
@@ -1135,7 +1012,10 @@ Item {
                             if (modelData.is_dir) {
                                 navigateTo(modelData.path)
                             } else {
-                                if (root.bridge && root.bridge.openPathInSystem) {
+                                var cat = getCategory(modelData.ext)
+                                if (cat === "image" || cat === "video" || cat === "audio") {
+                                    openLightbox(modelData)
+                                } else if (root.bridge && root.bridge.openPathInSystem) {
                                     root.bridge.openPathInSystem(modelData.path)
                                 }
                             }
@@ -1143,6 +1023,11 @@ Item {
                         onClicked: {
                             if (modelData.is_dir) {
                                 navigateTo(modelData.path)
+                            } else {
+                                var cat = getCategory(modelData.ext)
+                                if (cat === "image" || cat === "video" || cat === "audio") {
+                                    openLightbox(modelData)
+                                }
                             }
                         }
                     }
@@ -1194,5 +1079,24 @@ Item {
                 }
             }
         }
+    }
+
+    // ── Feature Modals ──────────────────────────────────────────────────────
+    MediaLightboxModal {
+        id: lightboxModal
+        bridge: root.bridge
+    }
+
+    BatchRenameModal {
+        id: batchRenameModal
+        bridge: root.bridge
+        onRenamed: navigateTo(root.currentPath)
+    }
+
+    GalleryCleanerModal {
+        id: galleryCleanerModal
+        bridge: root.bridge
+        onCleaned: navigateTo(root.currentPath)
+        onOrganized: navigateTo(root.currentPath)
     }
 }

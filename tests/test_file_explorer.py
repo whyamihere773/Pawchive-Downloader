@@ -75,6 +75,89 @@ class TestFileExplorer(unittest.TestCase):
         self.assertEqual(stats["files"], 2)
         self.assertEqual(stats["size"], 10)
 
+    def test_path_to_url(self):
+        bridge = AppBridge()
+        test_file = os.path.join(self.temp_dir, "image.png")
+        url = bridge.pathToUrl(test_file)
+        self.assertTrue(url.startswith("file:///"))
+        self.assertIn("image.png", url)
+
+    def test_batch_rename(self):
+        bridge = AppBridge()
+        # Create test files
+        test_file_1 = os.path.join(self.temp_dir, "01_art.png")
+        test_file_2 = os.path.join(self.temp_dir, "02_art.png")
+        with open(test_file_1, "w") as f:
+            f.write("content 1")
+        with open(test_file_2, "w") as f:
+            f.write("content 2")
+
+        plan = bridge.previewBatchRename(
+            self.temp_dir,
+            files=["01_art.png", "02_art.png"],
+            pattern="Wall_{0index}.{ext}"
+        )
+        self.assertEqual(len(plan), 2)
+        self.assertEqual(plan[0]["new_name"], "Wall_01.png")
+        self.assertEqual(plan[1]["new_name"], "Wall_02.png")
+        self.assertEqual(plan[0]["status"], "ready")
+
+        res = bridge.executeBatchRename(plan)
+        self.assertTrue(res["success"])
+        self.assertEqual(res["renamed"], 2)
+        self.assertTrue(os.path.exists(os.path.join(self.temp_dir, "Wall_01.png")))
+        self.assertTrue(os.path.exists(os.path.join(self.temp_dir, "Wall_02.png")))
+
+    def test_scan_broken_files_and_delete(self):
+        bridge = AppBridge()
+        zero_file = os.path.join(self.temp_dir, "zero.dat")
+        with open(zero_file, "w") as f:
+            pass  # 0 bytes
+        temp_file = os.path.join(self.temp_dir, "incomplete.part")
+        with open(temp_file, "w") as f:
+            f.write("in-progress download")
+
+        broken = bridge.scanBrokenFiles(self.temp_dir, recursive=False)
+        broken_names = [b["name"] for b in broken]
+        self.assertIn("zero.dat", broken_names)
+        self.assertIn("incomplete.part", broken_names)
+
+        del_res = bridge.deleteItems([zero_file, temp_file])
+        self.assertEqual(del_res["deleted"], 2)
+        self.assertFalse(os.path.exists(zero_file))
+        self.assertFalse(os.path.exists(temp_file))
+
+    def test_scan_duplicates(self):
+        bridge = AppBridge()
+        dup1 = os.path.join(self.temp_dir, "dup1.bin")
+        dup2 = os.path.join(self.temp_dir, "dup2.bin")
+        with open(dup1, "wb") as f:
+            f.write(b"IDENTICAL_CONTENT_FOR_HASH_TEST")
+        with open(dup2, "wb") as f:
+            f.write(b"IDENTICAL_CONTENT_FOR_HASH_TEST")
+
+        duplicates = bridge.scanDuplicates(self.temp_dir, recursive=False)
+        self.assertEqual(len(duplicates), 1)
+        self.assertEqual(duplicates[0]["count"], 2)
+        self.assertEqual(duplicates[0]["wasted_size"], len(b"IDENTICAL_CONTENT_FOR_HASH_TEST"))
+
+    def test_auto_sort_folder(self):
+        bridge = AppBridge()
+        sort_dir = os.path.join(self.temp_dir, "SortTest")
+        os.makedirs(sort_dir, exist_ok=True)
+        img = os.path.join(sort_dir, "photo.png")
+        vid = os.path.join(sort_dir, "clip.mp4")
+        with open(img, "w") as f:
+            f.write("image")
+        with open(vid, "w") as f:
+            f.write("video")
+
+        res = bridge.autoSortFolder(sort_dir, mode="type")
+        self.assertEqual(res["moved"], 2)
+        self.assertTrue(os.path.exists(os.path.join(sort_dir, "Images", "photo.png")))
+        self.assertTrue(os.path.exists(os.path.join(sort_dir, "Videos", "clip.mp4")))
+
 
 if __name__ == "__main__":
     unittest.main()
+

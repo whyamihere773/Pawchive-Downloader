@@ -200,7 +200,7 @@ class AppBridge(QObject):
     schedulerChanged          = Signal()
 
     # File Explorer & Media Gallery signals
-    folderStatsCalculated     = Signal(str, int, int, int)  # (path, total_size, file_count, folder_count)
+    folderStatsCalculated     = Signal(str, 'qint64', 'qint64', 'qint64')  # (path, total_size, file_count, folder_count)
 
     _progressSignal    = Signal(dict)    # carries progress info dict
     _taskSignal        = Signal(object)  # carries a DownloadTask object
@@ -6389,5 +6389,511 @@ class AppBridge(QObject):
                     subprocess.Popen(["xdg-open", path])
             except Exception as e:
                 logger.warning(f"Could not open file in system: {e}", category="system")
+
+    @Slot(str, result=str)
+    def pathToUrl(self, local_path: str) -> str:
+        """Convert local filesystem path to QUrl string for QML components."""
+        if not local_path:
+            return ""
+        from PySide6.QtCore import QUrl
+        return QUrl.fromLocalFile(os.path.abspath(local_path)).toString()
+
+    @Slot(str, 'QVariantList', str, str, str, str, str, str, result='QVariantList')
+    def previewBatchRename(
+        self,
+        folder_path: str,
+        files: list,
+        pattern: str = "{name}.{ext}",
+        find_text: str = "",
+        replace_text: str = "",
+        prefix: str = "",
+        suffix: str = "",
+        case_mode: str = "keep"
+    ) -> list:
+        """
+        Preview batch renaming results for files with metadata variable interpolation.
+        Supports variables: {name}, {ext}, {artist}, {title}, {post_id}, {date}, {index}, {0index}, {00index}.
+        """
+        if not folder_path or not os.path.exists(folder_path):
+            return []
+
+        folder_name = os.path.basename(os.path.normpath(folder_path))
+        parent_folder_name = os.path.basename(os.path.dirname(os.path.normpath(folder_path)))
+
+        if not files:
+            try:
+                files = [f for f in os.listdir(folder_path) if os.path.isfile(os.path.join(folder_path, f))]
+            except OSError:
+                return []
+
+        def natural_sort_key(s):
+            return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', str(s))]
+
+        try:
+            files = sorted(files, key=natural_sort_key)
+        except Exception:
+            pass
+
+        results = []
+        new_names_seen = {}
+
+        for idx, item in enumerate(files, start=1):
+            if isinstance(item, dict):
+                filename = item.get("name", "")
+                filepath = item.get("path", os.path.join(folder_path, filename))
+            else:
+                filename = str(item)
+                filepath = os.path.join(folder_path, filename) if not os.path.isabs(filename) else filename
+                filename = os.path.basename(filepath)
+
+            base_name, ext = os.path.splitext(filename)
+            raw_ext = ext.lstrip(".").lower()
+
+            # Metadata extraction
+            artist_match = re.search(r'\[([^\]]+)\]', base_name)
+            artist = artist_match.group(1).strip() if artist_match else (folder_name if folder_name else parent_folder_name)
+
+            post_id_match = re.search(r'\b(\d{5,10})\b', base_name)
+            if not post_id_match:
+                post_id_match = re.search(r'\b(\d{5,10})\b', folder_name)
+            post_id = post_id_match.group(1) if post_id_match else ""
+
+            try:
+                mtime = os.path.getmtime(filepath)
+                date_str = time.strftime("%Y-%m-%d", time.localtime(mtime))
+            except OSError:
+                date_str = time.strftime("%Y-%m-%d")
+
+            cleaned_title = base_name
+            if artist_match:
+                cleaned_title = cleaned_title.replace(artist_match.group(0), "")
+            if post_id:
+                cleaned_title = re.sub(rf'\b{post_id}\b', '', cleaned_title)
+            cleaned_title = cleaned_title.strip(" -_") or base_name
+
+            working_pattern = pattern if pattern else "{name}.{ext}"
+            new_name = working_pattern
+            new_name = new_name.replace("{name}", base_name)
+            new_name = new_name.replace("{ext}", raw_ext)
+            new_name = new_name.replace("{artist}", artist)
+            new_name = new_name.replace("{title}", cleaned_title)
+            new_name = new_name.replace("{post_id}", post_id)
+            new_name = new_name.replace("{date}", date_str)
+            new_name = new_name.replace("{index}", str(idx))
+            new_name = new_name.replace("{0index}", f"{idx:02d}")
+            new_name = new_name.replace("{00index}", f"{idx:03d}")
+
+            if find_text:
+                new_name = new_name.replace(find_text, replace_text)
+
+            if prefix or suffix:
+                n_base, n_ext = os.path.splitext(new_name)
+                new_name = f"{prefix}{n_base}{suffix}{n_ext}"
+
+            if case_mode == "lower":
+                n_base, n_ext = os.path.splitext(new_name)
+                new_name = f"{n_base.lower()}{n_ext.lower()}"
+            elif case_mode == "upper":
+                n_base, n_ext = os.path.splitext(new_name)
+                new_name = f"{n_base.upper()}{n_ext.lower()}"
+            elif case_mode == "title":
+                n_base, n_ext = os.path.splitext(new_name)
+                new_name = f"{n_base.title()}{n_ext.lower()}"
+
+            sanitized_name = re.sub(r'[<>:"/\\|?*]', '_', new_name).strip()
+            if not sanitized_name:
+                sanitized_name = filename
+
+            new_filepath = os.path.join(folder_path, sanitized_name)
+
+            status = "ready"
+            err = ""
+
+            if sanitized_name == filename:
+                status = "unchanged"
+            elif sanitized_name.lower() in new_names_seen:
+                status = "collision"
+                err = f"Duplicates another planned name: {sanitized_name}"
+            elif os.path.exists(new_filepath) and os.path.normcase(filepath) != os.path.normcase(new_filepath):
+                status = "collision"
+                err = f"File already exists on disk: {sanitized_name}"
+
+            new_names_seen[sanitized_name.lower()] = filepath
+
+            results.append({
+                "old_name": filename,
+                "new_name": sanitized_name,
+                "old_path": filepath,
+                "new_path": new_filepath,
+                "status": status,
+                "error": err,
+                "valid": status in ("ready", "unchanged")
+            })
+
+        return results
+
+    @Slot('QVariantList', result='QVariantMap')
+    def executeBatchRename(self, plan: list) -> dict:
+        """Execute a batch renaming plan safely with two-phase rename for circular collisions."""
+        import uuid
+        renamed = 0
+        failed = 0
+        errors = []
+
+        to_rename = [item for item in plan if item.get("status") == "ready" and item.get("valid", True)]
+        if not to_rename:
+            return {"success": True, "renamed": 0, "failed": 0, "errors": []}
+
+        temp_renames = []
+        for item in to_rename:
+            src = os.path.normpath(item["old_path"])
+            dst = os.path.normpath(item["new_path"])
+            if not os.path.exists(src):
+                failed += 1
+                errors.append(f"Source file not found: {os.path.basename(src)}")
+                continue
+
+            needs_temp = False
+            if os.path.normcase(src) == os.path.normcase(dst):
+                needs_temp = True
+            elif os.path.exists(dst):
+                needs_temp = True
+
+            if needs_temp:
+                temp_path = f"{src}.tmp_batch_{uuid.uuid4().hex[:6]}"
+                try:
+                    os.rename(src, temp_path)
+                    temp_renames.append((temp_path, dst, src))
+                except Exception as e:
+                    failed += 1
+                    errors.append(f"Cannot temp-rename {os.path.basename(src)}: {e}")
+            else:
+                try:
+                    os.rename(src, dst)
+                    renamed += 1
+                except Exception as e:
+                    failed += 1
+                    errors.append(f"Cannot rename {os.path.basename(src)}: {e}")
+
+        for temp_src, final_dst, orig_src in temp_renames:
+            try:
+                os.rename(temp_src, final_dst)
+                renamed += 1
+            except Exception as e:
+                failed += 1
+                errors.append(f"Cannot finalize rename to {os.path.basename(final_dst)}: {e}")
+                try:
+                    os.rename(temp_src, orig_src)
+                except Exception:
+                    pass
+
+        return {
+            "success": failed == 0,
+            "renamed": renamed,
+            "failed": failed,
+            "errors": errors
+        }
+
+    @Slot(str, bool, result='QVariantList')
+    def scanBrokenFiles(self, folder_path: str, recursive: bool = False) -> list:
+        """Scan folder for 0-byte files, incomplete download temp files (.part, .crdownload, etc.), and empty folders."""
+        if not folder_path or not os.path.exists(folder_path):
+            return []
+
+        norm_root = os.path.normpath(os.path.abspath(folder_path))
+        broken = []
+        temp_exts = {".part", ".crdownload", ".~tmp", ".download", ".temp", ".ytdl"}
+
+        if not recursive:
+            try:
+                for entry in os.scandir(norm_root):
+                    try:
+                        p = os.path.normpath(entry.path)
+                        rel_path = os.path.relpath(p, norm_root)
+                        if entry.is_file(follow_symlinks=False):
+                            sz = entry.stat().st_size
+                            ext = os.path.splitext(entry.name)[1].lower()
+                            if sz == 0:
+                                broken.append({
+                                    "path": p,
+                                    "name": entry.name,
+                                    "rel_path": rel_path,
+                                    "type": "zero_byte",
+                                    "type_label": "0-Byte Corrupt File",
+                                    "size": 0,
+                                    "mtime": entry.stat().st_mtime
+                                })
+                            elif ext in temp_exts:
+                                broken.append({
+                                    "path": p,
+                                    "name": entry.name,
+                                    "rel_path": rel_path,
+                                    "type": "temp_file",
+                                    "type_label": f"Incomplete Download ({ext})",
+                                    "size": sz,
+                                    "mtime": entry.stat().st_mtime
+                                })
+                        elif entry.is_dir(follow_symlinks=False):
+                            try:
+                                if not os.listdir(p):
+                                    broken.append({
+                                        "path": p,
+                                        "name": entry.name,
+                                        "rel_path": rel_path,
+                                        "type": "empty_folder",
+                                        "type_label": "Empty Directory",
+                                        "size": 0,
+                                        "mtime": entry.stat().st_mtime
+                                    })
+                            except OSError:
+                                pass
+                    except OSError:
+                        pass
+            except OSError:
+                pass
+        else:
+            try:
+                for root, dirs, files in os.walk(norm_root, topdown=False):
+                    for d in dirs:
+                        dp = os.path.join(root, d)
+                        try:
+                            if not os.listdir(dp):
+                                broken.append({
+                                    "path": os.path.normpath(dp),
+                                    "name": d,
+                                    "rel_path": os.path.relpath(dp, norm_root),
+                                    "type": "empty_folder",
+                                    "type_label": "Empty Directory",
+                                    "size": 0,
+                                    "mtime": os.path.getmtime(dp)
+                                })
+                        except OSError:
+                            pass
+                    for f in files:
+                        fp = os.path.join(root, f)
+                        try:
+                            sz = os.path.getsize(fp)
+                            ext = os.path.splitext(f)[1].lower()
+                            if sz == 0:
+                                broken.append({
+                                    "path": os.path.normpath(fp),
+                                    "name": f,
+                                    "rel_path": os.path.relpath(fp, norm_root),
+                                    "type": "zero_byte",
+                                    "type_label": "0-Byte Corrupt File",
+                                    "size": 0,
+                                    "mtime": os.path.getmtime(fp)
+                                })
+                            elif ext in temp_exts:
+                                broken.append({
+                                    "path": os.path.normpath(fp),
+                                    "name": f,
+                                    "rel_path": os.path.relpath(fp, norm_root),
+                                    "type": "temp_file",
+                                    "type_label": f"Incomplete Download ({ext})",
+                                    "size": sz,
+                                    "mtime": os.path.getmtime(fp)
+                                })
+                        except OSError:
+                            pass
+            except OSError:
+                pass
+
+        return broken
+
+    @Slot('QVariantList', result='QVariantMap')
+    def deleteItems(self, paths: list) -> dict:
+        """Safely delete a list of files or empty folders."""
+        deleted = 0
+        failed = 0
+        errors = []
+
+        for p in paths:
+            if not p:
+                continue
+            norm_p = os.path.normpath(p)
+            try:
+                if os.path.isfile(norm_p):
+                    os.remove(norm_p)
+                    deleted += 1
+                elif os.path.isdir(norm_p):
+                    os.rmdir(norm_p)
+                    deleted += 1
+                else:
+                    failed += 1
+                    errors.append(f"Target does not exist: {norm_p}")
+            except Exception as e:
+                failed += 1
+                errors.append(f"Failed deleting {os.path.basename(norm_p)}: {e}")
+
+        return {"deleted": deleted, "failed": failed, "errors": errors}
+
+    @Slot(str, bool, result='QVariantList')
+    def scanDuplicates(self, folder_path: str, recursive: bool = False) -> list:
+        """
+        Fast two-tier duplicate file finder using size grouping and SHA-256 chunked hashing.
+        Returns duplicate groups sorted by wasted storage space descending.
+        """
+        import hashlib
+        if not folder_path or not os.path.exists(folder_path):
+            return []
+
+        norm_root = os.path.normpath(os.path.abspath(folder_path))
+        size_groups = {}
+
+        def register_file(p):
+            try:
+                sz = os.path.getsize(p)
+                if sz > 0:
+                    if sz not in size_groups:
+                        size_groups[sz] = []
+                    size_groups[sz].append(p)
+            except OSError:
+                pass
+
+        if not recursive:
+            try:
+                for entry in os.scandir(norm_root):
+                    if entry.is_file(follow_symlinks=False):
+                        register_file(entry.path)
+            except OSError:
+                pass
+        else:
+            try:
+                for root, _, files in os.walk(norm_root):
+                    for f in files:
+                        register_file(os.path.join(root, f))
+            except OSError:
+                pass
+
+        partial_groups = {}
+        for sz, flist in size_groups.items():
+            if len(flist) < 2:
+                continue
+            for p in flist:
+                try:
+                    with open(p, "rb") as f:
+                        header = f.read(65536)
+                        p_hash = hashlib.md5(header).hexdigest()
+                        key = (sz, p_hash)
+                        if key not in partial_groups:
+                            partial_groups[key] = []
+                        partial_groups[key].append(p)
+                except OSError:
+                    pass
+
+        duplicate_groups = []
+        for (sz, _), flist in partial_groups.items():
+            if len(flist) < 2:
+                continue
+            full_groups = {}
+            for p in flist:
+                try:
+                    h = hashlib.sha256()
+                    with open(p, "rb") as f:
+                        while chunk := f.read(65536):
+                            h.update(chunk)
+                    full_hash = h.hexdigest()
+                    if full_hash not in full_groups:
+                        full_groups[full_hash] = []
+                    full_groups[full_hash].append(p)
+                except OSError:
+                    pass
+
+            for fhash, matches in full_groups.items():
+                if len(matches) >= 2:
+                    files_info = []
+                    for mp in matches:
+                        try:
+                            mtime = os.path.getmtime(mp)
+                        except OSError:
+                            mtime = 0
+                        files_info.append({
+                            "path": os.path.normpath(mp),
+                            "name": os.path.basename(mp),
+                            "rel_path": os.path.relpath(mp, norm_root),
+                            "mtime": mtime
+                        })
+                    files_info.sort(key=lambda x: x["mtime"])
+                    duplicate_groups.append({
+                        "hash": fhash[:12],
+                        "size": sz,
+                        "count": len(files_info),
+                        "wasted_size": (len(files_info) - 1) * sz,
+                        "files": files_info
+                    })
+
+        duplicate_groups.sort(key=lambda g: g["wasted_size"], reverse=True)
+        return duplicate_groups
+
+    @Slot(str, str, result='QVariantMap')
+    def autoSortFolder(self, folder_path: str, mode: str = "type") -> dict:
+        """Auto-organize files in a folder into clean subfolder hierarchies by type, date, or extension."""
+        import shutil
+        if not folder_path or not os.path.exists(folder_path):
+            return {"moved": 0, "errors": ["Folder does not exist"]}
+
+        norm_root = os.path.normpath(os.path.abspath(folder_path))
+        moved = 0
+        errors = []
+
+        type_map = {
+            "image": {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg", ".ico"},
+            "video": {".mp4", ".mkv", ".webm", ".mov", ".avi", ".ts", ".flv", ".m4v"},
+            "audio": {".mp3", ".flac", ".wav", ".ogg", ".m4a", ".opus", ".aac"},
+            "archive": {".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz"},
+            "document": {".txt", ".pdf", ".json", ".html", ".md", ".epub", ".doc", ".docx"}
+        }
+
+        try:
+            entries = [e for e in os.scandir(norm_root) if e.is_file(follow_symlinks=False)]
+        except OSError as e:
+            return {"moved": 0, "errors": [str(e)]}
+
+        for entry in entries:
+            src = os.path.normpath(entry.path)
+            fname = entry.name
+            base, ext = os.path.splitext(fname)
+            ext_lower = ext.lower()
+
+            if mode == "date":
+                try:
+                    mtime = entry.stat().st_mtime
+                    sub_name = time.strftime("%Y-%m", time.localtime(mtime))
+                except OSError:
+                    sub_name = "Unknown_Date"
+            elif mode == "extension":
+                sub_name = ext_lower.lstrip(".").upper() or "NO_EXT"
+            else:
+                sub_name = "Other"
+                for cat, extensions in type_map.items():
+                    if ext_lower in extensions:
+                        sub_name = cat.capitalize() + "s" if cat in ("image", "video", "archive", "document") else "Audio"
+                        break
+
+            target_dir = os.path.join(norm_root, sub_name)
+            try:
+                os.makedirs(target_dir, exist_ok=True)
+            except OSError as e:
+                errors.append(f"Cannot create directory {sub_name}: {e}")
+                continue
+
+            target_file = os.path.join(target_dir, fname)
+            if os.path.exists(target_file) and os.path.normcase(src) != os.path.normcase(target_file):
+                counter = 1
+                while True:
+                    target_file = os.path.join(target_dir, f"{base} ({counter}){ext}")
+                    if not os.path.exists(target_file):
+                        break
+                    counter += 1
+
+            try:
+                shutil.move(src, target_file)
+                moved += 1
+            except Exception as e:
+                errors.append(f"Could not move {fname}: {e}")
+
+        return {"moved": moved, "errors": errors}
+
 
 
