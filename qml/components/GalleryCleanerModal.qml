@@ -252,6 +252,9 @@ Item {
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: root.close()
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 250
+                        ToolTip.text: "Close cleaner dialog without making changes"
                     }
                 }
             }
@@ -290,8 +293,12 @@ Item {
                         }
                         MouseArea {
                             anchors.fill: parent
+                            hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
                             onClicked: root.activeTab = "broken"
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 250
+                            ToolTip.text: "Broken & 0-Byte Scanner\nScan for corrupt 0-byte downloads, truncated files, and empty files"
                         }
                     }
 
@@ -318,6 +325,7 @@ Item {
                         }
                         MouseArea {
                             anchors.fill: parent
+                            hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
                             onClicked: {
                                 root.activeTab = "duplicates"
@@ -325,6 +333,9 @@ Item {
                                     root.scanDuplicates()
                                 }
                             }
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 250
+                            ToolTip.text: "Duplicate File Finder\nDetect identical duplicate files across downloads by computing SHA-256 content hashes"
                         }
                     }
 
@@ -351,8 +362,12 @@ Item {
                         }
                         MouseArea {
                             anchors.fill: parent
+                            hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
                             onClicked: root.activeTab = "sort"
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 250
+                            ToolTip.text: "Auto-Sort Hierarchies\nAutomatically organize loose files into structured subfolders by type, date, or extension"
                         }
                     }
                 }
@@ -372,12 +387,16 @@ Item {
                         Text { visible: root.recursiveScan; anchors.centerIn: parent; text: "✓"; font.pixelSize: 10; font.weight: Font.Bold; color: "#0B0E14" }
                         MouseArea {
                             anchors.fill: parent
+                            hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
                             onClicked: {
                                 root.recursiveScan = !root.recursiveScan
                                 if (root.activeTab === "broken") root.scanBroken()
                                 else if (root.activeTab === "duplicates") root.scanDuplicates()
                             }
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 250
+                            ToolTip.text: "Scan subfolders recursively\nWhen checked, scans all nested subfolders instead of only the top-level directory."
                         }
                     }
 
@@ -388,12 +407,16 @@ Item {
                         color: "#94A3B8"
                         MouseArea {
                             anchors.fill: parent
+                            hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
                             onClicked: {
                                 root.recursiveScan = !root.recursiveScan
                                 if (root.activeTab === "broken") root.scanBroken()
                                 else if (root.activeTab === "duplicates") root.scanDuplicates()
                             }
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 250
+                            ToolTip.text: "Scan subfolders recursively\nWhen checked, scans all nested subfolders instead of only the top-level directory."
                         }
                     }
                 }
@@ -507,9 +530,14 @@ Item {
                                 }
 
                                 MouseArea {
+                                    id: bItemMouse
                                     anchors.fill: parent
+                                    hoverEnabled: true
                                     cursorShape: Qt.PointingHandCursor
                                     onClicked: root.toggleBrokenSelection(modelData.path)
+                                    ToolTip.visible: containsMouse
+                                    ToolTip.delay: 350
+                                    ToolTip.text: (root.selectedBrokenPaths[modelData.path] ? "☑ Marked for deletion: " : "☐ Click to select: ") + modelData.path + "\nSize: " + (modelData.size > 0 ? root.formatBytes(modelData.size) : "0 B")
                                 }
                             }
                         }
@@ -524,13 +552,29 @@ Item {
                             implicitHeight: 26; implicitWidth: 72; radius: 4
                             color: "#182030"; border.color: "#28354E"; border.width: 1
                             Text { anchors.centerIn: parent; text: "Select All"; font.pixelSize: 10; color: "#94A3B8" }
-                            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.selectAllBroken(true) }
+                            MouseArea {
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.selectAllBroken(true)
+                                ToolTip.visible: containsMouse
+                                ToolTip.delay: 250
+                                ToolTip.text: "Select all detected broken and 0-byte files for cleanup"
+                            }
                         }
                         Rectangle {
                             implicitHeight: 26; implicitWidth: 80; radius: 4
                             color: "#182030"; border.color: "#28354E"; border.width: 1
                             Text { anchors.centerIn: parent; text: "Deselect All"; font.pixelSize: 10; color: "#94A3B8" }
-                            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.selectAllBroken(false) }
+                            MouseArea {
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.selectAllBroken(false)
+                                ToolTip.visible: containsMouse
+                                ToolTip.delay: 250
+                                ToolTip.text: "Uncheck all files in the broken files list"
+                            }
                         }
 
                         Item { Layout.fillWidth: true }
@@ -555,9 +599,12 @@ Item {
                             }
                             MouseArea {
                                 anchors.fill: parent
-                                hoverEnabled: root.selectedBrokenCount > 0
+                                hoverEnabled: true
                                 cursorShape: root.selectedBrokenCount > 0 ? Qt.PointingHandCursor : Qt.ArrowCursor
                                 onClicked: root.deleteBrokenItems()
+                                ToolTip.visible: containsMouse
+                                ToolTip.delay: 250
+                                ToolTip.text: root.selectedBrokenCount > 0 ? ("Permanently delete " + root.selectedBrokenCount + " selected broken file(s) from disk.") : "No broken files selected for deletion. Check files above to enable cleanup."
                             }
                         }
                     }
@@ -607,7 +654,15 @@ Item {
                                 implicitHeight: 22; implicitWidth: 84; radius: 4
                                 color: "#1E273A"; border.color: "#38BDF8"; border.width: 1
                                 Text { anchors.centerIn: parent; text: "Keep Oldest"; font.pixelSize: 9; font.weight: 600; color: "#38BDF8" }
-                                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.selectDuplicatesStrategy("keep_oldest") }
+                                MouseArea {
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: root.selectDuplicatesStrategy("keep_oldest")
+                                    ToolTip.visible: containsMouse
+                                    ToolTip.delay: 250
+                                    ToolTip.text: "Keep Oldest Copies\nAutomatically marks newer duplicates for deletion, keeping the earliest downloaded file in each set."
+                                }
                             }
 
                             Rectangle {
@@ -615,7 +670,15 @@ Item {
                                 implicitHeight: 22; implicitWidth: 84; radius: 4
                                 color: "#1E273A"; border.color: "#38BDF8"; border.width: 1
                                 Text { anchors.centerIn: parent; text: "Keep Newest"; font.pixelSize: 9; font.weight: 600; color: "#38BDF8" }
-                                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.selectDuplicatesStrategy("keep_newest") }
+                                MouseArea {
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: root.selectDuplicatesStrategy("keep_newest")
+                                    ToolTip.visible: containsMouse
+                                    ToolTip.delay: 250
+                                    ToolTip.text: "Keep Newest Copies\nAutomatically marks older duplicates for deletion, keeping the most recently downloaded file in each set."
+                                }
                             }
                         }
                     }
@@ -704,9 +767,14 @@ Item {
                                             }
 
                                             MouseArea {
+                                                id: dupFileMouse
                                                 anchors.fill: parent
+                                                hoverEnabled: true
                                                 cursorShape: Qt.PointingHandCursor
                                                 onClicked: root.toggleDupSelection(modelData.path)
+                                                ToolTip.visible: containsMouse
+                                                ToolTip.delay: 350
+                                                ToolTip.text: (root.selectedDupPaths[modelData.path] ? "🗑️ Marked for deletion:\n" : "💾 Keeping file:\n") + modelData.path + "\nClick to toggle keep/delete"
                                             }
                                         }
                                     }
@@ -749,9 +817,12 @@ Item {
                             }
                             MouseArea {
                                 anchors.fill: parent
-                                hoverEnabled: root.selectedDupCount > 0
+                                hoverEnabled: true
                                 cursorShape: root.selectedDupCount > 0 ? Qt.PointingHandCursor : Qt.ArrowCursor
                                 onClicked: root.deleteDuplicateItems()
+                                ToolTip.visible: containsMouse
+                                ToolTip.delay: 250
+                                ToolTip.text: root.selectedDupCount > 0 ? ("Permanently delete " + root.selectedDupCount + " selected duplicate file(s) to reclaim disk space.") : "No duplicates selected for deletion. Choose a strategy or click items above."
                             }
                         }
                     }
@@ -802,7 +873,15 @@ Item {
                                 border.color: "#38BDF8"; border.width: 1.5
                             }
                         }
-                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.sortMode = "type" }
+                        MouseArea {
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.sortMode = "type"
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 250
+                            ToolTip.text: "Sort by File Type\nAutomatically creates Images/, Videos/, Audio/, Archives/, and Documents/ folders and sorts loose files into them."
+                        }
                     }
 
                     // Mode 2: By Date
@@ -832,7 +911,15 @@ Item {
                                 border.color: "#38BDF8"; border.width: 1.5
                             }
                         }
-                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.sortMode = "date" }
+                        MouseArea {
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.sortMode = "date"
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 250
+                            ToolTip.text: "Sort by Date Modified\nGroups files into YYYY-MM subfolders (e.g. 2026-09/, 2026-10/) based on file modification timestamps."
+                        }
                     }
 
                     // Mode 3: By Extension
@@ -862,7 +949,15 @@ Item {
                                 border.color: "#38BDF8"; border.width: 1.5
                             }
                         }
-                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.sortMode = "extension" }
+                        MouseArea {
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.sortMode = "extension"
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 250
+                            ToolTip.text: "Sort by Extension\nGroups files into subfolders named after their extension (e.g. PNG/, JPG/, MP4/, ZIP/)."
+                        }
                     }
 
                     Item { Layout.fillHeight: true }
@@ -901,6 +996,9 @@ Item {
                             hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
                             onClicked: root.executeAutoSort()
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 250
+                            ToolTip.text: "Organize Folder Now\nMove loose files in this folder into clean subfolders using the '" + (root.sortMode === "type" ? "File Type" : (root.sortMode === "date" ? "Date Modified" : "Extension")) + "' strategy."
                         }
                     }
                 }

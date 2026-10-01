@@ -206,6 +206,9 @@ Item {
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
                     onClicked: root.close()
+                    ToolTip.visible: containsMouse
+                    ToolTip.delay: 250
+                    ToolTip.text: "Close media viewer (Esc)"
                 }
             }
 
@@ -238,6 +241,14 @@ Item {
                         color: "#94A3B8"
                     }
                 }
+
+                MouseArea {
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    ToolTip.visible: containsMouse
+                    ToolTip.delay: 250
+                    ToolTip.text: "Media item " + (root.currentIndex + 1) + " of " + root.mediaList.length + " in this folder"
+                }
             }
 
             // Filename
@@ -249,6 +260,13 @@ Item {
                 color: "#F8FAFC"
                 elide: Text.ElideMiddle
                 Layout.fillWidth: true
+                MouseArea {
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    ToolTip.visible: containsMouse
+                    ToolTip.delay: 300
+                    ToolTip.text: root.itemPath
+                }
             }
 
             // Image Dimensions pill (when viewing image)
@@ -268,6 +286,13 @@ Item {
                     font.family: "Segoe UI, monospace"
                     font.pixelSize: 10
                     color: "#38BDF8"
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    ToolTip.visible: containsMouse
+                    ToolTip.delay: 250
+                    ToolTip.text: "Image dimensions: " + imgViewer.implicitWidth + " × " + imgViewer.implicitHeight + " px"
                 }
             }
 
@@ -289,6 +314,13 @@ Item {
                     font.pixelSize: 10
                     color: "#94A3B8"
                 }
+                MouseArea {
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    ToolTip.visible: containsMouse
+                    ToolTip.delay: 250
+                    ToolTip.text: "File size on disk: " + (root.currentItem ? root.formatBytes(root.currentItem.size) : "0 B")
+                }
             }
 
             // Image Zoom Controls
@@ -304,6 +336,9 @@ Item {
                     MouseArea {
                         id: zoomInMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
                         onClicked: root.zoomFactor = Math.min(4.0, root.zoomFactor + 0.25)
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 250
+                        ToolTip.text: "Zoom In (+ or Scroll Up)\nCurrent zoom: " + Math.round(root.zoomFactor * 100) + "%"
                     }
                 }
                 Rectangle {
@@ -314,6 +349,9 @@ Item {
                     MouseArea {
                         id: zoomOutMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
                         onClicked: root.zoomFactor = Math.max(0.25, root.zoomFactor - 0.25)
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 250
+                        ToolTip.text: "Zoom Out (- or Scroll Down)\nCurrent zoom: " + Math.round(root.zoomFactor * 100) + "%"
                     }
                 }
                 Rectangle {
@@ -324,6 +362,9 @@ Item {
                     MouseArea {
                         id: zoomResetMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
                         onClicked: root.zoomFactor = 1.0
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 250
+                        ToolTip.text: "Reset zoom to 100% (0 or Double-Click)"
                     }
                 }
             }
@@ -354,6 +395,9 @@ Item {
                             root.bridge.openPathInSystem(root.itemPath)
                         }
                     }
+                    ToolTip.visible: containsMouse
+                    ToolTip.delay: 250
+                    ToolTip.text: "Open file in your system's default media player / viewer"
                 }
             }
 
@@ -375,6 +419,9 @@ Item {
                             root.bridge.openFolder(dir)
                         }
                     }
+                    ToolTip.visible: containsMouse
+                    ToolTip.delay: 250
+                    ToolTip.text: "Open containing folder in File Explorer / OS manager"
                 }
             }
         }
@@ -545,6 +592,9 @@ Item {
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
                     onClicked: root.prevItem()
+                    ToolTip.visible: containsMouse
+                    ToolTip.delay: 250
+                    ToolTip.text: "Previous media item (Left Arrow key)"
                 }
             }
 
@@ -575,6 +625,9 @@ Item {
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
                     onClicked: root.nextItem()
+                    ToolTip.visible: containsMouse
+                    ToolTip.delay: 250
+                    ToolTip.text: "Next media item (Right Arrow key)"
                 }
             }
         }
@@ -623,6 +676,9 @@ Item {
                                 mediaPlayer.play()
                             }
                         }
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 250
+                        ToolTip.text: (mediaPlayer.playbackState === MediaPlayer.PlayingState) ? "Pause playback (Space)" : "Start playback (Space)"
                     }
                 }
 
@@ -645,6 +701,9 @@ Item {
                     onMoved: {
                         mediaPlayer.setPosition(value)
                     }
+                    ToolTip.visible: hovered
+                    ToolTip.delay: 250
+                    ToolTip.text: "Position: " + root.formatTime(mediaPlayer.position) + " / " + root.formatTime(mediaPlayer.duration)
                 }
 
                 // Time Total
@@ -672,6 +731,9 @@ Item {
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: root.isLooping = !root.isLooping
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 250
+                        ToolTip.text: root.isLooping ? "Repeat: Loop is ON (click to play once)" : "Repeat: Loop is OFF (click to loop continuously)"
                     }
                 }
 
@@ -680,9 +742,14 @@ Item {
                     text: audioOutput.muted ? "🔇" : (audioOutput.volume > 0.5 ? "🔊" : "🔉")
                     font.pixelSize: 13
                     MouseArea {
+                        id: volIconMouse
                         anchors.fill: parent
+                        hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: audioOutput.muted = !audioOutput.muted
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 250
+                        ToolTip.text: audioOutput.muted ? "Unmute audio" : "Mute audio"
                     }
                 }
 
@@ -697,6 +764,9 @@ Item {
                             audioOutput.muted = false
                         }
                     }
+                    ToolTip.visible: hovered
+                    ToolTip.delay: 250
+                    ToolTip.text: "Volume: " + Math.round(audioOutput.volume * 100) + "%"
                 }
             }
         }

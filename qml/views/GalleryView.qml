@@ -311,6 +311,9 @@ Item {
                             navigateTo(root.bridge.getDownloadDir())
                         }
                     }
+                    ToolTip.visible: containsMouse
+                    ToolTip.delay: 250
+                    ToolTip.text: "Jump to your default Downloads directory"
                 }
             }
 
@@ -346,6 +349,9 @@ Item {
                             root.bridge.openFolder(root.currentPath)
                         }
                     }
+                    ToolTip.visible: containsMouse
+                    ToolTip.delay: 250
+                    ToolTip.text: "Open current folder in File Explorer / OS file manager"
                 }
             }
 
@@ -470,8 +476,12 @@ Item {
                         Text { anchors.centerIn: parent; text: "⊞"; font.pixelSize: 13; color: root.viewMode === "grid" ? "#38BDF8" : "#64748B" }
                         MouseArea {
                             anchors.fill: parent
+                            hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
                             onClicked: root.viewMode = "grid"
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 250
+                            ToolTip.text: "Grid View\nDisplay files and folders as visual cards with thumbnails"
                         }
                     }
                     Rectangle {
@@ -484,8 +494,12 @@ Item {
                         Text { anchors.centerIn: parent; text: "📑"; font.pixelSize: 12; color: root.viewMode === "list" ? "#38BDF8" : "#64748B" }
                         MouseArea {
                             anchors.fill: parent
+                            hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
                             onClicked: root.viewMode = "list"
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 250
+                            ToolTip.text: "List View\nDisplay detailed file information: names, item counts, sizes, and modified dates"
                         }
                     }
                 }
@@ -529,6 +543,9 @@ Item {
                         hoverEnabled: true
                         cursorShape: root.breadcrumbs.length > 1 ? Qt.PointingHandCursor : Qt.ArrowCursor
                         onClicked: navigateUp()
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 250
+                        ToolTip.text: root.breadcrumbs.length > 1 ? ("Go up to: " + (root.breadcrumbs.length >= 2 ? root.breadcrumbs[root.breadcrumbs.length - 2].path : "parent directory")) : "Already at root level"
                     }
                 }
 
@@ -558,6 +575,9 @@ Item {
                             hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
                             onClicked: navigateTo(modelData.path)
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 250
+                            ToolTip.text: "Switch to drive " + (modelData.name || modelData.path)
                         }
                     }
                 }
@@ -605,6 +625,9 @@ Item {
                                         hoverEnabled: true
                                         cursorShape: Qt.PointingHandCursor
                                         onClicked: navigateTo(modelData.path)
+                                        ToolTip.visible: containsMouse
+                                        ToolTip.delay: 250
+                                        ToolTip.text: "Navigate to " + modelData.path
                                     }
                                 }
 
@@ -646,7 +669,15 @@ Item {
                         font.weight: 600
                         color: root.activeCategory === "all" ? "#0F172A" : "#94A3B8"
                     }
-                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.activeCategory = "all" }
+                    MouseArea {
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.activeCategory = "all"
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 250
+                        ToolTip.text: "Show all items in this folder (" + root.rawItems.length + " total)"
+                    }
                 }
 
                 // Folders
@@ -663,7 +694,15 @@ Item {
                         font.weight: 600
                         color: root.activeCategory === "folders" ? "#0F172A" : "#94A3B8"
                     }
-                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.activeCategory = "folders" }
+                    MouseArea {
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.activeCategory = "folders"
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 250
+                        ToolTip.text: "Show only subdirectories (" + root.folderCount + " folders)"
+                    }
                 }
 
                 // Images
@@ -680,7 +719,15 @@ Item {
                         font.weight: 600
                         color: root.activeCategory === "images" ? "#FFFFFF" : "#94A3B8"
                     }
-                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.activeCategory = "images" }
+                    MouseArea {
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.activeCategory = "images"
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 250
+                        ToolTip.text: "Show only images: JPG, PNG, GIF, WebP, SVG, BMP (" + root.imageCount + " images)"
+                    }
                 }
 
                 // Videos
@@ -697,7 +744,15 @@ Item {
                         font.weight: 600
                         color: root.activeCategory === "videos" ? "#FFFFFF" : "#94A3B8"
                     }
-                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.activeCategory = "videos" }
+                    MouseArea {
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.activeCategory = "videos"
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 250
+                        ToolTip.text: "Show only videos: MP4, MKV, WebM, MOV, AVI (" + root.videoCount + " videos)"
+                    }
                 }
 
                 // Archives
@@ -714,7 +769,15 @@ Item {
                         font.weight: 600
                         color: root.activeCategory === "archives" ? "#0F172A" : "#94A3B8"
                     }
-                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.activeCategory = "archives" }
+                    MouseArea {
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.activeCategory = "archives"
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 250
+                        ToolTip.text: "Show only compressed archives: ZIP, RAR, 7Z, TAR, GZ (" + root.archiveCount + " archives)"
+                    }
                 }
 
                 // Audio
@@ -731,7 +794,15 @@ Item {
                         font.weight: 600
                         color: root.activeCategory === "audio" ? "#0F172A" : "#94A3B8"
                     }
-                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.activeCategory = "audio" }
+                    MouseArea {
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.activeCategory = "audio"
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 250
+                        ToolTip.text: "Show only audio tracks: MP3, FLAC, WAV, OGG, M4A (" + root.audioCount + " audio files)"
+                    }
                 }
             }
 
@@ -778,11 +849,15 @@ Item {
                         color: "#94A3B8"
                         MouseArea {
                             anchors.fill: parent
+                            hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
                             onClicked: {
                                 searchInput.text = ""
                                 root.searchFilter = ""
                             }
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 250
+                            ToolTip.text: "Clear search filter"
                         }
                     }
                 }
@@ -924,6 +999,24 @@ Item {
                                 }
                             }
                         }
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 350
+                        ToolTip.text: {
+                            var tip = (modelData.is_dir ? "📁 " : "📄 ") + (modelData.name || "")
+                            if (modelData.is_dir) {
+                                tip += "\n" + root.formatFolderSubtitle(modelData)
+                                tip += "\n• Click or Double-click to open folder"
+                            } else {
+                                tip += "\nSize: " + root.formatBytes(modelData.size) + "\nModified: " + root.formatDate(modelData.mtime)
+                                var cat = root.getCategory(modelData.ext)
+                                if (cat === "image" || cat === "video" || cat === "audio") {
+                                    tip += "\n• Click or Double-click to preview in Lightbox"
+                                } else {
+                                    tip += "\n• Double-click to open in default app"
+                                }
+                            }
+                            return tip
+                        }
                     }
                 }
             }
@@ -1038,6 +1131,24 @@ Item {
                                     openLightbox(modelData)
                                 }
                             }
+                        }
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 350
+                        ToolTip.text: {
+                            var tip = (modelData.is_dir ? "📁 " : "📄 ") + (modelData.name || "")
+                            if (modelData.is_dir) {
+                                tip += "\n" + root.formatFolderSubtitle(modelData)
+                                tip += "\n• Click or Double-click to open folder"
+                            } else {
+                                tip += "\nSize: " + root.formatBytes(modelData.size) + "\nModified: " + root.formatDate(modelData.mtime)
+                                var cat = root.getCategory(modelData.ext)
+                                if (cat === "image" || cat === "video" || cat === "audio") {
+                                    tip += "\n• Click or Double-click to preview in Lightbox"
+                                } else {
+                                    tip += "\n• Double-click to open in default app"
+                                }
+                            }
+                            return tip
                         }
                     }
                 }
