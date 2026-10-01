@@ -2087,6 +2087,13 @@ SmoothFlickable {
                     onCheckedChanged: if (root.bridge) root.bridge.skipRetry404 = checked
                 }
 
+                StyledCheckBox {
+                    text: tr("opt_watchlist_apply_global", "Apply current global settings to Watchlist updates")
+                    tooltip: tr("opt_watchlist_apply_global_tip", "When queueing downloads from the Watchlist, use your active global download settings (naming templates, folder structure, compression, filters) instead of frozen creator snapshots")
+                    checked: root.bridge ? root.bridge.watchlistApplyGlobalSettings : true
+                    onCheckedChanged: if (root.bridge) root.bridge.watchlistApplyGlobalSettings = checked
+                }
+
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 10

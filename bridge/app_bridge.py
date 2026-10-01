@@ -166,6 +166,7 @@ class AppBridge(QObject):
     watchlistCheckFinished    = Signal(int)  # total new posts found
     watchlistArtistChecking   = Signal(str, str, bool) # (userId, service, isChecking)
     watchlistArtistChecked    = Signal(str, str, int)  # (userId, service, newPostCount)
+    watchlistApplyGlobalSettingsChanged = Signal()
 
     # Link Vault signals
     linkVaultChanged          = Signal()
@@ -351,6 +352,7 @@ class AppBridge(QObject):
         self._watchlist_pending_updates: Dict[Tuple[str, str], Tuple[str, str]] = {}
         self._watchlist_result_signal_connected = False
         self._watchlistResultSignal.connect(self._handle_watchlist_result, Qt.QueuedConnection)
+        self._watchlist_apply_global_settings = bool(saved_settings.get("watchlist_apply_global_settings", True))
 
         # Bulk Decompressor
         self._decompressor_bridge = DecompressorBridge(self._watchlist_manager, self, self)
@@ -1797,6 +1799,18 @@ class AppBridge(QObject):
     @Property(QObject, constant=True)
     def watchlistModel(self) -> WatchlistModel:
         return self._watchlist_model
+
+    @Property(bool, notify=watchlistApplyGlobalSettingsChanged)
+    def watchlistApplyGlobalSettings(self) -> bool:
+        return self._watchlist_apply_global_settings
+
+    @watchlistApplyGlobalSettings.setter
+    def watchlistApplyGlobalSettings(self, val: bool):
+        b_val = bool(val)
+        if self._watchlist_apply_global_settings != b_val:
+            self._watchlist_apply_global_settings = b_val
+            self.watchlistApplyGlobalSettingsChanged.emit()
+            self.saveSettings()
 
     @Property(QObject, constant=True)
     def decompressorBridge(self) -> DecompressorBridge:
@@ -4432,7 +4446,8 @@ class AppBridge(QObject):
             "telegram_safety_acknowledged": self._telegram_safety_acknowledged,
             "telegram_liability_acknowledged": self._telegram_liability_acknowledged,
             "skip_retry_404": self._skip_retry_404,
-            "group_file_type": self._group_file_type
+            "group_file_type": self._group_file_type,
+            "watchlist_apply_global_settings": self._watchlist_apply_global_settings
         }
         self.session_manager.save_settings(settings_dict, silent=True)
 
@@ -5102,7 +5117,10 @@ class AppBridge(QObject):
         # Standard single-drive fallback
         target = (getattr(entry, "download_dir", "") or "").strip()
         if target:
-            return self.resolve_artist_download_dir_for_folder(target, entry.creator_name or entry.user_id, entry.service)
+            if os.path.exists(target):
+                return self.resolve_artist_download_dir_for_folder(target, entry.creator_name or entry.user_id, entry.service)
+            elif not self._watchlist_apply_global_settings:
+                return self.resolve_artist_download_dir_for_folder(target, entry.creator_name or entry.user_id, entry.service)
 
         base_dir = self._download_dir or os.path.join(os.path.expanduser("~"), "Downloads", "KemonoDownloads")
         return os.path.join(base_dir, expected_folder)
@@ -5152,9 +5170,156 @@ class AppBridge(QObject):
         return fallback_dir or (os.path.dirname(sample_path) if sample_path else self._download_dir)
 
     @Slot(str, str)
+    def _get_effective_watchlist_options(self, entry) -> FilterOptions:
+        """
+        Determines the FilterOptions to use for a watchlist download:
+        - If watchlistApplyGlobalSettings is True: returns current global UI options with
+          transient search/date filters cleared so watchlist cutoff dates apply cleanly.
+        - If False: merges entry.options over current global options to preserve legacy
+          creator overrides without falling back to hardcoded defaults for newly added keys.
+        """
+        from core.filter_engine import FilterOptions
+        if self._watchlist_apply_global_settings:
+            options = self._get_filter_options()
+            options.date_after = ""
+            options.date_before = ""
+            options.page_start = 1
+            options.page_end = 999999
+            options.characters = ""
+            return options
+        elif getattr(entry, "options", None):
+            base_dict = self._get_filter_options().to_dict()
+            base_dict.update(entry.options)
+            base_dict["date_after"] = ""
+            base_dict["date_before"] = ""
+            base_dict["page_start"] = 1
+            base_dict["page_end"] = 999999
+            base_dict["characters"] = ""
+            return FilterOptions.from_dict(base_dict)
+        else:
+            options = self._get_filter_options()
+            options.date_after = ""
+            options.date_before = ""
+            options.page_start = 1
+            options.page_end = 999999
+            options.characters = ""
+            return options
+
+    def _process_watchlist_entry_download(self, entry, postIds: Optional[list] = None):
+        """Worker logic to fetch, structure, and append download tasks for a single watchlist entry."""
+        new_posts = self._watchlist_manager.get_posts_since(entry, self.api_client)
+        if not new_posts:
+            logger.info(f"No new posts found for {entry.creator_name!r}.", category="watchlist")
+            if entry.new_post_count > 0:
+                entry.new_post_count = 0
+                entry.cached_new_posts = []
+                self._watchlist_manager.save()
+                self._watchlist_model.update_new_counts()
+                self._watchlist_model.refresh()
+                self.watchlistChanged.emit()
+            return
+
+        # If specific postIds were requested (selective download), filter to only those
+        if postIds:
+            p_set = set(str(pid) for pid in postIds)
+            new_posts = [p for p in new_posts if str(p.get("id")) in p_set]
+            if not new_posts:
+                logger.info(f"None of the requested posts for {entry.creator_name!r} were available.", category="watchlist")
+                self._watchlist_manager.resolve_posts(entry.user_id, entry.service, post_ids=list(p_set))
+                self._watchlist_model.update_new_counts()
+                self._watchlist_model.refresh()
+                self.watchlistChanged.emit()
+                return
+
+        # Extract latest post id and date evaluated in this batch
+        latest_p = new_posts[-1]
+        latest_pid = str(latest_p.get("id", ""))
+        pub = latest_p.get("published") or latest_p.get("added") or ""
+        if isinstance(pub, (int, float)):
+            try:
+                import datetime
+                latest_pdate = datetime.datetime.fromtimestamp(pub).strftime("%Y-%m-%d")
+            except Exception:
+                latest_pdate = ""
+        else:
+            p_str = str(pub)
+            latest_pdate = p_str.split("T")[0] if "T" in p_str else (p_str[:10] if p_str else "")
+
+        options = self._get_effective_watchlist_options(entry)
+
+        artist_folder = self.resolve_artist_download_dir(entry)
+        # Ensure the entry knows its download_dir and download_dirs
+        if not entry.download_dir:
+            entry.download_dir = artist_folder
+        if hasattr(entry, "download_dirs") and isinstance(entry.download_dirs, list):
+            if artist_folder not in entry.download_dirs:
+                entry.download_dirs.insert(0, artist_folder)
+        self._watchlist_manager.save()
+        self._watchlist_model.refresh()
+        self.watchlistChanged.emit()
+
+        tasks = self.downloader.build_tasks_from_posts(
+            posts=new_posts,
+            creator_name=entry.creator_name,
+            service=entry.service,
+            domain=entry.domain,
+            base_dir=self._download_dir,
+            options=options,
+            batch_id=f"watchlist_{entry.service}_{entry.user_id}",
+            artist_dir=artist_folder,
+            user_id=entry.user_id
+        )
+
+        # Auto-harvest new posts' cloud links into permanent Link Vault
+        self._auto_harvest_posts_to_vault(
+            posts=new_posts,
+            creator_name=entry.creator_name,
+            domain=entry.domain,
+            service=entry.service,
+            user_id=entry.user_id
+        )
+        if tasks:
+            if not postIds and (latest_pdate or latest_pid):
+                self._watchlist_pending_updates[(entry.service.lower(), entry.user_id.lower())] = (latest_pid, latest_pdate)
+            self._appendTasksSignal.emit(tasks)
+            self.downloader.append_tasks(tasks, options=options, cookie_str=self._cookie_string)
+            if not self._is_downloading and self.downloader._is_running:
+                self._is_downloading = True
+                self.isDownloadingChanged.emit()
+                self._status_text = f"Downloading updates for {entry.creator_name}..."
+                self.statusTextChanged.emit()
+            logger.success(
+                f"Watchlist: queued {len(tasks)} new file(s) for {entry.creator_name!r} at {artist_folder}.",
+                category="watchlist"
+            )
+        else:
+            # All files across new_posts were already archived, already exist on disk, or were filtered out.
+            req_pids = [str(pid) for pid in postIds] if postIds else None
+            self._watchlist_manager.resolve_posts(
+                entry.user_id,
+                entry.service,
+                post_ids=req_pids,
+                latest_post_id=latest_pid,
+                latest_post_date=latest_pdate
+            )
+            self._watchlist_model.update_new_counts()
+            self._watchlist_model.refresh()
+            self.watchlistChanged.emit()
+            if req_pids:
+                logger.info(
+                    f"Watchlist: selected post(s) for {entry.creator_name!r} are already archived or downloaded. Review drawer updated.",
+                    category="watchlist"
+                )
+            else:
+                logger.info(
+                    f"Watchlist: all {len(new_posts)} new post(s) for {entry.creator_name!r} are already archived or downloaded. Marked as up to date.",
+                    category="watchlist"
+                )
+
+    @Slot(str, str)
     @Slot(str, str, "QVariantList")
     def downloadNewPosts(self, userId: str, service: str, postIds: Optional[list] = None):
-        """Queue only posts newer than the last_post_date for the given artist, reusing saved settings."""
+        """Queue only posts newer than the last_post_date for the given artist."""
         entry = self._watchlist_manager._find(userId, service)
         if not entry:
             logger.warning(f"downloadNewPosts: entry not found for {userId}/{service}", category="watchlist")
@@ -5164,133 +5329,27 @@ class AppBridge(QObject):
             return
 
         def _run():
-            new_posts = self._watchlist_manager.get_posts_since(entry, self.api_client)
-            if not new_posts:
-                logger.info(f"No new posts found for {entry.creator_name!r}.", category="watchlist")
-                if entry.new_post_count > 0:
-                    entry.new_post_count = 0
-                    entry.cached_new_posts = []
-                    self._watchlist_manager.save()
-                    self._watchlist_model.update_new_counts()
-                    self._watchlist_model.refresh()
-                    self.watchlistChanged.emit()
-                return
-
-            # If specific postIds were requested (selective download), filter to only those
-            if postIds:
-                p_set = set(str(pid) for pid in postIds)
-                new_posts = [p for p in new_posts if str(p.get("id")) in p_set]
-                if not new_posts:
-                    logger.info(f"None of the requested posts for {entry.creator_name!r} were available.", category="watchlist")
-                    self._watchlist_manager.resolve_posts(entry.user_id, entry.service, post_ids=list(p_set))
-                    self._watchlist_model.update_new_counts()
-                    self._watchlist_model.refresh()
-                    self.watchlistChanged.emit()
-                    return
-
-            # Extract latest post id and date evaluated in this batch
-            latest_p = new_posts[-1]
-            latest_pid = str(latest_p.get("id", ""))
-            pub = latest_p.get("published") or latest_p.get("added") or ""
-            if isinstance(pub, (int, float)):
-                try:
-                    import datetime
-                    latest_pdate = datetime.datetime.fromtimestamp(pub).strftime("%Y-%m-%d")
-                except Exception:
-                    latest_pdate = ""
-            else:
-                p_str = str(pub)
-                latest_pdate = p_str.split("T")[0] if "T" in p_str else (p_str[:10] if p_str else "")
-
-            # Reuse saved settings if present, otherwise fallback to current UI settings
-            from core.filter_engine import FilterOptions
-            if entry.options:
-                options = FilterOptions.from_dict(entry.options)
-            else:
-                options = self._get_filter_options()
-
-            artist_folder = self.resolve_artist_download_dir(entry)
-            # Ensure the entry knows its download_dir and download_dirs
-            if not entry.download_dir:
-                entry.download_dir = artist_folder
-            if hasattr(entry, "download_dirs") and isinstance(entry.download_dirs, list):
-                if artist_folder not in entry.download_dirs:
-                    entry.download_dirs.insert(0, artist_folder)
-            self._watchlist_manager.save()
-            self._watchlist_model.refresh()
-            self.watchlistChanged.emit()
-
-            tasks = self.downloader.build_tasks_from_posts(
-                posts=new_posts,
-                creator_name=entry.creator_name,
-                service=entry.service,
-                domain=entry.domain,
-                base_dir=self._download_dir,
-                options=options,
-                batch_id=f"watchlist_{entry.service}_{entry.user_id}",
-                artist_dir=artist_folder,
-                user_id=entry.user_id
-            )
-
-            # Auto-harvest new posts' cloud links into permanent Link Vault
-            self._auto_harvest_posts_to_vault(
-                posts=new_posts,
-                creator_name=entry.creator_name,
-                domain=entry.domain,
-                service=entry.service,
-                user_id=entry.user_id
-            )
-            if tasks:
-                if not postIds and (latest_pdate or latest_pid):
-                    self._watchlist_pending_updates[(entry.service.lower(), entry.user_id.lower())] = (latest_pid, latest_pdate)
-                self._appendTasksSignal.emit(tasks)
-                self.downloader.append_tasks(tasks, options=options, cookie_str=self._cookie_string)
-                if not self._is_downloading and self.downloader._is_running:
-                    self._is_downloading = True
-                    self.isDownloadingChanged.emit()
-                    self._status_text = f"Downloading updates for {entry.creator_name}..."
-                    self.statusTextChanged.emit()
-                logger.success(
-                    f"Watchlist: queued {len(tasks)} new file(s) for {entry.creator_name!r} at {artist_folder}.",
-                    category="watchlist"
-                )
-            else:
-                # All files across new_posts were already archived, already exist on disk, or were filtered out.
-                # Mark them as resolved so the artist doesn't get stuck with permanent update notifications.
-                req_pids = [str(pid) for pid in postIds] if postIds else None
-                self._watchlist_manager.resolve_posts(
-                    entry.user_id,
-                    entry.service,
-                    post_ids=req_pids,
-                    latest_post_id=latest_pid,
-                    latest_post_date=latest_pdate
-                )
-                self._watchlist_model.update_new_counts()
-                self._watchlist_model.refresh()
-                self.watchlistChanged.emit()
-                if req_pids:
-                    logger.info(
-                        f"Watchlist: selected post(s) for {entry.creator_name!r} are already archived or downloaded. Review drawer updated.",
-                        category="watchlist"
-                    )
-                else:
-                    logger.info(
-                        f"Watchlist: all {len(new_posts)} new post(s) for {entry.creator_name!r} are already archived or downloaded. Marked as up to date.",
-                        category="watchlist"
-                    )
+            self._process_watchlist_entry_download(entry, postIds)
 
         threading.Thread(target=_run, daemon=True).start()
 
     @Slot()
     def downloadAllNewPosts(self):
-        """Batch download new posts for all watchlist artists with pending updates."""
+        """Batch download new posts for all watchlist artists with pending updates sequentially."""
         updated_entries = [e for e in self._watchlist_manager.entries if (getattr(e, "new_post_count", 0) or 0) > 0]
         if not updated_entries:
             logger.info("No watchlist artists have pending updates.", category="watchlist")
             return
         logger.info(f"Queueing updates for {len(updated_entries)} watchlist creator(s)...", category="watchlist")
-        for e in updated_entries:
-            self.downloadNewPosts(e.user_id, e.service)
+
+        def _run_batch():
+            for e in updated_entries:
+                try:
+                    self._process_watchlist_entry_download(e)
+                except Exception as err:
+                    logger.error(f"Error downloading updates for {e.creator_name!r}: {err}", category="watchlist")
+
+        threading.Thread(target=_run_batch, daemon=True).start()
 
     @Slot(str, result=bool)
     @Slot(str, str, result=bool)

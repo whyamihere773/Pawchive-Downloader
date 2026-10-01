@@ -383,6 +383,8 @@
   "opt_skip_retry_404_tip": "Exclude HTTP 404 (Not Found) errors from retries and hide them from the retry window",
   "opt_subfolder_per_post": "Subfolder per post",
   "opt_subfolder_per_post_tip": "Organize downloads into subfolders named after each post",
+  "opt_watchlist_apply_global": "Apply current global settings to Watchlist updates",
+  "opt_watchlist_apply_global_tip": "When queueing downloads from the Watchlist, use your active global download settings (naming templates, folder structure, compression, filters) instead of frozen creator snapshots",
   "opt_tag_folder_mode": "Sort by Tag Folder",
   "opt_tag_folder_mode_tip": "(Pawchive & cum.st only) Groups downloaded files into subfolders named after the post's primary tag",
   "opt_thumbnails_only": "Download thumbnails only",
