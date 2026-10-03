@@ -5,6 +5,7 @@ multipart acceleration, WebP conversion, retry queues, and telemetry reporting.
 """
 
 import os
+import traceback
 import sys
 import shutil
 import re
@@ -16,8 +17,8 @@ import threading
 import requests
 import urllib.parse
 from collections import deque, defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Dict, Any, Optional, Callable
+from concurrent.futures import ThreadPoolExecutor
+from typing import List, Dict, Any, Optional, Callable, Set, Tuple
 from PIL import Image
 
 # Ensure project root is on sys.path even when executed directly
@@ -27,10 +28,110 @@ if __name__ == "__main__" or "core" not in sys.modules:
         sys.path.insert(0, project_root)
 
 from core.logger import logger
-from core.filter_engine import FilterEngine, FilterOptions, MediaTypes
+from core.filter_engine import FilterEngine, FilterOptions, MediaTypes, fit_path_for_windows
+from core.providers import cookie_for_url, is_disabled, disabled_message, provider_for_host, KEMONO, COOMER, PAWCHIVE
+from core.atomic_io import replace_file, atomic_write_text
+from core.file_order import order_files
 from core.known_manager import KnownManager
 from core.session_manager import SessionManager
 from core.archive_manager import ArchiveManager
+
+# Services hosted on Coomer rather than Kemono (used to pick the right mirror for Pawchive files)
+COOMER_SERVICES = {"onlyfans", "fansly", "candfans"}
+
+
+# Sites that embed Vimeo players: domain-locked embeds only play for the creator's own site
+EMBED_REFERERS = {
+    "patreon": "https://www.patreon.com/",
+    "fanbox": "https://www.fanbox.cc/",
+    "fantia": "https://fantia.jp/",
+    "subscribestar": "https://www.subscribestar.com/",
+    "gumroad": "https://gumroad.com/",
+    "boosty": "https://boosty.to/",
+}
+
+_NOT_A_VIDEO_ERRORS = ("unsupported url", "no video", "there's no video", "no media found", "not a video", "has no video")
+
+
+def is_not_a_video_error(msg: str) -> bool:
+    """yt-dlp couldn't find a video at the link at all (a web page, a picture post…)."""
+    m = (msg or "").lower()
+    return any(k in m for k in _NOT_A_VIDEO_ERRORS)
+
+
+def is_preview_url(url: str) -> bool:
+    """Thumbnail-server URLs: a small preview copy, never the full-size original."""
+    return "/thumbnail/" in (url or "")
+
+
+def needs_full_size_upgrade(existing_size: int, server_size: int, target_path: str, options) -> bool:
+    """An existing file is a small / preview copy that should be replaced by the full-size one."""
+    if options is None or getattr(options, "download_thumbnails_only", False):
+        return False
+    if server_size and server_size > 0 and existing_size < server_size * 0.75:
+        return True
+    if getattr(options, "redownload_small_files", False):
+        min_lim, _ = FilterEngine.get_effective_size_limits(options)
+        threshold = min_lim if min_lim else (150 * 1024)
+        ext = os.path.splitext((target_path or "").lower())[1]
+        return existing_size < threshold and (ext in MediaTypes.IMAGE_EXTS or ext == ".webp")
+    return False
+
+
+# Files download to "<name>.part" and get their real name only once complete, so a file under its
+# real name is always a finished one (an interrupted download used to look complete on the next run)
+PART_SUFFIX = ".part"
+
+_CONTACT_HEADERS = {
+    "X-Contact": "https://github.com/whyamihere773/Pawchive-Downloader",
+    "X-Client-Notice": (
+        "Pawchive Downloader user here! Love your site. If my client is ever causing server strain, "
+        "please open an issue on GitHub instead of a hard ban and I'll fix my request pacing immediately."
+    ),
+}
+
+_HASH_PATH_RE = re.compile(r"/[0-9a-f]{2}/[0-9a-f]{2}/([0-9a-f]{64})\.[^/?#]+(?:[?#]|$)", re.IGNORECASE)
+
+
+def content_hash_from_url(url: str) -> str:
+    """Kemono, Pawchive and Coomer store files as /ab/cd/<sha256>.<ext>: the name is the SHA-256 of the
+    file's content, which gives a free check that a download arrived complete and undamaged."""
+    if not url or is_preview_url(url) or provider_for_host(url) not in (KEMONO, COOMER, PAWCHIVE):
+        return ""
+    m = _HASH_PATH_RE.search(url.split("://", 1)[-1])
+    return m.group(1).lower() if m else ""
+
+
+def _fq(name: str) -> str:
+    """A file name for the ?f= link parameter ('#', '&', '%' etc. used to cut the link short)."""
+    return urllib.parse.quote(name, safe="")
+
+
+def _content_range(value: str):
+    """(start, total) from a Content-Range header; total is 0 when unknown."""
+    m = re.match(r"^\s*bytes\s+(?:(\d+)-\d+|\*)/(\d+|\*)\s*$", value or "", re.IGNORECASE)
+    if not m:
+        return None, 0
+    start = int(m.group(1)) if m.group(1) is not None else None
+    return start, (int(m.group(2)) if m.group(2).isdigit() else 0)
+
+
+def _remove_quietly(path: str) -> None:
+    try:
+        if path and os.path.exists(path):
+            os.remove(path)
+    except OSError:
+        pass
+
+
+def _write_post_info(path: str, content: str) -> None:
+    try:
+        if not os.path.exists(path):
+            atomic_write_text(path, content)
+    except Exception as ex:
+        logger.debug(f"Could not save {path}: {ex}", category="file")
+
+
 from services.multipart_downloader import download_multipart_file
 from services.link_extractor import LinkExtractor
 from services.ytdlp_manager import YtDlpManager
@@ -85,6 +186,9 @@ class DownloadTask:
         self.eta_str = "--"
         self.progress_pct = 0
         self.fallback_urls: List[str] = []
+        self._tried_urls: List[str] = []      # servers tried for this file (for the log)
+        self.used_preview = False   # True when only the small preview copy could be fetched
+        self.post_info_path = ""    # post_info.txt to write once this post's first file is saved
 
     @property
     def filename(self) -> str:
@@ -111,7 +215,11 @@ class DownloadTask:
             "telegram_message_id": getattr(self, "telegram_message_id", 0),
             "batch_id": getattr(self, "batch_id", ""),
             "post_url": getattr(self, "post_url", ""),
-            "post_date": getattr(self, "post_date", "")
+            "post_date": getattr(self, "post_date", ""),
+            "user_id": getattr(self, "user_id", ""),
+            "expected_sha256": getattr(self, "expected_sha256", ""),
+            "fallback_urls": list(getattr(self, "fallback_urls", []) or []),
+            "used_preview": bool(getattr(self, "used_preview", False)),
         }
 
     @classmethod
@@ -132,8 +240,11 @@ class DownloadTask:
             telegram_message_id=int(d.get("telegram_message_id", 0)),
             batch_id=d.get("batch_id", ""),
             post_url=d.get("post_url", ""),
-            post_date=d.get("post_date", "")
+            post_date=d.get("post_date", ""),
+            user_id=str(d.get("user_id", "") or "")
         )
+        t.fallback_urls = [u for u in (d.get("fallback_urls") or []) if isinstance(u, str)]
+        t.used_preview = bool(d.get("used_preview", False))
         t.downloaded_bytes = int(d.get("downloaded_bytes", 0))
         t.status = d.get("status", "pending")
         t.error_msg = d.get("error_msg", "")
@@ -176,6 +287,11 @@ class KemonoDownloader:
         self._worker_sessions_lock = threading.Lock()
         self._thread_local = threading.local()
         self._clean_cookie: str = ""
+        self._post_info_pending: Dict[str, str] = {}   # post_info.txt path -> text, written after the first file
+        self._dispatch_cursor = 0          # queue position where pending files started on the last scan
+        self._last_full_scan = 0.0
+        self._task_stats: Dict[str, float] = {}
+        self._task_stats_time = 0.0
 
         self.total_bytes = 0
         self.downloaded_bytes = 0
@@ -223,15 +339,8 @@ class KemonoDownloader:
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                 "Accept": "*/*"
             })
-            eff_cookie = clean_cookie or self._clean_cookie
-            if eff_cookie:
-                sess.headers["Cookie"] = eff_cookie
-            else:
-                sess.headers["X-Contact"] = "https://github.com/whyamihere773/Pawchive-Downloader"
-                sess.headers["X-Client-Notice"] = (
-                    "Pawchive Downloader user here! Love your site. If my client is ever causing server strain, "
-                    "please open an issue on GitHub instead of a hard ban and I'll fix my request pacing immediately."
-                )
+            # No Cookie here: the login cookie is added per request, only for the site it belongs to
+            # (it used to go to every host, Bunkr and other file servers included)
             self._thread_local.session = sess
             with self._worker_sessions_lock:
                 self._worker_sessions.add(sess)
@@ -351,7 +460,7 @@ class KemonoDownloader:
         self.adaptive_status_text = ""
         logger.info("Downloader state fully reset.", category="downloader")
 
-    def _save_recovery_checkpoint(self, options: Optional[FilterOptions] = None):
+    def _save_recovery_checkpoint(self, options: Optional[FilterOptions] = None, async_write: bool = False):
         """Persists current download tasks to the crash-proof recovery journal."""
         try:
             if not self.tasks:
@@ -362,7 +471,7 @@ class KemonoDownloader:
             eff_opts = options or self.current_options
             opts_dict = vars(eff_opts) if eff_opts else {}
             status = "paused" if self.is_paused else ("cancelled" if self._cancel_event.is_set() else "in_progress")
-            rec.save_checkpoint(tasks=self.tasks, settings=opts_dict, status=status)
+            rec.save_checkpoint(tasks=self.tasks, settings=opts_dict, status=status, async_write=async_write)
         except Exception as e:
             logger.debug(f"Could not persist recovery checkpoint: {e}", category="session")
 
@@ -497,6 +606,14 @@ class KemonoDownloader:
         """
         new_tasks = []
         self._unmatched_known_count = 0
+        self.last_build_cancelled = False
+        # cancel() bumps _session_id, so only a cancel issued during this build counts;
+        # a stale flag left over from an earlier cancelled scan must not abort it.
+        build_session_id = self._session_id
+
+        def _build_cancelled() -> bool:
+            return self._cancel_event.is_set() and self._session_id != build_session_id
+
         creator_clean = FilterEngine.clean_filesystem_text(creator_name, max_len=80, fallback="creator")
 
         # ── 1. Manga / Comic Mode Sorting ─────────────────────────────────────
@@ -518,11 +635,12 @@ class KemonoDownloader:
                 return (primary_tag, pub, pid)
             posts_to_process.sort(key=_post_tag_and_index_key)
 
-        # Smart character auto-discovery from posts
-        new_chars = self.known_manager.add_candidates_from_posts(posts_to_process)
+        # Character name discovery from post titles (reported only; nothing is added to the Known list)
+        new_chars = self.known_manager.find_candidates_in_posts(posts_to_process)
         if new_chars:
-            logger.info(
-                f"✨ Auto-learned {len(new_chars)} character(s) into Known list: {', '.join(new_chars[:6])}{'...' if len(new_chars) > 6 else ''}",
+            logger.debug(
+                f"Spotted {len(new_chars)} possible character name(s) in post titles (not added to Known list): "
+                f"{', '.join(new_chars[:6])}{'...' if len(new_chars) > 6 else ''}",
                 category="known"
             )
 
@@ -536,9 +654,12 @@ class KemonoDownloader:
         _batch_paths: Dict[str, Dict[str, Any]] = {}
         _batch_rel_paths: Dict[str, Set[str]] = defaultdict(set)
         _post_dup_counts: Dict[Tuple[str, str], int] = defaultdict(int)
+        build_post_infos: Dict[str, str] = {}
+        build_text_posts: Dict[str, str] = {}
 
         for post_idx, post in enumerate(posts_to_process, 1):
-            if self._cancel_event.is_set():
+            if _build_cancelled():
+                self.last_build_cancelled = True
                 logger.info("Task structuring cancelled by user.", category="downloader")
                 return []
 
@@ -633,7 +754,8 @@ class KemonoDownloader:
                     creator_prof = self.archive_manager.get_creator_character_profile(
                         service=service,
                         creator_id=creator_clean,
-                        creator_name=creator_clean
+                        creator_name=creator_clean,
+                        base_dirs=[d for d in {base_dir, base_root} if d]
                     )
 
                 matched_hierarchy = self.known_manager.find_matching_hierarchy(
@@ -719,11 +841,15 @@ class KemonoDownloader:
                 _pw_search_text += "\n" + post.get("comments_text")
             passwords = self.extract_passwords(_pw_search_text)
 
-            # Save post info / description archiver
+            # Post info / description archiver: prepared now, written once a file of the post is saved
+            # (planning used to create folders holding only post_info.txt for posts that were filtered
+            # out, skipped or cancelled)
+            post_task_start = len(new_tasks)
+            post_info_path = ""
+            post_info_content = ""
             if options.save_post_metadata:
                 try:
-                    os.makedirs(post_folder, exist_ok=True)
-                    info_path = os.path.join(post_folder, "post_info.txt")
+                    info_path = fit_path_for_windows(os.path.join(post_folder, "post_info.txt"))
                     if not os.path.exists(info_path):
                         tags_list = FilterEngine.normalize_tags(post.get("tags"))
                         tags_str = ", ".join(tags_list)
@@ -783,7 +909,7 @@ class KemonoDownloader:
                             info_content += f"Tags: {tags_str}\n"
 
                         if passwords:
-                            info_content += f"\n--- Detected Password(s) ---\n"
+                            info_content += "\n--- Detected Password(s) ---\n"
                             for pw in passwords:
                                 info_content += f"  {pw}\n"
 
@@ -793,24 +919,23 @@ class KemonoDownloader:
                             info_content += f"\n--- Comments ---\n{post.get('comments_text')}\n"
 
                         if all_file_names:
-                            info_content += f"\n--- Attached Files ---\n"
+                            info_content += "\n--- Attached Files ---\n"
                             for fn in all_file_names:
                                 info_content += f"  {fn}\n"
 
                         if ext_links_flat:
-                            info_content += f"\n--- External Links ---\n"
+                            info_content += "\n--- External Links ---\n"
                             for lnk in ext_links_flat:
                                 info_content += f"  {lnk}\n"
 
                         if embed_urls:
-                            info_content += f"\n--- Embedded Media ---\n"
+                            info_content += "\n--- Embedded Media ---\n"
                             for eu in embed_urls:
                                 info_content += f"  {eu}\n"
 
-                        with open(info_path, "w", encoding="utf-8") as inf_f:
-                            inf_f.write(info_content)
+                        post_info_path, post_info_content = info_path, info_content
                 except Exception as ex:
-                    logger.debug(f"Could not save post_info.txt for {post_id}: {ex}", category="file")
+                    logger.debug(f"Could not prepare post_info.txt for {post_id}: {ex}", category="file")
 
             # Automatically record external cloud links & embeds in download archive database
             if self.archive_manager and self.archive_manager.is_enabled:
@@ -909,6 +1034,8 @@ class KemonoDownloader:
                             seen_post_file_keys[k] = len(files_to_process)
                         files_to_process.append(dict(att))
 
+            post_file_count = len(files_to_process)
+
             # Scan inline content images if enabled
             if options.scan_content_images:
                 allowed_exts = FilterEngine.parse_extensions_list(options.exact_extensions) if options.exact_extensions else None
@@ -923,6 +1050,16 @@ class KemonoDownloader:
                         if k:
                             seen_post_file_keys[k] = len(files_to_process)
                         files_to_process.append(ci_dict)
+
+            # "File order in posts": decides which file is #1. The post's own files and the pictures
+            # embedded in its text are ordered separately, so the post's files are numbered the same
+            # way the Post Selection window lists them.
+            file_order = getattr(options, "file_order", "posted")
+            if file_order != "posted" and len(files_to_process) > 1:
+                def _order_name(f):
+                    return f.get("name") or f.get("originalFilename") or ""
+                files_to_process = (order_files(files_to_process[:post_file_count], file_order, _order_name)
+                                    + order_files(files_to_process[post_file_count:], file_order, _order_name))
 
             # Process each file attachment
             for file_idx, fobj in enumerate(files_to_process, 1):
@@ -1077,9 +1214,9 @@ class KemonoDownloader:
                     elif "pawchive" in orig_host:
                         effective_domain = "pawchive.pw"
                     elif "coomer" in orig_host:
-                        effective_domain = "coomer.su"
+                        effective_domain = "coomer.st"
                     elif "kemono" in orig_host:
-                        effective_domain = "kemono.su"
+                        effective_domain = "kemono.cr"
 
                 is_preview_only = bool(fobj.get("preview_only"))
                 candidate_urls = []
@@ -1088,13 +1225,14 @@ class KemonoDownloader:
                     # When download_thumbnails_only is enabled or an attachment is flagged preview_only,
                     # strictly query thumbnail CDN servers — never pull the heavy full-sized original file.
                     if "pawchive" in effective_domain:
-                        candidate_urls.append(f"https://img.pawchive.pw/thumbnail/data{clean_rel}")
+                        thumb_host = "img.pawchive.pw"
                     elif "cum.st" in effective_domain:
-                        candidate_urls.append(f"https://img.cum.st/thumbnail/data{clean_rel}")
+                        thumb_host = "img.cum.st"
                     elif "coomer" in effective_domain:
-                        candidate_urls.append(f"https://img.coomer.su/thumbnail/data{clean_rel}")
+                        thumb_host = "img.cum.st" if is_disabled("coomer.st") else "img.coomer.st"
                     else:
-                        candidate_urls.append(f"https://img.kemono.su/thumbnail/data{clean_rel}")
+                        thumb_host = "img.pawchive.pw" if is_disabled("kemono.cr") else "img.kemono.cr"
+                    candidate_urls.append(f"https://{thumb_host}/thumbnail/data{clean_rel}")
 
                     # If this is a video file, the thumbnail is served as an image, so adjust filename extension
                     _, orig_ext = os.path.splitext(sanitized_name.lower())
@@ -1118,7 +1256,7 @@ class KemonoDownloader:
 
                         # If original_url is not a thumbnail, try it first
                         if original_url and not is_thumbnail_url:
-                            candidate_urls.append(f"{original_url}?f={sanitized_name}")
+                            candidate_urls.append(f"{original_url}?f={_fq(sanitized_name)}")
 
                         fallback_thumb_url = None
 
@@ -1130,32 +1268,44 @@ class KemonoDownloader:
                                     if u_ev not in candidate_urls:
                                         candidate_urls.append(u_ev)
                             elif not original_url or is_thumbnail_url:
-                                candidate_urls.append(f"https://cum.st/data{clean_rel}?f={sanitized_name}")
+                                candidate_urls.append(f"https://cum.st/data{clean_rel}?f={_fq(sanitized_name)}")
                             # Fallbacks
                             candidate_urls.append(f"https://cum.st/data{clean_rel}")
                             candidate_urls.append(f"https://img.cum.st/data{clean_rel}")
                             fallback_thumb_url = f"https://img.cum.st/thumbnail/data{clean_rel}"
                         elif "pawchive" in effective_domain:
-                            # Only use confirmed live Pawchive mirrors
-                            full_url = f"https://file.pawchive.pw/data{clean_rel}?f={sanitized_name}"
-                            if full_url not in candidate_urls:
-                                candidate_urls.append(full_url)
+                            # Pawchive first; then Kemono / Coomer, which hold the same files (same hash
+                            # paths). Posts Pawchive imported from Kemono but hasn't copied yet
+                            # (origin "kemono" / preview_state "pending") only exist there, so they go first.
+                            full_url = f"https://file.pawchive.pw/data{clean_rel}?f={_fq(sanitized_name)}"
+                            mirror_host = "coomer.st" if service.lower() in COOMER_SERVICES else "kemono.cr"
+                            mirror_url = f"https://{mirror_host}/data{clean_rel}?f={_fq(sanitized_name)}"
+                            not_copied_yet = str(post.get("origin", "")).lower() in ("kemono", "coomer") or str(post.get("preview_state", "")).lower() == "pending"
+                            order = [mirror_url, full_url] if not_copied_yet else [full_url, mirror_url]
+                            for u in order:
+                                if u not in candidate_urls and not is_disabled(u):
+                                    candidate_urls.append(u)
                             fallback_thumb_url = f"https://img.pawchive.pw/thumbnail/data{clean_rel}"
                         elif "coomer" in effective_domain:
-                            for sub in ["c1", "c2", "c3", "n1", "n2", "n3", "n4"]:
-                                u = f"https://{sub}.coomer.su/data{clean_rel}?f={sanitized_name}"
+                            # coomer.st/data/… redirects to the file server that holds the file.
+                            # While Coomer is switched off, cum.st's file server is tried instead.
+                            coomer_hosts = ["coomer.st", "n1.coomer.st", "n2.coomer.st", "n3.coomer.st", "n4.coomer.st"]
+                            if is_disabled("coomer.st"):
+                                coomer_hosts = ["cum.st"]
+                            for host in coomer_hosts:
+                                u = f"https://{host}/data{clean_rel}?f={_fq(sanitized_name)}"
                                 if u not in candidate_urls:
                                     candidate_urls.append(u)
-                            fallback_thumb_url = f"https://img.coomer.su/thumbnail/data{clean_rel}"
-                        else:  # kemono.su / default
-                            for sub in ["c1", "c2", "c3", "n1", "n2", "n3", "n4"]:
-                                u = f"https://{sub}.kemono.su/data{clean_rel}?f={sanitized_name}"
+                            fallback_thumb_url = f"https://{'img.cum.st' if is_disabled('coomer.st') else 'img.coomer.st'}/thumbnail/data{clean_rel}"
+                        else:  # kemono / default — kemono.cr/data/… redirects to the right file server
+                            for host in ["kemono.cr", "n1.kemono.cr", "n2.kemono.cr", "n3.kemono.cr", "n4.kemono.cr"]:
+                                u = f"https://{host}/data{clean_rel}?f={_fq(sanitized_name)}"
                                 if u not in candidate_urls:
                                     candidate_urls.append(u)
-                            paw_u = f"https://file.pawchive.pw/data{clean_rel}?f={sanitized_name}"
+                            paw_u = f"https://file.pawchive.pw/data{clean_rel}?f={_fq(sanitized_name)}"
                             if paw_u not in candidate_urls:
                                 candidate_urls.append(paw_u)
-                            fallback_thumb_url = f"https://img.kemono.su/thumbnail/data{clean_rel}"
+                            fallback_thumb_url = f"https://{'img.pawchive.pw' if is_disabled('kemono.cr') else 'img.kemono.cr'}/thumbnail/data{clean_rel}"
 
                         # Only append thumbnail fallback if enabled in options
                         allow_thumb_fallback = getattr(options, "fallback_to_thumbnails", False)
@@ -1163,11 +1313,13 @@ class KemonoDownloader:
                             if fallback_thumb_url and fallback_thumb_url not in candidate_urls:
                                 candidate_urls.append(fallback_thumb_url)
                             if is_thumbnail_url and original_url and original_url not in candidate_urls:
-                                candidate_urls.append(f"{original_url}?f={sanitized_name}")
+                                candidate_urls.append(f"{original_url}?f={_fq(sanitized_name)}")
 
-                file_url = candidate_urls[0] if candidate_urls else f"https://file.pawchive.pw/data{clean_rel}?f={sanitized_name}"
+                # Switched-off sites (Kemono / Coomer) are never contacted
+                candidate_urls = [u for u in candidate_urls if not is_disabled(u)]
+                file_url = candidate_urls[0] if candidate_urls else f"https://file.pawchive.pw/data{clean_rel}?f={_fq(sanitized_name)}"
                 target_dest_dir = _get_dest_folder(sanitized_name)
-                target_path = os.path.join(target_dest_dir, sanitized_name)
+                target_path = fit_path_for_windows(os.path.join(target_dest_dir, sanitized_name))
                 file_id = f"{post_id}_{clean_rel}"
 
                 # Resolve filename collisions: distinguish between duplicate attachments in the SAME post
@@ -1189,13 +1341,18 @@ class KemonoDownloader:
                     stem, ext = os.path.splitext(sanitized_name)
 
                     if prev_post_id != post_id:
-                        # Collision across DIFFERENT posts (e.g. subfolder_per_post is disabled)
-                        disambig_name = f"{stem} [{post_id}]{ext}"
-                        target_path = os.path.join(target_dest_dir, disambig_name)
+                        # Collision across DIFFERENT posts (e.g. subfolder_per_post is disabled).
+                        # Album "posts" use the file's link as their id: a link in a file name made
+                        # an invalid path, so ids that aren't short and plain become a short hash.
+                        pid_tag = str(post_id)
+                        if not re.fullmatch(r"[\w.-]{1,40}", pid_tag):
+                            pid_tag = hashlib.md5(pid_tag.encode("utf-8")).hexdigest()[:8]
+                        disambig_name = f"{stem} [{pid_tag}]{ext}"
+                        target_path = fit_path_for_windows(os.path.join(target_dest_dir, disambig_name))
                         counter = 2
                         while target_path in _batch_paths:
-                            disambig_name = f"{stem} [{post_id}] ({counter}){ext}"
-                            target_path = os.path.join(target_dest_dir, disambig_name)
+                            disambig_name = f"{stem} [{pid_tag}] ({counter}){ext}"
+                            target_path = fit_path_for_windows(os.path.join(target_dest_dir, disambig_name))
                             counter += 1
                         logger.debug(
                             f"Different-post filename collision: '{sanitized_name}' belongs to post '{post_title}' ({post_id}), "
@@ -1207,11 +1364,11 @@ class KemonoDownloader:
                         hash_hint = os.path.splitext(os.path.basename(clean_rel))[0][-6:] or \
                                     hashlib.md5(clean_rel.encode()).hexdigest()[:6]
                         disambig_name = f"{stem}_{hash_hint}{ext}"
-                        target_path = os.path.join(target_dest_dir, disambig_name)
+                        target_path = fit_path_for_windows(os.path.join(target_dest_dir, disambig_name))
                         counter = 2
                         while target_path in _batch_paths:
                             disambig_name = f"{stem}_{hash_hint}_{counter}{ext}"
-                            target_path = os.path.join(target_dest_dir, disambig_name)
+                            target_path = fit_path_for_windows(os.path.join(target_dest_dir, disambig_name))
                             counter += 1
                         logger.debug(
                             f"Same-post duplicate attachment: '{sanitized_name}' already queued in post '{post_title}' — "
@@ -1221,7 +1378,7 @@ class KemonoDownloader:
 
                     # Also update the candidate URLs to use the disambiguated display name
                     candidate_urls = [
-                        u.replace(f"?f={sanitized_name}", f"?f={disambig_name}").replace(f"&f={sanitized_name}", f"&f={disambig_name}")
+                        u.replace(f"?f={_fq(sanitized_name)}", f"?f={_fq(disambig_name)}").replace(f"&f={_fq(sanitized_name)}", f"&f={_fq(disambig_name)}")
                         for u in candidate_urls
                     ]
                     file_url = candidate_urls[0] if candidate_urls else file_url
@@ -1246,11 +1403,15 @@ class KemonoDownloader:
 
                 expected_sha = str(fobj.get("sha256") or fobj.get("hash") or "")
 
-                # Skip if already recorded in download archive database (gallery-dl style)
+                # Skip if already recorded in download archive database (gallery-dl style) — unless the
+                # copy still on disk is a small / preview one that should be upgraded to full size
                 if self.archive_manager and self.archive_manager.is_enabled:
                     if self.archive_manager.is_archived(service=service, post_id=post_id, file_id=file_id, file_hash=expected_sha):
-                        logger.info(f"📦 Skipping archived file: '{os.path.basename(target_path)}' (present in download archive)", category="file")
-                        continue
+                        on_disk = next((cp for cp in (target_path, webp_path, raw_path, raw_webp, prefixed_raw, prefixed_webp)
+                                        if os.path.exists(cp) and os.path.getsize(cp) > 0), None)
+                        if not (on_disk and needs_full_size_upgrade(os.path.getsize(on_disk), int(file_bytes or 0), target_path, options)):
+                            logger.info(f"📦 Skipping archived file: '{os.path.basename(target_path)}' (present in download archive)", category="file")
+                            continue
 
                 # Skip if already exists on disk at target_path, webp path, or raw name path
                 if not options.keep_duplicates:
@@ -1305,7 +1466,6 @@ class KemonoDownloader:
                 if passwords:
                     try:
                         from core.archive_password_manager import archive_password_manager
-                        archive_password_manager.add_passwords(passwords)
                         _, _ext = os.path.splitext(target_path.lower())
                         from services.bulk_decompressor import ARCHIVE_EXTENSIONS
                         if _ext in ARCHIVE_EXTENSIONS:
@@ -1327,7 +1487,7 @@ class KemonoDownloader:
                     e_host = re.sub(r'[^a-zA-Z0-9]', '', e_url.split("://")[-1].split("/")[0])
                     e_name = f"embed_{embed_idx}_{e_host}.mp4"
                     e_dest_dir = _get_dest_folder(e_name)
-                    e_target_path = os.path.join(e_dest_dir, e_name)
+                    e_target_path = fit_path_for_windows(os.path.join(e_dest_dir, e_name))
                     e_file_id = f"embed_{post_id}_{embed_idx}"
 
                     if self.archive_manager and self.archive_manager.is_enabled:
@@ -1353,6 +1513,28 @@ class KemonoDownloader:
                         user_id=user_id or post_user
                     )
                     new_tasks.append(e_task)
+
+            post_tasks = new_tasks[post_task_start:]
+            if passwords and post_tasks:
+                try:
+                    from core.archive_password_manager import archive_password_manager
+                    archive_password_manager.add_passwords(passwords)
+                except Exception as _pwe:
+                    logger.debug(f"Could not save the passwords of post {post_id}: {_pwe}", category="downloader")
+            if post_info_path:
+                if post_tasks:
+                    build_post_infos[post_info_path] = post_info_content
+                    for _t in post_tasks:
+                        _t.post_info_path = post_info_path
+                elif not files_to_process:
+                    build_text_posts[post_info_path] = post_info_content   # a text-only post
+                elif os.path.isdir(os.path.dirname(post_info_path)):
+                    _write_post_info(post_info_path, post_info_content)   # its files are already saved
+
+        # Post texts: text-only posts are saved now; the others once their first file is downloaded
+        self._post_info_pending.update(build_post_infos)
+        for _path, _content in build_text_posts.items():
+            _write_post_info(_path, _content)
 
         # In links-only mode, store the harvested links and report summary
         if options.file_type == MediaTypes.LINKS:
@@ -1409,15 +1591,26 @@ class KemonoDownloader:
         Starts worker pool in a background thread.
         """
         if self._download_thread and self._download_thread.is_alive():
+            self._session_id += 1          # the previous run stops at its next check
             self._cancel_event.set()
             try:
-                self._download_thread.join(timeout=1.0)
+                self._download_thread.join(timeout=5.0)
             except Exception:
                 pass
+            if self._download_thread.is_alive():
+                logger.warning("The previous download run is still stopping; files it was working on may need a retry.",
+                               category="downloader")
+            else:
+                # Files the previous run was downloading when it stopped go back in line
+                for t in tasks:
+                    if t.status == "downloading":
+                        t.status = "pending"
 
         self._session_id += 1
+        self._dispatch_cursor = 0
         session_id = self._session_id
 
+        self._keep_paths_apart(tasks, [])
         self.tasks = tasks
         self.current_options = options
         self._cancel_event.clear()
@@ -1467,6 +1660,7 @@ class KemonoDownloader:
             logger.info("All new tasks were duplicates and already exist in the queue.", category="downloader")
             return 0
 
+        self._keep_paths_apart(deduped, self.tasks)
         self.tasks.extend(deduped)
         logger.info(f"Appended {len(deduped)} new tasks to download queue (total in queue: {len(self.tasks)}).", category="downloader")
 
@@ -1474,6 +1668,38 @@ class KemonoDownloader:
             self.start_download_queue(self.tasks, options, cookie_str)
 
         return len(deduped)
+
+    @staticmethod
+    def _keep_paths_apart(new_tasks: List[DownloadTask], existing: List[DownloadTask]) -> int:
+        """Two different files may never share a save path, whatever queued them.
+
+        Sharing one made the second count as "already downloaded", overwrite the first, or — when
+        both downloaded at once — mix into the same temporary file. Files not downloaded yet get
+        "name (2).ext", "name (3).ext"…; returns how many were renamed."""
+        taken: Dict[str, DownloadTask] = {}
+        for t in existing:
+            if getattr(t, "target_path", ""):
+                taken[os.path.normcase(t.target_path)] = t
+        renamed = 0
+        for t in new_tasks:
+            path = getattr(t, "target_path", "")
+            if not path:
+                continue
+            key = os.path.normcase(path)
+            other = taken.get(key)
+            if other is not None and other is not t and other.url != t.url                     and t.status in ("pending", "failed", "cancelled"):
+                stem, ext = os.path.splitext(path)
+                n = 2
+                while os.path.normcase(f"{stem} ({n}){ext}") in taken:
+                    n += 1
+                t.target_path = f"{stem} ({n}){ext}"
+                key = os.path.normcase(t.target_path)
+                renamed += 1
+            taken.setdefault(key, t)
+        if renamed:
+            logger.debug(f"{renamed} queued file(s) shared a save path with another file and were renamed.",
+                         category="downloader")
+        return renamed
 
     def cancel_batch(self, batch_id: str, notify: bool = False) -> int:
         """Cancels all pending and downloading tasks belonging to a specific batch_id."""
@@ -1544,14 +1770,20 @@ class KemonoDownloader:
                 if self.on_concurrency_throttled:
                     self.on_concurrency_throttled(self.max_workers)
 
-    def retry_failed_tasks(self, options: FilterOptions, cookie_str: str, max_auto_retries: int = 5) -> int:
-        """Resets all tasks with status 'failed' or 'cancelled' to 'pending' up to max_auto_retries (5) and resumes downloading."""
+    def retry_failed_tasks(self, options: FilterOptions, cookie_str: str, max_auto_retries: int = 5,
+                           include_cancelled: bool = True) -> int:
+        """Resets all tasks with status 'failed' (and 'cancelled', unless include_cancelled is False)
+        to 'pending' up to max_auto_retries (5) and resumes downloading.
+
+        Automatic retries pass include_cancelled=False so files the user stopped stay stopped.
+        """
         skip_404 = (
             getattr(self.current_options, "skip_retry_404", False)
             if self.current_options
             else getattr(options, "skip_retry_404", False)
         )
-        all_failed = [t for t in self.tasks if t.status in ("failed", "cancelled")]
+        retry_statuses = ("failed", "cancelled") if include_cancelled else ("failed",)
+        all_failed = [t for t in self.tasks if t.status in retry_statuses]
         if not all_failed:
             logger.info("No failed tasks to retry.", category="downloader")
             return 0
@@ -1652,6 +1884,42 @@ class KemonoDownloader:
 
         return len(target_tasks)
 
+    @staticmethod
+    def _task_context(task: "DownloadTask") -> str:
+        """Extra lines for the log file when a file fails: where it came from and what was tried."""
+        lines = []
+        creator = " / ".join(x for x in (getattr(task, "creator_name", ""), getattr(task, "service", ""), str(getattr(task, "user_id", "") or "")) if x)
+        if creator:
+            lines.append(f"creator: {creator}")
+        if getattr(task, "post_id", "") or getattr(task, "post_title", ""):
+            lines.append(f"post: {task.post_id} {task.post_title!r}" + (f" ({task.post_url})" if getattr(task, "post_url", "") else ""))
+        lines.append(f"url: {task.url}")
+        tried = getattr(task, "_tried_urls", None) or []
+        if len(tried) > 1 or (tried and tried[0] != task.url):
+            lines.append("servers tried: " + ", ".join(tried))
+        if getattr(task, "target_path", ""):
+            lines.append(f"save to: {task.target_path}")
+        if getattr(task, "retry_count", 0):
+            lines.append(f"retry: {task.retry_count}")
+        return "\n".join(lines)
+
+    def _describe_run(self, options: FilterOptions, cookie_str: str, run_count: int) -> str:
+        """The settings a download ran with, for the log file (bug reports need them)."""
+        lines = [
+            f"files in queue: {len(self.tasks)} ({run_count} to download in this run)",
+            f"workers: {self.max_workers}",
+            "login cookie: " + ("set in settings" if (cookie_str or "").strip() else "not set in settings (a saved login may still be used)"),
+        ]
+        folders = sorted({os.path.dirname(t.target_path) for t in self.tasks if getattr(t, "target_path", "")})
+        if folders:
+            lines.append(f"save folders ({len(folders)}): " + "; ".join(folders[:5]) + (" …" if len(folders) > 5 else ""))
+        for key, value in sorted(vars(options).items()):
+            if key.startswith("_") or callable(value):
+                continue
+            text = repr(value)
+            lines.append(f"{key} = {text[:200] + '…' if len(text) > 200 else text}")
+        return "\n".join(lines)
+
     def _run_download_loop(self, options: FilterOptions, cookie_str: str, session_id: int = 0):
         self.current_options = options
         self.start_time = time.time()
@@ -1665,7 +1933,9 @@ class KemonoDownloader:
         cpu_cores = max(4, os.cpu_count() or 16)
         self.current_options = options
         is_locked = getattr(self.current_options or options, "threads_locked", False)
-        target_max_workers = cpu_cores if (options.adaptive_threading and not is_locked) else max(1, self.max_workers)
+        # Adaptive threading tops out at 8: beyond that the file servers rate-limit and the app
+        # mostly spends its time on bookkeeping (16 threads made the window stop responding, #24)
+        target_max_workers = min(cpu_cores, 8) if (options.adaptive_threading and not is_locked) else max(1, self.max_workers)
         last_scale_time = time.time()
         last_checkpoint_time = time.time()
         consecutive_successes = 0
@@ -1695,6 +1965,10 @@ class KemonoDownloader:
             lock_label = " (Locked)" if is_locked else ""
             logger.info(f"Starting download pool with {self.max_workers} worker threads{lock_label}...", category="downloader")
 
+        self._run_tasks = [t for t in self.tasks if t.status == "pending"]
+        logger.debug("Download settings saved to the log file.", category="downloader",
+                     details=self._describe_run(options, cookie_str, len(self._run_tasks)))
+
         # Auto-normalize cookie if user pasted raw JWT token, or load from encrypted auth_manager vault
         clean_cookie = cookie_str.strip() if cookie_str else ""
         if not clean_cookie:
@@ -1714,7 +1988,7 @@ class KemonoDownloader:
         self._clean_cookie = clean_cookie
 
         active_futures = {}
-        auto_retried_once = False
+        last_count_time = 0.0
 
         with ThreadPoolExecutor(max_workers=max(32, target_max_workers)) as executor:
             while not self._cancel_event.is_set() and (session_id == self._session_id):
@@ -1783,7 +2057,8 @@ class KemonoDownloader:
                                 consecutive_successes += 1
                                 self._stable_clean_count += 1
                                 self.session_manager.record_downloaded_file(task.file_id)
-                                if self.archive_manager and self.archive_manager.is_enabled:
+                                self._write_pending_post_info(task)
+                                if self.archive_manager and self.archive_manager.is_enabled and not getattr(task, "used_preview", False):
                                     self.archive_manager.record_file(
                                         service=task.service,
                                         creator_id=task.user_id,
@@ -1844,14 +2119,18 @@ class KemonoDownloader:
                         consecutive_successes = 0
                         task.status = "failed"
                         task.error_msg = str(e)
-                        logger.error(f"Error downloading {task.filename}: {e}", category="downloader")
+                        logger.error(f"Error downloading {task.filename}: {e}", category="downloader",
+                                     details=self._task_context(task) + "\n" + traceback.format_exc())
                         if self.on_task_status_changed:
                             self.on_task_status_changed(task)
 
-                # Emit progress
-                completed_count = sum(1 for t in self.tasks if t.status in ("completed", "skipped"))
-                failed_count = sum(1 for t in self.tasks if t.status == "failed")
-                self._emit_progress(completed_count, failed_count, len(self.tasks))
+                # Emit progress (counted a few times a second: counting a 100,000-file queue every
+                # 50 ms took a quarter of a CPU core and made the window stutter)
+                if now - last_count_time >= 0.3:
+                    last_count_time = now
+                    completed_count = sum(1 for t in self.tasks if t.status in ("completed", "skipped"))
+                    failed_count = sum(1 for t in self.tasks if t.status == "failed")
+                    self._emit_progress(completed_count, failed_count, len(self.tasks))
 
                 # 4. If in cooldown or paused or cancelled, wait
                 if time.time() < self._rate_limit_cooldown_until or self._pause_event.is_set() or self._cancel_event.is_set():
@@ -1862,7 +2141,9 @@ class KemonoDownloader:
                 current_active = len(active_futures)
                 slots_available = max(0, self.max_workers - current_active)
                 if slots_available > 0:
-                    pending_tasks = [t for t in self.tasks if t.status == "pending"]
+                    pending_tasks = self._collect_pending(slots_available * 4 + 8, now)
+                    if not pending_tasks and current_active == 0:
+                        pending_tasks = self._collect_pending(slots_available * 4 + 8, now, full=True)
                     if not pending_tasks and current_active == 0:
                         # Check if "auto retry at the end" is enabled dynamically
                         auto_retry_active = (
@@ -1997,10 +2278,12 @@ class KemonoDownloader:
                     self.adaptive_state = "manual"
                     self.adaptive_status_text = f"Manual ({self.max_workers} threads)"
 
-                # Periodic crash-proof checkpoint (every 30 seconds)
+                # Periodic crash-proof checkpoint (every 30 seconds), written in the background: writing
+                # 1,000+ tasks with fsync here used to stop new downloads from starting for 30-50 s on
+                # slow drives (e.g. a Windows drive mounted under /mnt on Linux)
                 if now - last_checkpoint_time >= 30.0:
                     last_checkpoint_time = now
-                    self._save_recovery_checkpoint(options)
+                    self._save_recovery_checkpoint(options, async_write=True)
 
                 time.sleep(0.05)
 
@@ -2014,7 +2297,7 @@ class KemonoDownloader:
         self._close_worker_sessions()
         try:
             from core.memory_collector import MemoryCollector
-            MemoryCollector.instance().collect()
+            MemoryCollector.instance().collect(reason="download finished")
         except Exception:
             pass
 
@@ -2028,6 +2311,12 @@ class KemonoDownloader:
         completed_count = sum(1 for t in self.tasks if t.status == "completed")
         failed_count = sum(1 for t in self.tasks if t.status == "failed")
         skipped_count = sum(1 for t in self.tasks if t.status == "skipped")
+        self._emit_progress(completed_count + skipped_count, failed_count, len(self.tasks), force=True)
+        live_infos = {t.post_info_path for t in self.tasks
+                      if getattr(t, "post_info_path", "") and t.status not in ("completed", "skipped")}
+        for _path in list(self._post_info_pending):
+            if _path not in live_infos:
+                self._post_info_pending.pop(_path, None)
 
         if self._cancel_event.is_set():
             rec = getattr(self.session_manager, "recovery_manager", None)
@@ -2037,16 +2326,35 @@ class KemonoDownloader:
             if self.on_download_finished:
                 self.on_download_finished(False, "Download cancelled by user.")
         else:
-            if (completed_count + skipped_count) == len(self.tasks):
+            # Keep a recovery journal only when something can still be done: files that never got
+            # their turn, or failures a retry may fix. Missing (404) / locked (403) files and files
+            # out of retries used to bring the recovery prompt back on every launch.
+            def _retryable(t):
+                err = str(getattr(t, "error_msg", "") or "")
+                return not getattr(t, "retry_capped", False) and "404" not in err and "403" not in err
+            unfinished = [t for t in self.tasks if t.status in ("pending", "downloading", "retrying")
+                          or (t.status in ("failed", "cancelled") and _retryable(t))]
+            if not unfinished:
                 rec = getattr(self.session_manager, "recovery_manager", None)
                 if rec:
                     rec.discard_recovery()
             else:
                 self._save_recovery_checkpoint(options)
             skip_msg = f", {skipped_count} skipped" if skipped_count > 0 else ""
+            # What this run did (a retry only handles the files it retried, not the whole queue)
+            run_tasks = getattr(self, "_run_tasks", None) or []
+            run_note = ""
+            if run_tasks and len(run_tasks) < len(self.tasks):
+                run_ok = sum(1 for t in run_tasks if t.status in ("completed", "skipped"))
+                run_note = f" This run: {run_ok} of {len(run_tasks)} file(s) succeeded."
+            failed_tasks = [t for t in self.tasks if t.status == "failed"]
+            failed_list = "\n".join(
+                f"{t.filename}: {t.error_msg or 'unknown error'}  ({t.url})" for t in failed_tasks
+            )
             logger.success(
-                f"Download completed in {duration:.1f}s! ({completed_count} successful{skip_msg}, {failed_count} errors)",
-                category="downloader"
+                f"Download completed in {duration:.1f}s! ({completed_count} successful{skip_msg}, {failed_count} errors){run_note}",
+                category="downloader",
+                details=(f"Failed files ({len(failed_tasks)}):\n{failed_list}" if failed_tasks else "")
             )
             if getattr(options, "separate_by_known", False):
                 unmatched = getattr(self, "_unmatched_known_count", 0)
@@ -2059,6 +2367,34 @@ class KemonoDownloader:
                     )
             if self.on_download_finished:
                 self.on_download_finished(True, f"Completed: {completed_count} downloaded{skip_msg}, {failed_count} failed.")
+
+    def _write_pending_post_info(self, task: DownloadTask) -> None:
+        path = getattr(task, "post_info_path", "")
+        if path:
+            content = self._post_info_pending.pop(path, None)
+            if content is not None:
+                _write_post_info(path, content)
+
+    def _collect_pending(self, limit: int, now: float, full: bool = False) -> List[DownloadTask]:
+        """Up to `limit` pending files, without walking the whole queue 20 times a second: finished
+        files pile up at the front, so the scan starts where pending ones began last time. A full
+        scan every second picks up files that were put back in line (retries, rate limits)."""
+        tasks = self.tasks
+        if full or now - self._last_full_scan >= 1.0 or self._dispatch_cursor > len(tasks):
+            self._dispatch_cursor = 0
+            self._last_full_scan = now
+        found: List[DownloadTask] = []
+        first = None
+        for i in range(self._dispatch_cursor, len(tasks)):
+            t = tasks[i]
+            if t.status == "pending":
+                if first is None:
+                    first = i
+                found.append(t)
+                if len(found) >= limit:
+                    break
+        self._dispatch_cursor = first if first is not None else len(tasks)
+        return found
 
     def _worker_download_task(self, task: DownloadTask, options: FilterOptions):
         worker_session = self._get_worker_session()
@@ -2077,14 +2413,20 @@ class KemonoDownloader:
             if self._cancel_event.is_set():
                 return False, "Cancelled"
 
+        task.target_path = fit_path_for_windows(task.target_path)
         os.makedirs(os.path.dirname(task.target_path), exist_ok=True)
         task.status = "downloading"
         if self.on_task_status_changed:
             self.on_task_status_changed(task)
 
-        # Check if file is already recorded in download archive database
+        # Check if file is already recorded in download archive database — unless the copy on disk is a
+        # small / preview one that should be replaced by the full-size file (planning allowed that,
+        # but this second check used to mark those files "already archived" anyway)
         if self.archive_manager and self.archive_manager.is_enabled:
-            if self.archive_manager.is_archived(service=task.service, post_id=task.post_id, file_id=task.file_id, file_hash=task.expected_sha256):
+            _webp = os.path.splitext(task.target_path)[0] + ".webp"
+            _on_disk = next((p for p in (task.target_path, _webp) if os.path.exists(p) and os.path.getsize(p) > 0), None)
+            _upgrade = bool(_on_disk) and needs_full_size_upgrade(os.path.getsize(_on_disk), task.file_size, task.target_path, options)
+            if not _upgrade and self.archive_manager.is_archived(service=task.service, post_id=task.post_id, file_id=task.file_id, file_hash=task.expected_sha256):
                 task.status = "completed"
                 task.progress_pct = 100
                 task.eta_str = "Done"
@@ -2198,8 +2540,18 @@ class KemonoDownloader:
                 custom_filename=custom_fn,
                 cancel_event=self._cancel_event,
                 pause_event=self._pause_event,
-                progress_callback=_ytdlp_prog
+                progress_callback=_ytdlp_prog,
+                referer=EMBED_REFERERS.get((task.service or "").lower(), "")
             )
+            if not ok and is_not_a_video_error(msg):
+                logger.info(f"⏭️ [yt-dlp] Skipping {task.url}: not a video link", category="ytdlp")
+                task.status = "skipped"
+                task.error_msg = "Not a video link"
+                task.progress_pct = 100
+                task.eta_str = "Skipped"
+                if self.on_task_status_changed:
+                    self.on_task_status_changed(task)
+                return True, "Skipped: not a video link"
             if ok:
                 final_ytdlp_sz = os.path.getsize(task.target_path) if os.path.exists(task.target_path) else 0
                 if final_ytdlp_sz > 0 and options:
@@ -2336,12 +2688,16 @@ class KemonoDownloader:
                 logger.warning(f"✖ [Telegram] {task.filename}: {msg}", category="telegram")
                 return False, msg
 
-        # Check existing file for resume capability
+        # Continue an interrupted download from its .part file
+        part_path = task.target_path + PART_SUFFIX
         existing_size = 0
         mode = "wb"
         range_headers = {}
-        if not is_upgrade_download and os.path.exists(task.target_path):
-            existing_size = os.path.getsize(task.target_path)
+        if os.path.exists(part_path):
+            existing_size = os.path.getsize(part_path)
+            if task.file_size > 0 and existing_size > task.file_size:
+                _remove_quietly(part_path)      # bigger than the file itself: not a usable start
+                existing_size = 0
             if existing_size > 0:
                 range_headers["Range"] = f"bytes={existing_size}-"
                 mode = "ab"
@@ -2349,8 +2705,21 @@ class KemonoDownloader:
                     f"  ↪ Resume: {task.filename}  already have {existing_size // 1024}KB",
                     category="file"
                 )
+        resumed = existing_size > 0
 
-        urls_to_try = [task.url] + list(task.fallback_urls)
+        # Switched-off sites (Kemono / Coomer) are skipped, also for files queued before
+        all_urls = [u for u in [task.url] + list(task.fallback_urls) if not is_disabled(u)]
+        if not all_urls:
+            msg = disabled_message(task.url) or "This file's server is turned off"
+            logger.warning(f"  ✖ {task.filename}: {msg}", category="file")
+            return False, msg
+        if options is not None and getattr(options, "download_thumbnails_only", False):
+            full_urls, preview_urls = all_urls, []
+        else:
+            full_urls = [u for u in all_urls if not is_preview_url(u)] or all_urls
+            preview_urls = [u for u in all_urls if u not in full_urls]
+        urls_to_try = full_urls
+        task._tried_urls = []
         resp = None
         browser_headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -2363,13 +2732,17 @@ class KemonoDownloader:
         }
 
         try:
-            for pass_idx in range(2): # Up to 2 passes across available CDN mirrors
-                if pass_idx > 0:
+            # Two passes across the full-size mirrors; the small preview copy only if both failed
+            pass_lists = [full_urls, full_urls] + ([preview_urls] if preview_urls else [])
+            for pass_idx, urls_to_try in enumerate(pass_lists):
+                if pass_idx == 1:
                     time.sleep(1.5) # Brief jittered pause before second pass if all mirrors were busy
 
                 for attempt_url in urls_to_try:
                     if self._cancel_event.is_set():
                         return False, "Cancelled"
+                    if attempt_url not in task._tried_urls:
+                        task._tried_urls.append(attempt_url)
 
                     # Provider-specific headers per host
                     req_headers = dict(range_headers)
@@ -2389,26 +2762,28 @@ class KemonoDownloader:
                         req_headers["Accept"] = "*/*"
                     elif "coomer" in u_low:
                         req_headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-                        req_headers["Referer"] = "https://coomer.su/"
+                        req_headers["Referer"] = "https://coomer.st/"
                         req_headers["Accept"] = "*/*"
                     elif "pawchive" in u_low:
                         req_headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
                         req_headers["Referer"] = "https://pawchive.pw/"
                         req_headers["Accept"] = "*/*"
-                        if "Cookie" not in session.headers and "Cookie" not in req_headers:
-                            req_headers["X-Contact"] = "https://github.com/whyamihere773/Pawchive-Downloader"
-                            req_headers["X-Client-Notice"] = (
-                                "Pawchive Downloader user here! Love your site. If my client is ever causing server strain, "
-                                "please open an issue on GitHub instead of a hard ban and I'll fix my request pacing immediately."
-                            )
                     elif "cum.st" in u_low:
                         req_headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
                         req_headers["Referer"] = "https://cum.st/"
                         req_headers["Accept"] = "*/*"
                     else:
                         req_headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-                        req_headers["Referer"] = "https://kemono.su/"
+                        req_headers["Referer"] = "https://kemono.cr/"
                         req_headers["Accept"] = "*/*"
+
+                    # The login cookie only goes to the archive site it belongs to
+                    if provider_for_host(attempt_url):
+                        site_cookie = cookie_for_url(attempt_url, self._clean_cookie)
+                        if site_cookie:
+                            req_headers["Cookie"] = site_cookie
+                        else:
+                            req_headers.update(_CONTACT_HEADERS)
 
                     try:
                         resp = session.get(attempt_url, stream=True, timeout=30, headers=req_headers)
@@ -2418,7 +2793,7 @@ class KemonoDownloader:
                         elif resp.status_code == 404 and len(urls_to_try) <= 1:
                             # Definitive 404 on single-mirror host — skip second pass to avoid redundant server load
                             msg = "404 Not Found — file does not exist on server"
-                            logger.warning(f"  ✖ {task.filename}: {msg}", category="file")
+                            logger.warning(f"  ✖ {task.filename}: {msg}", category="file", details=self._task_context(task))
                             resp.close()
                             resp = None
                             return False, msg
@@ -2520,38 +2895,41 @@ class KemonoDownloader:
             if resp is None:
                 return False, "Failed to connect to any file server"
 
+            task.used_preview = is_preview_url(task.url) and not (options is not None and getattr(options, "download_thumbnails_only", False))
+            if task.used_preview:
+                logger.warning(
+                    f"⚠ {task.filename}: the full-size file couldn't be reached, so a smaller preview copy was saved. "
+                    f"Turn on \"Re-download small / thumbnail files\" and download again later to replace it with the full one.",
+                    category="file"
+                )
+
             status = resp.status_code
 
             # ── Handle error responses with helpful hints ─────────────────────
             if status == 416:
-                # Already fully downloaded
-                if options:
-                    keep_file, f_reason = FilterEngine.should_keep_file(task.filename, options, file_size=existing_size)
-                    if not keep_file:
-                        logger.info(f"⏭️ Skipping {task.filename} ({FilterEngine.format_size_str(existing_size)}): {f_reason}", category="filter")
-                        task.status = "skipped"
-                        task.error_msg = f_reason
-                        task.file_size = existing_size
-                        task.downloaded_bytes = existing_size
-                        task.progress_pct = 100
-                        task.eta_str = "Skipped"
-                        if self.on_task_status_changed:
-                            self.on_task_status_changed(task)
-                        return True, f"Skipped: {f_reason}"
-                task.status = "completed"
-                task.downloaded_bytes = existing_size
-                task.file_size = existing_size
-                logger.info(f"⏳ Skipping existing file: '{task.filename}' (already complete on disk)", category="file")
-                return True, "Already downloaded"
+                # Asked to continue past the end: the .part file may already hold the whole file
+                _, server_total = _content_range(resp.headers.get("Content-Range", ""))
+                resp.close()
+                resp = None
+                if existing_size > 0 and (server_total == existing_size or (not server_total and task.file_size == existing_size)):
+                    task.file_size = existing_size
+                    task.downloaded_bytes = existing_size
+                    return self._finalize_part(task, options, part_path, existing_size, hasher=None,
+                                               strict_hash=True, is_upgrade_download=is_upgrade_download,
+                                               found_existing_path=found_existing_path)
+                _remove_quietly(part_path)
+                msg = "The partly downloaded file didn't match the server's copy; it starts over on retry"
+                logger.warning(f"  ✖ {task.filename}: {msg}", category="file", details=self._task_context(task))
+                return False, msg
 
             if status == 403:
                 msg = "403 Forbidden — content locked (membership tier access required)"
-                logger.error(f"  ✖ {task.filename}: {msg}", category="file")
+                logger.error(f"  ✖ {task.filename}: {msg}", category="file", details=self._task_context(task))
                 return False, msg
 
             if status == 404:
                 msg = "404 Not Found — file does not exist on any server mirror"
-                logger.warning(f"  ✖ {task.filename}: {msg}", category="file")
+                logger.warning(f"  ✖ {task.filename}: {msg}", category="file", details=self._task_context(task))
                 return False, msg
 
             if status == 429:
@@ -2562,14 +2940,22 @@ class KemonoDownloader:
 
             if status not in (200, 206):
                 msg = f"HTTP {status}"
-                logger.warning(f"  ✖ {task.filename}: {msg}", category="file")
+                logger.warning(f"  ✖ {task.filename}: {msg}", category="file", details=self._task_context(task))
                 return False, msg
 
             # ── Determine file size and resume offset ─────────────────────────
-            content_length = int(resp.headers.get("content-length", 0))
+            content_length = int(resp.headers.get("content-length", 0) or 0)
             api_size = task.file_size  # pre-populated from API metadata (fobj["bytes"])
+            range_start, range_total = _content_range(resp.headers.get("Content-Range", ""))
+            if status == 206 and range_start is not None and range_start != existing_size:
+                resp.close()
+                resp = None
+                _remove_quietly(part_path)
+                msg = "The server sent a different part of the file than asked; it starts over on retry"
+                logger.warning(f"  ✖ {task.filename}: {msg}", category="file", details=self._task_context(task))
+                return False, msg
             if status == 206:
-                task.file_size = existing_size + content_length
+                task.file_size = range_total or (existing_size + content_length)
                 task.downloaded_bytes = existing_size
             else:
                 # If CDN uses chunked transfer (no Content-Length), fall back to API-provided size
@@ -2577,6 +2963,7 @@ class KemonoDownloader:
                 task.downloaded_bytes = 0
                 mode = "wb"
                 existing_size = 0
+                resumed = False
 
             # ── Runtime size filter check ─────────────────────────────────────
             if task.file_size > 0 and options:
@@ -2584,11 +2971,7 @@ class KemonoDownloader:
                 if not keep_file:
                     resp.close()
                     resp = None
-                    if os.path.exists(task.target_path):
-                        try:
-                            os.remove(task.target_path)
-                        except OSError:
-                            pass
+                    _remove_quietly(part_path)
                     size_disp = FilterEngine.format_size_str(task.file_size)
                     logger.info(f"⏭️ Skipping {task.filename} ({size_disp}): {f_reason}", category="filter")
                     task.status = "skipped"
@@ -2608,7 +2991,7 @@ class KemonoDownloader:
             # ── Storage Pool Auto-Spanning & Pre-flight disk space verification ──
             try:
                 from core.storage_pool_manager import storage_pool_manager
-                if storage_pool_manager.enabled and storage_pool_manager.overflow_dirs:
+                if storage_pool_manager.enabled and storage_pool_manager.overflow_dirs and existing_size == 0:
                     p_dir = storage_pool_manager.primary_dir
                     if p_dir and os.path.abspath(task.target_path).startswith(os.path.abspath(p_dir)):
                         rel_file = os.path.relpath(task.target_path, p_dir)
@@ -2620,16 +3003,20 @@ class KemonoDownloader:
                             estimated_bytes=task.file_size
                         )
                         if was_overflowed:
-                            task.target_path = new_target
+                            task.target_path = fit_path_for_windows(new_target)
+                            part_path = task.target_path + PART_SUFFIX
 
                 target_dir = os.path.dirname(os.path.abspath(task.target_path))
                 os.makedirs(target_dir, exist_ok=True)
                 usage = shutil.disk_usage(target_dir)
-                needed = max(10 * 1024 * 1024, task.file_size)
-                if usage.free < needed and usage.free < 25 * 1024 * 1024:
+                # Room for the rest of this file plus a small margin (it used to start any file as long
+                # as 25 MB were free, then fail half-way through big ones)
+                needed = max(25 * 1024 * 1024, max(0, task.file_size - existing_size) + 20 * 1024 * 1024)
+                if usage.free < needed:
                     resp.close()
-                    msg = f"Disk full: Only {usage.free / (1024*1024):.1f} MB free space on drive"
-                    logger.error(f"  ✖ {task.filename}: {msg}", category="file")
+                    msg = (f"Disk full: {FilterEngine.format_size_str(usage.free)} free, "
+                           f"this file needs {FilterEngine.format_size_str(needed)}")
+                    logger.error(f"  ✖ {task.filename}: {msg}", category="file", details=self._task_context(task))
                     return False, msg
             except Exception:
                 pass
@@ -2765,7 +3152,11 @@ class KemonoDownloader:
                                     self.on_task_status_changed(task)
                                 return True, f"Skipped: {f_reason}"
 
-                        self._verify_file_hash(task, final_mp_size)
+                        problem = self._verify_file_hash(task, final_mp_size)
+                        if problem:
+                            _remove_quietly(task.target_path)
+                            logger.error(f"  ✖ {task.filename}: {problem}", category="file", details=self._task_context(task))
+                            return False, problem
                         self._post_process_downloaded_file(task, options)
                         task.status = "completed"
                         task.downloaded_bytes = task.file_size
@@ -2807,6 +3198,7 @@ class KemonoDownloader:
                     logger.info(f"  ↪ Multipart fallback: {mp_err} — switching to standard single stream download...", category="file")
                     existing_size = 0
                     mode = "wb"
+                    resumed = False
 
                     # Re-acquire single stream response stream since resp was closed for multipart
                     try:
@@ -2820,7 +3212,7 @@ class KemonoDownloader:
                                 clean_resp.close()
                         if resp.status_code not in (200, 206):
                             msg = f"HTTP {resp.status_code} on single-stream fallback"
-                            logger.warning(f"  ✖ {task.filename}: {msg}", category="file")
+                            logger.warning(f"  ✖ {task.filename}: {msg}", category="file", details=self._task_context(task))
                             resp.close()
                             resp = None
                             return False, msg
@@ -2832,22 +3224,33 @@ class KemonoDownloader:
                                 pass
                             resp = None
                         msg = f"Single-stream fallback connection error: {ex}"
-                        logger.error(f"  ✖ {task.filename}: {msg}", category="file")
+                        logger.error(f"  ✖ {task.filename}: {msg}", category="file", details=self._task_context(task))
                         return False, msg
 
             # ── Standard single stream download loop ──────────────────────────
             chunk_size = 64 * 1024  # 64 KB
             last_speed_time = time.time()
-            last_log_time   = time.time()
             bytes_since_speed = 0
 
             _, max_size_limit = FilterEngine.get_effective_size_limits(options)
             stream_aborted_reason = None
 
+            # SHA-256 computed while downloading (a resumed file first reads what it already has)
+            hasher = None
+            if content_hash_from_url(task.url) or len((task.expected_sha256 or "").strip()) == 64:
+                hasher = hashlib.sha256()
+                if mode == "ab" and existing_size > 0:
+                    with open(part_path, "rb") as pf:
+                        while True:
+                            buf = pf.read(1024 * 1024)
+                            if not buf:
+                                break
+                            hasher.update(buf)
+
             with self._active_resp_lock:
                 self._active_responses.add(resp)
             try:
-                with open(task.target_path, mode) as f:
+                with open(part_path, mode) as f:
                     for chunk in resp.iter_content(chunk_size=chunk_size):
                         if self._cancel_event.is_set():
                             try:
@@ -2873,6 +3276,8 @@ class KemonoDownloader:
                             continue
 
                         f.write(chunk)
+                        if hasher is not None:
+                            hasher.update(chunk)
                         chunk_len = len(chunk)
                         task.downloaded_bytes += chunk_len
                         with self._lock:
@@ -2911,14 +3316,10 @@ class KemonoDownloader:
                     self._active_responses.discard(resp)
 
 
-            final_size = os.path.getsize(task.target_path) if os.path.exists(task.target_path) else 0
+            final_size = os.path.getsize(part_path) if os.path.exists(part_path) else 0
 
             if stream_aborted_reason or (max_size_limit and final_size > max_size_limit):
-                if os.path.exists(task.target_path):
-                    try:
-                        os.remove(task.target_path)
-                    except OSError:
-                        pass
+                _remove_quietly(part_path)
                 with self._lock:
                     self.downloaded_bytes = max(0, self.downloaded_bytes - task.downloaded_bytes)
                 task.status = "skipped"
@@ -2931,98 +3332,51 @@ class KemonoDownloader:
                 return True, f"Skipped: {f_reason}"
 
             if task.file_size > 0 and final_size == 0:
-                if os.path.exists(task.target_path):
-                    try:
-                        os.remove(task.target_path)
-                    except OSError:
-                        pass
+                _remove_quietly(part_path)
                 msg = "Downloaded file is empty (0.00 MB saved)"
-                logger.error(f"  ✖ {task.filename}: {msg}", category="file")
+                logger.error(f"  ✖ {task.filename}: {msg}", category="file", details=self._task_context(task))
                 return False, msg
 
             if task.file_size > 0 and final_size < task.file_size and not self._cancel_event.is_set():
-                if os.path.exists(task.target_path):
-                    try:
-                        os.remove(task.target_path)
-                    except OSError:
-                        pass
-                msg = f"Incomplete download ({FilterEngine.format_size_str(final_size)} / {FilterEngine.format_size_str(task.file_size)})"
-                logger.error(f"  ✖ {task.filename}: {msg}", category="file")
+                # The .part file stays: the retry continues from here
+                msg = (f"Incomplete download ({FilterEngine.format_size_str(final_size)} / "
+                       f"{FilterEngine.format_size_str(task.file_size)}); it continues from there on retry")
+                logger.error(f"  ✖ {task.filename}: {msg}", category="file", details=self._task_context(task))
                 return False, msg
 
-            # ── Runtime size filter verification on completed download ─────────
-            if final_size > 0 and options:
-                keep_file, f_reason = FilterEngine.should_keep_file(task.filename, options, file_size=final_size)
-                if not keep_file:
-                    if os.path.exists(task.target_path):
-                        try:
-                            os.remove(task.target_path)
-                        except OSError:
-                            pass
-                    with self._lock:
-                        self.downloaded_bytes = max(0, self.downloaded_bytes - task.downloaded_bytes)
-                    size_disp = FilterEngine.format_size_str(final_size)
-                    logger.info(f"⏭️ Skipping {task.filename} ({size_disp}): {f_reason}", category="filter")
-                    task.status = "skipped"
-                    task.error_msg = f_reason
-                    task.progress_pct = 100
-                    task.eta_str = "Skipped"
-                    if self.on_task_status_changed:
-                        self.on_task_status_changed(task)
-                    return True, f"Skipped: {f_reason}"
-
-            task.progress_pct = 100
-            task.eta_str = "Done"
-
-            # Verify hash BEFORE post-processing (mutagen tags or WebP conversion alter byte content)
-            self._verify_file_hash(task, final_size)
-
-            # If this was an upgrade download and an older webp thumbnail existed, remove it if it differs from current target_path
-            if is_upgrade_download and found_existing_path and os.path.exists(found_existing_path):
-                if os.path.abspath(found_existing_path) != os.path.abspath(task.target_path):
-                    try:
-                        os.remove(found_existing_path)
-                    except OSError:
-                        pass
-
-            # ── Post-download processing ───────────────────────────────────────
-            self._post_process_downloaded_file(task, options)
-
-            # Thread cooldown delay to avoid CDN rate limiting (429)
-            if options.download_delay > 0 and not self._cancel_event.is_set():
-                time.sleep(options.download_delay)
-
-            return True, "Success"
+            # The server told us the size and we got exactly that: a checksum mismatch then means the
+            # site serves a different version, not a damaged download. Without a confirmed size, or
+            # when pieces from two attempts were joined, a mismatch means the file is damaged.
+            size_confirmed = task.file_size > 0 and final_size == task.file_size and (content_length > 0 or range_total > 0)
+            return self._finalize_part(task, options, part_path, final_size, hasher=hasher,
+                                       strict_hash=resumed or not size_confirmed,
+                                       is_upgrade_download=is_upgrade_download,
+                                       found_existing_path=found_existing_path)
 
         except requests.exceptions.Timeout:
             if self._cancel_event.is_set():
-                if os.path.exists(task.target_path):
-                    try:
-                        os.remove(task.target_path)
-                    except OSError:
-                        pass
                 return False, "Cancelled"
             msg = "Connection timed out"
-            logger.error(f"  ✖ {task.filename}: {msg}", category="file")
+            logger.error(f"  ✖ {task.filename}: {msg}", category="file", details=self._task_context(task))
             return False, msg
         except requests.exceptions.ConnectionError as e:
             if self._cancel_event.is_set():
-                if os.path.exists(task.target_path):
-                    try:
-                        os.remove(task.target_path)
-                    except OSError:
-                        pass
                 return False, "Cancelled"
             msg = f"Connection error: {e}"
-            logger.error(f"  ✖ {task.filename}: {msg}", category="file")
+            logger.error(f"  ✖ {task.filename}: {msg}", category="file", details=self._task_context(task))
+            return False, msg
+        except (requests.exceptions.ChunkedEncodingError, requests.exceptions.ContentDecodingError) as e:
+            # A connection that drops mid-transfer (IncompleteRead). requests derives these from
+            # IOError, so without this branch they'd land in the OSError handler below, be
+            # mislabelled as disk errors and have their partial file deleted. Keeping the
+            # partial file lets the retry resume from where it stopped.
+            if self._cancel_event.is_set():
+                return False, "Cancelled"
+            msg = f"Connection dropped mid-download (will resume on retry): {e}"
+            logger.error(f"  ✖ {task.filename}: {msg}", category="file", details=self._task_context(task))
             return False, msg
         except OSError as e:
             if self._cancel_event.is_set():
-                if os.path.exists(task.target_path):
-                    try:
-                        os.remove(task.target_path)
-                    except OSError:
-                        pass
                 return False, "Cancelled"
             is_disk_full = (
                 getattr(e, "errno", None) == 28
@@ -3030,12 +3384,8 @@ class KemonoDownloader:
                 or "space" in str(e).lower()
             )
             msg = "Disk full: Not enough free space on drive" if is_disk_full else f"Disk/IO error: {e}"
-            logger.error(f"  ✖ {task.filename}: {msg}", category="file")
-            if os.path.exists(task.target_path):
-                try:
-                    os.remove(task.target_path)
-                except OSError:
-                    pass
+            logger.error(f"  ✖ {task.filename}: {msg}", category="file", details=self._task_context(task))
+            _remove_quietly(task.target_path + PART_SUFFIX)
             task.downloaded_bytes = 0
             task.progress_pct = 0
             task.speed_bps = 0
@@ -3044,13 +3394,9 @@ class KemonoDownloader:
             return False, msg
         except Exception as e:
             if self._cancel_event.is_set():
-                if os.path.exists(task.target_path):
-                    try:
-                        os.remove(task.target_path)
-                    except OSError:
-                        pass
                 return False, "Cancelled"
-            logger.error(f"  ✖ {task.filename}: {type(e).__name__}: {e}", category="file")
+            logger.error(f"  ✖ {task.filename}: {type(e).__name__}: {e}", category="file",
+                         details=self._task_context(task) + "\n" + traceback.format_exc())
             return False, str(e)
         finally:
             if resp is not None:
@@ -3059,17 +3405,75 @@ class KemonoDownloader:
                 except Exception:
                     pass
 
-    def _verify_file_hash(self, task: DownloadTask, file_size: int):
-        """Verifies downloaded file integrity using SHA-256 or MD5 before any post-processing."""
+    def _finalize_part(self, task: DownloadTask, options: FilterOptions, part_path: str, final_size: int,
+                       hasher=None, strict_hash: bool = False, is_upgrade_download: bool = False,
+                       found_existing_path: Optional[str] = None) -> Tuple[bool, str]:
+        """Checks a finished .part file (size filter, checksum) and gives it its real name."""
+        if final_size > 0 and options:
+            keep_file, f_reason = FilterEngine.should_keep_file(task.filename, options, file_size=final_size)
+            if not keep_file:
+                _remove_quietly(part_path)
+                with self._lock:
+                    self.downloaded_bytes = max(0, self.downloaded_bytes - task.downloaded_bytes)
+                logger.info(f"⏭️ Skipping {task.filename} ({FilterEngine.format_size_str(final_size)}): {f_reason}", category="filter")
+                task.status = "skipped"
+                task.error_msg = f_reason
+                task.progress_pct = 100
+                task.eta_str = "Skipped"
+                if self.on_task_status_changed:
+                    self.on_task_status_changed(task)
+                return True, f"Skipped: {f_reason}"
+
+        # Checksum before any post-processing (tagging / WebP conversion change the bytes)
+        problem = self._verify_file_hash(task, final_size, path=part_path, hasher=hasher, strict=strict_hash)
+        if problem:
+            _remove_quietly(part_path)
+            with self._lock:
+                self.downloaded_bytes = max(0, self.downloaded_bytes - task.downloaded_bytes)
+            task.downloaded_bytes = 0
+            task.progress_pct = 0
+            logger.error(f"  ✖ {task.filename}: {problem}", category="file", details=self._task_context(task))
+            return False, problem
+
+        # One step: an older small copy under the same name stays until the full file replaces it
+        replace_file(part_path, task.target_path)
+        task.progress_pct = 100
+        task.eta_str = "Done"
+
+        # An older copy under another name (e.g. a .webp preview) is replaced by the full file
+        if is_upgrade_download and found_existing_path and os.path.exists(found_existing_path):
+            if os.path.abspath(found_existing_path) != os.path.abspath(task.target_path):
+                _remove_quietly(found_existing_path)
+
+        self._post_process_downloaded_file(task, options)
+
+        # Thread cooldown delay to avoid CDN rate limiting (429)
+        if options.download_delay > 0 and not self._cancel_event.is_set():
+            time.sleep(options.download_delay)
+        return True, "Success"
+
+    def _verify_file_hash(self, task: DownloadTask, file_size: int, path: Optional[str] = None,
+                          hasher=None, strict: bool = False) -> str:
+        """Verifies downloaded file integrity using SHA-256 or MD5 before any post-processing.
+
+        Returns an error message when the file is damaged (only for hashes known to be the real
+        content hash, and only when strict), otherwise "".
+        """
+        path = path or task.target_path
         raw_hash = (task.expected_sha256 or "").strip().lower()
-        if not raw_hash or not os.path.exists(task.target_path):
+        # Kemono / Pawchive / Coomer file names are the content's SHA-256: the most reliable hash
+        url_hash = content_hash_from_url(task.url)
+        if url_hash:
+            raw_hash = url_hash
+        if not raw_hash or not os.path.exists(path):
             if file_size > 0:
                 logger.success(
                     f"✔ {task.filename}  ({file_size / (1024*1024):.2f} MB saved)",
                     category="file"
                 )
-            return
+            return ""
 
+        precomputed = hasher
         # Determine hash algorithm by length
         if len(raw_hash) == 64 and all(c in "0123456789abcdef" for c in raw_hash):
             algo_name = "SHA-256"
@@ -3084,7 +3488,7 @@ class KemonoDownloader:
                     f"✔ {task.filename}  ({file_size / (1024*1024):.2f} MB saved)",
                     category="file"
                 )
-            return
+            return ""
 
         # Video variants and storage keys on cum.st or similar CDN mirrors often have rearranged
         # container atoms (moov atom faststart) or upstream transcode layouts where the served
@@ -3098,18 +3502,23 @@ class KemonoDownloader:
                     f"✔ {task.filename}  ({file_size / (1024*1024):.2f} MB saved)",
                     category="file"
                 )
-            return
+            return ""
 
         try:
-            with open(task.target_path, "rb") as check_f:
-                while chunk := check_f.read(65536):
-                    hasher.update(chunk)
-            computed_hash = hasher.hexdigest().lower()
+            if precomputed is not None and algo_name == "SHA-256":
+                computed_hash = precomputed.hexdigest().lower()
+            else:
+                with open(path, "rb") as check_f:
+                    while chunk := check_f.read(1024 * 1024):
+                        hasher.update(chunk)
+                computed_hash = hasher.hexdigest().lower()
             if computed_hash == raw_hash:
                 logger.success(
                     f"✔ {task.filename}  ({file_size / (1024*1024):.2f} MB saved, {algo_name} verified)",
                     category="file"
                 )
+            elif url_hash and strict:
+                return "The file arrived damaged (checksum mismatch); it downloads again on retry"
             else:
                 # File completed successfully (Content-Length and TLS integrity validated),
                 # but the server-provided hash was an upstream ingest ID, storage key, or CDN transcode variant.
@@ -3119,7 +3528,7 @@ class KemonoDownloader:
                         f"✔ {task.filename}  ({file_size / (1024*1024):.2f} MB saved)",
                         category="file"
                     )
-                logger.debug(
+                (logger.warning if url_hash else logger.debug)(
                     f"{task.filename}: server metadata {algo_name} differs from delivered stream "
                     f"(expected {raw_hash[:8]}, got {computed_hash[:8]}; upstream storageKey/variant)",
                     category="file"
@@ -3131,15 +3540,18 @@ class KemonoDownloader:
                     f"✔ {task.filename}  ({file_size / (1024*1024):.2f} MB saved)",
                     category="file"
                 )
+        return ""
 
     def _post_process_downloaded_file(self, task: DownloadTask, options: FilterOptions):
         """Runs post-download processing such as WebP compression and audio metadata tagging."""
         if not task.target_path or not os.path.exists(task.target_path):
             return
 
-        # 1. WebP conversion
+        # 1. WebP conversion (the task, archive and queue then point at the .webp file)
         if options.compress_to_webp:
-            self._convert_to_webp(task.target_path)
+            converted = self._convert_to_webp(task.target_path)
+            if converted:
+                task.target_path = converted
 
         # 2. Audio metadata tagging
         if getattr(options, "write_audio_metadata", False) and AudioTagger.is_supported(task.target_path):
@@ -3152,16 +3564,22 @@ class KemonoDownloader:
                 comment=getattr(task, "post_url", "") or task.url
             )
 
-    def _convert_to_webp(self, file_path: str):
+    def _convert_to_webp(self, file_path: str) -> Optional[str]:
+        """Converts JPG/PNG to WebP; returns the new path, or None when the file was kept as it was."""
         try:
             _, ext = os.path.splitext(file_path.lower())
             if ext in (".jpg", ".jpeg", ".png"):
                 webp_path = os.path.splitext(file_path)[0] + ".webp"
+                tmp_path = webp_path + PART_SUFFIX
                 with Image.open(file_path) as img:
-                    img.save(webp_path, "WEBP", quality=85)
+                    img.save(tmp_path, "WEBP", quality=85)
+                replace_file(tmp_path, webp_path)
                 os.remove(file_path)
+                return webp_path
         except Exception as e:
+            _remove_quietly(os.path.splitext(file_path)[0] + ".webp" + PART_SUFFIX)
             logger.debug(f"WebP compression skipped for {file_path}: {e}", category="downloader")
+        return None
 
     def _calculate_instant_speed(self, now: float) -> int:
         """
@@ -3171,9 +3589,7 @@ class KemonoDownloader:
         with self._lock:
             current_bytes = self.downloaded_bytes
 
-        self._speed_samples.append((now, current_bytes))
-
-        # If there was a stall/gap (> 2.0s without progress calls), clear stale samples
+        # A gap of more than 2 s since the last sample (paused, stalled): measure afresh
         if self._speed_samples and (now - self._speed_samples[-1][0] > 2.0):
             self._speed_samples.clear()
             self._smoothed_speed = 0.0
@@ -3216,23 +3632,17 @@ class KemonoDownloader:
         self._last_eta_calc_time = now
 
         # ── 1. Learned File Size Estimation ──────────────────────────────────
-        completed_tasks_bytes = [t.downloaded_bytes for t in self.tasks if t.status == "completed" and t.downloaded_bytes > 0]
-        known_pending_bytes = [t.file_size for t in self.tasks if t.status in ("pending", "downloading") and t.file_size > 0]
-
-        if completed_tasks_bytes:
-            learned_avg_file_size = sum(completed_tasks_bytes) / len(completed_tasks_bytes)
-        elif known_pending_bytes:
-            learned_avg_file_size = sum(known_pending_bytes) / len(known_pending_bytes)
+        st = self._queue_stats(now)
+        if st["done_n"]:
+            learned_avg_file_size = st["done_bytes"] / st["done_n"]
+        elif st["known_n"]:
+            learned_avg_file_size = st["known_bytes"] / st["known_n"]
         else:
             learned_avg_file_size = 4.5 * 1024 * 1024  # 4.5 MB realistic artwork fallback
 
         # Calculate estimated remaining bytes
-        total_remaining_bytes = 0.0
-        for t in self.tasks:
-            if t.status in ("pending", "downloading"):
-                task_size = t.file_size if t.file_size > 0 else learned_avg_file_size
-                rem = max(0.0, float(task_size - t.downloaded_bytes))
-                total_remaining_bytes += rem
+        total_remaining_bytes = st["known_remaining"] + max(
+            0.0, st["unknown_n"] * learned_avg_file_size - st["unknown_downloaded"])
 
         # ── 2. Derive Learning ETA Throughput Baseline ────────────────────────
         # Rather than using the raw 1-second fluctuating speed (which jumps on dips/crashes),
@@ -3311,6 +3721,38 @@ class KemonoDownloader:
         else:
             return "< 1s"
 
+    def _queue_stats(self, now: float) -> Dict[str, float]:
+        """Byte totals over the whole queue for the ETA, gathered in one pass at most once a second
+        (four passes five times a second were noticeable with 100,000-file queues)."""
+        if self._task_stats and now - self._task_stats_time < 1.0:
+            return self._task_stats
+        done_bytes = done_n = known_bytes = known_n = 0
+        known_remaining = unknown_n = unknown_downloaded = all_downloaded = 0
+        for t in self.tasks:
+            d = t.downloaded_bytes
+            all_downloaded += d
+            status = t.status
+            if status == "completed":
+                if d > 0:
+                    done_bytes += d
+                    done_n += 1
+            elif status in ("pending", "downloading"):
+                size = t.file_size
+                if size > 0:
+                    known_bytes += size
+                    known_n += 1
+                    known_remaining += max(0, size - d)
+                else:
+                    unknown_n += 1
+                    unknown_downloaded += d
+        self._task_stats = {
+            "done_bytes": done_bytes, "done_n": done_n, "known_bytes": known_bytes, "known_n": known_n,
+            "known_remaining": float(known_remaining), "unknown_n": unknown_n,
+            "unknown_downloaded": float(unknown_downloaded), "all_downloaded": all_downloaded,
+        }
+        self._task_stats_time = now
+        return self._task_stats
+
     def _emit_progress(self, completed: int, failed: int, total: int, force: bool = False):
         if not self.on_progress_update:
             return
@@ -3347,7 +3789,7 @@ class KemonoDownloader:
         # Use the maximum of the running counter and the sum of per-task bytes.
         # The running counter can lag for multipart files (disk-poll vs in-flight bytes),
         # and the per-task sum stays accurate because _disk_poll updates task.downloaded_bytes.
-        tasks_downloaded = sum(t.downloaded_bytes for t in self.tasks)
+        tasks_downloaded = self._queue_stats(now)["all_downloaded"]
         effective_bytes = max(self.downloaded_bytes, tasks_downloaded)
         dl_mb = effective_bytes / (1024 * 1024)
         if effective_bytes > 1024 * 1024 * 1024:

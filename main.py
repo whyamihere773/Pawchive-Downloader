@@ -8,16 +8,96 @@ os.environ["QT_QUICK_CONTROLS_STYLE"] = "Basic"
 if sys.platform.startswith("linux"):
     os.environ["QT_QPA_PLATFORMTHEME"] = "xdgdesktopportal"
 
-from PySide6.QtWidgets import QApplication
-from PySide6.QtQml import QQmlApplicationEngine
-from PySide6.QtCore import QUrl, QTimer
-from PySide6.QtGui import QIcon
-
 from core.logger import logger
-from bridge.app_bridge import AppBridge
+
+# Open this session's log file first, so everything after this (including errors while the app
+# loads) ends up in logs/v<version>/ next to the app.
+logger.start_session()
+logger.install_crash_handlers()
+
+from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtQml import QQmlApplicationEngine  # noqa: E402
+from PySide6.QtCore import QUrl, QTimer, QtMsgType, qInstallMessageHandler  # noqa: E402
+from PySide6.QtGui import QIcon  # noqa: E402
+
+from bridge.app_bridge import AppBridge  # noqa: E402
+
+
+def _install_qt_message_handler():
+    """QML errors and Qt warnings go to the log file (release builds have no console)."""
+    levels = {
+        QtMsgType.QtDebugMsg: "DEBUG",
+        QtMsgType.QtInfoMsg: "INFO",
+        QtMsgType.QtWarningMsg: "WARNING",
+        QtMsgType.QtCriticalMsg: "ERROR",
+        QtMsgType.QtFatalMsg: "ERROR",
+    }
+    seen = {}
+
+    def _handler(mode, context, message):
+        # The same warning can fire thousands of times (e.g. on every frame); keep the first 20
+        count = seen.get(message, 0) + 1
+        seen[message] = count
+        if count > 20:
+            return
+        if count == 20:
+            message += "  (repeated 20 times; further copies of this message are hidden)"
+        where = ""
+        if context is not None and context.file and context.file not in message:
+            where = f"  [{context.file}:{context.line}]"
+        logger.log(message + where, levels.get(mode, "WARNING"), "qt")
+
+    qInstallMessageHandler(_handler)
+
+
+def _setup_memory_management(app, win, app_bridge, memory_collector):
+    """Plug the parts that hold memory into the collector, and run full cleanups only when free."""
+    import time as _time
+    from PySide6.QtGui import QWindow
+    from bridge.thumbnail_provider import media_cache
+
+    def _mb(n):
+        return f"{n / (1024 * 1024):.0f} MB"
+
+    # Pictures / animations kept in memory: each expires 5 minutes after it was last shown
+    memory_collector.register_cleanup_hook(media_cache.expire)
+    memory_collector.register_reporter("pictures in memory", lambda: "{} ({})".format(media_cache.usage()[0], _mb(media_cache.usage()[1])))
+
+    # AI models: unloaded after 5 minutes without use
+    km = getattr(app_bridge, "known_manager", None)
+
+    def _unload_idle_ai():
+        for engine in (getattr(km, "semantic_matcher", None), getattr(km, "contextual_reasoner", None)):
+            if engine is not None and hasattr(engine, "unload_if_idle") and engine.unload_if_idle():
+                logger.debug(f"{type(engine).__name__}: unloaded after 5 minutes unused.", category="memory")
+
+    def _ai_report():
+        loaded = [name for name, engine in (("semantic matcher", getattr(km, "semantic_matcher", None)),
+                                            ("language model", getattr(km, "contextual_reasoner", None)))
+                  if engine is not None and getattr(engine, "is_loaded", lambda: False)()]
+        return ", ".join(loaded) if loaded else "none loaded"
+
+    memory_collector.register_cleanup_hook(_unload_idle_ai)
+    memory_collector.register_reporter("AI models", _ai_report)
+    memory_collector.register_reporter("download queue", lambda: f"{len(getattr(app_bridge.downloader, 'tasks', []) or [])} file(s)")
+
+    # Startup objects (character database, settings, modules) are left out of future cleanups
+    QTimer.singleShot(8000, memory_collector.freeze_startup_objects)
+
+    # A full cleanup while the window is minimized, where a short pause can't be noticed
+    last = {"t": 0.0}
+
+    def _on_visibility(visibility):
+        if visibility == QWindow.Visibility.Minimized and _time.monotonic() - last["t"] > 300:
+            last["t"] = _time.monotonic()
+            memory_collector.collect_in_background(reason="window minimized")
+
+    win.visibilityChanged.connect(_on_visibility)
 
 
 def main():
+    _install_qt_message_handler()
+
     # Handle Ctrl+C gracefully
     signal.signal(signal.SIGINT, lambda *args: QApplication.quit())
 
@@ -74,6 +154,23 @@ def main():
     engine.rootContext().setContextProperty("updaterBridge", updater_bridge)
     engine.rootContext().setContextProperty("Lang", translation_manager)
 
+    from bridge.thumbnail_provider import FrameProvider, FullImageProvider, ThumbnailProvider
+    engine.addImageProvider("thumb", ThumbnailProvider())
+    engine.addImageProvider("full", FullImageProvider())   # image viewer: AVIF / mis-named files via Pillow
+    engine.addImageProvider("frame", FrameProvider())      # animations Qt can't play (APNG, animated AVIF)
+
+    from bridge.gallery_tools_bridge import GalleryToolsBridge
+    gallery_tools_bridge = GalleryToolsBridge(app_bridge, getattr(app_bridge, "_watchlist_manager", None))
+    engine.rootContext().setContextProperty("galleryTools", gallery_tools_bridge)
+
+    from bridge.gallery_updates import GalleryUpdates
+    gallery_updates = GalleryUpdates(app_bridge, getattr(app_bridge, "_watchlist_manager", None))
+    engine.rootContext().setContextProperty("galleryUpdates", gallery_updates)
+
+    from bridge.gallery_archive_bridge import GalleryArchiveBridge
+    gallery_archive_bridge = GalleryArchiveBridge(app_bridge, gallery_tools_bridge)
+    engine.rootContext().setContextProperty("galleryArchiveBridge", gallery_archive_bridge)
+
     qml_file = os.path.join(base_dir, "qml", "main.qml")
 
     logger.info("Initializing Kemono & Pawchive Desktop Suite...", category="system")
@@ -82,12 +179,14 @@ def main():
     engine.load(QUrl.fromLocalFile(qml_file))
 
     if not engine.rootObjects():
-        logger.error("Failed to load QML interface. Check console for QML errors.", category="system")
+        logger.error("Failed to load QML interface. The errors above (category 'qt') say why.", category="system")
+        logger.end_session("after the window failed to load")
         sys.exit(-1)
 
     win = engine.rootObjects()[0]
 
     from core.memory_collector import memory_collector
+    _setup_memory_management(app, win, app_bridge, memory_collector)
     memory_collector.start()
 
     def update_screen_hz(target_screen=None):
@@ -100,11 +199,30 @@ def main():
 
     from services.telegram_service import TelegramService
     app.aboutToQuit.connect(app_bridge.onAppClosing)
+
+    # Exit watchdog: Python waits for every download thread before the process ends. If one is
+    # stuck in a network call that never returns, the app would linger with no window (#24).
+    def _arm_exit_watchdog():
+        import threading as _th
+
+        def _force_exit():
+            logger.warning("Some background work didn't stop in time; closing the app anyway.", category="system")
+            busy = [t.name for t in _th.enumerate() if t is not _th.current_thread() and not t.daemon]
+            if busy:
+                logger.warning(f"Still running: {', '.join(busy)}", category="system")
+            logger.end_session("after 20s wait (background work didn't stop)")
+            os._exit(0)
+
+        t = _th.Timer(20.0, _force_exit)
+        t.daemon = True
+        t.start()
+
+    app.aboutToQuit.connect(_arm_exit_watchdog)
     app.aboutToQuit.connect(memory_collector.stop)
     app.aboutToQuit.connect(TelegramService.instance().stop)
 
     logger.success("Application interface initialized successfully.", category="system")
-    sys.exit(app.exec())
+    sys.exit(app.exec())       # the log's closing line is written once background work has stopped
 
 
 if __name__ == "__main__":

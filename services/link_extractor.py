@@ -10,6 +10,7 @@ import re
 import base64
 from typing import List, Dict, Any, Set, Optional, Tuple
 from urllib.parse import urlparse, parse_qs, unquote
+from core.logger import logger
 
 LINK_PATTERNS = {
     "mega": re.compile(r'https?://(?:www\.)?mega\.(?:nz|co\.nz|io)/(?:file/|folder/|embed/|#|#!|#F!|[a-zA-Z0-9_\-#])[^\s"\'<>]+', re.IGNORECASE),
@@ -35,7 +36,8 @@ GENERIC_URL_PATTERN = re.compile(r'https?://[^\s"\'<>()]+', re.IGNORECASE)
 # Regex patterns for popular embedded media platforms supported by yt-dlp
 YTDLP_MEDIA_PATTERNS = [
     re.compile(r'https?://(?:www\.)?(?:youtube\.com/(?:watch\?v=|embed/|shorts/|v/)|youtu\.be/)[a-zA-Z0-9_\-]+', re.IGNORECASE),
-    re.compile(r'https?://(?:www\.)?(?:player\.)?vimeo\.com/(?:video/)?\d+(?:\?[^\s"\'<>]*)?', re.IGNORECASE),
+    re.compile(r'https?://(?:www\.)?(?:player\.)?vimeo\.com/(?:video/)?\d+(?:/[0-9a-f]{6,})?(?:\?[^\s"\'<>]*)?', re.IGNORECASE),
+    re.compile(r'https?://(?:www\.)?picarto\.tv/(?:videopopout|[A-Za-z0-9_]+/videos)/[A-Za-z0-9_\-]+', re.IGNORECASE),
     re.compile(r'https?://(?:www\.)?streamable\.com/(?:e/)?[a-zA-Z0-9]+', re.IGNORECASE),
     re.compile(r'https?://(?:www\.)?redgifs\.com/(?:watch/|ifr/)?[a-zA-Z0-9\-]+', re.IGNORECASE),
     re.compile(r'https?://(?:www\.)?(?:twitter|x)\.com/[a-zA-Z0-9_]+/status/\d+', re.IGNORECASE),
@@ -43,6 +45,24 @@ YTDLP_MEDIA_PATTERNS = [
     re.compile(r'https?://(?:www\.)?bilibili\.com/video/[a-zA-Z0-9]+', re.IGNORECASE),
     re.compile(r'https?://(?:www\.)?dailymotion\.com/video/[a-zA-Z0-9]+', re.IGNORECASE),
 ]
+
+
+# Hosts that never carry downloadable media (payment, tips, link-in-bio, chat invites).
+# Creators often attach these as a post's "embed", which used to send them to yt-dlp.
+NON_MEDIA_EMBED_HOSTS = (
+    "paypal.me", "paypal.com", "ko-fi.com", "buymeacoffee.com", "gumroad.com", "throne.com",
+    "cash.app", "venmo.com", "streamlabs.com", "streamelements.com", "linktr.ee", "beacons.ai",
+    "carrd.co", "allmylinks.com", "discord.gg", "discord.com", "discordapp.com",
+)
+
+
+def is_non_media_host(url: str) -> bool:
+    """True for links that can't contain media (e.g. paypal.me), matching subdomains too."""
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return False
+    return any(host == h or host.endswith("." + h) for h in NON_MEDIA_EMBED_HOSTS)
 
 
 class LinkExtractor:
@@ -95,7 +115,7 @@ class LinkExtractor:
 
         # 7. Ignore internal Kemono / Pawchive / Coomer platform domains
         internal_domains = [
-            "kemono.su", "kemono.party", "coomer.su", "coomer.party",
+            "kemono.cr", "kemono.su", "kemono.party", "coomer.st", "coomer.su", "coomer.party",
             "pawchive.pw", "cum.st", "localhost", "127.0.0.1"
         ]
         if any(domain == d or domain.endswith("." + d) for d in internal_domains):
@@ -172,7 +192,7 @@ class LinkExtractor:
         html_text = f"{post.get('content', '') or ''}\n{post.get('captionHtml', '') or ''}\n{post.get('caption', '') or ''}"
         if html_text.strip():
             # Check iframe src
-            iframe_matches = re.findall(r'<iframe\s+[^>]*?src=["\']([^"\']+)["\']', html_text, re.IGNORECASE)
+            iframe_matches = re.findall(r'<iframe\s+[^<>]*?src=["\']([^"\']+)["\']', html_text, re.IGNORECASE)
             for m in iframe_matches:
                 cleaned = cls.clean_and_normalize_url(m)
                 if cleaned:
@@ -185,7 +205,7 @@ class LinkExtractor:
                     if cleaned:
                         found_urls.add(cleaned)
 
-        return sorted(list(found_urls))
+        return sorted(u for u in found_urls if not is_non_media_host(u))
 
     @classmethod
     def extract_links_from_text(cls, text: str) -> Dict[str, List[str]]:
@@ -206,11 +226,13 @@ class LinkExtractor:
 
         # 1. Extract from HTML <a> tags: <a ... href="..." ...>blue clickable word</a>
         # Handles single quotes, double quotes, unquoted hrefs
-        candidates.extend(re.findall(r'<a\s+[^>]*?href\s*=\s*["\']([^"\']+)["\']', text, re.IGNORECASE))
-        candidates.extend(re.findall(r'<a\s+[^>]*?href\s*=\s*([^\s>"\']+)', text, re.IGNORECASE))
+        # ([^<>] keeps each match inside one tag: with [^>], HTML full of unclosed tags was
+        #  re-scanned to the end from every '<a' — 20,000 of them took 20 s)
+        candidates.extend(re.findall(r'<a\s+[^<>]*?href\s*=\s*["\']([^"\']+)["\']', text, re.IGNORECASE))
+        candidates.extend(re.findall(r'<a\s+[^<>]*?href\s*=\s*([^\s>"\']+)', text, re.IGNORECASE))
 
         # 2. Extract from <iframe> tags
-        candidates.extend(re.findall(r'<iframe\s+[^>]*?src\s*=\s*["\']([^"\']+)["\']', text, re.IGNORECASE))
+        candidates.extend(re.findall(r'<iframe\s+[^<>]*?src\s*=\s*["\']([^"\']+)["\']', text, re.IGNORECASE))
 
         # 3. Extract from Markdown links: [anchor](url)
         candidates.extend(re.findall(r'\[(?:[^\]]*)\]\(([^)\s]+)\)', text))

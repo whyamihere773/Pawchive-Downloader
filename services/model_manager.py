@@ -5,10 +5,7 @@ management of on-demand AI models for character recognition and semantic matchin
 """
 
 import os
-import sys
 import time
-import shutil
-import hashlib
 import threading
 import requests
 from typing import Optional, Dict, Any, Callable, List
@@ -138,7 +135,12 @@ class ModelManager:
                 return dict(prog)
 
         ready = self.is_model_ready(model_key)
-        hw_info = HardwareDetector.get_hardware_info()
+        # Never detect here: Settings asks for this while opening, and detecting starts PowerShell
+        # and loads ONNX Runtime (the page froze for up to a few seconds). It runs in the background.
+        hw_info = HardwareDetector.cached_info()
+        if hw_info is None:
+            HardwareDetector.probe_async()
+            hw_info = {"provider_name": "Detecting hardware…", "has_gpu": False}
 
         return {
             "model_key": model_key,
@@ -329,10 +331,19 @@ class ModelManager:
                         if cancel_event.is_set():
                             break
 
-                        # Validate minimum size
+                        # Validate the size: the whole file as announced by the server (a dropped
+                        # connection used to leave a cut-off model marked "ready" that then failed
+                        # to load), and at least the expected minimum
                         min_bytes = file_spec.get("expected_min_bytes", 1024)
-                        if os.path.exists(part_path) and os.path.getsize(part_path) >= min_bytes:
-                            shutil.move(part_path, target_path)
+                        got = os.path.getsize(part_path) if os.path.exists(part_path) else 0
+                        encoded = "content-encoding" in {k.lower() for k in resp.headers}
+                        if content_len and not encoded and got != content_len:
+                            logger.warning(f"{filename}: download incomplete ({got} of {content_len} bytes), trying again...",
+                                           category="ai")
+                            os.remove(part_path)
+                            continue
+                        if got >= min_bytes:
+                            os.replace(part_path, target_path)
                             file_success = True
                             logger.info(f"Successfully downloaded {filename} ({os.path.getsize(target_path)} bytes)", category="ai")
                             break

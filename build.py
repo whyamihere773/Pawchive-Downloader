@@ -56,7 +56,7 @@ def check_and_install_dependencies():
         uv_path = shutil.which("uv")
         if uv_path:
             print("⚡ Fast installing required packages via uv...")
-            install_cmd = [uv_path, "pip", "install", "-r", "requirements.txt"]
+            install_cmd = [uv_path, "pip", "install", "--python", sys.executable, "-r", "requirements.txt"]
         else:
             print("📦 Installing required packages via pip...")
             install_cmd = [sys.executable, "-m", "pip", "install", "-r", "requirements.txt"]
@@ -215,49 +215,10 @@ def main():
 
     out_folder = os.path.join(project_root, "dist", "Pawchive Downloader")
 
-    # 2. Compile standalone onefile companion updater (console hidden)
-    print("\n🔨 Compiling updater.exe (standalone onefile, console hidden)...")
-    icon_file = os.path.join(project_root, "assets", "icon.ico")
-    updater_work = os.path.join(project_root, "build", "updater_build")
-    updater_dist = os.path.join(project_root, "build", "updater_dist")
-    os.makedirs(updater_work, exist_ok=True)
-    os.makedirs(updater_dist, exist_ok=True)
-
-    version_info_updater = os.path.join(project_root, "version_info_updater.txt")
-    updater_cmd = [
-        sys.executable, "-m", "PyInstaller",
-        "--noconfirm",
-        "--onefile",
-        "--windowed",
-        "--noupx",                          # Disable UPX: major AV/ML false-positive trigger
-        "--name", "updater",
-        "--workpath", updater_work,
-        "--distpath", updater_dist,
-    ]
-    if os.path.exists(icon_file):
-        updater_cmd.extend(["--icon", icon_file])
-    if os.path.exists(version_info_updater):
-        updater_cmd.extend(["--version-file", version_info_updater])
-    updater_cmd.append(os.path.join(project_root, "updater.py"))
-
-    updater_result = subprocess.run(updater_cmd)
-    if updater_result.returncode != 0:
-        print("\n❌ Build failed for updater.exe!")
-        sys.exit(updater_result.returncode)
-
-    built_updater = os.path.join(updater_dist, "updater.exe")
-    dst_updater = os.path.join(out_folder, "updater.exe")
-    if os.path.exists(built_updater):
-        shutil.copy2(built_updater, dst_updater)
-        print(f"   Embedded updater.exe -> {dst_updater}")
-
-    # Remove temporary updater.spec
-    spec_auto = os.path.join(project_root, "updater.spec")
-    if os.path.exists(spec_auto):
-        try:
-            os.remove(spec_auto)
-        except Exception:
-            pass
+    # The updater (QML window) is built by the spec as a second program sharing '_internal'.
+    if not os.path.exists(os.path.join(out_folder, "updater.exe")):
+        print("\n❌ updater.exe is missing from the build output.")
+        sys.exit(1)
 
     post_build_setup(out_folder, app_version)
 

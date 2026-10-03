@@ -8,6 +8,7 @@ Credentials are NEVER stored in plaintext on disk.
 import os
 import sys
 import json
+import re
 import time
 import threading
 import requests
@@ -24,14 +25,17 @@ from core.crypto_utils import encrypt_credential, decrypt_credential
 
 VAULT_CONTEXT = "pawchive_auth_vault"
 
+# Fields that can be sent to a site to authenticate. A saved password is never one of them.
+SESSION_FIELDS = ("cookie", "token", "api_key")
+
 
 # Provider definitions registry — Kemono, Coomer, Cum.st, and Pawchive
 SUPPORTED_PROVIDERS: Dict[str, Dict[str, Any]] = {
     "kemono": {
         "id": "kemono",
         "name": "Kemono",
-        "domain": "kemono.su",
-        "mirror_domains": ["kemono.cr", "kemono.su"],
+        "domain": "kemono.cr",
+        "mirror_domains": ["kemono.cr"],
         "icon": "🐱",
         "category": "Primary Platform",
         "auth_type": "account",
@@ -68,8 +72,8 @@ SUPPORTED_PROVIDERS: Dict[str, Dict[str, Any]] = {
     "coomer": {
         "id": "coomer",
         "name": "Coomer",
-        "domain": "coomer.su",
-        "mirror_domains": ["coomer.st", "coomer.cr", "coomer.su"],
+        "domain": "coomer.st",
+        "mirror_domains": ["coomer.st", "coomer.cr"],
         "icon": "💎",
         "category": "Primary Platform",
         "auth_type": "account",
@@ -190,7 +194,14 @@ class AuthManager:
     """
 
     def __init__(self, data_dir: Optional[str] = None):
-        base = data_dir or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+        if data_dir:
+            base = data_dir
+        else:
+            from core.path_utils import get_data_dir, migrate_legacy_files
+            base = os.path.join(get_data_dir(), "data")
+            # Packaged builds used to keep the vault inside "_internal"
+            migrate_legacy_files(base, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data"),
+                                 ("credentials_vault.enc",))
         os.makedirs(base, exist_ok=True)
         self.vault_file = os.path.join(base, "credentials_vault.enc")
         self._lock = threading.RLock()
@@ -224,10 +235,26 @@ class AuthManager:
                     self._data = payload
                 else:
                     self._data = {"version": 1, "providers": {}}
+                from core.crypto_utils import needs_reencrypt
+                if needs_reencrypt(raw_encrypted):
+                    self.save()     # move off the old MAC-address key
                 logger.debug(f"[AuthManager] Decrypted vault loaded ({len(self._data.get('providers', {}))} providers configured).", category="auth")
             except Exception as e:
                 logger.error(f"[AuthManager] Failed to decrypt credentials vault: {e}", category="auth")
                 self._data = {"version": 1, "providers": {}}
+                # Keep the unreadable vault instead of overwriting it with an empty one on the next save.
+                # Named after its content, so the same vault is copied once (not on every start).
+                try:
+                    import hashlib
+                    import shutil
+                    with open(self.vault_file, "rb") as f:
+                        digest = hashlib.sha256(f.read()).hexdigest()[:12]
+                    backup = self.vault_file + f".unreadable-{digest}"
+                    if not os.path.exists(backup):
+                        shutil.copy2(self.vault_file, backup)
+                    logger.warning(f"[AuthManager] The old credentials vault was kept as {os.path.basename(backup)}.", category="auth")
+                except Exception:
+                    pass
 
     def save(self) -> bool:
         """Encrypts and atomically writes credentials vault to disk."""
@@ -239,11 +266,12 @@ class AuthManager:
                 tmp_path = self.vault_file + ".tmp"
                 with open(tmp_path, "wb") as f:
                     f.write(encrypted)
-
-                if os.path.exists(self.vault_file):
-                    os.replace(tmp_path, self.vault_file)
-                else:
-                    os.rename(tmp_path, self.vault_file)
+                    f.flush()
+                    try:
+                        os.fsync(f.fileno())
+                    except OSError:
+                        pass
+                os.replace(tmp_path, self.vault_file)
 
                 logger.debug("[AuthManager] Encrypted credentials vault saved safely with DPAPI.", category="auth")
                 return True
@@ -257,29 +285,27 @@ class AuthManager:
         and cleans it from plaintext disk storage.
         """
         try:
-            settings_path = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                "data", "settings.json"
-            )
-            if not os.path.exists(settings_path):
-                return
-
-            with open(settings_path, "r", encoding="utf-8") as f:
-                settings_dict = json.load(f)
-
-            legacy_cookie = str(settings_dict.get("cookie", "")).strip()
-            if legacy_cookie:
-                # If kemono is not already saved in the vault, migrate it
-                kemono_data = self.get_provider_data("kemono")
-                if not kemono_data.get("cookie"):
+            from core.path_utils import get_config_dir
+            from core.atomic_io import atomic_write_json
+            candidates = [
+                os.path.join(get_config_dir(), "settings.json"),
+                os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "settings.json"),
+            ]
+            for settings_path in candidates:
+                if not os.path.exists(settings_path):
+                    continue
+                with open(settings_path, "r", encoding="utf-8") as f:
+                    settings_dict = json.load(f)
+                legacy_cookie = str(settings_dict.get("cookie", "") or "").strip()
+                if not legacy_cookie:
+                    continue
+                # Keep it in the encrypted vault (the general cookie lives in the "kemono" slot)
+                if not self.get_provider_data("kemono").get("cookie"):
                     self.set_credential("kemono", {"cookie": legacy_cookie})
-                    logger.info("🔒 [AuthManager] Migrated legacy session cookie to DPAPI-encrypted credential vault.", category="auth")
-
-                # Clear plaintext cookie from settings.json
-                settings_dict["cookie"] = ""
-                with open(settings_path, "w", encoding="utf-8") as f:
-                    json.dump(settings_dict, f, indent=4)
-                logger.info("🔒 [AuthManager] Cleared plaintext session cookie from settings.json.", category="auth")
+                    logger.info("🔒 [AuthManager] Moved the session cookie from settings.json into the encrypted vault.", category="auth")
+                settings_dict.pop("cookie", None)
+                atomic_write_json(settings_path, settings_dict, indent=2)
+                logger.info("🔒 [AuthManager] Removed the plaintext session cookie from settings.json.", category="auth")
         except Exception as e:
             logger.debug(f"[AuthManager] Legacy migration check: {e}", category="auth")
 
@@ -292,17 +318,17 @@ class AuthManager:
 
     def get_credential(self, provider_id: str, field: str = "cookie") -> str:
         """
-        Returns the decrypted secret credential (cookie, token, api_key) for the given provider.
+        Returns the stored value of one field for the given provider ("" if not set).
+
+        For "cookie" a stored session token counts too (some providers save it as "token"), but a
+        password never does: it is only used to log in and must never be sent as a cookie.
         """
         with self._lock:
             p_data = self.get_provider_data(provider_id)
-            val = p_data.get(field, "")
-            # If default field not found, try common secret field names
-            if not val:
-                for alt in ("cookie", "token", "api_key", "password"):
-                    if p_data.get(alt):
-                        return str(p_data[alt]).strip()
-            return str(val).strip()
+            val = str(p_data.get(field, "") or "").strip()
+            if not val and field == "cookie":
+                val = str(p_data.get("token", "") or "").strip()
+            return val
 
     def set_credential(self, provider_id: str, creds: Dict[str, Any]) -> bool:
         """
@@ -314,6 +340,8 @@ class AuthManager:
                 self._data["providers"] = {}
 
             curr = self._data["providers"].get(provider_id, {})
+            creds = {k: v for k, v in creds.items() if k != "password"}
+            curr.pop("password", None)
             # Normalize cookie if passed
             if "cookie" in creds:
                 c_val = str(creds["cookie"]).strip()
@@ -351,17 +379,15 @@ class AuthManager:
         """Checks if a provider has active authentication."""
         if provider_id == "telegram":
             try:
-                from services.telegram_service import telegram_service
-                return bool(telegram_service.is_authenticated())
+                from services.telegram_service import TelegramService
+                telegram_service = TelegramService.instance()
+                return bool(telegram_service.is_logged_in())
             except Exception:
                 return False
 
         with self._lock:
             p_data = self.get_provider_data(provider_id)
-            for k in ("cookie", "token", "api_key", "password"):
-                if p_data.get(k):
-                    return True
-            return False
+            return any(p_data.get(k) for k in SESSION_FIELDS)
 
     # ── Summary & Presentation for QML ──────────────────────────────────────
 
@@ -402,9 +428,9 @@ class AuthManager:
         logged_in = self.is_logged_in(provider_id)
         p_data = self.get_provider_data(provider_id)
 
-        # Get masked secret
+        # Get masked secret (never a password)
         secret_val = ""
-        for k in ("cookie", "token", "api_key", "password"):
+        for k in SESSION_FIELDS:
             if p_data.get(k):
                 secret_val = str(p_data[k])
                 break
@@ -419,9 +445,10 @@ class AuthManager:
         # Telegram special status
         if provider_id == "telegram":
             try:
-                from services.telegram_service import telegram_service
-                if telegram_service.is_authenticated():
-                    u_info = telegram_service.get_current_user_info() or {}
+                from services.telegram_service import TelegramService
+                telegram_service = TelegramService.instance()
+                if telegram_service.is_logged_in():
+                    u_info = telegram_service.get_user_info() or {}
                     uname = u_info.get("username") or u_info.get("first_name") or ""
                     phone = u_info.get("phone") or ""
                     username = f"@{uname}" if uname else phone
@@ -433,6 +460,13 @@ class AuthManager:
         days_left = p_data.get("days_remaining", 0)
         if logged_in and days_left > 0 and days_left < 700:
             status_text += f" ({days_left}d remaining)"
+
+        from core.providers import DISABLED_PROVIDERS, PROVIDER_NAMES, disabled_message
+        is_disabled = provider_id in DISABLED_PROVIDERS
+        if is_disabled:
+            alt = PROVIDER_NAMES.get(DISABLED_PROVIDERS[provider_id]["alternative"], "")
+            status_text = f"Turned off — use {alt} instead" if alt else "Turned off"
+            status_color = "#F59E0B"
 
         return {
             "id": provider_id,
@@ -451,8 +485,10 @@ class AuthManager:
             "supports_browser_import": bool(meta.get("supports_browser_import", False)),
             "supports_test_connection": bool(meta.get("supports_test_connection", False)),
             "features": meta.get("features", []),
-            "help_tip": meta.get("help_tip", ""),
-            "updated_at": p_data.get("updated_at", 0)
+            "help_tip": disabled_message(provider_id) if is_disabled else meta.get("help_tip", ""),
+            "updated_at": p_data.get("updated_at", 0),
+            "is_disabled": is_disabled,
+            "disabled_message": disabled_message(provider_id) if is_disabled else "",
         }
 
     def get_all_providers_summary(self) -> List[Dict[str, Any]]:
@@ -479,23 +515,22 @@ class AuthManager:
         if provider_id not in SUPPORTED_PROVIDERS:
             return False, f"Unknown provider: {provider_id}", {}
 
+        from core.providers import is_disabled, disabled_message
+        if is_disabled(provider_id):
+            return False, disabled_message(provider_id), {}
+
         meta = SUPPORTED_PROVIDERS[provider_id]
         if not meta.get("supports_credentials_login", False):
             return False, f"{meta['name']} does not support direct password login. Please use 1-Click Import or Session Cookie.", {}
 
         domains = meta.get("mirror_domains", [meta["domain"]])
 
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-            "Accept": "application/json, text/plain, */*",
-            "Content-Type": "application/json"
-        }
 
         # ── 1. Kemono / Coomer ──
         if provider_id in ("kemono", "coomer"):
             api_headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-                "Accept": "application/json, text/plain, */*",
+                "Accept": "text/css",   # Kemono / Coomer answer API calls only for text/css
                 "Content-Type": "application/json"
             }
             last_err = ""
@@ -530,7 +565,8 @@ class AuthManager:
                             logger.success(f"[AuthManager] Successfully logged into {meta['name']} as {username} (DPAPI secured).", category="auth")
                             return True, f"Successfully logged in as {username}!", {"username": username, "domain": dom}
                         else:
-                            return True, f"Logged into {meta['name']} successfully.", {"username": username}
+                            return False, (f"{meta['name']} accepted the login but didn't return a session cookie. "
+                                           "Use 1-Click Browser Import or paste the session cookie instead."), {}
 
                     elif resp.status_code in (400, 401):
                         try:
@@ -664,6 +700,9 @@ class AuthManager:
         Performs a live network validation check for the specified provider.
         Returns: (success: bool, status_message: str, details: dict)
         """
+        from core.providers import is_disabled, disabled_message
+        if is_disabled(provider_id):
+            return False, disabled_message(provider_id), {}
         if not self.is_logged_in(provider_id):
             return False, "Not connected. Please log in or import cookies first.", {}
 
@@ -679,7 +718,7 @@ class AuthManager:
                 headers = {
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
                     "Cookie": cookie,
-                    "Accept": "application/json, text/plain, */*",
+                    "Accept": "text/css" if ("kemono" in dom or "coomer" in dom) else "application/json, text/plain, */*",
                     "Referer": f"https://{dom}/"
                 }
 
@@ -717,7 +756,7 @@ class AuthManager:
                 resp = requests.get("https://pawchive.pw/account", headers=headers, timeout=10, allow_redirects=False)
                 if resp.status_code == 200:
                     self.set_credential(provider_id, {"last_verified": int(time.time())})
-                    uname = self.get_credential(provider_id, "username") or ""
+                    uname = str(self.get_provider_data(provider_id).get("username", "") or "").strip()
                     if not uname:
                         match = re.search(r'account-view__identity[^>]*>\s*([^\s<]+)', resp.text)
                         if match:

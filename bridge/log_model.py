@@ -130,9 +130,18 @@ class LogModel(QAbstractListModel):
     def _on_new_log(self, entry: LogEntry):
         self._all_entries.append(entry)
         if len(self._all_entries) > self.MAX_LOG_ENTRIES:
+            # Drop the oldest lines as removed rows (a full reset made the console jump back to the
+            # top and rebuild every visible row while scrolled)
+            pruned = {id(e) for e in self._all_entries[:self.PRUNE_BATCH_SIZE]}
             del self._all_entries[:self.PRUNE_BATCH_SIZE]
-            self._reapply_filter()
-            return
+            k = 0
+            while k < len(self._filtered_entries) and id(self._filtered_entries[k]) in pruned:
+                k += 1
+            if k:
+                self.beginRemoveRows(QModelIndex(), 0, k - 1)
+                del self._filtered_entries[:k]
+                self.endRemoveRows()
+                self.countChanged.emit()
 
         if self._matches_filter(entry):
             pos = len(self._filtered_entries)

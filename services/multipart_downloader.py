@@ -1,8 +1,9 @@
 import os
+import re
 import time
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Optional, Callable, Dict, Any, Tuple
+from concurrent.futures import ThreadPoolExecutor
+from typing import Optional, Callable, Dict, Tuple
 import requests
 
 CHUNK_BUFFER_SIZE = 64 * 1024  # 64 KB read buffer
@@ -10,6 +11,18 @@ MIN_MULTIPART_SIZE = 20 * 1024 * 1024  # Only use multipart for files >= 20 MB
 
 _active_multipart_resps: set = set()
 _active_multipart_lock = threading.Lock()
+
+# A chunk answered with the whole file (HTTP 200) or the wrong byte range: retrying won't help
+_RANGE_IGNORED = "Server ignored the byte range"
+
+
+def _content_range_matches(resp, start: int, end: int) -> bool:
+    """True when a 206 answer really carries bytes start..end (some CDNs ignore Range and send
+    the whole file with HTTP 200; stitching four of those produced the file repeated 4×)."""
+    if resp.status_code != 206:
+        return False
+    m = re.match(r"^\s*bytes\s+(\d+)-(\d+)/(\d+|\*)\s*$", resp.headers.get("Content-Range", ""), re.IGNORECASE)
+    return bool(m) and int(m.group(1)) == start and int(m.group(2)) == end
 
 def cancel_all_multipart():
     """Instantly closes all active multipart chunk sockets and fallback streams."""
@@ -87,7 +100,7 @@ def _do_download_multipart_file(
         probe_resp = req_session.get(url, headers=probe_headers, timeout=timeout, stream=True)
         with _active_multipart_lock:
             _active_multipart_resps.add(probe_resp)
-    except Exception as e:
+    except Exception:
         if cancel_event and cancel_event.is_set():
             return False, "Download cancelled"
         # Network error on probe — attempt normal single-stream download
@@ -184,7 +197,9 @@ def _do_download_multipart_file(
                     with _active_multipart_lock:
                         _active_multipart_resps.add(resp)
                     try:
-                        if resp.status_code not in (200, 206):
+                        if resp.status_code == 200 or (resp.status_code == 206 and not _content_range_matches(resp, start, end)):
+                            return False, _RANGE_IGNORED
+                        if resp.status_code != 206:
                             time.sleep(1.0)
                             continue
 
@@ -201,11 +216,13 @@ def _do_download_multipart_file(
                                 if chunk:
                                     f.write(chunk)
                                     written += len(chunk)
+                                    if written > expected_len:
+                                        return False, _RANGE_IGNORED
                                     with lock:
                                         downloaded_bytes_per_chunk[chunk_idx] = written
                                     _update_global_progress()
 
-                        if written >= expected_len:
+                        if written == expected_len:
                             return True, ""
                     finally:
                         with _active_multipart_lock:
@@ -274,11 +291,11 @@ def _do_download_multipart_file(
                         outfile.write(buf)
         
         _cleanup_parts(part_files)
-        if os.path.exists(target_path):
-            try:
-                os.remove(target_path)
-            except OSError:
-                pass
+        stitched = os.path.getsize(temp_final)
+        if stitched != total_size:
+            os.remove(temp_final)
+            return False, f"Incomplete download ({stitched} of {total_size} bytes)"
+        # os.replace overwrites the old file in one step (the old copy stays until the new one is complete)
         os.replace(temp_final, target_path)
         return True, ""
     except Exception as e:
@@ -364,19 +381,16 @@ def _fallback_single_download(
                     if progress_callback:
                         progress_callback(downloaded, total_size)
 
-        if total_size > 0 and downloaded == 0:
+        if total_size > 0 and downloaded < total_size and "content-encoding" not in {k.lower() for k in resp.headers}:
             if os.path.exists(temp_target):
                 try:
                     os.remove(temp_target)
                 except OSError:
                     pass
-            return False, "Downloaded file is empty (0 bytes received)"
+            if downloaded == 0:
+                return False, "Downloaded file is empty (0 bytes received)"
+            return False, f"Incomplete download ({downloaded} of {total_size} bytes)"
 
-        if os.path.exists(target_path):
-            try:
-                os.remove(target_path)
-            except OSError:
-                pass
         os.replace(temp_target, target_path)
         return True, ""
     except Exception as e:

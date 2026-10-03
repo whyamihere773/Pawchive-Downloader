@@ -971,6 +971,29 @@ Rectangle {
                                         }
                                     }
                                 }
+
+                                // Show the downloaded file in the Gallery (finished items)
+                                Rectangle {
+                                    width: 22
+                                    height: 20
+                                    radius: 4
+                                    color: itemGalleryMouse.containsMouse ? "#1E293B" : "#141A28"
+                                    border.color: itemGalleryMouse.containsMouse ? "#38BDF8" : "#2E3A56"
+                                    border.width: 1
+                                    visible: model.status === "completed" && !!model.targetPath
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    Text { anchors.centerIn: parent; text: "🖼"; font.pixelSize: 10 }
+                                    MouseArea {
+                                        id: itemGalleryMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        ToolTip.visible: containsMouse
+                                        ToolTip.delay: 300
+                                        ToolTip.text: root.tr("queue_show_gallery_tip", "Show this file in the Gallery")
+                                        onClicked: if (root.bridge) root.bridge.showInGallery(model.targetPath)
+                                    }
+                                }
                             }
                         }
 

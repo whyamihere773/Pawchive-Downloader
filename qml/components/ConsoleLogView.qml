@@ -130,7 +130,24 @@ Rectangle {
     signal exportLinksRequested()
     signal downloadLinksRequested()
 
-    readonly property bool isCompact: root.width < 780
+    // Full labels only when they really fit. The width is measured with the fonts actually in use:
+    // on Linux "Segoe UI" is missing and the replacement font is wider, so a fixed width let the
+    // last button slide off the edge (#23).
+    FontMetrics { id: fmLogTitle; font.family: "Segoe UI, Inter, sans-serif"; font.pixelSize: 12; font.weight: 600 }
+    FontMetrics { id: fmLogBtn; font.family: "Segoe UI, Inter, sans-serif"; font.pixelSize: 10; font.weight: 600 }
+    FontMetrics { id: fmLogPill; font.pixelSize: 9; font.weight: Font.Bold }
+    readonly property real fullHeaderWidth: {
+        var pills = 0
+        var levels = ["ALL", "INFO", "WARN", "ERR"]
+        for (var i = 0; i < levels.length; i++) pills += Math.max(42, fmLogPill.advanceWidth(levels[i]) + 14) + 4
+        var buttons = Math.max(120, fmLogBtn.advanceWidth(root.tr("btn_download_links", "Download Links")) + 38)
+                    + Math.max(106, fmLogBtn.advanceWidth(root.tr("btn_export_links", "Export Links")) + 38)
+                    + Math.max(90, fmLogBtn.advanceWidth(root.tr("btn_copy_selected", "Copy (%1)").replace("%1", "999")) + 36)
+                    + Math.max(70, fmLogBtn.advanceWidth(root.tr("btn_reset", "Reset")) + 32)
+        var title = 13 + 6 + fmLogTitle.advanceWidth(root.tr("title_progress_log", "Progress Log"))
+        return 20 + title + pills + buttons + 8 * 6 + 24   // margins + gaps between items + safety room
+    }
+    readonly property bool isCompact: root.width < Math.max(780, fullHeaderWidth)
     readonly property bool isVeryNarrow: root.width < 440
 
     color: "#0D0F14"

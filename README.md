@@ -102,7 +102,7 @@
 - 📋 **Failed Download Export:** Export a full report of failed files — including direct download links and source post URLs — to a text file for manual auditing.
 - 🍪 **1-Click Browser Session Importer:** Extracts authenticated Kemono/Patreon cookies directly from installed browsers without locking open sessions or manual DevTools copying.
 - 🌐 **Full 14-Language Localization (i18n):** Instant in-app language switching and real-time dynamically translated console activity logs (English, Chinese, Japanese, Korean, Spanish, French, German, Russian, Portuguese, and more).
-- 🔄 **Smart In-App Updater & Standalone Companion (`updater.exe`):** Automatic update alerts on launch with release notes preview and a dedicated standalone companion updater for zero-lock binary updates, seamless extraction, and instant restart.
+- 🔄 **Safe In-App Updater:** Update alerts on launch with a release notes preview, then a dedicated updater window that verifies the download, installs it with automatic rollback if anything fails, and reopens the app. Works for the Windows build, the Linux build and source checkouts.
 
 </details>
 
@@ -112,9 +112,10 @@
 
 ### Creator Archives & Portals
 - **Pawchive** (`pawchive.pw`)
-- **Kemono** (`kemono.su`)
-- **Coomer** (`coomer.su`)
 - **Cum.st** (`cum.st`)
+- **Kemono** and **Coomer**: *turned off for now.* Both sites are mostly not working at the moment, so the app
+  doesn't use them. Kemono links are offered as the same link on Pawchive (it has the same creators and IDs);
+  for Coomer creators, use cum.st. Kemono artists in the Watchlist can be moved to Pawchive in one click.
 - **Telegram** (`t.me/...` public channels, private links, and individual media posts)
 - *Supported creator services:* Patreon, Pixiv Fanbox, Fantia, Subscribestar, Gumroad, Boosty, Discord, OnlyFans, Fansly, Afdian, DLsite, and more.
 
@@ -137,9 +138,12 @@
 ### Option A: Pre-compiled Windows Binary (Recommended for most users)
 
 1. Head over to the **[Latest Release](https://github.com/whyamihere773/Pawchive-Downloader/releases/latest)** page.
-2. Download `Pawchive-Downloader-v1.2.0-Windows.zip`.
+2. Download `Pawchive-Downloader-v1.2.2-Windows.zip`.
 3. Extract the ZIP archive anywhere on your computer.
 4. Run `Pawchive Downloader.exe` — that's it!
+
+**On Linux**, download `Pawchive-Downloader-v<version>-Linux-x86_64.tar.gz` instead, extract it, and run `./pawchive`.
+The Linux build is made on Ubuntu 22.04, so it runs on any distro with glibc 2.35 or newer (Debian 12+, Fedora 36+, Arch, Mint 21+, openSUSE Tumbleweed…).
 
 ---
 
@@ -157,6 +161,23 @@ Ensure you have **Python 3.10 or newer** installed.
    ```bash
    pip install -r requirements.txt
    ```
+   or, with [uv](https://docs.astral.sh/uv/):
+   ```bash
+   uv pip install -r requirements.txt
+   ```
+   On Linux distributions that manage the system Python (Arch / CachyOS, Debian 12+, Ubuntu 23.04+, Fedora…),
+   `pip install` refuses with *externally-managed-environment*. Use a virtual environment instead:
+   ```bash
+   python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
+   # or: uv venv && source .venv/bin/activate && uv pip install -r requirements.txt
+   ```
+   The in-app updater installs new dependencies the same way (uv when available, otherwise pip).
+
+   *Optional:* offline AI character recognition (Settings → AI & Recognition) needs a few extra packages:
+   ```bash
+   pip install -r requirements-ai.txt
+   ```
+   The Windows and Linux downloads already include them.
 
 3. **Run the application:**
    ```bash
@@ -168,6 +189,41 @@ Ensure you have **Python 3.10 or newer** installed.
    python build.py
    ```
    The portable distribution will be output to `dist/Pawchive Downloader/` alongside a compressed release ZIP archive.
+
+---
+
+### Logs
+
+Logs are saved in a `logs` folder next to `Pawchive Downloader.exe`, the Linux `pawchive` binary, or `main.py`:
+
+```
+logs/
+  v1.2.1/        one file per session (2026-10-02_10-00-00.log); a <session>.crash.log appears only after a hard crash
+  updater/       one file per update (2026-10-02_10-05-12 (1.2.1 to 1.3.0).log)
+  older/         logs from versions before this layout
+```
+
+Each log starts with the app version, edition, system and Python/Qt versions and ends with a "Session ended" line, so a log without one belongs to a session that crashed or was closed by force. Passwords, MEGA keys, proxy logins and your home folder are hidden, so logs are safe to attach to bug reports. Logs are never deleted automatically: **Settings → Storage → Logs** shows their size and has a **Clear logs** button. If the app folder can't be written to, logs go to `%LOCALAPPDATA%\Pawchive Downloader\logs` (Windows) or `~/.local/share/pawchive/logs` (Linux) instead.
+
+### Updating
+
+Pawchive checks for updates on launch. Click **Update now** in the update dialog: the app closes, the updater installs the new version, and the app opens again. Your `config/`, `downloads/`, `logs/`, `data/` folders, virtual environments and any files you added are never touched, and if anything fails the previous version is restored.
+
+The update dialog shows the version you're running and its edition (**Windows build**, **Linux build** or **Source code**):
+
+| Edition | Version shown | How it updates |
+| --- | --- | --- |
+| Windows / Linux build | `1.2.1` | Downloads the matching release package, checks it against the release's SHA-256, and installs it |
+| Source, git clone | `1.2.1 (ad0390c)` | `git fetch` + fast-forward of `main`; if you've edited app files it asks to `git stash` them or skip |
+| Source, zip download | `1.2.1 (ad0390c)` | Downloads the exact commit from GitHub and remembers which commit is installed |
+
+Source installs compare their commit with GitHub's `main`, so they're offered an update only when `main` has new commits (shown as *"1.2.1 + 3 new changes"*). A checkout with your own commits on top isn't nagged.
+
+You can also run the updater yourself:
+```bash
+python updater.py            # check and update this source folder
+python updater.py --console  # same, in the terminal (used automatically when no window can open)
+```
 
 ---
 

@@ -10,7 +10,7 @@ import sys
 import shutil
 import threading
 import subprocess
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass
 from typing import List, Dict, Any, Optional, Callable, Tuple
 
 from core.logger import logger
@@ -422,11 +422,13 @@ class BulkDecompressorEngine:
         delete_after: bool = False,
         progress_callback: Optional[Callable[[float], None]] = None,
         cancel_event: Optional[threading.Event] = None,
-        overwrite: bool = True
+        overwrite: bool = True,
+        probe: bool = True
     ) -> Tuple[bool, str]:
         """
         Extract a single archive using 7za.exe into a folder named after the archive.
         Returns (success: bool, error_message: str).
+        probe=False skips the encryption pre-check, for callers that already ran a faster one.
         """
         if not self.has_7za:
             return False, "7za.exe standalone binary not found in dependencies."
@@ -438,7 +440,7 @@ class BulkDecompressorEngine:
 
         # Pre-check: if no password was provided, probe in-memory first.
         # This prevents 7-Zip from creating a target folder and 0-byte ghost files on disk.
-        if not effective_pw:
+        if not effective_pw and probe:
             is_enc, enc_err = self.probe_if_encrypted(item.path)
             if is_enc:
                 return False, f"ERROR: Can not open encrypted archive. Wrong password? ({enc_err})"
@@ -446,8 +448,13 @@ class BulkDecompressorEngine:
         # Determine target output folder
         base_name = clean_archive_stem(item.filename)
         default_dir = os.path.join(item.directory, base_name)
+        # -aoa overwrites only when re-extracting into this archive's own earlier extraction. A folder
+        # that merely has the same name may hold other files: existing files there are kept (-aos)
+        # instead of being silently replaced.
+        overwrite_flag = "-aos"
         if overwrite and item.extracted_dir and os.path.exists(item.extracted_dir):
             target_dir = item.extracted_dir
+            overwrite_flag = "-aoa"
         elif overwrite and os.path.exists(default_dir):
             target_dir = default_dir
         else:
@@ -465,7 +472,7 @@ class BulkDecompressorEngine:
             self._7za_path,
             "x",
             "-y",
-            "-aoa",   # Overwrite existing files without prompting
+            overwrite_flag,   # never prompt (see above)
             "-bsp1",  # Output progress to stdout
             f"-mmt={max(1, threads_per_archive)}",
             f"-o{target_dir}"
@@ -567,13 +574,17 @@ class BulkDecompressorEngine:
             item.extracted_present = True
             item.extracted_dir = target_dir
 
-            # Safely delete archive if requested
+            # Move the archive to the Recycle Bin if requested (it was deleted permanently before)
             if delete_after:
                 try:
-                    os.remove(item.path)
-                    logger.info(f"Deleted source archive after successful extraction: {item.path}", category="decompressor")
+                    from PySide6.QtCore import QFile
+                    if QFile.moveToTrash(item.path):
+                        logger.info(f"Moved the archive to the Recycle Bin after extracting it: {item.path}", category="decompressor")
+                    else:
+                        logger.warning(f"Extracted, but couldn't move the archive to the Recycle Bin, so it was kept: {item.path}",
+                                       category="decompressor")
                 except Exception as del_err:
-                    logger.warning(f"Extracted successfully but failed to delete archive: {del_err}", category="decompressor")
+                    logger.warning(f"Extracted successfully but failed to remove the archive: {del_err}", category="decompressor")
 
             return True, ""
         else:

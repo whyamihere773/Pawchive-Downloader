@@ -8,14 +8,12 @@ Maintains an atomic, persistent repository in config/link_vault.json with automa
 import os
 import sys
 import json
-import time
 import uuid
 import re
 import datetime
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Any, List, Optional, Set, Callable
-from urllib.parse import urlparse
 
 if __name__ == "__main__" or "core" not in sys.modules:
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -34,7 +32,10 @@ class LinkVaultManager:
 
     def __init__(self, config_dir: Optional[str] = None):
         if not config_dir:
-            config_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config")
+            from core.path_utils import get_config_dir, migrate_legacy_files
+            config_dir = get_config_dir()
+            migrate_legacy_files(config_dir, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config"),
+                                 ("link_vault.json", "link_vault.json.bak"))
         self.config_dir = config_dir
         os.makedirs(self.config_dir, exist_ok=True)
 
@@ -407,7 +408,7 @@ class LinkVaultManager:
                     break
             if found:
                 self._save_unlocked()
-                logger.info(f"Updated passwords for link {link_id}: {clean_pws}", category="vault")
+                logger.info(f"Updated passwords for link {link_id} ({len(clean_pws)} saved).", category="vault")
                 return True
         return False
 
@@ -460,7 +461,7 @@ class LinkVaultManager:
                 logger.success(f"Cleaned {purged} dead links from Link Vault.", category="vault")
             return purged
 
-    def update_link_health(self, link_id: str, health: str):
+    def update_link_health(self, link_id: str, health: str, save: bool = True):
         """Updates health status for a single link ('alive', 'dead', 'unknown')."""
         with self._lock:
             for lnk in self.data["links"]:
@@ -468,7 +469,36 @@ class LinkVaultManager:
                     lnk["health"] = health
                     lnk["last_checked"] = datetime.datetime.now().isoformat()
                     break
-        self.save()
+        if save:
+            self.save()
+
+    @staticmethod
+    def _probe_mega(url: str) -> str:
+        """Asks MEGA's public API whether a file / folder link still exists (a link that merely
+        looked valid used to count as alive, so dead MEGA links were never cleaned up)."""
+        import requests
+        m = re.search(r"mega(?:\.co)?\.nz/(?:file/|#!)([A-Za-z0-9_-]{8})", url)
+        folder = False
+        if not m:
+            m = re.search(r"mega(?:\.co)?\.nz/(?:folder/|#F!)([A-Za-z0-9_-]{8})", url)
+            folder = bool(m)
+        if not m:
+            return "unknown"
+        handle = m.group(1)
+        if folder:
+            r = requests.post(f"https://g.api.mega.co.nz/cs?id=1&n={handle}",
+                              json=[{"a": "f", "c": 1, "ca": 1, "r": 1}], timeout=8)
+        else:
+            r = requests.post("https://g.api.mega.co.nz/cs?id=1", json=[{"a": "g", "p": handle}], timeout=8)
+        if r.status_code != 200:
+            return "unknown"
+        data = r.json()
+        first = data[0] if isinstance(data, list) and data else data
+        if isinstance(first, dict):
+            return "alive"
+        if isinstance(first, int) and first in (-9, -16):    # not found / taken down
+            return "dead"
+        return "unknown"
 
     def get_all_passwords(self) -> List[str]:
         """Returns a flat, deduplicated list of all passwords currently stored."""
@@ -491,7 +521,6 @@ class LinkVaultManager:
         """
         import requests
         url = link_item.get("url", "")
-        platform = link_item.get("platform", "other").lower()
 
         if not url:
             return "dead"
@@ -521,11 +550,9 @@ class LinkVaultManager:
                     elif r.status_code in (404, 400):
                         return "dead"
 
-            # 3. Mega syntax check
+            # 3. MEGA API check (a HEAD request on a MEGA page always answers 200)
             if "mega.nz" in url or "mega.co.nz" in url:
-                # Validate valid Mega file/folder syntax (#... or /file/... or /folder/...)
-                if "#" in url or "/file/" in url or "/folder/" in url:
-                    return "alive"
+                return self._probe_mega(url)
 
             # 4. Catbox / general HTTP HEAD request
             headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
@@ -557,12 +584,13 @@ class LinkVaultManager:
         Runs health check across all stored links (or links belonging to creator_key) in a background worker pool.
         Non-blocking, updates status in real-time.
         """
-        if self._probing_active:
-            logger.warning("Health probing is already in progress.", category="vault")
-            return
+        with self._lock:
+            if self._probing_active:
+                logger.warning("Health probing is already in progress.", category="vault")
+                return
+            self._probing_active = True     # set before the thread starts: two quick clicks ran two probes
 
         def _worker():
-            self._probing_active = True
             try:
                 with self._lock:
                     if creator_key:
@@ -575,7 +603,8 @@ class LinkVaultManager:
 
                 done_count = 0
                 if total > 0:
-                    with ThreadPoolExecutor(max_workers=8) as executor:
+                    executor = ThreadPoolExecutor(max_workers=8)
+                    try:
                         future_to_link = {
                             executor.submit(self.probe_link_health_single, lnk): lnk
                             for lnk in links_copy
@@ -584,6 +613,8 @@ class LinkVaultManager:
                         for future in as_completed(future_to_link):
                             if cancel_event and cancel_event.is_set():
                                 logger.warning("Health probing cancelled by user.", category="vault")
+                                # Drop the checks that haven't started (cancel used to wait for all of them)
+                                executor.shutdown(wait=False, cancel_futures=True)
                                 break
 
                             lnk = future_to_link[future]
@@ -592,11 +623,16 @@ class LinkVaultManager:
                             except Exception:
                                 status = "unknown"
 
-                            self.update_link_health(lnk["id"], status)
+                            # Saved in batches: every checked link used to rewrite the whole vault file
+                            self.update_link_health(lnk["id"], status, save=False)
                             done_count += 1
+                            if done_count % 50 == 0:
+                                self.save()
 
                             if progress_callback:
                                 progress_callback(done_count, total, lnk.get("url", ""))
+                    finally:
+                        executor.shutdown(wait=False, cancel_futures=True)
 
                 self.save()
                 logger.success(f"Link Vault: Health probing complete ({done_count}/{total} checked).", category="vault")

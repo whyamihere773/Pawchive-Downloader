@@ -34,9 +34,22 @@ Item {
     property string activeServiceFilter: "all"
     property bool showAddDialog: false
     property var  expandedArtists: ({})
+    property string _addRequest: ""     // set while "Add to Watchlist" is looking the creator up
 
     Connections {
         target: bridge
+        function onAsyncResultReady(requestId, result) {
+            if (requestId !== root._addRequest) return
+            root._addRequest = ""
+            if (result === true) {
+                addUrlInput.text = ""
+                addFolderInput.text = ""
+                root.showAddDialog = false
+                resultToast.showCustom("✅ Added creator to watchlist!")
+            } else {
+                addErrorText.text = root.tr("watchlist_error_invalid_url", "Invalid URL or creator could not be resolved.")
+            }
+        }
         function onWatchlistCheckStarted() { root.isChecking = true }
         function onWatchlistCheckFinished(n) {
             root.isChecking = false
@@ -964,7 +977,7 @@ Item {
                                     cursorShape: Qt.PointingHandCursor
                                     ToolTip.visible: containsMouse
                                     ToolTip.delay: 250
-                                    ToolTip.text: root.tr("watchlist_edit_date_tip", "Click to modify last downloaded cutoff date\nEnforces/converts to YYYY-MM-DD for Pawchive and Kemono")
+                                    ToolTip.text: root.tr("watchlist_edit_date_tip", "Click to modify last downloaded cutoff date\nEnforces/converts to YYYY-MM-DD for Pawchive and cum.st")
                                     onClicked: {
                                         entryCard.isEditingDate = !entryCard.isEditingDate
                                         if (entryCard.isEditingDate) {
@@ -1491,6 +1504,27 @@ Item {
                                     }
                                 }
 
+                                // Show this folder in the Gallery tab
+                                Rectangle {
+                                    height: 24
+                                    width: 28
+                                    radius: 5
+                                    color: gallerySingleMouse.containsMouse ? "#1E293B" : "#0F172A"
+                                    border.color: gallerySingleMouse.containsMouse ? "#38BDF8" : "#334155"
+                                    border.width: 1
+                                    Text { anchors.centerIn: parent; text: "🖼"; font.pixelSize: 11 }
+                                    MouseArea {
+                                        id: gallerySingleMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        ToolTip.visible: containsMouse
+                                        ToolTip.delay: 300
+                                        ToolTip.text: root.tr("watchlist_show_gallery_tip", "Show this folder in the Gallery")
+                                        onClicked: if (bridge) bridge.showInGallery(entryCard.artistDownloadDir || bridge.getDownloadDir())
+                                    }
+                                }
+
                                 // Add Path button (links a second drive/folder to this artist)
                                 Rectangle {
                                     height: 24
@@ -1590,6 +1624,27 @@ Item {
                                             onClicked: {
                                                 if (bridge) bridge.openFolder(modelData)
                                             }
+                                        }
+                                    }
+
+                                    // Show this folder in the Gallery tab
+                                    Rectangle {
+                                        height: 24
+                                        width: 28
+                                        radius: 5
+                                        color: galleryMultiMouse.containsMouse ? "#1E293B" : "#0F172A"
+                                        border.color: galleryMultiMouse.containsMouse ? "#38BDF8" : "#334155"
+                                        border.width: 1
+                                        Text { anchors.centerIn: parent; text: "🖼"; font.pixelSize: 11 }
+                                        MouseArea {
+                                            id: galleryMultiMouse
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            ToolTip.visible: containsMouse
+                                            ToolTip.delay: 300
+                                            ToolTip.text: root.tr("watchlist_show_gallery_tip", "Show this folder in the Gallery")
+                                            onClicked: if (bridge) bridge.showInGallery(modelData)
                                         }
                                     }
 
@@ -2255,7 +2310,7 @@ Item {
 
                     // URL Input Label
                     Text {
-                        text: root.tr("watchlist_add_url_label", "Artist URL (Kemono / Coomer):")
+                        text: root.tr("watchlist_add_url_label", "Artist URL (Pawchive / cum.st):")
                         font.family: "Segoe UI, sans-serif"
                         font.pixelSize: 11
                         font.weight: 600
@@ -2400,7 +2455,7 @@ Item {
                                 anchors.centerIn: parent
                                 width: parent.width - 16
                                 horizontalAlignment: Text.AlignHCenter
-                                text: root.tr("watchlist_add_confirm", "Add to Watchlist")
+                                text: root._addRequest !== "" ? root.tr("watchlist_adding", "Adding…") : root.tr("watchlist_add_confirm", "Add to Watchlist")
                                 font.family: "Segoe UI, sans-serif"
                                 font.pixelSize: 11
                                 font.weight: Font.Bold
@@ -2413,6 +2468,7 @@ Item {
                                 anchors.fill: parent
                                 hoverEnabled: true
                                 cursorShape: Qt.PointingHandCursor
+                                enabled: root._addRequest === ""
                                 onClicked: {
                                     var url = addUrlInput.text.trim()
                                     if (!url) {
@@ -2420,19 +2476,10 @@ Item {
                                         return
                                     }
                                     addErrorText.text = ""
-                                    var customDir = addFolderInput.text.trim()
-                                    var ok = false
-                                    if (bridge) {
-                                        ok = bridge.addArtistToWatchlist(url, customDir)
-                                    }
-                                    if (ok) {
-                                        addUrlInput.text = ""
-                                        addFolderInput.text = ""
-                                        root.showAddDialog = false
-                                        resultToast.showCustom("✅ Added creator to watchlist!")
-                                    } else {
-                                        addErrorText.text = root.tr("watchlist_error_invalid_url", "Invalid URL or creator could not be resolved.")
-                                    }
+                                    if (!bridge) return
+                                    // Looked up in the background: the window used to freeze meanwhile
+                                    root._addRequest = "watchlist-add-" + Date.now()
+                                    bridge.addArtistToWatchlistAsync(root._addRequest, url, addFolderInput.text.trim())
                                 }
                             }
                         }

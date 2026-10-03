@@ -5,11 +5,13 @@ Handles persistent storage, categorization matching, smart character extraction,
 
 import sys
 import os
+import threading
 import re
 import json
 import pickle
 from typing import List, Optional, Set, Dict, Any, Callable, Tuple
 from core.logger import logger
+from core.atomic_io import atomic_write_text
 
 IGNORED_TAGS: Set[str] = {
     "r-18", "r18", "nsfw", "sfw", "4k", "8k", "patreon", "fanbox", "fantia",
@@ -242,12 +244,21 @@ class KnownManager:
         self._load_master_db()
 
         self.on_entries_changed: Optional[Callable[[], None]] = None
+        self._lock = threading.RLock()
         self.load()
 
     def enable_ai(self, enabled: bool = True, model_manager: Optional[Any] = None) -> None:
         """Enables or disables AI-assisted character recognition (Tier 1 & Tier 2)."""
         self._ai_enabled = bool(enabled)
         if self._ai_enabled:
+            # Without these packages the engine never starts; say so instead of failing silently
+            import importlib.util
+            missing = [m for m in ("numpy", "onnxruntime", "tokenizers") if importlib.util.find_spec(m) is None]
+            if missing:
+                logger.warning(
+                    "AI character recognition needs these Python packages, which aren't installed: "
+                    f"{', '.join(missing)}. Install them with: pip install -r requirements-ai.txt",
+                    category="ai")
             if not self.model_manager:
                 try:
                     from services.model_manager import ModelManager
@@ -258,7 +269,7 @@ class KnownManager:
                     self.contextual_reasoner = ContextualReasoner(self.model_manager)
                     logger.info("AI-assisted character recognition engine activated.", category="known")
                 except Exception as e:
-                    logger.debug(f"AI engine initialization notice: {e}", category="known")
+                    logger.warning(f"AI character recognition couldn't start: {e}", category="ai")
         self._lru_cache.clear()
 
     def set_ai_engine_mode(self, mode: str) -> None:
@@ -358,12 +369,16 @@ class KnownManager:
             self._lru_cache.clear()
             logger.info(f"Known character recognition mode set to: '{mode}'", category="known")
 
-    def load(self):
-        self.entries.clear()
-        self.entry_franchise_map.clear()
-        self.franchise_sections.clear()
-        self.standalone_entries.clear()
-        self.franchise_aliases.clear()
+    def load(self, log: bool = True):
+        # Everything is built aside and swapped in at the end: a download being planned at the same
+        # time used to see an empty or half-built list while Known.txt was reloaded
+        entries: List[str] = []
+        entry_franchise_map: Dict[str, str] = {}
+        franchise_sections: Dict[str, List[str]] = {}
+        standalone_entries: List[str] = []
+        franchise_aliases: Dict[str, List[str]] = {}
+        custom_cjk_names: Set[str] = set()
+        custom_cjk_franchises: Set[str] = set()
 
         if not os.path.exists(self.file_path):
             os.makedirs(os.path.dirname(self.file_path), exist_ok=True)
@@ -398,8 +413,7 @@ Morathi
 Katarin
 """
             try:
-                with open(self.file_path, "w", encoding="utf-8") as f:
-                    f.write(default_content.strip() + "\n")
+                atomic_write_text(self.file_path, default_content.strip() + "\n")
                 logger.info(f"Created default structured Known.txt at: {self.file_path}", category="known")
             except Exception as e:
                 logger.error(f"Failed to create Known.txt: {e}", category="known")
@@ -418,63 +432,63 @@ Katarin
                         parts = [p.strip() for p in raw_header.split("|") if p.strip()]
                         primary_fr = parts[0] if parts else raw_header
                         current_franchise = primary_fr
-                        self.franchise_sections.setdefault(current_franchise, [])
-                        if current_franchise not in self.franchise_aliases:
-                            self.franchise_aliases[current_franchise] = []
+                        franchise_sections.setdefault(current_franchise, [])
+                        if current_franchise not in franchise_aliases:
+                            franchise_aliases[current_franchise] = []
                         for al in parts[1:]:
-                            if al not in self.franchise_aliases[current_franchise]:
-                                self.franchise_aliases[current_franchise].append(al)
+                            if al not in franchise_aliases[current_franchise]:
+                                franchise_aliases[current_franchise].append(al)
                             self.franchise_resolver.register_alias(al, current_franchise, persist=False)
                         continue
 
-                    if cleaned not in self.entries:
-                        self.entries.append(cleaned)
+                    if cleaned not in entries:
+                        entries.append(cleaned)
                     
                     if current_franchise:
-                        self.entry_franchise_map[cleaned.lower()] = current_franchise
+                        entry_franchise_map[cleaned.lower()] = current_franchise
                         canon = self._canonical_entry(cleaned)
-                        self.entry_franchise_map[canon.lower()] = current_franchise
+                        entry_franchise_map[canon.lower()] = current_franchise
                         for al in self._entry_aliases(cleaned):
-                            self.entry_franchise_map[al.lower()] = current_franchise
-                        if cleaned not in self.franchise_sections[current_franchise]:
-                            self.franchise_sections[current_franchise].append(cleaned)
+                            entry_franchise_map[al.lower()] = current_franchise
+                        if cleaned not in franchise_sections[current_franchise]:
+                            franchise_sections[current_franchise].append(cleaned)
                     else:
-                        if cleaned not in self.standalone_entries:
-                            self.standalone_entries.append(cleaned)
+                        if cleaned not in standalone_entries:
+                            standalone_entries.append(cleaned)
 
             # Build custom phone book index for O(1) matching
-            self._custom_exact_map = {}
-            self._custom_first_token_map = {}
-            self._custom_last_token_map = {}
-            self._custom_single_names = []
-            self._custom_indexed = []
-            self._custom_words: Set[str] = set()
+            custom_exact_map = {}
+            custom_first_token_map = {}
+            custom_last_token_map = {}
+            custom_single_names = []
+            custom_indexed = []
+            custom_words: Set[str] = set()
 
-            for entry in self.entries:
+            for entry in entries:
                 canonical = self._canonical_entry(entry)
                 if not canonical:
                     continue
-                fr = self.entry_franchise_map.get(canonical.lower()) or canonical
+                fr = entry_franchise_map.get(canonical.lower()) or canonical
                 for alias in self._entry_aliases(entry):
                     ntoks = tuple(self._tokenize(alias))
                     if not ntoks:
                         continue
-                    self._custom_exact_map[ntoks] = (fr, canonical)
-                    self._custom_indexed.append((canonical, ntoks))
+                    custom_exact_map[ntoks] = (fr, canonical)
+                    custom_indexed.append((canonical, ntoks))
                     for tok in ntoks:
-                        self._custom_words.add(tok)
+                        custom_words.add(tok)
 
                     if len(ntoks) == 1:
-                        self._custom_single_names.append(canonical)
+                        custom_single_names.append(canonical)
                     else:
                         first, last = ntoks[0], ntoks[-1]
                         if len(first) >= 3 and first not in _NOISE_TAGS and first not in GENERIC_TITLE_WORDS:
-                            self._custom_first_token_map.setdefault(first, []).append((canonical, ntoks))
+                            custom_first_token_map.setdefault(first, []).append((canonical, ntoks))
                         if last != first and len(last) >= 3 and last not in _NOISE_TAGS and last not in GENERIC_TITLE_WORDS:
-                            self._custom_last_token_map.setdefault(last, []).append((canonical, ntoks))
+                            custom_last_token_map.setdefault(last, []).append((canonical, ntoks))
 
             # Build custom franchise map with auto-generated and explicit aliases
-            self._custom_franchise_map = {}
+            custom_franchise_map = {}
 
             # Built-in multi-lingual franchise synonyms across supported tutorial languages (ZH, JA, KO, RU, EN)
             MULTILINGUAL_FRANCHISE_MAP = {
@@ -514,27 +528,27 @@ Katarin
                 ]
             }
 
-            for fr in self.franchise_sections:
+            for fr in franchise_sections:
                 fr_toks = tuple(self._tokenize(fr))
                 if fr_toks:
-                    self._custom_franchise_map[fr_toks] = fr
-                for al in self.franchise_aliases.get(fr, []):
+                    custom_franchise_map[fr_toks] = fr
+                for al in franchise_aliases.get(fr, []):
                     al_toks = tuple(self._tokenize(al))
                     if al_toks:
-                        self._custom_franchise_map[al_toks] = fr
+                        custom_franchise_map[al_toks] = fr
 
                 # 1. Stripping "The "
                 if fr.lower().startswith("the "):
                     stripped_toks = tuple(self._tokenize(fr[4:]))
                     if stripped_toks:
-                        self._custom_franchise_map[stripped_toks] = fr
+                        custom_franchise_map[stripped_toks] = fr
 
                 # 2. Acronyms for >= 3 words (e.g. Fate Grand Order -> FGO)
                 words = fr.split()
                 if len(words) >= 3:
                     acro = "".join(w[0] for w in words if w.lower() not in {"the", "of", "and", "in", "no", "to"}).lower()
                     if len(acro) >= 2:
-                        self._custom_franchise_map[(acro,)] = fr
+                        custom_franchise_map[(acro,)] = fr
 
                 # 3. Roman numerals <-> numbers (e.g. VII <-> 7)
                 roman_map = {
@@ -544,17 +558,17 @@ Katarin
                 for r_tok, d_tok in roman_map.items():
                     if r_tok in fr_toks:
                         sub_toks = tuple(d_tok if t == r_tok else t for t in fr_toks)
-                        self._custom_franchise_map[sub_toks] = fr
+                        custom_franchise_map[sub_toks] = fr
                         if len(fr_toks) >= 2:
                             ff_acro = f"{fr_toks[0][0]}{fr_toks[1][0]}{d_tok}"
-                            self._custom_franchise_map[(ff_acro,)] = fr
-                            self._custom_franchise_map[(f"{fr_toks[0][0]}{fr_toks[1][0]}{r_tok}",)] = fr
+                            custom_franchise_map[(ff_acro,)] = fr
+                            custom_franchise_map[(f"{fr_toks[0][0]}{fr_toks[1][0]}{r_tok}",)] = fr
 
                 # 4. Distinctive single-word franchise keywords (len >= 6)
                 for w in fr_toks:
                     if len(w) >= 6 and w not in _NOISE_TAGS and w not in GENERIC_TITLE_WORDS and w not in IGNORED_TAGS:
-                        if (w,) not in self._custom_franchise_map:
-                            self._custom_franchise_map[(w,)] = fr
+                        if (w,) not in custom_franchise_map:
+                            custom_franchise_map[(w,)] = fr
 
                 # 5. Multi-lingual franchise aliases (ZH, JA, KO, RU, EN)
                 fr_lower = fr.lower()
@@ -562,70 +576,103 @@ Katarin
                     if key in fr_lower or any(t.lower() in fr_lower for t in trans_list):
                         for trans in trans_list:
                             t_toks = tuple(self._tokenize(trans))
-                            if t_toks and t_toks not in self._custom_franchise_map:
-                                self._custom_franchise_map[t_toks] = fr
+                            if t_toks and t_toks not in custom_franchise_map:
+                                custom_franchise_map[t_toks] = fr
 
                 # 6. Automated Franchise Resolver Aliases (Seed catalog + persistent learned cache)
                 if hasattr(self, "franchise_resolver") and self.franchise_resolver:
                     for r_al in self.franchise_resolver.get_aliases(fr):
                         r_toks = tuple(self._tokenize(r_al))
-                        if r_toks and r_toks not in self._custom_franchise_map:
-                            self._custom_franchise_map[r_toks] = fr
+                        if r_toks and r_toks not in custom_franchise_map:
+                            custom_franchise_map[r_toks] = fr
 
             # Track CJK character names and franchise names for unspaced Asian title scanning
-            self._custom_cjk_names.clear()
-            self._custom_cjk_franchises.clear()
-            for entry in self.entries:
+            for entry in entries:
                 if self._has_cjk(entry):
-                    self._custom_cjk_names.add(entry.strip())
+                    custom_cjk_names.add(entry.strip())
                 for alias in self._entry_aliases(entry):
                     if self._has_cjk(alias):
-                        self._custom_cjk_names.add(alias.strip())
+                        custom_cjk_names.add(alias.strip())
 
-            for fr in self.franchise_sections:
+            for fr in franchise_sections:
                 if self._has_cjk(fr):
-                    self._custom_cjk_franchises.add(fr.strip())
-                for al in self.franchise_aliases.get(fr, []):
+                    custom_cjk_franchises.add(fr.strip())
+                for al in franchise_aliases.get(fr, []):
                     if self._has_cjk(al):
-                        self._custom_cjk_franchises.add(al.strip())
+                        custom_cjk_franchises.add(al.strip())
 
-            for t_toks, mapped_fr in self._custom_franchise_map.items():
+            for t_toks, mapped_fr in custom_franchise_map.items():
                 phrase = "".join(t_toks)
                 if self._has_cjk(phrase) and len(phrase) >= 2:
-                    self._custom_cjk_franchises.add(phrase)
+                    custom_cjk_franchises.add(phrase)
 
-            self._lru_cache.clear()
-            logger.info(f"Loaded {len(self.entries)} known characters/series from Known.txt ({len(self.franchise_sections)} franchises)", category="known")
+            with self._lock:
+                self.entries = entries
+                self.entry_franchise_map = entry_franchise_map
+                self.franchise_sections = franchise_sections
+                self.standalone_entries = standalone_entries
+                self.franchise_aliases = franchise_aliases
+                self._custom_exact_map = custom_exact_map
+                self._custom_first_token_map = custom_first_token_map
+                self._custom_last_token_map = custom_last_token_map
+                self._custom_single_names = custom_single_names
+                self._custom_indexed = custom_indexed
+                self._custom_words = custom_words
+                self._custom_franchise_map = custom_franchise_map
+                self._custom_cjk_names = custom_cjk_names
+                self._custom_cjk_franchises = custom_cjk_franchises
+                self._lru_cache.clear()
+            if log:
+                logger.info(f"Loaded {len(entries)} known characters/series from Known.txt ({len(franchise_sections)} franchises)", category="known")
         except Exception as e:
             logger.error(f"Failed to read Known.txt: {e}", category="known")
 
-    def save(self):
+    def save(self, notify: bool = True):
+        """Write standalone entries and franchise sections to Known.txt.
+
+        Only those two structures are written, so every edit must update them
+        (not just self.entries) or it is lost on restart.
+        """
         try:
-            os.makedirs(os.path.dirname(self.file_path), exist_ok=True)
-            with open(self.file_path, "w", encoding="utf-8") as f:
-                f.write("# Pawchive Downloader - Known Series & Characters\n# Format: [Franchise Name] followed by character names\n\n")
+            with self._lock:
+                parts = ["# Pawchive Downloader - Known Series & Characters\n# Format: [Franchise Name] followed by character names\n\n"]
                 if self.standalone_entries:
                     for entry in self.standalone_entries:
-                        f.write(f"{entry}\n")
-                    f.write("\n")
+                        parts.append(f"{entry}\n")
+                    parts.append("\n")
 
                 for franchise, chars in self.franchise_sections.items():
                     if chars or franchise in self.franchise_aliases:
                         aliases = self.franchise_aliases.get(franchise, [])
                         header_str = f"[{franchise} | {' | '.join(aliases)}]" if aliases else f"[{franchise}]"
-                        f.write(f"{header_str}\n")
+                        parts.append(f"{header_str}\n")
                         for c in chars:
-                            f.write(f"{c}\n")
-                        f.write("\n")
+                            parts.append(f"{c}\n")
+                        parts.append("\n")
+                # Crash-safe: a cut-off write used to leave Known.txt empty or half-written
+                atomic_write_text(self.file_path, "".join(parts))
 
-            if self.on_entries_changed:
+            if notify and self.on_entries_changed:
                 try:
                     self.on_entries_changed()
                 except Exception:
                     pass
-            logger.success(f"Saved {len(self.entries)} entries to Known.txt", category="known")
+            written = len(self.standalone_entries) + sum(len(c) for c in self.franchise_sections.values())
+            logger.success(f"Saved {written} entries to Known.txt", category="known")
+            return True
         except Exception as e:
             logger.error(f"Failed to save Known.txt: {e}", category="known")
+            return False
+
+    def _commit(self):
+        """Save, then reload so the matching indexes (built in load) include the change."""
+        if self.save(notify=False):
+            self.load(log=False)
+        if self.on_entries_changed:
+            try:
+                self.on_entries_changed()
+            except Exception:
+                pass
 
     def add_entry(self, name: str) -> bool:
         name = name.strip()
@@ -634,13 +681,21 @@ Katarin
         # Case-insensitive duplicate check
         existing_lower = [e.lower() for e in self.entries]
         if name.lower() not in existing_lower:
-            self.entries.append(name)
-            self.save()
+            self.standalone_entries.append(name)
+            self._commit()
             return True
         return False
 
     def add_entries(self, names: List[str]) -> List[str]:
-        """Adds a list of candidate names, skipping existing items (case-insensitive)."""
+        """Adds the plausible names from a list of candidates as standalone entries."""
+        added = self.filter_candidates(names)
+        if added:
+            self.standalone_entries.extend(added)
+            self._commit()
+        return added
+
+    def filter_candidates(self, names: List[str]) -> List[str]:
+        """Clean up candidate names and drop junk and anything already known (case-insensitive)."""
         added: List[str] = []
         existing_lower = {e.lower() for e in self.entries}
 
@@ -724,30 +779,33 @@ Katarin
 
                 processed_names.append(split_n)
 
-            # Add all processed names
             for processed in processed_names:
-                self.entries.append(processed)
                 existing_lower.add(processed.lower())
                 added.append(processed)
 
-        if added:
-            self.save()
         return added
 
 
     def remove_entry(self, name: str) -> bool:
-        for idx, entry in enumerate(self.entries):
-            if entry.lower() == name.lower().strip():
-                self.entries.pop(idx)
-                self.save()
-                return True
-        return False
+        target = (name or "").strip().lower()
+        if not target:
+            return False
+        removed = False
+        before = len(self.standalone_entries)
+        self.standalone_entries = [e for e in self.standalone_entries if e.lower() != target]
+        removed = removed or len(self.standalone_entries) != before
+        for franchise, chars in self.franchise_sections.items():
+            kept = [c for c in chars if c.lower() != target]
+            if len(kept) != len(chars):
+                self.franchise_sections[franchise] = kept
+                removed = True
+        if removed:
+            self._commit()
+        return removed
 
     def remove_at_index(self, index: int) -> bool:
         if 0 <= index < len(self.entries):
-            self.entries.pop(index)
-            self.save()
-            return True
+            return self.remove_entry(self.entries[index])
         return False
 
     def search(self, query: str) -> List[str]:
@@ -1901,12 +1959,16 @@ Katarin
 
         return unique
 
-    def add_candidates_from_posts(self, posts: List[Dict[str, Any]]) -> List[str]:
-        """Scans a batch of posts and auto-learns all discovered character/series names."""
+    def find_candidates_in_posts(self, posts: List[Dict[str, Any]]) -> List[str]:
+        """Scan posts for possible character/series names that aren't in the Known list yet.
+
+        Nothing is added: title words are too noisy ("Soon", "comics", ...) to go into the
+        list automatically, so callers only report what was found.
+        """
         if self.mode == "database_only":
             return []
         all_candidates: List[str] = []
         for p in posts:
             all_candidates.extend(self.extract_character_candidates(p))
-        return self.add_entries(all_candidates)
+        return self.filter_candidates(all_candidates)
 

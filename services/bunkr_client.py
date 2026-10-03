@@ -12,7 +12,8 @@ DEFAULT_HEADERS = {
     "Referer": "https://bunkr.cr/",
 }
 
-from core.text_utils import clean_text, sanitize_filesystem_name
+from core.text_utils import clean_text, sanitize_filesystem_name, safe_file_name
+from core.logger import logger
 
 SIGN_ENDPOINT_DEFAULT = "https://glb-apisign.cdn.cr/sign"
 METADATA_ENDPOINT_DEFAULT = "https://dl.bunkr.cr/api/_001_v2"
@@ -58,19 +59,26 @@ def sign_bunkr_path(
         encoded_path = urllib.parse.quote(path)
         url = f"{sign_url}?path={encoded_path}"
 
+        last = ""
         for attempt in range(3):
             try:
                 resp = s.get(url, headers=req_headers, timeout=timeout)
                 if resp.status_code == 429:
+                    last = "HTTP 429 (rate limited)"
                     time.sleep(1.0 * (attempt + 1))
                     continue
                 if resp.status_code == 200:
                     data = resp.json()
                     if "token" in data and "ex" in data:
                         return data
-            except Exception:
+                    last = "the answer had no token"
+                else:
+                    last = f"HTTP {resp.status_code}"
+            except Exception as e:
+                last = repr(e)
                 time.sleep(0.8 * (attempt + 1))
 
+        logger.warning(f"Bunkr: couldn't sign the download link for {path} ({last}).", category="bunkr")
         return None
     finally:
         if created_session:
@@ -104,6 +112,7 @@ def fetch_bunkr_file_by_id(
             req_headers.update(headers)
 
         meta_data = None
+        last = ""
         for attempt in range(3):
             try:
                 resp = s.post(
@@ -113,15 +122,19 @@ def fetch_bunkr_file_by_id(
                     timeout=timeout
                 )
                 if resp.status_code == 429:
+                    last = "HTTP 429 (rate limited)"
                     time.sleep(1.2 * (attempt + 1))
                     continue
                 if resp.status_code == 200:
                     meta_data = resp.json()
                     break
-            except Exception:
+                last = f"HTTP {resp.status_code}"
+            except Exception as e:
+                last = repr(e)
                 time.sleep(0.8 * (attempt + 1))
 
         if not meta_data or not isinstance(meta_data, dict):
+            logger.debug(f"Bunkr: no file details for id {file_id} ({last or 'empty answer'}).", category="bunkr")
             return None
 
         mediafiles = meta_data.get("mediafiles")
@@ -174,19 +187,23 @@ def resolve_bunkr_file_page(
             req_headers.update(headers)
 
         content = None
+        last = ""
         for attempt in range(3):
             try:
                 resp = s.get(page_url, headers=req_headers, timeout=timeout)
                 if resp.status_code == 429:
+                    last = "HTTP 429 (rate limited)"
                     time.sleep(1.2 * (attempt + 1))
                     continue
                 resp.raise_for_status()
                 content = _get_response_text(resp)
                 break
-            except Exception:
+            except Exception as e:
+                last = repr(e)
                 time.sleep(0.8 * (attempt + 1))
 
         if not content:
+            logger.debug(f"Bunkr: couldn't open the file page {page_url} ({last or 'empty page'}).", category="bunkr")
             return None
 
         # 1. Extract filename
@@ -358,6 +375,7 @@ def _do_fetch_bunkr_album(
             time.sleep(1.0 * (attempt + 1))
 
     if not content:
+        logger.warning(f"Bunkr: couldn't open the album page {url}.", category="bunkr")
         return None, []
 
     # Extract album title
@@ -458,6 +476,7 @@ def _do_fetch_bunkr_album(
                     res["size"] = size
                 return res
 
+        logger.warning(f"Bunkr: couldn't get a download link for '{orig or slug or f_id}' (details above).", category="bunkr")
         return None
 
     if catalog_entries:
@@ -473,9 +492,8 @@ def _do_fetch_bunkr_album(
     if legacy_media_urls:
         legacy_list = []
         for idx, media_url in enumerate(sorted(list(legacy_media_urls)), 1):
-            fname = media_url.split("?")[0].split("/")[-1]
-            if not fname:
-                fname = f"bunkr_file_{idx:03d}"
+            fname = safe_file_name(urllib.parse.unquote(media_url.split("?")[0].split("/")[-1]),
+                                   fallback=f"bunkr_file_{idx:03d}")
             legacy_list.append({
                 "url": media_url,
                 "filename": fname,

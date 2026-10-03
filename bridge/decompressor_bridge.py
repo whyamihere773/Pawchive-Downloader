@@ -249,10 +249,12 @@ class DecompressorBridge(QObject):
             if c and c.strip() and c.strip() != "Global":
                 creators.add(c.strip())
         try:
-            from core.watchlist_manager import watchlist_manager
-            for w in watchlist_manager.get_entries():
-                if w.creator and w.creator.strip():
-                    creators.add(w.creator.strip())
+            # (this imported a module-level watchlist_manager that doesn't exist and read a missing
+            # field, so Watchlist creators never appeared here)
+            for w in list(getattr(self._watchlist_manager, "entries", []) or []):
+                name = (getattr(w, "creator_name", "") or "").strip()
+                if name:
+                    creators.add(name)
         except Exception:
             pass
         try:
@@ -681,7 +683,7 @@ class DecompressorBridge(QObject):
                             break
                         if self.engine.test_password(item.path, cand, cancel_event=self._extract_cancel_event):
                             matched_pw = cand
-                            logger.success(f"✓ Found matching password for [{item.creator}] {item.filename}: '{cand}'", category="decompressor")
+                            logger.success(f"✓ Found matching password for [{item.creator}] {item.filename} (from the Password Bank)", category="decompressor")
                             break
 
                     if matched_pw:

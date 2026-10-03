@@ -12,7 +12,7 @@ ApplicationWindow {
     minimumWidth: 900
     minimumHeight: 600
     visible: true
-    title: "Pawchive Downloader " + ((typeof updaterBridge !== "undefined" && updaterBridge && updaterBridge.currentVersion) ? ("v" + updaterBridge.currentVersion) : "v1.1.3")
+    title: "Pawchive Downloader" + ((typeof updaterBridge !== "undefined" && updaterBridge && updaterBridge.currentVersion) ? (" v" + updaterBridge.currentVersion) : "")
     color: "#0F1117"
 
     // Stop active downloads and persist session gracefully when user closes the app
@@ -30,6 +30,40 @@ ApplicationWindow {
 
     property bool showConsole: true
     property int currentTab: 0 // 0: Downloader, 1: Queue, 2: Watchlist, 3: Decompressor, 4: Link Vault, 5: Scheduler, 6: Gallery, 7: Known, 8: Archive, 9: History, 10: Settings
+    // The Gallery has no use for the download controls, so they step aside to give it the room
+    readonly property bool hideDownloadChrome: currentTab === 6
+
+    // They step aside with the same motion as the Progress Log: opening grows the height (320 ms),
+    // fades in (260 ms) and slides into place (380 ms, small overshoot), all starting together.
+    // Closing is that motion backwards over 380 ms: the slide starts first, the height 60 ms later
+    // and the fade 120 ms later, so all three end together.
+    property real chromeProgress: 1     // 0 = hidden, 1 = shown (height)
+    property real chromeOpacity: 1
+    property real chromeSlide: 0        // 0 = in place, 1 = slid out
+    readonly property bool chromeMoving: chromeShowAnim.running || chromeHideAnim.running
+
+    ParallelAnimation {
+        id: chromeShowAnim
+        NumberAnimation { target: appWindow; property: "chromeProgress"; to: 1; duration: 320; easing.type: Easing.OutCubic }
+        NumberAnimation { target: appWindow; property: "chromeOpacity"; to: 1; duration: 260; easing.type: Easing.OutCubic }
+        NumberAnimation { target: appWindow; property: "chromeSlide"; to: 0; duration: 380; easing.type: Easing.OutBack; easing.overshoot: 1.25 }
+    }
+    ParallelAnimation {
+        id: chromeHideAnim
+        SequentialAnimation {
+            PauseAnimation { duration: 60 }
+            NumberAnimation { target: appWindow; property: "chromeProgress"; to: 0; duration: 320; easing.type: Easing.InCubic }
+        }
+        SequentialAnimation {
+            PauseAnimation { duration: 120 }
+            NumberAnimation { target: appWindow; property: "chromeOpacity"; to: 0; duration: 260; easing.type: Easing.InCubic }
+        }
+        NumberAnimation { target: appWindow; property: "chromeSlide"; to: 1; duration: 380; easing.type: Easing.InBack; easing.overshoot: 1.25 }
+    }
+    onHideDownloadChromeChanged: {
+        if (hideDownloadChrome) { chromeShowAnim.stop(); chromeHideAnim.restart() }
+        else { chromeHideAnim.stop(); chromeShowAnim.restart() }
+    }
 
     onCurrentTabChanged: {
         if (typeof tabsFlickable !== "undefined" && tabsFlickable && tabsFlickable.ensureIndexVisible) {
@@ -56,11 +90,17 @@ ApplicationWindow {
         archiveRebuildModal.isOpen = true;
     }
 
+    // Settings and Gallery are built in the background the first time they open, so a request
+    // made before they exist is kept here and applied once they're ready (see their onLoaded)
+    property int pendingSettingsSubTab: -1
+    property string pendingProviderHighlight: ""
+    property var pendingGalleryShow: null       // { path, isDir }
+
     function openSettingsTab(subTabIndex) {
-        appWindow.currentTab = 10;
-        if (typeof settingsViewTab !== "undefined" && settingsViewTab) {
-            settingsViewTab.currentSubTab = (subTabIndex !== undefined ? subTabIndex : 0);
-        }
+        var idx = (subTabIndex !== undefined ? subTabIndex : 0)
+        appWindow.currentTab = 10;      // builds the Settings tab if it wasn't opened yet
+        if (settingsLoader.item) settingsLoader.item.currentSubTab = idx
+        else appWindow.pendingSettingsSubTab = idx
     }
 
     function showToast(msg, callback) {
@@ -967,7 +1007,7 @@ ApplicationWindow {
                         }
 
                         Text {
-                            text: (typeof updaterBridge !== "undefined" && updaterBridge && updaterBridge.currentVersion) ? updaterBridge.currentVersion : "1.1.3"
+                            text: (typeof updaterBridge !== "undefined" && updaterBridge && updaterBridge.currentVersion) ? updaterBridge.currentVersion : ""
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 11
                             font.weight: 700
@@ -1015,939 +1055,969 @@ ApplicationWindow {
             }
         }
 
-        // 2. Omnibox Browser Navigation Bar
-        BrowserNavBar {
-            id: navBar
+        // 2. Omnibox Browser Navigation Bar (the slot shrinks while the bar slides up out of it)
+        Item {
             Layout.fillWidth: true
-            bridge: appBridge
-            onQueueRequested: {
-                if (appBridge) appBridge.addToQueue()
-            }
-            onSettingsRequested: {
-                appWindow.currentTab = 10
+            Layout.preferredHeight: navBar.implicitHeight * appWindow.chromeProgress
+            visible: appWindow.chromeProgress > 0
+            opacity: appWindow.chromeOpacity
+            clip: appWindow.chromeMoving
+
+            BrowserNavBar {
+                id: navBar
+                width: parent.width
+                height: implicitHeight
+                anchors.bottom: parent.bottom
+                transform: Translate { y: -16 * appWindow.chromeSlide }
+                bridge: appBridge
+                onQueueRequested: {
+                    if (appBridge) appBridge.addToQueue()
+                }
+                onSettingsRequested: {
+                    appWindow.currentTab = 10
+                }
             }
         }
 
         // 2b. Creator Name Banner (shown with fluid Newtonian spring entrance after URL resolves)
-        Rectangle {
-            id: creatorBanner
+        Item {
             Layout.fillWidth: true
-            property bool hasCreator: appBridge ? appBridge.creatorName.length > 0 : false
-            visible: hasCreator
-            implicitHeight: 28
-            Layout.preferredHeight: 28
-            color: "#0D1019"
-            border.color: "#25334D"
-            border.width: 1
-            radius: 6
-            clip: true
+            Layout.preferredHeight: 28 * appWindow.chromeProgress
+            visible: creatorBanner.hasCreator && appWindow.chromeProgress > 0
+            opacity: appWindow.chromeOpacity
+            clip: appWindow.chromeMoving
 
-            opacity: hasCreator ? 1.0 : 0.0
-            scale: hasCreator ? 1.0 : 0.95
-            transformOrigin: Item.Center
+            Rectangle {
+                id: creatorBanner
+                width: parent.width
+                height: 28
+                anchors.bottom: parent.bottom
+                transform: Translate { y: -16 * appWindow.chromeSlide }
+                property bool hasCreator: appBridge ? appBridge.creatorName.length > 0 : false
+                visible: hasCreator
+                color: "#0D1019"
+                border.color: "#25334D"
+                border.width: 1
+                radius: 6
+                clip: true
 
-            Behavior on opacity {
-                NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
-            }
-            Behavior on scale {
-                NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.3 }
-            }
-            Behavior on border.color {
-                ColorAnimation { duration: 200 }
-            }
+                opacity: hasCreator ? 1.0 : 0.0
+                scale: hasCreator ? 1.0 : 0.95
+                transformOrigin: Item.Center
 
-            RowLayout {
-                anchors.fill: parent
-                anchors.leftMargin: 14
-                anchors.rightMargin: 14
-                spacing: 8
-
-                Text {
-                    text: "👤"
-                    font.pixelSize: 12
-                    scale: (appBridge && appBridge.creatorName.length > 0) ? 1.0 : 0.2
-                    Behavior on scale {
-                        NumberAnimation { duration: 320; easing.type: Easing.OutBack; easing.overshoot: 1.8 }
-                    }
+                Behavior on opacity {
+                    NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
+                }
+                Behavior on scale {
+                    NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.3 }
+                }
+                Behavior on border.color {
+                    ColorAnimation { duration: 200 }
                 }
 
-                Text {
-                    text: tr("label_creator", "Creator:")
-                    font.family: "Segoe UI, sans-serif"
-                    font.pixelSize: 11
-                    color: "#64748B"
-                }
-
-                Text {
-                    text: appBridge ? appBridge.creatorName : ""
-                    font.family: "Segoe UI, Inter, sans-serif"
-                    font.pixelSize: 12
-                    font.weight: 600
-                    color: "#38BDF8"
-                    elide: Text.ElideRight
-                    Layout.fillWidth: true
-                }
-
-                // Service tag if in URL
-                Rectangle {
-                    implicitHeight: 20
-                    implicitWidth: svcTag.implicitWidth + 14
-                    Layout.preferredHeight: 20
-                    Layout.preferredWidth: svcTag.implicitWidth + 14
-                    Layout.alignment: Qt.AlignVCenter
-                    radius: 4
-                    color: "#1A2030"
-                    border.color: "#2D3748"
-                    border.width: 1
-                    visible: appBridge ? (appBridge.currentUrl.length > 0 && svcTag.text.length > 0) : false
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 14
+                    anchors.rightMargin: 14
+                    spacing: 8
 
                     Text {
-                        id: svcTag
-                        anchors.centerIn: parent
-                        text: {
-                            if (!appBridge) return ""
-                            var u = appBridge.currentUrl.toLowerCase()
-                            if (u.indexOf("/fanbox/") >= 0) return "Fanbox"
-                            if (u.indexOf("/patreon/") >= 0) return "Patreon"
-                            if (u.indexOf("/onlyfans/") >= 0) return "OnlyFans"
-                            if (u.indexOf("/fansly/") >= 0) return "Fansly"
-                            if (u.indexOf("/gumroad/") >= 0) return "Gumroad"
-                            if (u.indexOf("/subscribestar/") >= 0) return "SubscribeStar"
-                            if (u.indexOf("/fantia/") >= 0) return "Fantia"
-                            if (u.indexOf("/boosty/") >= 0) return "Boosty"
-                            if (u.indexOf("/dlsite/") >= 0) return "DLsite"
-                            if (u.indexOf("/discord/") >= 0) return "Discord"
-                            if (u.indexOf("bunkr") >= 0) return "Bunkr"
-                            if (u.indexOf("erome") >= 0) return "Erome"
-                            if (u.indexOf("nhentai") >= 0) return "nHentai"
-                            if (u.indexOf("saint2") >= 0) return "Saint2"
-                            if (u.indexOf("telegram") >= 0 || u.indexOf("t.me") >= 0) return "Telegram"
-                            return ""
+                        text: "👤"
+                        font.pixelSize: 12
+                        scale: (appBridge && appBridge.creatorName.length > 0) ? 1.0 : 0.2
+                        Behavior on scale {
+                            NumberAnimation { duration: 320; easing.type: Easing.OutBack; easing.overshoot: 1.8 }
                         }
-                        font.pixelSize: 9
-                        font.bold: true
-                        color: "#94A3B8"
+                    }
+
+                    Text {
+                        text: tr("label_creator", "Creator:")
+                        font.family: "Segoe UI, sans-serif"
+                        font.pixelSize: 11
+                        color: "#64748B"
+                    }
+
+                    Text {
+                        text: appBridge ? appBridge.creatorName : ""
+                        font.family: "Segoe UI, Inter, sans-serif"
+                        font.pixelSize: 12
+                        font.weight: 600
+                        color: "#38BDF8"
+                        elide: Text.ElideRight
+                        Layout.fillWidth: true
+                    }
+
+                    // Service tag if in URL
+                    Rectangle {
+                        implicitHeight: 20
+                        implicitWidth: svcTag.implicitWidth + 14
+                        Layout.preferredHeight: 20
+                        Layout.preferredWidth: svcTag.implicitWidth + 14
+                        Layout.alignment: Qt.AlignVCenter
+                        radius: 4
+                        color: "#1A2030"
+                        border.color: "#2D3748"
+                        border.width: 1
+                        visible: appBridge ? (appBridge.currentUrl.length > 0 && svcTag.text.length > 0) : false
+
+                        Text {
+                            id: svcTag
+                            anchors.centerIn: parent
+                            text: {
+                                if (!appBridge) return ""
+                                var u = appBridge.currentUrl.toLowerCase()
+                                if (u.indexOf("/fanbox/") >= 0) return "Fanbox"
+                                if (u.indexOf("/patreon/") >= 0) return "Patreon"
+                                if (u.indexOf("/onlyfans/") >= 0) return "OnlyFans"
+                                if (u.indexOf("/fansly/") >= 0) return "Fansly"
+                                if (u.indexOf("/gumroad/") >= 0) return "Gumroad"
+                                if (u.indexOf("/subscribestar/") >= 0) return "SubscribeStar"
+                                if (u.indexOf("/fantia/") >= 0) return "Fantia"
+                                if (u.indexOf("/boosty/") >= 0) return "Boosty"
+                                if (u.indexOf("/dlsite/") >= 0) return "DLsite"
+                                if (u.indexOf("/discord/") >= 0) return "Discord"
+                                if (u.indexOf("bunkr") >= 0) return "Bunkr"
+                                if (u.indexOf("erome") >= 0) return "Erome"
+                                if (u.indexOf("nhentai") >= 0) return "nHentai"
+                                if (u.indexOf("saint2") >= 0) return "Saint2"
+                                if (u.indexOf("telegram") >= 0 || u.indexOf("t.me") >= 0) return "Telegram"
+                                return ""
+                            }
+                            font.pixelSize: 9
+                            font.bold: true
+                            color: "#94A3B8"
+                        }
                     }
                 }
             }
         }
 
         // ── Sticky Download Action Bar ─────────────────────────────────────────
-        Rectangle {
+        Item {
             Layout.fillWidth: true
-            height: 52
-            color: "#0C0F16"
-            border.color: "#1A2035"
-            border.width: 1
-            clip: true
+            Layout.preferredHeight: 52 * appWindow.chromeProgress
+            visible: appWindow.chromeProgress > 0
+            opacity: appWindow.chromeOpacity
+            clip: appWindow.chromeMoving
 
-            // Subtle gradient top accent line
             Rectangle {
                 width: parent.width
-                height: 1
-                anchors.top: parent.top
-                z: 1
-                gradient: Gradient {
-                    orientation: Gradient.Horizontal
-                    GradientStop { position: 0.0; color: "transparent" }
-                    GradientStop { position: 0.3; color: "#38BDF8" }
-                    GradientStop { position: 0.7; color: "#A78BFA" }
-                    GradientStop { position: 1.0; color: "transparent" }
-                }
-            }
-
-            Flickable {
-                id: actionBarFlickable
-                anchors.fill: parent
-                anchors.leftMargin: 10
-                anchors.rightMargin: 10
-                contentWidth: actionBarRow.implicitWidth
-                contentHeight: height
-                flickableDirection: Flickable.HorizontalFlick
-                boundsBehavior: Flickable.StopAtBounds
+                height: 52
+                anchors.bottom: parent.bottom
+                transform: Translate { y: -16 * appWindow.chromeSlide }
+                color: "#0C0F16"
+                border.color: "#1A2035"
+                border.width: 1
                 clip: true
 
-                WheelHandler {
-                    acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
-                    onWheel: function(event) {
-                        var delta = event.angleDelta.y || event.angleDelta.x
-                        actionBarFlickable.flick(delta * 10, 0)
+                // Subtle gradient top accent line
+                Rectangle {
+                    width: parent.width
+                    height: 1
+                    anchors.top: parent.top
+                    z: 1
+                    gradient: Gradient {
+                        orientation: Gradient.Horizontal
+                        GradientStop { position: 0.0; color: "transparent" }
+                        GradientStop { position: 0.3; color: "#38BDF8" }
+                        GradientStop { position: 0.7; color: "#A78BFA" }
+                        GradientStop { position: 1.0; color: "transparent" }
                     }
                 }
 
-            RowLayout {
-                id: actionBarRow
-                height: parent.height
-                spacing: 6
+                Flickable {
+                    id: actionBarFlickable
+                    anchors.fill: parent
+                    anchors.leftMargin: 10
+                    anchors.rightMargin: 10
+                    contentWidth: actionBarRow.implicitWidth
+                    contentHeight: height
+                    flickableDirection: Flickable.HorizontalFlick
+                    boundsBehavior: Flickable.StopAtBounds
+                    clip: true
 
-                // ── PRIMARY: Start Download / Extract Links / Downloading indicator ────
-                Rectangle {
-                    id: mainStartBtn
-                    property bool isLinksMode: appBridge ? appBridge.filterType === "links" : false
-                    property bool isFavoritesMode: (appBridge && appBridge.favoriteMode && (!appBridge.currentUrl || appBridge.currentUrl.trim().length === 0))
-                    property bool isDownloading: appBridge ? appBridge.isDownloading : false
-                    property bool hasPendingQueue: (appBridge && appBridge.queueModel) ? (appBridge.queueModel.pendingCount > 0 || appBridge.queueModel.count > 0) : false
-                    property bool isTelegramBlocked: (appBridge ? appBridge.isTelegramUrl : false) && !hasPendingQueue
-
-                    Layout.preferredWidth: Math.max(isFavoritesMode ? 175 : (isLinksMode ? 162 : 148), startBtnRow.implicitWidth + 28)
-                    Layout.preferredHeight: 34
-                    radius: 7
-
-                    color: mainStartBtn.isTelegramBlocked
-                        ? "#10131B"
-                        : (mainStartBtn.isDownloading
-                            ? "#0F2A1A"
-                            : (startBtnMouse.containsMouse
-                                ? (mainStartBtn.isFavoritesMode ? "#2E2008" : (mainStartBtn.isLinksMode ? "#0D3330" : "#1a3a52"))
-                                : (mainStartBtn.isFavoritesMode ? "#241905" : (mainStartBtn.isLinksMode ? "#0A2825" : "#0D2137"))))
-                    border.color: mainStartBtn.isTelegramBlocked
-                        ? "#334155"
-                        : (mainStartBtn.isDownloading
-                            ? "#10B981"
-                            : (mainStartBtn.isFavoritesMode ? "#F59E0B" : (mainStartBtn.isLinksMode ? "#2DD4BF" : "#38BDF8")))
-                    border.width: 1
-                    opacity: mainStartBtn.isTelegramBlocked ? 0.45 : (mainStartBtn.isDownloading ? 0.7 : 1.0)
-
-                    scale: (!mainStartBtn.isTelegramBlocked && startBtnMouse.pressed) ? 0.94 : ((!mainStartBtn.isTelegramBlocked && startBtnMouse.containsMouse) ? 1.03 : 1.0)
-                    transformOrigin: Item.Center
-
-                    Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutBack; easing.overshoot: 1.5 } }
-                    Behavior on color { ColorAnimation { duration: 150 } }
-                    Behavior on border.color { ColorAnimation { duration: 150 } }
-                    Behavior on Layout.preferredWidth { NumberAnimation { duration: 200; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
-
-                    Row {
-                        id: startBtnRow
-                        anchors.centerIn: parent
-                        spacing: 6
-                        Text {
-                            text: mainStartBtn.isTelegramBlocked ? "🚫" : (mainStartBtn.isDownloading ? "⏳" : (mainStartBtn.isFavoritesMode ? "⭐" : (mainStartBtn.isLinksMode ? "🔗" : "⚡")))
-                            font.pixelSize: 13
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
-                        Text {
-                            text: mainStartBtn.isTelegramBlocked ? appWindow.tr("action_select_required", "Use 'Select Posts'")
-                                : (mainStartBtn.isDownloading ? appWindow.tr("action_downloading", "Downloading…")
-                                : (mainStartBtn.isFavoritesMode ? appWindow.tr("action_download_favorites", "Download Favorites")
-                                : (mainStartBtn.isLinksMode ? appWindow.tr("action_extract_links", "Extract Links") : appWindow.tr("action_start_download", "Start Download"))))
-                            font.family: "Segoe UI, sans-serif"
-                            font.pixelSize: 12
-                            font.weight: 600
-                            color: mainStartBtn.isTelegramBlocked ? "#64748B" : (mainStartBtn.isDownloading ? "#34D399" : (mainStartBtn.isFavoritesMode ? "#FBBF24" : (mainStartBtn.isLinksMode ? "#2DD4BF" : "#38BDF8")))
-                            anchors.verticalCenter: parent.verticalCenter
+                    WheelHandler {
+                        acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                        onWheel: function(event) {
+                            var delta = event.angleDelta.y || event.angleDelta.x
+                            actionBarFlickable.flick(delta * 10, 0)
                         }
                     }
 
-                    MouseArea {
-                        id: startBtnMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: (mainStartBtn.isDownloading || mainStartBtn.isTelegramBlocked) ? Qt.ArrowCursor : Qt.PointingHandCursor
-                        enabled: !mainStartBtn.isDownloading && !mainStartBtn.isTelegramBlocked
-                        ToolTip.visible: containsMouse
-                        ToolTip.delay: 300
-                        ToolTip.text: mainStartBtn.isTelegramBlocked
-                            ? appWindow.tr("tip_tg_disabled", "Direct download is disabled for Telegram links. Please click 'Select Posts…' to configure download scope and media filters.")
-                            : (mainStartBtn.isFavoritesMode
-                                ? appWindow.tr("tip_download_favorites", "Fetch and download all favorited posts from your connected account")
-                                : (mainStartBtn.isLinksMode
-                                    ? appWindow.tr("tip_extract_links", "Scan posts for external cloud links (Mega.nz, Drive, Dropbox, etc.) — no files downloaded")
-                                    : appWindow.tr("tip_start_download", "Fetch posts from the URL and start downloading immediately")))
-                        onClicked: if (appBridge) appBridge.startDownload()
-                    }
-                }
+                RowLayout {
+                    id: actionBarRow
+                    height: parent.height
+                    spacing: 6
 
-                // ── Select Posts (Interactive Thumbnail Browser) ───────────
-                Rectangle {
-                    id: selectPostsBtn
-                    property bool isLoading: appBridge ? appBridge.postSelectionLoading : false
-                    property bool isTelegram: appBridge ? appBridge.isTelegramUrl : false
-                    Layout.preferredWidth: Math.max(124, selectPostsRow.implicitWidth + 24)
-                    Layout.preferredHeight: 34
-                    radius: 7
-                    color: selectPostsBtn.isLoading
-                        ? "#151F30"
-                        : (selectPostsMouse.containsMouse ? "#1A263C" : "#111827")
-                    border.color: selectPostsBtn.isLoading ? "#38BDF8" : (isTelegram ? "#38BDF8" : (selectPostsMouse.containsMouse ? "#38BDF8" : "#2E3D59"))
-                    border.width: isTelegram ? 1.5 : 1
-
-                    // Newtonian fluid weight and hydraulic spring
-                    scale: selectPostsMouse.pressed ? 0.93 : (selectPostsMouse.containsMouse ? 1.03 : 1.0)
-                    transformOrigin: Item.Center
-                    Behavior on scale { SpringAnimation { spring: 3.8; damping: 0.32; mass: 1.8 } }
-                    Behavior on color { ColorAnimation { duration: 140 } }
-                    Behavior on border.color { ColorAnimation { duration: 140 } }
-
-                    // Fluid surface tension aura wave for Telegram link
+                    // ── PRIMARY: Start Download / Extract Links / Downloading indicator ────
                     Rectangle {
-                        anchors.fill: parent
-                        anchors.margins: -3
-                        radius: 10
-                        color: "transparent"
-                        border.color: "#38BDF8"
-                        border.width: 1.5
-                        visible: selectPostsBtn.isTelegram && !selectPostsBtn.isLoading
-                        opacity: 0.2
+                        id: mainStartBtn
+                        property bool isLinksMode: appBridge ? appBridge.filterType === "links" : false
+                        property bool isFavoritesMode: (appBridge && appBridge.favoriteMode && (!appBridge.currentUrl || appBridge.currentUrl.trim().length === 0))
+                        property bool isDownloading: appBridge ? appBridge.isDownloading : false
+                        property bool hasPendingQueue: (appBridge && appBridge.queueModel) ? (appBridge.queueModel.pendingCount > 0 || appBridge.queueModel.count > 0) : false
+                        property bool isTelegramBlocked: (appBridge ? appBridge.isTelegramUrl : false) && !hasPendingQueue
 
-                        SequentialAnimation on opacity {
-                            loops: Animation.Infinite
-                            running: selectPostsBtn.isTelegram && !selectPostsBtn.isLoading
-                            NumberAnimation { to: 0.85; duration: 1400; easing.type: Easing.InOutSine }
-                            NumberAnimation { to: 0.15; duration: 1400; easing.type: Easing.InOutSine }
+                        Layout.preferredWidth: Math.max(isFavoritesMode ? 175 : (isLinksMode ? 162 : 148), startBtnRow.implicitWidth + 28)
+                        Layout.preferredHeight: 34
+                        radius: 7
+
+                        color: mainStartBtn.isTelegramBlocked
+                            ? "#10131B"
+                            : (mainStartBtn.isDownloading
+                                ? "#0F2A1A"
+                                : (startBtnMouse.containsMouse
+                                    ? (mainStartBtn.isFavoritesMode ? "#2E2008" : (mainStartBtn.isLinksMode ? "#0D3330" : "#1a3a52"))
+                                    : (mainStartBtn.isFavoritesMode ? "#241905" : (mainStartBtn.isLinksMode ? "#0A2825" : "#0D2137"))))
+                        border.color: mainStartBtn.isTelegramBlocked
+                            ? "#334155"
+                            : (mainStartBtn.isDownloading
+                                ? "#10B981"
+                                : (mainStartBtn.isFavoritesMode ? "#F59E0B" : (mainStartBtn.isLinksMode ? "#2DD4BF" : "#38BDF8")))
+                        border.width: 1
+                        opacity: mainStartBtn.isTelegramBlocked ? 0.45 : (mainStartBtn.isDownloading ? 0.7 : 1.0)
+
+                        scale: (!mainStartBtn.isTelegramBlocked && startBtnMouse.pressed) ? 0.94 : ((!mainStartBtn.isTelegramBlocked && startBtnMouse.containsMouse) ? 1.03 : 1.0)
+                        transformOrigin: Item.Center
+
+                        Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutBack; easing.overshoot: 1.5 } }
+                        Behavior on color { ColorAnimation { duration: 150 } }
+                        Behavior on border.color { ColorAnimation { duration: 150 } }
+                        Behavior on Layout.preferredWidth { NumberAnimation { duration: 200; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
+
+                        Row {
+                            id: startBtnRow
+                            anchors.centerIn: parent
+                            spacing: 6
+                            Text {
+                                text: mainStartBtn.isTelegramBlocked ? "🚫" : (mainStartBtn.isDownloading ? "⏳" : (mainStartBtn.isFavoritesMode ? "⭐" : (mainStartBtn.isLinksMode ? "🔗" : "⚡")))
+                                font.pixelSize: 13
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                            Text {
+                                text: mainStartBtn.isTelegramBlocked ? appWindow.tr("action_select_required", "Use 'Select Posts'")
+                                    : (mainStartBtn.isDownloading ? appWindow.tr("action_downloading", "Downloading…")
+                                    : (mainStartBtn.isFavoritesMode ? appWindow.tr("action_download_favorites", "Download Favorites")
+                                    : (mainStartBtn.isLinksMode ? appWindow.tr("action_extract_links", "Extract Links") : appWindow.tr("action_start_download", "Start Download"))))
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 12
+                                font.weight: 600
+                                color: mainStartBtn.isTelegramBlocked ? "#64748B" : (mainStartBtn.isDownloading ? "#34D399" : (mainStartBtn.isFavoritesMode ? "#FBBF24" : (mainStartBtn.isLinksMode ? "#2DD4BF" : "#38BDF8")))
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
                         }
-                        SequentialAnimation on scale {
-                            loops: Animation.Infinite
-                            running: selectPostsBtn.isTelegram && !selectPostsBtn.isLoading
-                            NumberAnimation { to: 1.03; duration: 1400; easing.type: Easing.InOutSine }
-                            NumberAnimation { to: 0.99; duration: 1400; easing.type: Easing.InOutSine }
+
+                        MouseArea {
+                            id: startBtnMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: (mainStartBtn.isDownloading || mainStartBtn.isTelegramBlocked) ? Qt.ArrowCursor : Qt.PointingHandCursor
+                            enabled: !mainStartBtn.isDownloading && !mainStartBtn.isTelegramBlocked
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 300
+                            ToolTip.text: mainStartBtn.isTelegramBlocked
+                                ? appWindow.tr("tip_tg_disabled", "Direct download is disabled for Telegram links. Please click 'Select Posts…' to configure download scope and media filters.")
+                                : (mainStartBtn.isFavoritesMode
+                                    ? appWindow.tr("tip_download_favorites", "Fetch and download all favorited posts from your connected account")
+                                    : (mainStartBtn.isLinksMode
+                                        ? appWindow.tr("tip_extract_links", "Scan posts for external cloud links (Mega.nz, Drive, Dropbox, etc.) — no files downloaded")
+                                        : appWindow.tr("tip_start_download", "Fetch posts from the URL and start downloading immediately")))
+                            onClicked: if (appBridge) appBridge.startDownload()
                         }
                     }
 
-                    Row {
-                        id: selectPostsRow
-                        anchors.centerIn: parent
-                        spacing: 6
-                        Text {
-                            text: selectPostsBtn.isLoading ? "⏳" : "🖼️"
-                            font.pixelSize: 12
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
-                        Text {
-                            text: selectPostsBtn.isLoading
-                                ? appWindow.tr("action_fetching_posts", "Fetching…")
-                                : (mainStartBtn.isFavoritesMode ? appWindow.tr("action_browse_favorites", "Browse Favorites…") : appWindow.tr("action_select_posts", "Select Posts…"))
-                            font.family: "Segoe UI, sans-serif"
-                            font.pixelSize: 12
-                            font.weight: 600
-                            color: selectPostsBtn.isLoading ? "#38BDF8" : (mainStartBtn.isFavoritesMode ? "#FBBF24" : "#E2E8F0")
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
-                    }
+                    // ── Select Posts (Interactive Thumbnail Browser) ───────────
+                    Rectangle {
+                        id: selectPostsBtn
+                        property bool isLoading: appBridge ? appBridge.postSelectionLoading : false
+                        property bool isTelegram: appBridge ? appBridge.isTelegramUrl : false
+                        Layout.preferredWidth: Math.max(124, selectPostsRow.implicitWidth + 24)
+                        Layout.preferredHeight: 34
+                        radius: 7
+                        color: selectPostsBtn.isLoading
+                            ? "#151F30"
+                            : (selectPostsMouse.containsMouse ? "#1A263C" : "#111827")
+                        border.color: selectPostsBtn.isLoading ? "#38BDF8" : (isTelegram ? "#38BDF8" : (selectPostsMouse.containsMouse ? "#38BDF8" : "#2E3D59"))
+                        border.width: isTelegram ? 1.5 : 1
 
-                    MouseArea {
-                        id: selectPostsMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: selectPostsBtn.isLoading ? Qt.ArrowCursor : Qt.PointingHandCursor
-                        enabled: !selectPostsBtn.isLoading
-                        ToolTip.visible: containsMouse
-                        ToolTip.delay: 400
-                        ToolTip.text: appWindow.tr("tip_select_posts", "Fetch and visually select specific posts and thumbnails before downloading")
-                        onClicked: {
-                            if (!appBridge) return
-                            if (appBridge.isTelegramUrl) {
-                                if (!appBridge.telegramSafetyAcknowledged || !appBridge.telegramLiabilityAcknowledged) {
-                                    telegramWarningModal.open()
-                                    return
+                        // Newtonian fluid weight and hydraulic spring
+                        scale: selectPostsMouse.pressed ? 0.93 : (selectPostsMouse.containsMouse ? 1.03 : 1.0)
+                        transformOrigin: Item.Center
+                        Behavior on scale { SpringAnimation { spring: 3.8; damping: 0.32; mass: 1.8 } }
+                        Behavior on color { ColorAnimation { duration: 140 } }
+                        Behavior on border.color { ColorAnimation { duration: 140 } }
+
+                        // Fluid surface tension aura wave for Telegram link
+                        Rectangle {
+                            anchors.fill: parent
+                            anchors.margins: -3
+                            radius: 10
+                            color: "transparent"
+                            border.color: "#38BDF8"
+                            border.width: 1.5
+                            visible: selectPostsBtn.isTelegram && !selectPostsBtn.isLoading
+                            opacity: 0.2
+
+                            SequentialAnimation on opacity {
+                                loops: Animation.Infinite
+                                running: selectPostsBtn.isTelegram && !selectPostsBtn.isLoading
+                                NumberAnimation { to: 0.85; duration: 1400; easing.type: Easing.InOutSine }
+                                NumberAnimation { to: 0.15; duration: 1400; easing.type: Easing.InOutSine }
+                            }
+                            SequentialAnimation on scale {
+                                loops: Animation.Infinite
+                                running: selectPostsBtn.isTelegram && !selectPostsBtn.isLoading
+                                NumberAnimation { to: 1.03; duration: 1400; easing.type: Easing.InOutSine }
+                                NumberAnimation { to: 0.99; duration: 1400; easing.type: Easing.InOutSine }
+                            }
+                        }
+
+                        Row {
+                            id: selectPostsRow
+                            anchors.centerIn: parent
+                            spacing: 6
+                            Text {
+                                text: selectPostsBtn.isLoading ? "⏳" : "🖼️"
+                                font.pixelSize: 12
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                            Text {
+                                text: selectPostsBtn.isLoading
+                                    ? appWindow.tr("action_fetching_posts", "Fetching…")
+                                    : (mainStartBtn.isFavoritesMode ? appWindow.tr("action_browse_favorites", "Browse Favorites…") : appWindow.tr("action_select_posts", "Select Posts…"))
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 12
+                                font.weight: 600
+                                color: selectPostsBtn.isLoading ? "#38BDF8" : (mainStartBtn.isFavoritesMode ? "#FBBF24" : "#E2E8F0")
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                        }
+
+                        MouseArea {
+                            id: selectPostsMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: selectPostsBtn.isLoading ? Qt.ArrowCursor : Qt.PointingHandCursor
+                            enabled: !selectPostsBtn.isLoading
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 400
+                            ToolTip.text: appWindow.tr("tip_select_posts", "Fetch and visually select specific posts and thumbnails before downloading")
+                            onClicked: {
+                                if (!appBridge) return
+                                if (appBridge.isTelegramUrl) {
+                                    if (!appBridge.telegramSafetyAcknowledged || !appBridge.telegramLiabilityAcknowledged) {
+                                        telegramWarningModal.open()
+                                        return
+                                    }
                                 }
-                            }
-                            appBridge.fetchPostsForSelection()
-                        }
-                    }
-                }
-
-                // ── Add to Queue ────────────────────────────────────────────
-                Rectangle {
-                    Layout.preferredWidth: Math.max(116, queueRow.implicitWidth + 24)
-                    Layout.preferredHeight: 34
-                    radius: 7
-                    color: queueBtnMouse.containsMouse ? "#1A1F2E" : "#131722"
-                    border.color: "#2E3A56"
-                    border.width: 1
-                    Behavior on color { ColorAnimation { duration: 120 } }
-
-                    Row {
-                        id: queueRow
-                        anchors.centerIn: parent
-                        spacing: 6
-                        Text { text: "➕"; font.pixelSize: 11; anchors.verticalCenter: parent.verticalCenter }
-                        Text {
-                            text: appWindow.tr("action_add_to_queue", "Add to Queue")
-                            font.family: "Segoe UI, sans-serif"
-                            font.pixelSize: 12
-                            color: "#CBD5E1"
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
-                    }
-
-                    MouseArea {
-                        id: queueBtnMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        ToolTip.visible: containsMouse
-                        ToolTip.delay: 400
-                        ToolTip.text: appWindow.tr("tip_add_to_queue", "Add all matched files to the queue without auto-starting download")
-                        onClicked: if (appBridge) appBridge.addToQueue()
-                    }
-                }
-
-                // ── Thin separator ──────────────────────────────────────────
-                Rectangle { width: 1; height: 28; color: "#1E293B"; Layout.alignment: Qt.AlignVCenter }
-
-                // ── Pause / Resume (shown only while downloading) ───────────
-                Rectangle {
-                    Layout.preferredWidth: Math.max(100, pauseRow.implicitWidth + 24)
-                    Layout.preferredHeight: 34
-                    radius: 7
-                    visible: appBridge ? appBridge.isDownloading : false
-                    color: pauseBtnMouse.containsMouse ? "#1C1A08" : "#141208"
-                    border.color: "#FBBF24"
-                    border.width: 1
-                    Behavior on color { ColorAnimation { duration: 120 } }
-
-                    Row {
-                        id: pauseRow
-                        anchors.centerIn: parent
-                        spacing: 6
-                        Text {
-                            text: (appBridge && (appBridge.isPaused || appBridge.statusText.indexOf("Paused") >= 0)) ? "▶" : "⏸"
-                            font.pixelSize: 12
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
-                        Text {
-                            text: (appBridge && (appBridge.isPaused || appBridge.statusText.indexOf("Paused") >= 0)) ? appWindow.tr("action_resume", "Resume") : appWindow.tr("action_pause", "Pause")
-                            font.family: "Segoe UI, sans-serif"
-                            font.pixelSize: 12
-                            color: "#FBBF24"
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
-                    }
-
-                    MouseArea {
-                        id: pauseBtnMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        ToolTip.visible: containsMouse
-                        ToolTip.delay: 400
-                        ToolTip.text: (appBridge && (appBridge.isPaused || appBridge.statusText.indexOf("Paused") >= 0))
-                                      ? appWindow.tr("tip_resume_download", "Resume paused download") : appWindow.tr("tip_pause_download", "Pause the active download (can be resumed)")
-                        onClicked: {
-                            if (!appBridge) return
-                            if (appBridge.isPaused || appBridge.statusText.indexOf("Paused") >= 0)
-                                appBridge.resumeDownload()
-                            else
-                                appBridge.pauseDownload()
-                        }
-                    }
-                }
-
-                // ── Cancel (shown only while downloading) ───────────────────
-                Rectangle {
-                    Layout.preferredWidth: Math.max(86, cancelRow.implicitWidth + 24)
-                    Layout.preferredHeight: 34
-                    radius: 7
-                    visible: appBridge ? appBridge.isDownloading : false
-                    color: cancelBtnMouse.containsMouse ? "#2A0D0D" : "#1C0808"
-                    border.color: "#EF4444"
-                    border.width: 1
-                    Behavior on color { ColorAnimation { duration: 120 } }
-
-                    Row {
-                        id: cancelRow
-                        anchors.centerIn: parent
-                        spacing: 6
-                        Text { text: "⏹"; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
-                        Text {
-                            text: appWindow.tr("action_cancel", "Cancel")
-                            font.family: "Segoe UI, sans-serif"
-                            font.pixelSize: 12
-                            color: "#F87171"
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
-                    }
-
-                    MouseArea {
-                        id: cancelBtnMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        ToolTip.visible: containsMouse
-                        ToolTip.delay: 400
-                        ToolTip.text: appWindow.tr("tip_cancel_download", "Cancel the active download (session preserved for restore)")
-                        onClicked: if (appBridge) appBridge.cancelDownload()
-                    }
-                }
-
-                // ── Thin separator ──────────────────────────────────────────
-                Rectangle { width: 1; height: 28; color: "#1E293B"; Layout.alignment: Qt.AlignVCenter }
-
-                // ── Retry Failed ────────────────────────────────────────────
-                Rectangle {
-                    id: retryFailedBtn
-                    property int failedCount: (appBridge && appBridge.queueModel) ? appBridge.queueModel.failedCount : 0
-                    Layout.preferredWidth: Math.max(106, retryFailedRow.implicitWidth + 22)
-                    Layout.preferredHeight: 34
-                    radius: 7
-                    color: failedCount > 0
-                           ? (retryBtnMouse.containsMouse ? "#2A1010" : "#1E0A0A")
-                           : (retryBtnMouse.containsMouse ? "#181B28" : "#111420")
-                    border.color: failedCount > 0 ? "#EF4444" : "#2E3A56"
-                    border.width: 1
-                    opacity: failedCount > 0 ? 1.0 : 0.5
-                    Behavior on color { ColorAnimation { duration: 120 } }
-                    Behavior on opacity { NumberAnimation { duration: 180 } }
-
-                    Row {
-                        id: retryFailedRow
-                        anchors.centerIn: parent
-                        spacing: 6
-                        Text { text: "🔁"; font.pixelSize: 11; anchors.verticalCenter: parent.verticalCenter }
-                        Text {
-                            text: retryFailedBtn.failedCount > 0
-                                  ? appWindow.tr("action_retry_failed_count", "Retry Failed (%1)").replace("%1", retryFailedBtn.failedCount)
-                                  : appWindow.tr("action_retry_failed", "Retry Failed")
-                            font.family: "Segoe UI, sans-serif"
-                            font.pixelSize: 12
-                            color: retryFailedBtn.failedCount > 0 ? "#FCA5A5" : "#64748B"
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
-                    }
-
-                    MouseArea {
-                        id: retryBtnMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        ToolTip.visible: containsMouse
-                        ToolTip.delay: 400
-                        ToolTip.text: appWindow.tr("tip_retry_failed_dialog", "Open dialog to inspect and retry failed downloads")
-                        onClicked: mainRetryModal.isOpen = true
-                    }
-                }
-
-                // ── Download Cloud Links button (visible when harvested links exist) ──
-                Rectangle {
-                    id: cloudDownloadStickyBtn
-                    property int count: appBridge ? appBridge.harvestedLinksCount : 0
-                    visible: count > 0
-                    Layout.preferredWidth: Math.max(165, cloudRow.implicitWidth + 24)
-                    Layout.preferredHeight: 34
-                    radius: 7
-                    color: cloudBtnMouse.containsMouse ? "#0D3330" : "#0A2825"
-                    border.color: "#2DD4BF"
-                    border.width: 1
-                    scale: cloudBtnMouse.pressed ? 0.95 : (cloudBtnMouse.containsMouse ? 1.03 : 1.0)
-                    transformOrigin: Item.Center
-
-                    Behavior on scale { NumberAnimation { duration: 160; easing.type: Easing.OutBack; easing.overshoot: 1.5 } }
-                    Behavior on color { ColorAnimation { duration: 120 } }
-
-                    Row {
-                        id: cloudRow
-                        anchors.centerIn: parent
-                        spacing: 6
-                        Text { text: "☁️"; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
-                        Text {
-                            text: appWindow.tr("action_download_links_count", "Download Links (%1)").replace("%1", cloudDownloadStickyBtn.count)
-                            font.family: "Segoe UI, sans-serif"
-                            font.pixelSize: 12
-                            font.weight: 600
-                            color: "#2DD4BF"
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
-                    }
-
-                    MouseArea {
-                        id: cloudBtnMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        ToolTip.visible: containsMouse
-                        ToolTip.delay: 400
-                        ToolTip.text: appWindow.tr("tip_cloud_download_dialog", "Open dialog to download harvested links via Mega, Google Drive, Dropbox, or GoFile")
-                        onClicked: mainCloudModal.isOpen = true
-                    }
-                }
-
-                // ── Auto-Retry toggle ───────────────────────────────────────
-                Rectangle {
-                    Layout.preferredWidth: Math.max(118, autoRetryRow.implicitWidth + 24)
-                    Layout.preferredHeight: 34
-                    radius: 7
-                    color: autoRetryMouse.containsMouse
-                           ? (appBridge && appBridge.autoRetryAtEnd ? "#0A2118" : "#181B28")
-                           : (appBridge && appBridge.autoRetryAtEnd ? "#071812" : "#111420")
-                    border.color: (appBridge && appBridge.autoRetryAtEnd) ? "#10B981" : "#2E3A56"
-                    border.width: 1
-                    Behavior on color { ColorAnimation { duration: 120 } }
-                    Behavior on border.color { ColorAnimation { duration: 120 } }
-
-                    Row {
-                        id: autoRetryRow
-                        anchors.centerIn: parent
-                        spacing: 6
-                        Text {
-                            text: (appBridge && appBridge.autoRetryAtEnd) ? "✔" : "○"
-                            font.pixelSize: 10
-                            color: (appBridge && appBridge.autoRetryAtEnd) ? "#34D399" : "#64748B"
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
-                        Text {
-                            text: appWindow.tr("action_auto_retry", "Auto-Retry")
-                            font.family: "Segoe UI, sans-serif"
-                            font.pixelSize: 12
-                            color: (appBridge && appBridge.autoRetryAtEnd) ? "#34D399" : "#64748B"
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
-                    }
-
-                    MouseArea {
-                        id: autoRetryMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        ToolTip.visible: containsMouse
-                        ToolTip.delay: 300
-                        ToolTip.text: (appBridge && appBridge.autoRetryAtEnd)
-                                      ? appWindow.tr("tip_auto_retry_on", "Auto-Retry is ON (automatically retries failed files at end of queue, or immediately if clicked with failed files)")
-                                      : appWindow.tr("tip_auto_retry_off", "Auto-Retry is OFF (click to enable auto-retry for failed downloads)")
-                        onClicked: if (appBridge) appBridge.toggleAutoRetry()
-                    }
-                }
-
-                // ── When Done (Post-Download Action) Selector ───────────────
-                Rectangle {
-                    id: postActionBtn
-                    property string currentAction: appBridge ? appBridge.postDownloadAction : "none"
-
-                    function getActionLabel(act) {
-                        if (act === "close_app") return appWindow.tr("post_action_close", "Close App")
-                        if (act === "sleep") return appWindow.tr("post_action_sleep_short", "Sleep")
-                        if (act === "hibernate") return appWindow.tr("post_action_hibernate_short", "Hibernate (-F)")
-                        if (act === "shutdown") return appWindow.tr("post_action_shutdown_short", "Shut Down (-F)")
-                        if (act === "restart") return appWindow.tr("post_action_restart_short", "Restart (-F)")
-                        return appWindow.tr("post_action_none_short", "Do Nothing")
-                    }
-
-                    function getOptionLabel(actId) {
-                        if (actId === "close_app") return appWindow.tr("post_action_close", "Close App")
-                        if (actId === "sleep") return appWindow.tr("post_action_sleep", "Sleep System")
-                        if (actId === "hibernate") return appWindow.tr("post_action_hibernate", "Hibernate (-F Force)")
-                        if (actId === "shutdown") return appWindow.tr("post_action_shutdown", "Shut Down (-F Force)")
-                        if (actId === "restart") return appWindow.tr("post_action_restart", "Restart (-F Force)")
-                        return appWindow.tr("post_action_none", "Do Nothing (Default)")
-                    }
-
-                    function getOptionDesc(actId) {
-                        if (actId === "close_app") return appWindow.tr("post_action_close_desc", "Exit Pawchive Downloader")
-                        if (actId === "sleep") return appWindow.tr("post_action_sleep_desc", "Suspend / sleep computer")
-                        if (actId === "hibernate") return appWindow.tr("post_action_hibernate_desc", "Force save to disk and power down")
-                        if (actId === "shutdown") return appWindow.tr("post_action_shutdown_desc", "Force close apps & turn off (10s buffer)")
-                        if (actId === "restart") return appWindow.tr("post_action_restart_desc", "Force close apps & reboot computer")
-                        return appWindow.tr("post_action_none_desc", "Keep app & system running")
-                    }
-
-                    function getActionIcon(act) {
-                        if (act === "close_app") return "🚪"
-                        if (act === "sleep") return "🌙"
-                        if (act === "hibernate") return "💤"
-                        if (act === "shutdown") return "🔌"
-                        if (act === "restart") return "🔄"
-                        return "⏸️"
-                    }
-
-                    function getActionColor(act) {
-                        if (act === "close_app") return "#38BDF8"
-                        if (act === "sleep") return "#A78BFA"
-                        if (act === "hibernate") return "#818CF8"
-                        if (act === "shutdown") return "#F43F5E"
-                        if (act === "restart") return "#F59E0B"
-                        return "#64748B"
-                    }
-
-                    function getActionBorderColor(act) {
-                        if (act === "close_app") return "#0284C7"
-                        if (act === "sleep") return "#7C3AED"
-                        if (act === "hibernate") return "#4F46E5"
-                        if (act === "shutdown") return "#E11D48"
-                        if (act === "restart") return "#D97706"
-                        return "#2E3A56"
-                    }
-
-                    function getActionBg(act, hovered) {
-                        if (act === "close_app") return hovered ? "#0E2A3E" : "#0A1D2B"
-                        if (act === "sleep") return hovered ? "#241E3A" : "#191528"
-                        if (act === "hibernate") return hovered ? "#22203A" : "#171628"
-                        if (act === "shutdown") return hovered ? "#361014" : "#260B0E"
-                        if (act === "restart") return hovered ? "#35220A" : "#241707"
-                        return hovered ? "#181B28" : "#111420"
-                    }
-
-                    Layout.preferredWidth: postActionRow.implicitWidth + 24
-                    Layout.preferredHeight: 34
-                    radius: 7
-                    color: getActionBg(currentAction, postActionMouse.containsMouse)
-                    border.color: getActionBorderColor(currentAction)
-                    border.width: currentAction !== "none" ? 1.5 : 1
-
-                    Behavior on color { ColorAnimation { duration: 120 } }
-                    Behavior on border.color { ColorAnimation { duration: 120 } }
-
-                    Row {
-                        id: postActionRow
-                        anchors.centerIn: parent
-                        spacing: 6
-
-                        Text {
-                            text: postActionBtn.getActionIcon(postActionBtn.currentAction)
-                            font.pixelSize: 11
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
-                        Text {
-                            text: appWindow.tr("action_when_done", "When Done: %1").replace("%1", postActionBtn.getActionLabel(postActionBtn.currentAction))
-                            font.family: "Segoe UI, sans-serif"
-                            font.pixelSize: 12
-                            font.weight: postActionBtn.currentAction !== "none" ? 600 : Font.Normal
-                            color: postActionBtn.getActionColor(postActionBtn.currentAction)
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
-                        Text {
-                            text: postActionPopup.opened ? "▴" : "▾"
-                            font.pixelSize: 10
-                            color: postActionBtn.getActionColor(postActionBtn.currentAction)
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
-                    }
-
-                    MouseArea {
-                        id: postActionMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        ToolTip.visible: containsMouse && !postActionPopup.opened
-                        ToolTip.delay: 300
-                        ToolTip.text: appWindow.tr("tip_when_done", "Choose what action to execute when downloads finish (resets to 'Do Nothing' after execution)")
-                        onClicked: {
-                            if (postActionPopup.opened) {
-                                postActionPopup.close()
-                            } else {
-                                postActionPopup.open()
+                                appBridge.fetchPostsForSelection()
                             }
                         }
                     }
 
-                    // Dropdown Menu for selecting post-download action (opens downwards)
-                    Popup {
-                        id: postActionPopup
-                        y: postActionBtn.height + 6
-                        x: 0
-                        width: 256
-                        padding: 8
-                        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent | Popup.CloseOnPressOutside
+                    // ── Add to Queue ────────────────────────────────────────────
+                    Rectangle {
+                        Layout.preferredWidth: Math.max(116, queueRow.implicitWidth + 24)
+                        Layout.preferredHeight: 34
+                        radius: 7
+                        color: queueBtnMouse.containsMouse ? "#1A1F2E" : "#131722"
+                        border.color: "#2E3A56"
+                        border.width: 1
+                        Behavior on color { ColorAnimation { duration: 120 } }
 
-                        background: Rectangle {
-                            color: "#111420"
-                            border.color: "#2E3A56"
-                            border.width: 1
-                            radius: 8
+                        Row {
+                            id: queueRow
+                            anchors.centerIn: parent
+                            spacing: 6
+                            Text { text: "➕"; font.pixelSize: 11; anchors.verticalCenter: parent.verticalCenter }
+                            Text {
+                                text: appWindow.tr("action_add_to_queue", "Add to Queue")
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 12
+                                color: "#CBD5E1"
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
                         }
 
-                        contentItem: ColumnLayout {
-                            spacing: 4
+                        MouseArea {
+                            id: queueBtnMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 400
+                            ToolTip.text: appWindow.tr("tip_add_to_queue", "Add all matched files to the queue without auto-starting download")
+                            onClicked: if (appBridge) appBridge.addToQueue()
+                        }
+                    }
+
+                    // ── Thin separator ──────────────────────────────────────────
+                    Rectangle { width: 1; height: 28; color: "#1E293B"; Layout.alignment: Qt.AlignVCenter }
+
+                    // ── Pause / Resume (shown only while downloading) ───────────
+                    Rectangle {
+                        Layout.preferredWidth: Math.max(100, pauseRow.implicitWidth + 24)
+                        Layout.preferredHeight: 34
+                        radius: 7
+                        visible: appBridge ? appBridge.isDownloading : false
+                        color: pauseBtnMouse.containsMouse ? "#1C1A08" : "#141208"
+                        border.color: "#FBBF24"
+                        border.width: 1
+                        Behavior on color { ColorAnimation { duration: 120 } }
+
+                        Row {
+                            id: pauseRow
+                            anchors.centerIn: parent
+                            spacing: 6
+                            Text {
+                                text: (appBridge && (appBridge.isPaused || appBridge.statusText.indexOf("Paused") >= 0)) ? "▶" : "⏸"
+                                font.pixelSize: 12
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                            Text {
+                                text: (appBridge && (appBridge.isPaused || appBridge.statusText.indexOf("Paused") >= 0)) ? appWindow.tr("action_resume", "Resume") : appWindow.tr("action_pause", "Pause")
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 12
+                                color: "#FBBF24"
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                        }
+
+                        MouseArea {
+                            id: pauseBtnMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 400
+                            ToolTip.text: (appBridge && (appBridge.isPaused || appBridge.statusText.indexOf("Paused") >= 0))
+                                          ? appWindow.tr("tip_resume_download", "Resume paused download") : appWindow.tr("tip_pause_download", "Pause the active download (can be resumed)")
+                            onClicked: {
+                                if (!appBridge) return
+                                if (appBridge.isPaused || appBridge.statusText.indexOf("Paused") >= 0)
+                                    appBridge.resumeDownload()
+                                else
+                                    appBridge.pauseDownload()
+                            }
+                        }
+                    }
+
+                    // ── Cancel (shown only while downloading) ───────────────────
+                    Rectangle {
+                        Layout.preferredWidth: Math.max(86, cancelRow.implicitWidth + 24)
+                        Layout.preferredHeight: 34
+                        radius: 7
+                        visible: appBridge ? appBridge.isDownloading : false
+                        color: cancelBtnMouse.containsMouse ? "#2A0D0D" : "#1C0808"
+                        border.color: "#EF4444"
+                        border.width: 1
+                        Behavior on color { ColorAnimation { duration: 120 } }
+
+                        Row {
+                            id: cancelRow
+                            anchors.centerIn: parent
+                            spacing: 6
+                            Text { text: "⏹"; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
+                            Text {
+                                text: appWindow.tr("action_cancel", "Cancel")
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 12
+                                color: "#F87171"
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                        }
+
+                        MouseArea {
+                            id: cancelBtnMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 400
+                            ToolTip.text: appWindow.tr("tip_cancel_download", "Cancel the active download (session preserved for restore)")
+                            onClicked: if (appBridge) appBridge.cancelDownload()
+                        }
+                    }
+
+                    // ── Thin separator ──────────────────────────────────────────
+                    Rectangle { width: 1; height: 28; color: "#1E293B"; Layout.alignment: Qt.AlignVCenter }
+
+                    // ── Retry Failed ────────────────────────────────────────────
+                    Rectangle {
+                        id: retryFailedBtn
+                        property int failedCount: (appBridge && appBridge.queueModel) ? appBridge.queueModel.failedCount : 0
+                        Layout.preferredWidth: Math.max(106, retryFailedRow.implicitWidth + 22)
+                        Layout.preferredHeight: 34
+                        radius: 7
+                        color: failedCount > 0
+                               ? (retryBtnMouse.containsMouse ? "#2A1010" : "#1E0A0A")
+                               : (retryBtnMouse.containsMouse ? "#181B28" : "#111420")
+                        border.color: failedCount > 0 ? "#EF4444" : "#2E3A56"
+                        border.width: 1
+                        opacity: failedCount > 0 ? 1.0 : 0.5
+                        Behavior on color { ColorAnimation { duration: 120 } }
+                        Behavior on opacity { NumberAnimation { duration: 180 } }
+
+                        Row {
+                            id: retryFailedRow
+                            anchors.centerIn: parent
+                            spacing: 6
+                            Text { text: "🔁"; font.pixelSize: 11; anchors.verticalCenter: parent.verticalCenter }
+                            Text {
+                                text: retryFailedBtn.failedCount > 0
+                                      ? appWindow.tr("action_retry_failed_count", "Retry Failed (%1)").replace("%1", retryFailedBtn.failedCount)
+                                      : appWindow.tr("action_retry_failed", "Retry Failed")
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 12
+                                color: retryFailedBtn.failedCount > 0 ? "#FCA5A5" : "#64748B"
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                        }
+
+                        MouseArea {
+                            id: retryBtnMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 400
+                            ToolTip.text: appWindow.tr("tip_retry_failed_dialog", "Open dialog to inspect and retry failed downloads")
+                            onClicked: mainRetryModal.isOpen = true
+                        }
+                    }
+
+                    // ── Download Cloud Links button (visible when harvested links exist) ──
+                    Rectangle {
+                        id: cloudDownloadStickyBtn
+                        property int count: appBridge ? appBridge.harvestedLinksCount : 0
+                        visible: count > 0
+                        Layout.preferredWidth: Math.max(165, cloudRow.implicitWidth + 24)
+                        Layout.preferredHeight: 34
+                        radius: 7
+                        color: cloudBtnMouse.containsMouse ? "#0D3330" : "#0A2825"
+                        border.color: "#2DD4BF"
+                        border.width: 1
+                        scale: cloudBtnMouse.pressed ? 0.95 : (cloudBtnMouse.containsMouse ? 1.03 : 1.0)
+                        transformOrigin: Item.Center
+
+                        Behavior on scale { NumberAnimation { duration: 160; easing.type: Easing.OutBack; easing.overshoot: 1.5 } }
+                        Behavior on color { ColorAnimation { duration: 120 } }
+
+                        Row {
+                            id: cloudRow
+                            anchors.centerIn: parent
+                            spacing: 6
+                            Text { text: "☁️"; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
+                            Text {
+                                text: appWindow.tr("action_download_links_count", "Download Links (%1)").replace("%1", cloudDownloadStickyBtn.count)
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 12
+                                font.weight: 600
+                                color: "#2DD4BF"
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                        }
+
+                        MouseArea {
+                            id: cloudBtnMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 400
+                            ToolTip.text: appWindow.tr("tip_cloud_download_dialog", "Open dialog to download harvested links via Mega, Google Drive, Dropbox, or GoFile")
+                            onClicked: mainCloudModal.isOpen = true
+                        }
+                    }
+
+                    // ── Auto-Retry toggle ───────────────────────────────────────
+                    Rectangle {
+                        Layout.preferredWidth: Math.max(118, autoRetryRow.implicitWidth + 24)
+                        Layout.preferredHeight: 34
+                        radius: 7
+                        color: autoRetryMouse.containsMouse
+                               ? (appBridge && appBridge.autoRetryAtEnd ? "#0A2118" : "#181B28")
+                               : (appBridge && appBridge.autoRetryAtEnd ? "#071812" : "#111420")
+                        border.color: (appBridge && appBridge.autoRetryAtEnd) ? "#10B981" : "#2E3A56"
+                        border.width: 1
+                        Behavior on color { ColorAnimation { duration: 120 } }
+                        Behavior on border.color { ColorAnimation { duration: 120 } }
+
+                        Row {
+                            id: autoRetryRow
+                            anchors.centerIn: parent
+                            spacing: 6
+                            Text {
+                                text: (appBridge && appBridge.autoRetryAtEnd) ? "✔" : "○"
+                                font.pixelSize: 10
+                                color: (appBridge && appBridge.autoRetryAtEnd) ? "#34D399" : "#64748B"
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                            Text {
+                                text: appWindow.tr("action_auto_retry", "Auto-Retry")
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 12
+                                color: (appBridge && appBridge.autoRetryAtEnd) ? "#34D399" : "#64748B"
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                        }
+
+                        MouseArea {
+                            id: autoRetryMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 300
+                            ToolTip.text: (appBridge && appBridge.autoRetryAtEnd)
+                                          ? appWindow.tr("tip_auto_retry_on", "Auto-Retry is ON (automatically retries failed files at end of queue, or immediately if clicked with failed files)")
+                                          : appWindow.tr("tip_auto_retry_off", "Auto-Retry is OFF (click to enable auto-retry for failed downloads)")
+                            onClicked: if (appBridge) appBridge.toggleAutoRetry()
+                        }
+                    }
+
+                    // ── When Done (Post-Download Action) Selector ───────────────
+                    Rectangle {
+                        id: postActionBtn
+                        property string currentAction: appBridge ? appBridge.postDownloadAction : "none"
+
+                        function getActionLabel(act) {
+                            if (act === "close_app") return appWindow.tr("post_action_close", "Close App")
+                            if (act === "sleep") return appWindow.tr("post_action_sleep_short", "Sleep")
+                            if (act === "hibernate") return appWindow.tr("post_action_hibernate_short", "Hibernate (-F)")
+                            if (act === "shutdown") return appWindow.tr("post_action_shutdown_short", "Shut Down (-F)")
+                            if (act === "restart") return appWindow.tr("post_action_restart_short", "Restart (-F)")
+                            return appWindow.tr("post_action_none_short", "Do Nothing")
+                        }
+
+                        function getOptionLabel(actId) {
+                            if (actId === "close_app") return appWindow.tr("post_action_close", "Close App")
+                            if (actId === "sleep") return appWindow.tr("post_action_sleep", "Sleep System")
+                            if (actId === "hibernate") return appWindow.tr("post_action_hibernate", "Hibernate (-F Force)")
+                            if (actId === "shutdown") return appWindow.tr("post_action_shutdown", "Shut Down (-F Force)")
+                            if (actId === "restart") return appWindow.tr("post_action_restart", "Restart (-F Force)")
+                            return appWindow.tr("post_action_none", "Do Nothing (Default)")
+                        }
+
+                        function getOptionDesc(actId) {
+                            if (actId === "close_app") return appWindow.tr("post_action_close_desc", "Exit Pawchive Downloader")
+                            if (actId === "sleep") return appWindow.tr("post_action_sleep_desc", "Suspend / sleep computer")
+                            if (actId === "hibernate") return appWindow.tr("post_action_hibernate_desc", "Force save to disk and power down")
+                            if (actId === "shutdown") return appWindow.tr("post_action_shutdown_desc", "Force close apps & turn off (10s buffer)")
+                            if (actId === "restart") return appWindow.tr("post_action_restart_desc", "Force close apps & reboot computer")
+                            return appWindow.tr("post_action_none_desc", "Keep app & system running")
+                        }
+
+                        function getActionIcon(act) {
+                            if (act === "close_app") return "🚪"
+                            if (act === "sleep") return "🌙"
+                            if (act === "hibernate") return "💤"
+                            if (act === "shutdown") return "🔌"
+                            if (act === "restart") return "🔄"
+                            return "⏸️"
+                        }
+
+                        function getActionColor(act) {
+                            if (act === "close_app") return "#38BDF8"
+                            if (act === "sleep") return "#A78BFA"
+                            if (act === "hibernate") return "#818CF8"
+                            if (act === "shutdown") return "#F43F5E"
+                            if (act === "restart") return "#F59E0B"
+                            return "#64748B"
+                        }
+
+                        function getActionBorderColor(act) {
+                            if (act === "close_app") return "#0284C7"
+                            if (act === "sleep") return "#7C3AED"
+                            if (act === "hibernate") return "#4F46E5"
+                            if (act === "shutdown") return "#E11D48"
+                            if (act === "restart") return "#D97706"
+                            return "#2E3A56"
+                        }
+
+                        function getActionBg(act, hovered) {
+                            if (act === "close_app") return hovered ? "#0E2A3E" : "#0A1D2B"
+                            if (act === "sleep") return hovered ? "#241E3A" : "#191528"
+                            if (act === "hibernate") return hovered ? "#22203A" : "#171628"
+                            if (act === "shutdown") return hovered ? "#361014" : "#260B0E"
+                            if (act === "restart") return hovered ? "#35220A" : "#241707"
+                            return hovered ? "#181B28" : "#111420"
+                        }
+
+                        Layout.preferredWidth: postActionRow.implicitWidth + 24
+                        Layout.preferredHeight: 34
+                        radius: 7
+                        color: getActionBg(currentAction, postActionMouse.containsMouse)
+                        border.color: getActionBorderColor(currentAction)
+                        border.width: currentAction !== "none" ? 1.5 : 1
+
+                        Behavior on color { ColorAnimation { duration: 120 } }
+                        Behavior on border.color { ColorAnimation { duration: 120 } }
+
+                        Row {
+                            id: postActionRow
+                            anchors.centerIn: parent
+                            spacing: 6
 
                             Text {
-                                text: appWindow.tr("post_action_header", "ACTION WHEN COMPLETED")
+                                text: postActionBtn.getActionIcon(postActionBtn.currentAction)
+                                font.pixelSize: 11
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                            Text {
+                                text: appWindow.tr("action_when_done", "When Done: %1").replace("%1", postActionBtn.getActionLabel(postActionBtn.currentAction))
                                 font.family: "Segoe UI, sans-serif"
-                                font.pixelSize: 9
-                                font.weight: Font.Bold
-                                color: "#64748B"
-                                Layout.leftMargin: 6
-                                Layout.topMargin: 2
-                                Layout.bottomMargin: 2
+                                font.pixelSize: 12
+                                font.weight: postActionBtn.currentAction !== "none" ? 600 : Font.Normal
+                                color: postActionBtn.getActionColor(postActionBtn.currentAction)
+                                anchors.verticalCenter: parent.verticalCenter
                             }
-
-                            ListModel {
-                                id: postActionOptionsModel
-                                ListElement { actionId: "none"; actionIcon: "⏸️"; actionColor: "#94A3B8" }
-                                ListElement { actionId: "close_app"; actionIcon: "🚪"; actionColor: "#38BDF8" }
-                                ListElement { actionId: "sleep"; actionIcon: "🌙"; actionColor: "#A78BFA" }
-                                ListElement { actionId: "hibernate"; actionIcon: "💤"; actionColor: "#818CF8" }
-                                ListElement { actionId: "shutdown"; actionIcon: "🔌"; actionColor: "#F43F5E" }
-                                ListElement { actionId: "restart"; actionIcon: "🔄"; actionColor: "#F59E0B" }
+                            Text {
+                                text: postActionPopup.opened ? "▴" : "▾"
+                                font.pixelSize: 10
+                                color: postActionBtn.getActionColor(postActionBtn.currentAction)
+                                anchors.verticalCenter: parent.verticalCenter
                             }
+                        }
 
-                            Repeater {
-                                model: postActionOptionsModel
-                                delegate: Rectangle {
-                                    Layout.fillWidth: true
-                                    Layout.preferredHeight: 34
-                                    radius: 6
-                                    property bool isCurrent: (appBridge ? appBridge.postDownloadAction : "none") === model.actionId
-                                    color: optMouse.containsMouse ? "#1E2436" : (isCurrent ? "#161B2E" : "transparent")
-                                    border.color: isCurrent ? model.actionColor : "transparent"
-                                    border.width: 1
-
-                                    RowLayout {
-                                        anchors.fill: parent
-                                        anchors.leftMargin: 8
-                                        anchors.rightMargin: 8
-                                        spacing: 8
-
-                                        Text {
-                                            text: model.actionIcon
-                                            font.pixelSize: 13
-                                            Layout.alignment: Qt.AlignVCenter
-                                        }
-
-                                        ColumnLayout {
-                                            Layout.fillWidth: true
-                                            spacing: 1
-                                            Text {
-                                                text: postActionBtn.getOptionLabel(model.actionId)
-                                                font.family: "Segoe UI, sans-serif"
-                                                font.pixelSize: 11
-                                                font.weight: isCurrent ? 600 : Font.Normal
-                                                color: isCurrent ? model.actionColor : "#E2E8F0"
-                                            }
-                                            Text {
-                                                text: postActionBtn.getOptionDesc(model.actionId)
-                                                font.family: "Segoe UI, sans-serif"
-                                                font.pixelSize: 9
-                                                color: "#64748B"
-                                            }
-                                        }
-
-                                        Text {
-                                            text: "✔"
-                                            font.pixelSize: 11
-                                            color: model.actionColor
-                                            visible: isCurrent
-                                            Layout.alignment: Qt.AlignVCenter
-                                        }
-                                    }
-
-                                    MouseArea {
-                                        id: optMouse
-                                        anchors.fill: parent
-                                        hoverEnabled: true
-                                        cursorShape: Qt.PointingHandCursor
-                                        onClicked: {
-                                            if (appBridge) {
-                                                appBridge.postDownloadAction = model.actionId
-                                            }
-                                            postActionPopup.close()
-                                        }
-                                    }
+                        MouseArea {
+                            id: postActionMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            ToolTip.visible: containsMouse && !postActionPopup.opened
+                            ToolTip.delay: 300
+                            ToolTip.text: appWindow.tr("tip_when_done", "Choose what action to execute when downloads finish (resets to 'Do Nothing' after execution)")
+                            onClicked: {
+                                if (postActionPopup.opened) {
+                                    postActionPopup.close()
+                                } else {
+                                    postActionPopup.open()
                                 }
                             }
+                        }
 
-                            Rectangle {
-                                Layout.fillWidth: true
-                                height: 1
-                                color: "#1E293B"
-                                Layout.topMargin: 2
-                                Layout.bottomMargin: 2
+                        // Dropdown Menu for selecting post-download action (opens downwards)
+                        Popup {
+                            id: postActionPopup
+                            y: postActionBtn.height + 6
+                            x: 0
+                            width: 256
+                            padding: 8
+                            closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent | Popup.CloseOnPressOutside
+
+                            background: Rectangle {
+                                color: "#111420"
+                                border.color: "#2E3A56"
+                                border.width: 1
+                                radius: 8
                             }
 
-                            RowLayout {
-                                Layout.fillWidth: true
-                                Layout.leftMargin: 6
-                                Layout.rightMargin: 6
-                                Layout.bottomMargin: 2
+                            contentItem: ColumnLayout {
                                 spacing: 4
+
                                 Text {
-                                    text: "ℹ️"
-                                    font.pixelSize: 10
-                                }
-                                Text {
-                                    text: appWindow.tr("post_action_footer", "Automatically resets to 'Do Nothing' after each task.")
+                                    text: appWindow.tr("post_action_header", "ACTION WHEN COMPLETED")
                                     font.family: "Segoe UI, sans-serif"
                                     font.pixelSize: 9
+                                    font.weight: Font.Bold
                                     color: "#64748B"
+                                    Layout.leftMargin: 6
+                                    Layout.topMargin: 2
+                                    Layout.bottomMargin: 2
+                                }
+
+                                ListModel {
+                                    id: postActionOptionsModel
+                                    ListElement { actionId: "none"; actionIcon: "⏸️"; actionColor: "#94A3B8" }
+                                    ListElement { actionId: "close_app"; actionIcon: "🚪"; actionColor: "#38BDF8" }
+                                    ListElement { actionId: "sleep"; actionIcon: "🌙"; actionColor: "#A78BFA" }
+                                    ListElement { actionId: "hibernate"; actionIcon: "💤"; actionColor: "#818CF8" }
+                                    ListElement { actionId: "shutdown"; actionIcon: "🔌"; actionColor: "#F43F5E" }
+                                    ListElement { actionId: "restart"; actionIcon: "🔄"; actionColor: "#F59E0B" }
+                                }
+
+                                Repeater {
+                                    model: postActionOptionsModel
+                                    delegate: Rectangle {
+                                        Layout.fillWidth: true
+                                        Layout.preferredHeight: 34
+                                        radius: 6
+                                        property bool isCurrent: (appBridge ? appBridge.postDownloadAction : "none") === model.actionId
+                                        color: optMouse.containsMouse ? "#1E2436" : (isCurrent ? "#161B2E" : "transparent")
+                                        border.color: isCurrent ? model.actionColor : "transparent"
+                                        border.width: 1
+
+                                        RowLayout {
+                                            anchors.fill: parent
+                                            anchors.leftMargin: 8
+                                            anchors.rightMargin: 8
+                                            spacing: 8
+
+                                            Text {
+                                                text: model.actionIcon
+                                                font.pixelSize: 13
+                                                Layout.alignment: Qt.AlignVCenter
+                                            }
+
+                                            ColumnLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 1
+                                                Text {
+                                                    text: postActionBtn.getOptionLabel(model.actionId)
+                                                    font.family: "Segoe UI, sans-serif"
+                                                    font.pixelSize: 11
+                                                    font.weight: isCurrent ? 600 : Font.Normal
+                                                    color: isCurrent ? model.actionColor : "#E2E8F0"
+                                                }
+                                                Text {
+                                                    text: postActionBtn.getOptionDesc(model.actionId)
+                                                    font.family: "Segoe UI, sans-serif"
+                                                    font.pixelSize: 9
+                                                    color: "#64748B"
+                                                }
+                                            }
+
+                                            Text {
+                                                text: "✔"
+                                                font.pixelSize: 11
+                                                color: model.actionColor
+                                                visible: isCurrent
+                                                Layout.alignment: Qt.AlignVCenter
+                                            }
+                                        }
+
+                                        MouseArea {
+                                            id: optMouse
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                if (appBridge) {
+                                                    appBridge.postDownloadAction = model.actionId
+                                                }
+                                                postActionPopup.close()
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Rectangle {
                                     Layout.fillWidth: true
-                                    wrapMode: Text.WordWrap
+                                    height: 1
+                                    color: "#1E293B"
+                                    Layout.topMargin: 2
+                                    Layout.bottomMargin: 2
+                                }
+
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Layout.leftMargin: 6
+                                    Layout.rightMargin: 6
+                                    Layout.bottomMargin: 2
+                                    spacing: 4
+                                    Text {
+                                        text: "ℹ️"
+                                        font.pixelSize: 10
+                                    }
+                                    Text {
+                                        text: appWindow.tr("post_action_footer", "Automatically resets to 'Do Nothing' after each task.")
+                                        font.family: "Segoe UI, sans-serif"
+                                        font.pixelSize: 9
+                                        color: "#64748B"
+                                        Layout.fillWidth: true
+                                        wrapMode: Text.WordWrap
+                                    }
                                 }
                             }
                         }
                     }
-                }
 
-                Item { Layout.fillWidth: true }
+                    Item { Layout.fillWidth: true }
 
-                // ── Restore Session ─────────────────────────────────────────
-                Rectangle {
-                    Layout.preferredWidth: Math.max(120, restoreRow.implicitWidth + 24)
-                    Layout.preferredHeight: 34
-                    radius: 7
-                    visible: appBridge ? appBridge.hasSavedSession : false
-                    color: restoreBtnMouse.containsMouse ? "#0D2820" : "#071A14"
-                    border.color: "#10B981"
-                    border.width: 1
-                    Behavior on color { ColorAnimation { duration: 120 } }
+                    // ── Restore Session ─────────────────────────────────────────
+                    Rectangle {
+                        Layout.preferredWidth: Math.max(120, restoreRow.implicitWidth + 24)
+                        Layout.preferredHeight: 34
+                        radius: 7
+                        visible: appBridge ? appBridge.hasSavedSession : false
+                        color: restoreBtnMouse.containsMouse ? "#0D2820" : "#071A14"
+                        border.color: "#10B981"
+                        border.width: 1
+                        Behavior on color { ColorAnimation { duration: 120 } }
 
-                    Row {
-                        id: restoreRow
-                        anchors.centerIn: parent
-                        spacing: 6
-                        Text { text: "🔄"; font.pixelSize: 11; anchors.verticalCenter: parent.verticalCenter }
-                        Text {
-                            text: appWindow.tr("action_restore_session", "Restore Session")
-                            font.family: "Segoe UI, sans-serif"
-                            font.pixelSize: 11
-                            color: "#34D399"
-                            anchors.verticalCenter: parent.verticalCenter
+                        Row {
+                            id: restoreRow
+                            anchors.centerIn: parent
+                            spacing: 6
+                            Text { text: "🔄"; font.pixelSize: 11; anchors.verticalCenter: parent.verticalCenter }
+                            Text {
+                                text: appWindow.tr("action_restore_session", "Restore Session")
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 11
+                                color: "#34D399"
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
                         }
-                    }
 
-                    MouseArea {
-                        id: restoreBtnMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        ToolTip.visible: containsMouse
-                        ToolTip.delay: 400
-                        ToolTip.text: appWindow.tr("tip_restore_session", "Resume the previously saved incomplete download session")
-                        onClicked: {
-                            if (appBridge && appBridge.hasRecoverySession) {
-                                sessionRecoveryModal.sessionSummary = appBridge.recoverySummary
-                                sessionRecoveryModal.isOpen = true
-                            } else if (appBridge) {
-                                appBridge.restoreDownload()
+                        MouseArea {
+                            id: restoreBtnMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 400
+                            ToolTip.text: appWindow.tr("tip_restore_session", "Resume the previously saved incomplete download session")
+                            onClicked: {
+                                if (appBridge && appBridge.hasRecoverySession) {
+                                    sessionRecoveryModal.sessionSummary = appBridge.recoverySummary
+                                    sessionRecoveryModal.isOpen = true
+                                } else if (appBridge) {
+                                    appBridge.restoreDownload()
+                                }
                             }
                         }
                     }
-                }
 
-                // ── Discard Session ─────────────────────────────────────────
-                Rectangle {
-                    Layout.preferredWidth: Math.max(88, discardRow.implicitWidth + 24)
-                    Layout.preferredHeight: 34
-                    radius: 7
-                    visible: appBridge ? appBridge.hasSavedSession : false
-                    color: discardBtnMouse.containsMouse ? "#2A0D0D" : "#1C0808"
-                    border.color: "#7F1D1D"
-                    border.width: 1
-                    Behavior on color { ColorAnimation { duration: 120 } }
+                    // ── Discard Session ─────────────────────────────────────────
+                    Rectangle {
+                        Layout.preferredWidth: Math.max(88, discardRow.implicitWidth + 24)
+                        Layout.preferredHeight: 34
+                        radius: 7
+                        visible: appBridge ? appBridge.hasSavedSession : false
+                        color: discardBtnMouse.containsMouse ? "#2A0D0D" : "#1C0808"
+                        border.color: "#7F1D1D"
+                        border.width: 1
+                        Behavior on color { ColorAnimation { duration: 120 } }
 
-                    Row {
-                        id: discardRow
-                        anchors.centerIn: parent
-                        spacing: 6
-                        Text { text: "🗑"; font.pixelSize: 11; anchors.verticalCenter: parent.verticalCenter }
-                        Text {
-                            text: appWindow.tr("action_discard", "Discard")
-                            font.family: "Segoe UI, sans-serif"
-                            font.pixelSize: 12
-                            color: "#FCA5A5"
-                            anchors.verticalCenter: parent.verticalCenter
+                        Row {
+                            id: discardRow
+                            anchors.centerIn: parent
+                            spacing: 6
+                            Text { text: "🗑"; font.pixelSize: 11; anchors.verticalCenter: parent.verticalCenter }
+                            Text {
+                                text: appWindow.tr("action_discard", "Discard")
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 12
+                                color: "#FCA5A5"
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                        }
+
+                        MouseArea {
+                            id: discardBtnMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 400
+                            ToolTip.text: appWindow.tr("tip_discard_session", "Clear the saved session and queue (cannot be undone)")
+                            onClicked: if (appBridge) appBridge.discardSession()
                         }
                     }
-
-                    MouseArea {
-                        id: discardBtnMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        ToolTip.visible: containsMouse
-                        ToolTip.delay: 400
-                        ToolTip.text: appWindow.tr("tip_discard_session", "Clear the saved session and queue (cannot be undone)")
-                        onClicked: if (appBridge) appBridge.discardSession()
-                    }
                 }
+                } // end Flickable (actionBarFlickable)
             }
-            } // end Flickable (actionBarFlickable)
         }
 
         // 3. Main Split Content Area
@@ -2039,7 +2109,14 @@ ApplicationWindow {
                             Behavior on y { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
                             Behavior on scale { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
 
-                            QueueView { anchors.fill: parent; bridge: appBridge }
+                            LazyTab {
+                                anchors.fill: parent
+                                // Built in the background the first time this tab is opened (the window keeps
+                                // responding, with a spinner if it takes a moment), then kept
+                                wanted: appWindow.currentTab === 1
+                                loadingText: appWindow.tr("tab_loading", "Loading…")
+                                sourceComponent: Component { QueueView { bridge: appBridge } }
+                            }
                         }
 
                         // Tab 2: Watchlist View with Newtonian slide & fade transition
@@ -2053,7 +2130,14 @@ ApplicationWindow {
                             Behavior on y { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
                             Behavior on scale { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
 
-                            WatchlistView { anchors.fill: parent; bridge: appBridge }
+                            LazyTab {
+                                anchors.fill: parent
+                                // Built in the background the first time this tab is opened (the window keeps
+                                // responding, with a spinner if it takes a moment), then kept
+                                wanted: appWindow.currentTab === 2
+                                loadingText: appWindow.tr("tab_loading", "Loading…")
+                                sourceComponent: Component { WatchlistView { bridge: appBridge } }
+                            }
                         }
 
                         // Tab 3: Bulk Decompressor View with Newtonian slide & fade transition
@@ -2081,7 +2165,14 @@ ApplicationWindow {
                             Behavior on y { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
                             Behavior on scale { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
 
-                            LinkVaultView { anchors.fill: parent; bridge: appBridge }
+                            LazyTab {
+                                anchors.fill: parent
+                                // Built in the background the first time this tab is opened (the window keeps
+                                // responding, with a spinner if it takes a moment), then kept
+                                wanted: appWindow.currentTab === 4
+                                loadingText: appWindow.tr("tab_loading", "Loading…")
+                                sourceComponent: Component { LinkVaultView { bridge: appBridge } }
+                            }
                         }
 
                         // Tab 5: Scheduler View with Newtonian slide & fade transition
@@ -2095,7 +2186,14 @@ ApplicationWindow {
                             Behavior on y { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
                             Behavior on scale { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
 
-                            SchedulerView { anchors.fill: parent; bridge: appBridge }
+                            LazyTab {
+                                anchors.fill: parent
+                                // Built in the background the first time this tab is opened (the window keeps
+                                // responding, with a spinner if it takes a moment), then kept
+                                wanted: appWindow.currentTab === 5
+                                loadingText: appWindow.tr("tab_loading", "Loading…")
+                                sourceComponent: Component { SchedulerView { bridge: appBridge } }
+                            }
                         }
 
                         // Tab 6: File Explorer & Media Gallery View with Newtonian slide & fade transition
@@ -2109,7 +2207,23 @@ ApplicationWindow {
                             Behavior on y { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
                             Behavior on scale { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
 
-                            GalleryView { anchors.fill: parent; bridge: appBridge }
+                            LazyTab {
+                                id: galleryLoader
+                                anchors.fill: parent
+                                // Built in the background the first time this tab is opened (the window keeps
+                                // responding, with a spinner if it takes a moment), then kept
+                                wanted: appWindow.currentTab === 6
+                                loadingText: appWindow.tr("tab_loading", "Loading…")
+                                sourceComponent: Component { GalleryView { bridge: appBridge } }
+                                onLoaded: {
+                                    var req = appWindow.pendingGalleryShow
+                                    appWindow.pendingGalleryShow = null
+                                    if (req) {
+                                        if (req.isDir) item.navigateTo(req.path)
+                                        else item.revealInGallery(req.path)
+                                    }
+                                }
+                            }
                         }
 
                         // Tab 7: Known Manager View with Newtonian slide & fade transition
@@ -2123,7 +2237,14 @@ ApplicationWindow {
                             Behavior on y { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
                             Behavior on scale { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
 
-                            KnownManagerView { anchors.fill: parent; bridge: appBridge }
+                            LazyTab {
+                                anchors.fill: parent
+                                // Built in the background the first time this tab is opened (the window keeps
+                                // responding, with a spinner if it takes a moment), then kept
+                                wanted: appWindow.currentTab === 7
+                                loadingText: appWindow.tr("tab_loading", "Loading…")
+                                sourceComponent: Component { KnownManagerView { bridge: appBridge } }
+                            }
                         }
 
                         // Tab 8: Archive View with Newtonian slide & fade transition
@@ -2137,10 +2258,14 @@ ApplicationWindow {
                             Behavior on y { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
                             Behavior on scale { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
 
-                            ArchiveView {
-                                id: archiveViewTab
+                            LazyTab {
+                                id: archiveLoader
                                 anchors.fill: parent
-                                bridge: appBridge
+                                // Built in the background the first time this tab is opened (the window keeps
+                                // responding, with a spinner if it takes a moment), then kept
+                                wanted: appWindow.currentTab === 8
+                                loadingText: appWindow.tr("tab_loading", "Loading…")
+                                sourceComponent: Component { ArchiveView { bridge: appBridge } }
                             }
                         }
 
@@ -2155,7 +2280,14 @@ ApplicationWindow {
                             Behavior on y { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
                             Behavior on scale { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
 
-                            HistoryView { anchors.fill: parent; bridge: appBridge }
+                            LazyTab {
+                                anchors.fill: parent
+                                // Built in the background the first time this tab is opened (the window keeps
+                                // responding, with a spinner if it takes a moment), then kept
+                                wanted: appWindow.currentTab === 9
+                                loadingText: appWindow.tr("tab_loading", "Loading…")
+                                sourceComponent: Component { HistoryView { bridge: appBridge } }
+                            }
                         }
 
                         // Tab 10: Settings View with Newtonian slide & fade transition
@@ -2169,7 +2301,26 @@ ApplicationWindow {
                             Behavior on y { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
                             Behavior on scale { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
 
-                            SettingsView { id: settingsViewTab; objectName: "settingsViewTab"; anchors.fill: parent; bridge: appBridge }
+                            LazyTab {
+                                id: settingsLoader
+                                anchors.fill: parent
+                                // Built in the background the first time this tab is opened (the window keeps
+                                // responding, with a spinner if it takes a moment), then kept
+                                wanted: appWindow.currentTab === 10
+                                loadingText: appWindow.tr("tab_loading", "Loading…")
+                                sourceComponent: Component { SettingsView { objectName: "settingsViewTab"; bridge: appBridge } }
+                                onLoaded: {
+                                    if (appWindow.pendingSettingsSubTab >= 0) {
+                                        item.currentSubTab = appWindow.pendingSettingsSubTab
+                                        appWindow.pendingSettingsSubTab = -1
+                                    }
+                                    if (appWindow.pendingProviderHighlight !== "") {
+                                        var prov = appWindow.pendingProviderHighlight
+                                        appWindow.pendingProviderHighlight = ""
+                                        item.highlightProvider(prov === "*" ? "" : prov)
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -2183,49 +2334,63 @@ ApplicationWindow {
                         var raw = appBridge ? appBridge.consoleWidth : 680
                         return Math.min(raw, maxAllowedConsoleWidth)
                     }
-                    property real targetConsoleWidth: appWindow.showConsole ? baseConsoleWidth : 0
-                    property real animConsoleWidth: targetConsoleWidth
-                    property bool isOpeningOrClosing: Math.abs(animConsoleWidth - targetConsoleWidth) > 1
+                    // Open / close motion. Opening: width 320 ms, fade 260 ms, content slide 380 ms, all
+                    // starting together. Closing is the same motion played backwards over 380 ms: the slide
+                    // starts first, the width follows 60 ms later and the fade 120 ms later, so all three end
+                    // together. Two fixed animations (rather than Behaviors whose timing depends on
+                    // showConsole) so the close can never pick up the opening timing.
+                    property real widthProgress: 0          // 0 = closed, 1 = open
+                    property real slideX: 35                // content offset while closed
+                    opacity: 0
+                    readonly property real animConsoleWidth: baseConsoleWidth * widthProgress
+                    readonly property bool isOpeningOrClosing: consoleOpenAnim.running || consoleCloseAnim.running
 
-                    Behavior on animConsoleWidth {
-                        enabled: !mainSplitView.isHandleDragging
-                        NumberAnimation {
-                            duration: appWindow.showConsole ? 320 : 260
-                            easing.type: Easing.OutCubic
+                    ParallelAnimation {
+                        id: consoleOpenAnim
+                        NumberAnimation { target: consoleContainer; property: "widthProgress"; to: 1; duration: 320; easing.type: Easing.OutCubic }
+                        NumberAnimation { target: consoleContainer; property: "opacity"; to: 1; duration: 260; easing.type: Easing.OutCubic }
+                        NumberAnimation { target: consoleContainer; property: "slideX"; to: 0; duration: 380; easing.type: Easing.OutBack; easing.overshoot: 1.25 }
+                    }
+                    ParallelAnimation {
+                        id: consoleCloseAnim
+                        SequentialAnimation {
+                            PauseAnimation { duration: 60 }
+                            NumberAnimation { target: consoleContainer; property: "widthProgress"; to: 0; duration: 320; easing.type: Easing.InCubic }
                         }
+                        SequentialAnimation {
+                            PauseAnimation { duration: 120 }
+                            NumberAnimation { target: consoleContainer; property: "opacity"; to: 0; duration: 260; easing.type: Easing.InCubic }
+                        }
+                        // InBack is OutBack played backwards: a small pull the other way, then out
+                        NumberAnimation { target: consoleContainer; property: "slideX"; to: 35; duration: 380; easing.type: Easing.InBack; easing.overshoot: 1.25 }
+                    }
+                    Connections {
+                        target: appWindow
+                        function onShowConsoleChanged() {
+                            if (appWindow.showConsole) { consoleCloseAnim.stop(); consoleOpenAnim.restart() }
+                            else { consoleOpenAnim.stop(); consoleCloseAnim.restart() }
+                        }
+                    }
+                    Component.onCompleted: {
+                        var on = appWindow.showConsole
+                        widthProgress = on ? 1 : 0
+                        opacity = on ? 1 : 0
+                        slideX = on ? 0 : 35
                     }
 
                     SplitView.preferredWidth: mainSplitView.isHandleDragging ? width : animConsoleWidth
                     SplitView.minimumWidth: (appWindow.showConsole && !isOpeningOrClosing) ? 320 : 0
-                    SplitView.maximumWidth: appWindow.showConsole ? maxAllowedConsoleWidth : 0
+                    SplitView.maximumWidth: (appWindow.showConsole || isOpeningOrClosing) ? maxAllowedConsoleWidth : 0
                     visible: animConsoleWidth > 2
                     clip: true
                     color: "#0B0D12"
-
-                    // Fluid Newtonian opacity
-                    opacity: appWindow.showConsole ? 1.0 : 0.0
-                    Behavior on opacity {
-                        NumberAnimation {
-                            duration: appWindow.showConsole ? 260 : 200
-                            easing.type: Easing.OutCubic
-                        }
-                    }
 
                     ColumnLayout {
                         anchors.fill: parent
                         anchors.margins: 8
                         spacing: 8
 
-                        transform: Translate {
-                            x: appWindow.showConsole ? 0 : 35
-                            Behavior on x {
-                                NumberAnimation {
-                                    duration: appWindow.showConsole ? 380 : 240
-                                    easing.type: appWindow.showConsole ? Easing.OutBack : Easing.InCubic
-                                    easing.overshoot: 1.25
-                                }
-                            }
-                        }
+                        transform: Translate { x: consoleContainer.slideX }
 
                         ActiveDownloadsPanel {
                             id: activeDownloadsPanel
@@ -2248,123 +2413,133 @@ ApplicationWindow {
             }
         }
 
-        // 4. Bottom Status & Progress Footer
-        Rectangle {
+        // 4. Bottom Status & Progress Footer (the Gallery shows a small download chip instead)
+        Item {
             Layout.fillWidth: true
-            height: 44
-            color: "#0B0D12"
-            border.color: "#1E2330"
-            border.width: 1
+            Layout.preferredHeight: 44 * appWindow.chromeProgress
+            visible: appWindow.chromeProgress > 0
+            opacity: appWindow.chromeOpacity
+            clip: appWindow.chromeMoving
 
-            RowLayout {
-                anchors.fill: parent
-                anchors.leftMargin: 12
-                anchors.rightMargin: 12
-                spacing: 12
+            Rectangle {
+                width: parent.width
+                height: 44
+                anchors.top: parent.top
+                transform: Translate { y: 16 * appWindow.chromeSlide }
+                color: "#0B0D12"
+                border.color: "#1E2330"
+                border.width: 1
 
-                // Error Indicator if any
-                Rectangle {
-                    width: 20; height: 20; radius: 10
-                    color: "#EF4444"
-                    visible: appBridge ? appBridge.hasError : false
-                    Text { anchors.centerIn: parent; text: "!"; color: "#FFFFFF"; font.bold: true }
-                }
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 12
+                    anchors.rightMargin: 12
+                    spacing: 12
 
-                // Overall Progress Bar (Full-Width with Inline Telemetry Badges)
-                ProgressBarFancy {
-                    Layout.fillWidth: true
-                    progressPercent: appBridge ? appBridge.overallProgress : 0
-                    statusText: appBridge ? appBridge.statusText : "Progress: Idle"
-                    filesText: appBridge ? appBridge.filesCountText : ""
-                    speedText: appBridge ? appBridge.currentSpeed : "0 KB/s"
-                    etaText: appBridge ? appBridge.etaText : "--"
-                    elapsedText: appBridge ? appBridge.elapsedTimeText : "0s"
-                    savedText: appBridge ? appBridge.savedBytesText : "0 MB"
-                    active: appBridge ? appBridge.isDownloading : false
-                }
-
-                // Live Adaptive Health & Scaling Pill (Feature 5) with Spring Entrance
-                Rectangle {
-                    id: adaptivePill
-                    implicitHeight: 24
-                    implicitWidth: adaptiveRow.implicitWidth + 24
-                    radius: 6
-                    visible: opacity > 0
-                    opacity: (appBridge && appBridge.isDownloading && appBridge.adaptiveThreading && appBridge.adaptiveStatusText.length > 0) ? 1.0 : 0.0
-                    scale: opacity > 0 ? 1.0 : 0.6
-                    transformOrigin: Item.Center
-
-                    Behavior on opacity { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
-                    Behavior on scale { NumberAnimation { duration: 240; easing.type: Easing.OutBack; easing.overshoot: 1.5 } }
-
-                    color: {
-                        if (!appBridge) return "#161E2E"
-                        if (appBridge.adaptiveState === "cooldown") return "#2E1418"
-                        if (appBridge.adaptiveState === "scaling") return "#2E2414"
-                        return "#122820"
+                    // Error Indicator if any
+                    Rectangle {
+                        width: 20; height: 20; radius: 10
+                        color: "#EF4444"
+                        visible: appBridge ? appBridge.hasError : false
+                        Text { anchors.centerIn: parent; text: "!"; color: "#FFFFFF"; font.bold: true }
                     }
-                    border.color: {
-                        if (!appBridge) return "#1E293B"
-                        if (appBridge.adaptiveState === "cooldown") return "#EF4444"
-                        if (appBridge.adaptiveState === "scaling") return "#FBBF24"
-                        return "#10B981"
+
+                    // Overall Progress Bar (Full-Width with Inline Telemetry Badges)
+                    ProgressBarFancy {
+                        Layout.fillWidth: true
+                        progressPercent: appBridge ? appBridge.overallProgress : 0
+                        statusText: appBridge ? appBridge.statusText : "Progress: Idle"
+                        filesText: appBridge ? appBridge.filesCountText : ""
+                        speedText: appBridge ? appBridge.currentSpeed : "0 KB/s"
+                        etaText: appBridge ? appBridge.etaText : "--"
+                        elapsedText: appBridge ? appBridge.elapsedTimeText : "0s"
+                        savedText: appBridge ? appBridge.savedBytesText : "0 MB"
+                        active: appBridge ? appBridge.isDownloading : false
                     }
-                    border.width: 1
 
-                    Behavior on color { ColorAnimation { duration: 150 } }
-                    Behavior on border.color { ColorAnimation { duration: 150 } }
+                    // Live Adaptive Health & Scaling Pill (Feature 5) with Spring Entrance
+                    Rectangle {
+                        id: adaptivePill
+                        implicitHeight: 24
+                        implicitWidth: adaptiveRow.implicitWidth + 24
+                        radius: 6
+                        visible: opacity > 0
+                        opacity: (appBridge && appBridge.isDownloading && appBridge.adaptiveThreading && appBridge.adaptiveStatusText.length > 0) ? 1.0 : 0.0
+                        scale: opacity > 0 ? 1.0 : 0.6
+                        transformOrigin: Item.Center
 
-                    Row {
-                        id: adaptiveRow
-                        anchors.centerIn: parent
-                        spacing: 6
-                        Text {
-                            text: {
-                                if (!appBridge) return "⚡"
-                                if (appBridge.adaptiveState === "cooldown") return "⏳"
-                                if (appBridge.adaptiveState === "scaling") return "⚡"
-                                return "✔"
-                            }
-                            font.pixelSize: 10
-                            anchors.verticalCenter: parent.verticalCenter
+                        Behavior on opacity { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+                        Behavior on scale { NumberAnimation { duration: 240; easing.type: Easing.OutBack; easing.overshoot: 1.5 } }
+
+                        color: {
+                            if (!appBridge) return "#161E2E"
+                            if (appBridge.adaptiveState === "cooldown") return "#2E1418"
+                            if (appBridge.adaptiveState === "scaling") return "#2E2414"
+                            return "#122820"
                         }
-                        Text {
-                            id: adaptivePillText
-                            text: appBridge ? appBridge.adaptiveStatusText : ""
-                            font.family: "Segoe UI, sans-serif"
-                            font.pixelSize: 11
-                            font.weight: Font.Medium
-                            anchors.verticalCenter: parent.verticalCenter
-                            color: {
-                                if (!appBridge) return "#38BDF8"
-                                if (appBridge.adaptiveState === "cooldown") return "#FCA5A5"
-                                if (appBridge.adaptiveState === "scaling") return "#FCD34D"
-                                return "#6EE7B7"
+                        border.color: {
+                            if (!appBridge) return "#1E293B"
+                            if (appBridge.adaptiveState === "cooldown") return "#EF4444"
+                            if (appBridge.adaptiveState === "scaling") return "#FBBF24"
+                            return "#10B981"
+                        }
+                        border.width: 1
+
+                        Behavior on color { ColorAnimation { duration: 150 } }
+                        Behavior on border.color { ColorAnimation { duration: 150 } }
+
+                        Row {
+                            id: adaptiveRow
+                            anchors.centerIn: parent
+                            spacing: 6
+                            Text {
+                                text: {
+                                    if (!appBridge) return "⚡"
+                                    if (appBridge.adaptiveState === "cooldown") return "⏳"
+                                    if (appBridge.adaptiveState === "scaling") return "⚡"
+                                    return "✔"
+                                }
+                                font.pixelSize: 10
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                            Text {
+                                id: adaptivePillText
+                                text: appBridge ? appBridge.adaptiveStatusText : ""
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 11
+                                font.weight: Font.Medium
+                                anchors.verticalCenter: parent.verticalCenter
+                                color: {
+                                    if (!appBridge) return "#38BDF8"
+                                    if (appBridge.adaptiveState === "cooldown") return "#FCA5A5"
+                                    if (appBridge.adaptiveState === "scaling") return "#FCD34D"
+                                    return "#6EE7B7"
+                                }
                             }
                         }
                     }
-                }
 
-                // Quick session state badge
-                Rectangle {
-                    height: 22
-                    width: Math.max(90, sessStateText.implicitWidth + 12)
-                    radius: 4
-                    color: "#181B22"
-                    border.color: "#282E3D"
-                    border.width: 1
-                    visible: appBridge ? appBridge.hasSavedSession : false
+                    // Quick session state badge
+                    Rectangle {
+                        height: 22
+                        width: Math.max(90, sessStateText.implicitWidth + 12)
+                        radius: 4
+                        color: "#181B22"
+                        border.color: "#282E3D"
+                        border.width: 1
+                        visible: appBridge ? appBridge.hasSavedSession : false
 
-                    Row {
-                        anchors.centerIn: parent
-                        spacing: 4
-                        Text { text: "📁"; font.pixelSize: 10 }
-                        Text {
-                            id: sessStateText
-                            text: appWindow.tr("badge_session_active", "Session Active")
-                            font.family: "Segoe UI, sans-serif"
-                            font.pixelSize: 10
-                            color: "#FBBF24"
+                        Row {
+                            anchors.centerIn: parent
+                            spacing: 4
+                            Text { text: "📁"; font.pixelSize: 10 }
+                            Text {
+                                id: sessStateText
+                                text: appWindow.tr("badge_session_active", "Session Active")
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 10
+                                color: "#FBBF24"
+                            }
                         }
                     }
                 }
@@ -2414,6 +2589,13 @@ ApplicationWindow {
     }
 
     // Unfinished Crash Recovery Modal
+    // Kemono / Coomer are switched off: tells the user where to go instead
+    ProviderNoticeModal {
+        id: providerNoticeModal
+        bridge: appBridge
+        onUseAlternative: (url) => { appBridge.currentUrl = url; appWindow.currentTab = 0 }
+    }
+
     SessionRecoveryModal {
         id: sessionRecoveryModal
         bridge: appBridge
@@ -2425,8 +2607,8 @@ ApplicationWindow {
         id: archiveRebuildModal
         bridge: appBridge
         onRebuildCompleted: {
-            if (typeof archiveViewTab !== "undefined" && archiveViewTab && typeof archiveViewTab.reload === "function") {
-                archiveViewTab.reload();
+            if (archiveLoader.item && typeof archiveLoader.item.reload === "function") {
+                archiveLoader.item.reload();
             }
         }
     }
@@ -2451,14 +2633,30 @@ ApplicationWindow {
             discardWarningToast.show(oldDesc)
         }
         function onFavoriteAuthRequired(provName) {
-            appWindow.currentTab = 9
+            appWindow.currentTab = 10      // Settings (9 is History)
             var cleanName = (provName || "").trim()
             var msg = cleanName.length > 0
                 ? ("⭐ " + appWindow.tr("msg_fav_auth_required", "Favorite Mode requires account login for " + cleanName + ". Please connect below."))
                 : ("⭐ " + appWindow.tr("msg_fav_login_hint", "Favorite Mode requires a connected account. Please log in below."))
             appWindow.showToast(msg)
-            if (typeof settingsViewTab !== "undefined" && settingsViewTab && typeof settingsViewTab.highlightProvider === "function") {
-                settingsViewTab.highlightProvider(cleanName)
+            if (settingsLoader.item && typeof settingsLoader.item.highlightProvider === "function") {
+                settingsLoader.item.highlightProvider(cleanName)
+            } else {
+                appWindow.pendingProviderHighlight = cleanName || "*"     // applied once Settings is built
+            }
+        }
+        function onProviderDisabled(message, alternativeUrl, context) {
+            providerNoticeModal.show(message, alternativeUrl, context)
+        }
+        function onGalleryShowRequested(path, isDir) {
+            // An open Gallery handles this itself; otherwise build it first, then show the place
+            if (galleryLoader.item) return
+            appWindow.currentTab = 6
+            if (galleryLoader.item) {
+                if (isDir) galleryLoader.item.navigateTo(path)
+                else galleryLoader.item.revealInGallery(path)
+            } else {
+                appWindow.pendingGalleryShow = { path: path, isDir: isDir }    // applied once it's built
             }
         }
     }

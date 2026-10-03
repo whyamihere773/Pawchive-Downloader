@@ -181,12 +181,13 @@ Item {
         }
     }
 
+    // Same as every other view (this used to ask the bridge, which has no translations, so the tab
+    // always stayed in English)
     function tr(key, def) {
-        if (bridge && typeof bridge.tr === "function") {
-            var val = bridge.tr(key);
-            if (val && val !== key) return val;
-        }
-        return def;
+        if (typeof Lang === "undefined" || !Lang) return def !== undefined ? def : key
+        var _ = Lang.activeLanguage
+        var res = Lang.t(key)
+        return (res && res !== key) ? res : (def !== undefined ? def : res)
     }
 
     function formatBytes(bytes) {
@@ -376,7 +377,7 @@ Item {
                 implicitWidth: delRow.implicitWidth
                 ToolTip.visible: containsMouse
                 ToolTip.delay: 300
-                ToolTip.text: root.tr("decompressor_delete_tip", "Safe deletion: original archive is deleted ONLY if 7-Zip exits with 0 errors.")
+                ToolTip.text: root.tr("decompressor_delete_tip", "The archive is moved to the Recycle Bin, and only after 7-Zip finishes without errors.")
                 onClicked: {
                     if (decompressor) decompressor.deleteAfter = !decompressor.deleteAfter;
                 }
@@ -405,7 +406,7 @@ Item {
                     }
 
                     Text {
-                        text: root.tr("decompressor_delete_opt", "Delete archive after successful extraction")
+                        text: root.tr("decompressor_delete_opt", "Move archive to the Recycle Bin after extracting")
                         font.family: "Segoe UI, sans-serif"
                         font.pixelSize: 11
                         font.weight: Font.Medium

@@ -28,7 +28,10 @@ class StoragePoolManager:
 
     def __init__(self, config_dir: Optional[str] = None):
         if not config_dir:
-            config_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config")
+            from core.path_utils import get_config_dir, migrate_legacy_files
+            config_dir = get_config_dir()
+            migrate_legacy_files(config_dir, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config"),
+                                 ("storage_pools.json", "storage_pools.json.bak"))
         self.config_dir = config_dir
         os.makedirs(self.config_dir, exist_ok=True)
 
@@ -411,15 +414,20 @@ class StoragePoolManager:
                 _check_and_add(os.path.join(root_dir, svc.capitalize(), clean_c))
 
         # 2. Check additional explicit paths (e.g. from WatchlistEntry.download_dirs)
+        #    Only a folder named after the creator counts as theirs. Any other saved folder (for example
+        #    the main download folder) is a parent: look for the creator's folder inside it. Accepting it
+        #    as-is made downloads land loose in that folder instead of in "Creator [service]".
         if additional_paths:
+            clean_low = clean_c.lower()
             for p in additional_paths:
                 if not p:
                     continue
                 norm = os.path.normpath(p)
-                if os.path.isdir(norm):
+                base = os.path.basename(norm).lower()
+                is_artist_folder = base == expected_folder.lower() or base == clean_low or (svc and base.startswith(f"{clean_low} ["))
+                if is_artist_folder:
                     _check_and_add(norm)
                 else:
-                    # Maybe it's a parent folder where the artist folder lives
                     _check_and_add(os.path.join(norm, expected_folder))
                     _check_and_add(os.path.join(norm, clean_c))
 

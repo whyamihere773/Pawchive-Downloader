@@ -11,7 +11,7 @@ import random
 import threading
 import requests
 import re
-from urllib.parse import urljoin, unquote
+from urllib.parse import unquote
 from typing import Dict, Any, List, Optional, Callable
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -24,6 +24,41 @@ if __name__ == "__main__" or "core" not in sys.modules:
 from core.logger import logger
 from core.parser import URLParseResult
 from core.text_utils import clean_text
+from core.providers import cookie_for_url, is_disabled, disabled_message, provider_for_host
+
+# Only advertise Brotli when it can actually be decoded: Pawchive answers with Brotli when asked,
+# and without the brotli package requests hands back undecodable bytes (every API call failed).
+try:
+    import brotli  # noqa: F401
+    _ACCEPT_ENCODING = "gzip, deflate, br"
+except ImportError:
+    try:
+        import brotlicffi  # noqa: F401
+        _ACCEPT_ENCODING = "gzip, deflate, br"
+    except ImportError:
+        _ACCEPT_ENCODING = "gzip, deflate"
+
+# Services that live on Coomer / cum.st rather than Kemono / Pawchive
+_COOMER_FAMILY_SERVICES = {"onlyfans", "fansly", "candfans"}
+
+
+def _retry_after_seconds(value, default: float = 5.0, cap: float = 120.0) -> float:
+    """Retry-After is either a number of seconds or an HTTP date."""
+    if value is None:
+        return default
+    try:
+        return max(0.0, min(cap, float(str(value).strip())))
+    except ValueError:
+        pass
+    try:
+        from email.utils import parsedate_to_datetime
+        import datetime as _dt
+        when = parsedate_to_datetime(str(value))
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=_dt.timezone.utc)
+        return max(0.0, min(cap, (when - _dt.datetime.now(_dt.timezone.utc)).total_seconds()))
+    except Exception:
+        return default
 
 HTTP_STATUS_HINTS = {
     400: "Bad Request — malformed URL or invalid query parameters",
@@ -71,10 +106,15 @@ class KemonoApiClient:
         self._request_count = 0
         self._total_bytes_received = 0
 
-        # Retry strategy: 4 retries, 1.5× exponential backoff on 429/5xx
+        # Retry strategy: 4 retries, 1.5× exponential backoff on 429/5xx, at most 8 s per wait.
+        # The server's Retry-After isn't followed here: these waits can't be interrupted, and a
+        # "Retry-After: 60" made Cancel hang for up to 4 minutes. The post scan handles 429 itself,
+        # with waits that stop as soon as you cancel.
         retry_strategy = Retry(
             total=4,
             backoff_factor=1.5,
+            backoff_max=8,
+            respect_retry_after_header=False,
             status_forcelist=[429, 500, 502, 503, 504],
             allowed_methods=["HEAD", "GET", "OPTIONS"],
             raise_on_status=False,
@@ -82,6 +122,11 @@ class KemonoApiClient:
         adapter = HTTPAdapter(max_retries=retry_strategy)
         self.session.mount("https://", adapter)
         self.session.mount("http://", adapter)
+        # Name / profile lookups try several URLs; retrying each with backoff took minutes in outages
+        self._quick_session = requests.Session()
+        quick_adapter = HTTPAdapter(max_retries=0)
+        self._quick_session.mount("https://", quick_adapter)
+        self._quick_session.mount("http://", quick_adapter)
         self._update_headers()
         self._update_proxies()
 
@@ -94,19 +139,18 @@ class KemonoApiClient:
             logger.info(f"Proxy configured: {self.proxy_url}", category="api")
 
     def _update_proxies(self):
-        if self.proxy_url:
-            self.session.proxies = {
-                "http": self.proxy_url,
-                "https": self.proxy_url
-            }
-        else:
-            self.session.proxies = {}
+        proxies = {"http": self.proxy_url, "https": self.proxy_url} if self.proxy_url else {}
+        self.session.proxies = dict(proxies)
+        if hasattr(self, "_quick_session"):
+            self._quick_session.proxies = dict(proxies)
 
     def set_cookie(self, cookie_string: str):
+        """The general cookie from Settings. It's attached per request, only to the archive sites."""
+        changed = cookie_string.strip() != self.cookie_string
         self.cookie_string = cookie_string.strip()
         self._update_headers()
-        if cookie_string:
-            logger.info("Session cookie loaded into HTTP client.", category="api")
+        if cookie_string and changed:
+            logger.debug("Session cookie updated.", category="api")
 
     def set_user_agent(self, user_agent: str):
         self.user_agent = user_agent.strip() or self.DEFAULT_USER_AGENT
@@ -114,40 +158,64 @@ class KemonoApiClient:
         logger.debug(f"User-Agent updated: {self.user_agent[:60]}", category="api")
 
     def _update_headers(self):
+        # No Cookie here: cookies are added per request for the site they belong to (_get_with_log)
         headers = {
             "User-Agent": self.user_agent,
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": "en-US,en;q=0.9",
-            "Accept-Encoding": "gzip, deflate, br",
+            "Accept-Encoding": _ACCEPT_ENCODING,
             "Connection": "keep-alive",
-            "Referer": "https://pawchive.pw/",
-        }
-        if self.cookie_string:
-            headers["Cookie"] = self.cookie_string
-            self.session.headers.pop("X-Contact", None)
-            self.session.headers.pop("X-Client-Notice", None)
-        else:
-            self.session.headers.pop("Cookie", None)
-            headers["X-Contact"] = "https://github.com/whyamihere773/Pawchive-Downloader"
-            headers["X-Client-Notice"] = (
+            "X-Contact": "https://github.com/whyamihere773/Pawchive-Downloader",
+            "X-Client-Notice": (
                 "Pawchive Downloader user here! Love your site. If my client is ever causing server strain, "
                 "please open an issue on GitHub instead of a hard ban and I'll fix my request pacing immediately."
-            )
-        self.session.headers.update(headers)
+            ),
+        }
+        for sess in (self.session, getattr(self, "_quick_session", None)):
+            if sess is None:
+                continue
+            sess.headers.pop("Cookie", None)
+            sess.headers.update(headers)
 
-    def _get_with_log(self, url: str, timeout: int = 20, extra_headers: dict = None) -> Optional[requests.Response]:
+    @staticmethod
+    def is_kemono_family(domain_or_url: str) -> bool:
+        """Kemono / Coomer run the same software (new API path rules and the text/css header)."""
+        d = (domain_or_url or "").lower()
+        return "kemono." in d or "coomer." in d
+
+    @classmethod
+    def posts_list_url(cls, domain: str, service: str, user_id: str, offset: int) -> str:
+        """A creator's post list. Kemono / Coomer moved it to /posts (the old path answers 404)."""
+        if cls.is_kemono_family(domain):
+            return f"https://{domain}/api/v1/{service}/user/{user_id}/posts?o={offset}"
+        return f"https://{domain}/api/v1/{service}/user/{user_id}?o={offset}"
+
+    def _get_with_log(self, url: str, timeout: int = 20, extra_headers: dict = None,
+                      quick: bool = False) -> Optional[requests.Response]:
         """
         Performs a GET request with full logging of status, latency, and errors.
-        Returns the Response on HTTP 200/206/416, None on failure.
+        Returns the Response for any HTTP status, or None when there was no answer (or the site is
+        switched off). quick=True skips the automatic retries (for lookups that try several URLs).
         """
+        host = url.split("://")[-1].split("/")[0]
+        if is_disabled(host):
+            logger.debug(f"Skipped {host}: {disabled_message(host)}", category="http")
+            return None
         self._request_count += 1
-        req_headers = {}
+        req_headers = {"Referer": f"https://{host}/"} if provider_for_host(host) else {}
+        cookie = cookie_for_url(url, self.cookie_string)
+        if cookie:
+            req_headers["Cookie"] = cookie
+        # Kemono / Coomer refuse API calls (HTTP 403) unless they ask for "text/css"
+        if "/api/" in url and self.is_kemono_family(url.split("://")[-1].split("/")[0]):
+            req_headers["Accept"] = "text/css"
         if extra_headers:
             req_headers.update(extra_headers)
 
         t0 = time.time()
         try:
-            resp = self.session.get(url, timeout=timeout, headers=req_headers, stream=False)
+            sess = self._quick_session if quick else self.session
+            resp = sess.get(url, timeout=timeout, headers=req_headers, stream=False)
             elapsed = (time.time() - t0) * 1000  # ms
             status = resp.status_code
 
@@ -257,15 +325,15 @@ class KemonoApiClient:
         logger.info(f"Fetching creator profile: {parsed.service}/{parsed.user_id}", category="api")
         uid_str = str(parsed.user_id).strip()
 
-        # Phase 1: Try dedicated JSON profile endpoints on parsed domain + mirrors
-        profile_domains = [parsed.domain]
-        for alt_domain in ("pawchive.pw", "kemono.su", "coomer.su", "cum.st"):
-            if alt_domain not in profile_domains:
-                profile_domains.append(alt_domain)
+        # Phase 1: Try dedicated JSON profile endpoints on the link's site + the mirror that carries
+        # the same creators (Pawchive/Kemono, or cum.st/Coomer). Switched-off sites are skipped.
+        family = ("coomer.st", "cum.st") if str(parsed.service).lower() in _COOMER_FAMILY_SERVICES else ("pawchive.pw", "kemono.cr")
+        profile_domains = [d for d in [parsed.domain, *family] if d and not is_disabled(d)]
+        profile_domains = list(dict.fromkeys(profile_domains))
 
         for domain in profile_domains:
             url = f"https://{domain}/api/v1/{parsed.service}/user/{parsed.user_id}/profile"
-            resp = self._get_with_log(url, timeout=10)
+            resp = self._get_with_log(url, timeout=10, quick=True)
             if resp and resp.status_code == 200:
                 try:
                     data = resp.json()
@@ -282,7 +350,7 @@ class KemonoApiClient:
         # Phase 2: HTML Page metadata scraping (extremely resilient against API rate limits & 429/403)
         for domain in profile_domains:
             html_url = f"https://{domain}/{parsed.service}/user/{parsed.user_id}"
-            resp = self._get_with_log(html_url, timeout=10)
+            resp = self._get_with_log(html_url, timeout=10, quick=True)
             if resp and resp.status_code == 200:
                 name = self._extract_creator_from_html(resp.text, uid_str)
                 if name:
@@ -291,8 +359,8 @@ class KemonoApiClient:
 
         # Phase 3: Try posts endpoints ONLY if they contain a distinct creator name (NEVER accept raw_name == user_id)
         for domain in profile_domains:
-            posts_url = f"https://{domain}/api/v1/{parsed.service}/user/{parsed.user_id}?o=0"
-            resp = self._get_with_log(posts_url, timeout=10)
+            posts_url = self.posts_list_url(domain, parsed.service, parsed.user_id, 0)
+            resp = self._get_with_log(posts_url, timeout=10, quick=True)
             if resp and resp.status_code == 200:
                 try:
                     posts_data = resp.json()
@@ -459,6 +527,11 @@ class KemonoApiClient:
         offset = (page_start - 1) * page_size
         consecutive_errors = 0
         MAX_CONSECUTIVE_ERRORS = 3
+        rate_limited = 0
+        MAX_RATE_LIMITED = 6
+        largest_page = 0
+        pages_fetched = 0
+        cancelled = False
 
         logger.info(
             f"Post enumeration started — {parsed.service}/{parsed.user_id}  "
@@ -469,6 +542,7 @@ class KemonoApiClient:
         while current_page <= page_end:
             if cancel_event and cancel_event.is_set():
                 logger.warning("Post enumeration cancelled by user.", category="api")
+                cancelled = True
                 break
 
             if parsed.domain == "cum.st":
@@ -477,10 +551,7 @@ class KemonoApiClient:
                     f"/user/{parsed.user_id}/posts?o={offset}&n={page_size}"
                 )
             else:
-                url = (
-                    f"https://{parsed.domain}/api/v1/{parsed.service}"
-                    f"/user/{parsed.user_id}?o={offset}"
-                )
+                url = self.posts_list_url(parsed.domain, parsed.service, parsed.user_id, offset)
 
             if progress_callback:
                 progress_callback(current_page, len(all_posts))
@@ -489,6 +560,7 @@ class KemonoApiClient:
 
             if cancel_event and cancel_event.is_set():
                 logger.warning("Post enumeration cancelled by user.", category="api")
+                cancelled = True
                 break
 
             if resp is None:
@@ -510,10 +582,20 @@ class KemonoApiClient:
             consecutive_errors = 0  # reset on success
 
             if resp.status_code == 429:
-                wait_sec = int(resp.headers.get("Retry-After", 5))
-                logger.warning(f"Page {current_page}: Rate limited (429). Pausing {wait_sec}s before retry...", category="api")
-                time.sleep(wait_sec)
+                rate_limited += 1
+                if rate_limited > MAX_RATE_LIMITED:
+                    logger.error(f"Page {current_page}: still rate limited after {MAX_RATE_LIMITED} waits; stopping here.", category="api")
+                    break
+                wait_sec = _retry_after_seconds(resp.headers.get("Retry-After"), default=5.0 * rate_limited)
+                logger.warning(f"Page {current_page}: Rate limited (429). Pausing {wait_sec:.0f}s before retry...", category="api")
+                waited = 0.0
+                while waited < wait_sec:
+                    if cancel_event and cancel_event.is_set():
+                        break
+                    time.sleep(min(0.5, wait_sec - waited))
+                    waited += 0.5
                 continue
+            rate_limited = 0
 
             if resp.status_code == 403:
                 logger.error(
@@ -524,7 +606,10 @@ class KemonoApiClient:
                 break
 
             if resp.status_code != 200:
-                logger.warning(f"Page {current_page}: unexpected HTTP {resp.status_code}, stopping.", category="api")
+                if resp.status_code in (400, 404) and pages_fetched > 0:
+                    logger.info(f"Page {current_page}: no more posts (HTTP {resp.status_code}).", category="api")
+                else:
+                    logger.warning(f"Page {current_page}: unexpected HTTP {resp.status_code}, stopping.", category="api")
                 break
 
             try:
@@ -550,14 +635,18 @@ class KemonoApiClient:
 
             batch = len(posts)
             all_posts.extend(posts)
+            pages_fetched += 1
             logger.info(
                 f"Page {current_page:3d}  offset {offset:5d}  +{batch} posts  "
                 f"(running total: {len(all_posts)})",
                 category="api"
             )
 
-            if batch < page_size:
-                logger.info(f"Partial page ({batch}<{page_size}) — reached last page.", category="api")
+            # A page smaller than the biggest one seen is the last one. (Comparing with our own
+            # page_size assumed every site serves 50 posts per page.)
+            largest_page = max(largest_page, batch)
+            if batch < largest_page:
+                logger.info(f"Partial page ({batch}<{largest_page}) — reached last page.", category="api")
                 break
 
             # Early-stop: if date_after is set and ALL posts on this page are
@@ -599,11 +688,17 @@ class KemonoApiClient:
             page_delay = random.uniform(0.35, 0.55) if ("pawchive" in domain_lower) else 0.15
             time.sleep(page_delay)
 
-        logger.success(
-            f"Enumeration done: {len(all_posts)} posts collected "
-            f"across {current_page - page_start + 1} page(s).",
-            category="api"
-        )
+        page_word = "page" if pages_fetched == 1 else "pages"
+        if cancelled:
+            logger.info(
+                f"Enumeration stopped: {len(all_posts)} posts collected from {pages_fetched} {page_word} before cancelling.",
+                category="api"
+            )
+        else:
+            logger.success(
+                f"Enumeration done: {len(all_posts)} posts collected across {pages_fetched} {page_word}.",
+                category="api"
+            )
         return all_posts
 
     def fetch_creator_tags(self, parsed) -> List[str]:
@@ -632,7 +727,7 @@ class KemonoApiClient:
         if resp is None or resp.status_code != 200:
             logger.warning(
                 f"Failed to fetch tags for {parsed.user_id} ({parsed.service}): "
-                f"HTTP {resp.status_code if resp else 'no response'}",
+                f"HTTP {resp.status_code if resp is not None else 'no response'}",
                 category="api"
             )
             return []
@@ -670,7 +765,7 @@ class KemonoApiClient:
 
     def fetch_user_favorites(
         self,
-        domain: str = "kemono.su",
+        domain: str = "kemono.cr",
         fav_type: str = "post",
         page_start: int = 1,
         page_end: int = 999999,
@@ -682,30 +777,15 @@ class KemonoApiClient:
         Fetches authenticated user favorites (posts or artists) from Kemono/Coomer favorites API.
         Endpoint: https://{domain}/api/v1/favorites?type={fav_type}&o={offset}
         """
-        # Ensure cookie is loaded from auth_manager if not explicitly passed
-        if not self.cookie_string:
-            try:
-                from core.auth_manager import auth_manager
-                d = domain.lower()
-                if "coomer" in d:
-                    prov_id = "coomer"
-                elif "pawchive" in d:
-                    prov_id = "pawchive"
-                elif "cum" in d:
-                    prov_id = "cumst"
-                else:
-                    prov_id = "kemono"
-                saved_cookie = auth_manager.get_credential(prov_id, "cookie")
-                if saved_cookie:
-                    self.set_cookie(saved_cookie)
-            except Exception:
-                pass
+        # The account cookie for this site is attached per request (core.providers.cookie_for_url)
 
         all_items: List[Dict[str, Any]] = []
         current_page = page_start
         offset = (page_start - 1) * page_size
         consecutive_errors = 0
         MAX_CONSECUTIVE_ERRORS = 3
+        seen_keys = set()
+        largest_page = 0
 
         logger.info(
             f"Favorites enumeration started — domain={domain} type={fav_type} pages {page_start}–{page_end}",
@@ -816,12 +896,27 @@ class KemonoApiClient:
                 logger.info(f"Page {current_page}: 0 favorites returned — enumeration complete.", category="api")
                 break
 
-            batch = len(items)
-            all_items.extend(items)
-            logger.info(f"Page {current_page:3d}  offset {offset:5d}  +{batch} favorite {fav_type}(s) (total: {len(all_items)})", category="api")
+            # A site that ignores the page offset returns the same list again: stop when a page
+            # brings nothing new (that used to repeat the list until page_end)
+            fresh = []
+            for it in items:
+                key = (str(it.get("service", "")), str(it.get("user", "")), str(it.get("id", ""))) if isinstance(it, dict) else (str(it),)
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    fresh.append(it)
+            if not fresh:
+                logger.info(f"Page {current_page}: nothing new — reached end of favorites.", category="api")
+                break
 
-            if batch < page_size:
-                logger.info(f"Partial page ({batch}<{page_size}) — reached end of favorites.", category="api")
+            batch = len(items)
+            all_items.extend(fresh)
+            logger.info(f"Page {current_page:3d}  offset {offset:5d}  +{len(fresh)} favorite {fav_type}(s) (total: {len(all_items)})", category="api")
+
+            # A page smaller than the biggest one seen is the last one (the page size isn't fixed:
+            # assuming 50 stopped after the first page on a site that shows fewer)
+            largest_page = max(largest_page, batch)
+            if batch < largest_page:
+                logger.info(f"Partial page ({batch}<{largest_page}) — reached end of favorites.", category="api")
                 break
 
             offset += batch

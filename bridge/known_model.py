@@ -3,7 +3,7 @@ Known Characters & Series List Model
 Provides an observable list model with search filtering for the Known Series tab.
 """
 
-from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt, Signal, Slot
+from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt, Signal, Slot, QThread
 from typing import List
 from core.known_manager import KnownManager
 
@@ -12,9 +12,11 @@ class KnownModel(QAbstractListModel):
     NameRole = Qt.UserRole + 1
 
     countChanged = Signal()
+    _guiCall = Signal(object)
 
     def __init__(self, known_manager: KnownManager, parent=None):
         super().__init__(parent)
+        self._guiCall.connect(self._run_gui_call, Qt.QueuedConnection)
         self.known_manager = known_manager
         self.known_manager.on_entries_changed = self.refresh
         self._filtered_entries: List[str] = list(self.known_manager.entries)
@@ -60,8 +62,22 @@ class KnownModel(QAbstractListModel):
             return success
         return False
 
+    @Slot(object)
+    def _run_gui_call(self, fn):
+        fn()
+
+    def _off_gui_thread(self, fn) -> bool:
+        """Models may only change on the GUI thread (a reset from a worker thread can crash the
+        app). Called from another thread, fn is queued for the GUI thread and True is returned."""
+        if QThread.currentThread() is not self.thread():
+            self._guiCall.emit(fn)
+            return True
+        return False
+
     @Slot()
     def refresh(self):
+        if self._off_gui_thread(self.refresh):
+            return
         self.beginResetModel()
         self._filtered_entries = self.known_manager.search(self._search_query)
         self.endResetModel()

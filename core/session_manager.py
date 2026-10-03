@@ -3,14 +3,18 @@ Session & History Persistence Manager
 Handles queue persistence, history records, application settings, and link file exports.
 """
 
-import sys
 import json
 import os
 import time
 import datetime
+import threading
 from typing import Dict, Any, List, Optional
 from core.logger import logger
 from core.recovery_manager import RecoveryManager
+from core.atomic_io import atomic_write_json
+
+# Settings that must never be written to settings.json (the login cookie lives in the encrypted vault)
+_NEVER_SAVED_SETTINGS = ("cookie",)
 
 
 from core.path_utils import get_config_dir
@@ -28,6 +32,12 @@ class SessionManager:
 
         self.history: Dict[str, Any] = {"downloaded_files": [], "processed_posts": []}
         self._downloaded_files_set: set = set()
+        # The download loop and the window both record history; one lock keeps history.json whole,
+        # and a second one keeps saves in order (an older snapshot never overwrites a newer one)
+        self._history_lock = threading.RLock()
+        self._history_write_lock = threading.Lock()
+        self._history_save_timer: Optional[threading.Timer] = None
+        self._settings_lock = threading.Lock()
         self.load_history()
 
     def load_history(self):
@@ -45,33 +55,62 @@ class SessionManager:
                 logger.warning(f"Could not load download history: {e}", category="session")
 
     def save_history(self):
-        try:
-            with open(self.history_file, "w", encoding="utf-8") as f:
-                json.dump(self.history, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            logger.error(f"Failed to save download history: {e}", category="session")
+        """Writes history.json now (crash-safe: a cut-off write never leaves a broken file)."""
+        with self._history_write_lock:
+            with self._history_lock:
+                timer, self._history_save_timer = self._history_save_timer, None
+                try:
+                    payload = json.dumps(self.history, ensure_ascii=False)
+                except Exception as e:
+                    logger.error(f"Failed to save download history: {e}", category="session")
+                    return
+            if timer is not None:
+                timer.cancel()
+            try:
+                from core.atomic_io import atomic_write_text
+                atomic_write_text(self.history_file, payload)
+            except Exception as e:
+                logger.error(f"Failed to save download history: {e}", category="session")
+
+    def _schedule_history_save(self, delay: float = 3.0):
+        """Saves history a few seconds after the latest change, in the background (writing up to
+        50,000 entries from the download loop every 3 s stalled downloads on slow drives)."""
+        with self._history_lock:
+            if self._history_save_timer is not None:
+                return
+            timer = threading.Timer(delay, self.save_history)
+            timer.daemon = True
+            self._history_save_timer = timer
+        timer.start()
+
+    def flush_history(self):
+        """Writes a pending history save right away (call before the app closes)."""
+        with self._history_lock:
+            pending = self._history_save_timer is not None
+        if pending:
+            self.save_history()
 
     def record_downloaded_file(self, file_id_or_path: str):
-        if "downloaded_files" not in self.history:
-            self.history["downloaded_files"] = []
-        if file_id_or_path not in self._downloaded_files_set:
+        with self._history_lock:
+            if "downloaded_files" not in self.history:
+                self.history["downloaded_files"] = []
+            if file_id_or_path in self._downloaded_files_set:
+                return
             self._downloaded_files_set.add(file_id_or_path)
             self.history["downloaded_files"].append(file_id_or_path)
             if len(self.history["downloaded_files"]) > 50000:
                 removed = self.history["downloaded_files"][:-50000]
                 self.history["downloaded_files"] = self.history["downloaded_files"][-50000:]
                 self._downloaded_files_set.difference_update(removed)
-            now = time.time()
-            if now - getattr(self, "_last_history_save_time", 0.0) >= 3.0:
-                self._last_history_save_time = now
-                self.save_history()
+        self._schedule_history_save()
 
     def is_file_downloaded(self, file_id_or_path: str) -> bool:
         return file_id_or_path in self._downloaded_files_set
 
     def record_download_session(self, creator_name: str, url: str, service: str, file_count: int):
-        if "download_history" not in self.history:
-            self.history["download_history"] = []
+        with self._history_lock:
+            if "download_history" not in self.history:
+                self.history["download_history"] = []
         entry = {
             "creator": creator_name,
             "url": url,
@@ -79,10 +118,11 @@ class SessionManager:
             "files": file_count,
             "date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
         }
-        self.history["download_history"].insert(0, entry)
-        if len(self.history["download_history"]) > 500:
-            self.history["download_history"] = self.history["download_history"][:500]
-        self.save_history()
+        with self._history_lock:
+            self.history["download_history"].insert(0, entry)
+            if len(self.history["download_history"]) > 500:
+                self.history["download_history"] = self.history["download_history"][:500]
+        self._schedule_history_save(delay=0.5)
 
     def get_download_history(self):
         return self.history.get("download_history", [])
@@ -175,16 +215,26 @@ class SessionManager:
             try:
                 with open(self.settings_file, "r", encoding="utf-8") as f:
                     saved = json.load(f)
+                if isinstance(saved, dict):
                     default_settings.update(saved)
             except Exception as e:
                 logger.warning(f"Failed to load settings.json: {e}", category="session")
+                # Keep the unreadable file for inspection instead of overwriting it on the next save
+                try:
+                    import shutil
+                    shutil.copy2(self.settings_file, f"{self.settings_file}.unreadable-{int(time.time())}")
+                except Exception:
+                    pass
 
         return default_settings
 
     def save_settings(self, settings_data: Dict[str, Any], silent: bool = False):
+        """Writes settings.json crash-safely (a crash mid-write used to reset all settings).
+        The login cookie is never written here: it is kept in the encrypted credentials vault."""
+        data = {k: v for k, v in settings_data.items() if k not in _NEVER_SAVED_SETTINGS}
         try:
-            with open(self.settings_file, "w", encoding="utf-8") as f:
-                json.dump(settings_data, f, indent=2, ensure_ascii=False)
+            with self._settings_lock:
+                atomic_write_json(self.settings_file, data, indent=2)
             if not silent:
                 logger.info("Application settings saved.", category="session")
         except Exception as e:

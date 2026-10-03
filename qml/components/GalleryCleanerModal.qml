@@ -33,11 +33,46 @@ Item {
     // Auto sort state
     property string sortMode: "type" // "type" | "date" | "extension"
     property string sortResultMsg: ""
+    property bool sortRecursive: false
+    property bool isSorting: false
+    property bool canUndoFlatten: false
+
+    // Scans and sorting run in the background (big folders froze the window); answers arrive here
+    property int _requestSeq: 0
+    property string _brokenRequest: ""
+    property string _dupRequest: ""
+    property string _sortRequest: ""
+    function _newRequest(kind) { _requestSeq += 1; return "cleaner-" + kind + "-" + _requestSeq }
+
+    Connections {
+        target: root.bridge
+        ignoreUnknownSignals: true
+        function onAsyncResultReady(requestId, result) {
+            if (requestId === root._brokenRequest) {
+                root._brokenRequest = ""
+                root._applyBrokenResult(result || [])
+            } else if (requestId === root._dupRequest) {
+                root._dupRequest = ""
+                root._applyDuplicateResult(result || [])
+            } else if (requestId === root._sortRequest) {
+                root._sortRequest = ""
+                root._applySortResult(result)
+            }
+        }
+    }
+
+    // Safety checks
+    property var pathSafety: (bridge && bridge.getPathSafetyInfo) ? bridge.getPathSafetyInfo(folderPath) : null
+    readonly property bool isPathBlocked: pathSafety ? pathSafety.is_blocked : false
+    readonly property bool isOtherRoot: pathSafety ? pathSafety.is_other_root : false
 
     anchors.fill: parent
     z: 9998
-    visible: isOpen
-
+    // Fades in / out (weight-based motion); no input while closing
+    opacity: isOpen ? 1 : 0
+    visible: opacity > 0.005
+    enabled: isOpen
+    Behavior on opacity { NumberAnimation { duration: 190; easing.type: Easing.OutCubic } }
     function formatBytes(bytes) {
         if (!bytes || bytes <= 0) return "0 B"
         var k = 1024
@@ -52,6 +87,7 @@ Item {
         folderPath = currentFolder || ""
         activeTab = "broken"
         recursiveScan = false
+        sortRecursive = false
         brokenItems = []
         selectedBrokenPaths = {}
         selectedBrokenCount = 0
@@ -60,8 +96,12 @@ Item {
         selectedDupCount = 0
         totalWastedBytes = 0
         sortResultMsg = ""
+        isSorting = false
+        canUndoFlatten = (bridge && bridge.hasFlattenUndo) ? bridge.hasFlattenUndo(folderPath) : false
         isOpen = true
-        scanBroken()
+        if (!isPathBlocked) {
+            scanBroken()
+        }
     }
 
     function close() {
@@ -70,9 +110,14 @@ Item {
 
     // ── Tab 1: Broken Files ─────────────────────────────────────────────────
     function scanBroken() {
-        if (!bridge || !bridge.scanBrokenFiles) return
+        if (!bridge || !bridge.scanBrokenFilesAsync) return
         isScanning = true
-        var items = bridge.scanBrokenFiles(folderPath, recursiveScan) || []
+        brokenItems = []
+        _brokenRequest = _newRequest("broken")
+        bridge.scanBrokenFilesAsync(_brokenRequest, folderPath, recursiveScan)
+    }
+
+    function _applyBrokenResult(items) {
         brokenItems = items
 
         var sel = {}
@@ -109,7 +154,7 @@ Item {
     }
 
     function deleteBrokenItems() {
-        if (!bridge || !bridge.deleteItems || selectedBrokenCount === 0) return
+        if (!bridge || !bridge.deleteItems || selectedBrokenCount === 0 || root.isPathBlocked) return
         isDeleting = true
         var paths = Object.keys(selectedBrokenPaths)
         bridge.deleteItems(paths)
@@ -120,9 +165,15 @@ Item {
 
     // ── Tab 2: Duplicate Files ──────────────────────────────────────────────
     function scanDuplicates() {
-        if (!bridge || !bridge.scanDuplicates) return
+        if (!bridge || !bridge.scanDuplicatesAsync) return
         isScanning = true
-        var groups = bridge.scanDuplicates(folderPath, recursiveScan) || []
+        duplicateGroups = []
+        totalWastedBytes = 0
+        _dupRequest = _newRequest("dup")
+        bridge.scanDuplicatesAsync(_dupRequest, folderPath, recursiveScan)
+    }
+
+    function _applyDuplicateResult(groups) {
         duplicateGroups = groups
 
         var totalWasted = 0
@@ -170,7 +221,7 @@ Item {
     }
 
     function deleteDuplicateItems() {
-        if (!bridge || !bridge.deleteItems || selectedDupCount === 0) return
+        if (!bridge || !bridge.deleteItems || selectedDupCount === 0 || root.isPathBlocked) return
         isDeleting = true
         var paths = Object.keys(selectedDupPaths)
         bridge.deleteItems(paths)
@@ -181,12 +232,39 @@ Item {
 
     // ── Tab 3: Auto-Sort ────────────────────────────────────────────────────
     function executeAutoSort() {
-        if (!bridge || !bridge.autoSortFolder) return
-        var res = bridge.autoSortFolder(folderPath, sortMode)
-        if (res) {
-            sortResultMsg = "Successfully sorted " + (res.moved || 0) + " files into clean subfolders!"
-            root.organized()
+        if (!bridge || !bridge.autoSortFolderAsync || root.isPathBlocked || root.isSorting) return
+        isSorting = true
+        sortResultMsg = root.sortMode === "flatten" ? "Moving files…" : "Sorting…"
+        _sortRequest = _newRequest("sort")
+        bridge.autoSortFolderAsync(_sortRequest, folderPath, sortMode, root.sortRecursive)
+    }
+
+    function undoFlatten() {
+        if (!bridge || !bridge.undoFlattenAsync || root.isSorting) return
+        isSorting = true
+        sortResultMsg = "Moving files back…"
+        _sortRequest = _newRequest("undo")
+        bridge.undoFlattenAsync(_sortRequest, folderPath)
+    }
+
+    function _applySortResult(res) {
+        isSorting = false
+        if (!res) {
+            sortResultMsg = "Something went wrong — see the log for details."
+            return
         }
+        var moved = res.moved || 0
+        var warn = (res.errors && res.errors.length > 0) ? (" Warning: " + res.errors.join(", ")) : ""
+        if (res.mode === "undo") {
+            sortResultMsg = "Moved " + moved + " files back into their folders." + warn
+            canUndoFlatten = false
+        } else if (res.mode === "flatten") {
+            sortResultMsg = "Moved " + moved + " files into this folder." + warn
+            canUndoFlatten = !!res.undo_available || canUndoFlatten
+        } else {
+            sortResultMsg = "Sorted " + moved + " files into subfolders." + warn
+        }
+        root.organized()
     }
 
     // Backdrop
@@ -195,11 +273,15 @@ Item {
         color: "#080B11"
         opacity: root.isOpen ? 0.88 : 0.0
         Behavior on opacity { NumberAnimation { duration: 180 } }
-        MouseArea { anchors.fill: parent }
+        // Swallow clicks, hover (card tooltips behind) and the wheel
+        MouseArea { anchors.fill: parent; hoverEnabled: true; onWheel: (wheel) => wheel.accepted = true }
     }
 
     // Modal Card
     Rectangle {
+        // Heavy panel: settles in on a soft spring
+        scale: root.isOpen ? 1.0 : 0.9
+        Behavior on scale { SpringAnimation { spring: 3.4; damping: 0.36; mass: 1.6; epsilon: 0.0008 } }
         width: Math.min(840, parent.width - 40)
         height: Math.min(680, parent.height - 40)
         anchors.centerIn: parent
@@ -246,6 +328,7 @@ Item {
                     border.color: closeBtnMouse.containsMouse ? "#DC2626" : "#2E3A52"
                     border.width: 1
                     Text { anchors.centerIn: parent; text: "✕"; font.pixelSize: 12; font.weight: Font.Bold; color: "#FFFFFF" }
+                    Springy { hover: closeBtnMouse.containsMouse; pressed: closeBtnMouse.pressed }
                     MouseArea {
                         id: closeBtnMouse
                         anchors.fill: parent
@@ -260,6 +343,40 @@ Item {
             }
 
             Rectangle { Layout.fillWidth: true; height: 1; color: "#1F283B" }
+
+            // Safety Warning Banner (Operating System or Root Drive)
+            Rectangle {
+                visible: root.isPathBlocked || root.isOtherRoot
+                Layout.fillWidth: true
+                implicitHeight: 34
+                radius: 6
+                color: root.isPathBlocked ? "#380D12" : "#38230B"
+                border.color: root.isPathBlocked ? "#EF4444" : "#F59E0B"
+                border.width: 1
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 10
+                    anchors.rightMargin: 10
+                    spacing: 8
+
+                    Text {
+                        text: root.isPathBlocked ? "🛡️" : "⚠️"
+                        font.pixelSize: 14
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: root.isPathBlocked ?
+                              ((root.pathSafety && root.pathSafety.message) ? ("Operating System Protection: " + root.pathSafety.message) : "Operating System Protection: Operations are permanently disabled on this path.") :
+                              ("Root Drive Selected (" + (root.pathSafety ? root.pathSafety.drive_letter : "") + "\\): Operations will affect files across the entire drive volume. Exercise extreme caution.")
+                        font.family: "Segoe UI, sans-serif"
+                        font.pixelSize: 11
+                        font.weight: 600
+                        color: root.isPathBlocked ? "#FCA5A5" : "#FDE68A"
+                        elide: Text.ElideRight
+                    }
+                }
+            }
 
             // Tab Navigation & Recursive Checkbox
             RowLayout {
@@ -444,9 +561,17 @@ Item {
                         clip: true
 
                         // Empty State
+                        Text {
+                            anchors.centerIn: parent
+                            visible: root.isScanning && root.activeTab === "broken"
+                            text: "Scanning…"
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 12
+                            color: "#94A3B8"
+                        }
                         Item {
                             anchors.centerIn: parent
-                            visible: root.brokenItems.length === 0
+                            visible: root.brokenItems.length === 0 && !root.isScanning
                             ColumnLayout {
                                 spacing: 6
                                 anchors.centerIn: parent
@@ -490,7 +615,7 @@ Item {
                                         width: 16; height: 16; radius: 3
                                         color: root.selectedBrokenPaths[modelData.path] ? "#EF4444" : "#161D2B"
                                         border.color: "#374151"; border.width: 1
-                                        Text { visible: root.selectedBrokenPaths[modelData.path]; anchors.centerIn: parent; text: "✓"; font.pixelSize: 10; font.weight: Font.Bold; color: "#FFFFFF" }
+                                        Text { visible: Boolean(root.selectedBrokenPaths && root.selectedBrokenPaths[modelData.path]); anchors.centerIn: parent; text: "✓"; font.pixelSize: 10; font.weight: Font.Bold; color: "#FFFFFF" }
                                     }
 
                                     Text {
@@ -529,6 +654,7 @@ Item {
                                     }
                                 }
 
+                                Springy { hover: bItemMouse.containsMouse; pressed: bItemMouse.pressed }
                                 MouseArea {
                                     id: bItemMouse
                                     anchors.fill: parent
@@ -604,7 +730,7 @@ Item {
                                 onClicked: root.deleteBrokenItems()
                                 ToolTip.visible: containsMouse
                                 ToolTip.delay: 250
-                                ToolTip.text: root.selectedBrokenCount > 0 ? ("Permanently delete " + root.selectedBrokenCount + " selected broken file(s) from disk.") : "No broken files selected for deletion. Check files above to enable cleanup."
+                                ToolTip.text: root.selectedBrokenCount > 0 ? ("Move " + root.selectedBrokenCount + " selected broken file(s) to the Recycle Bin.") : "No broken files selected for deletion. Check files above to enable cleanup."
                             }
                         }
                     }
@@ -636,11 +762,11 @@ Item {
                             anchors.rightMargin: 12
                             spacing: 8
 
-                            Text { text: root.totalWastedBytes > 0 ? "⚠️" : "✨"; font.pixelSize: 14 }
+                            Text { text: root.isScanning ? "⏳" : (root.totalWastedBytes > 0 ? "⚠️" : "✨"); font.pixelSize: 14 }
                             Text {
-                                text: root.totalWastedBytes > 0 ?
+                                text: root.isScanning ? "Scanning for duplicates…" : (root.totalWastedBytes > 0 ?
                                       ("Found " + root.duplicateGroups.length + " duplicate groups — Reclaim " + root.formatBytes(root.totalWastedBytes) + " of disk space") :
-                                      "No duplicate files detected in this folder!"
+                                      "No duplicate files detected in this folder!")
                                 font.family: "Segoe UI, sans-serif"
                                 font.pixelSize: 11
                                 font.weight: 600
@@ -753,7 +879,7 @@ Item {
                                                     width: 14; height: 14; radius: 3
                                                     color: root.selectedDupPaths[modelData.path] ? "#EF4444" : "#161D2B"
                                                     border.color: "#374151"; border.width: 1
-                                                    Text { visible: root.selectedDupPaths[modelData.path]; anchors.centerIn: parent; text: "✓"; font.pixelSize: 9; font.weight: Font.Bold; color: "#FFFFFF" }
+                                                    Text { visible: Boolean(root.selectedDupPaths && root.selectedDupPaths[modelData.path]); anchors.centerIn: parent; text: "✓"; font.pixelSize: 9; font.weight: Font.Bold; color: "#FFFFFF" }
                                                 }
 
                                                 Text {
@@ -766,6 +892,7 @@ Item {
                                                 }
                                             }
 
+                                            Springy { hover: dupFileMouse.containsMouse; pressed: dupFileMouse.pressed }
                                             MouseArea {
                                                 id: dupFileMouse
                                                 anchors.fill: parent
@@ -822,7 +949,7 @@ Item {
                                 onClicked: root.deleteDuplicateItems()
                                 ToolTip.visible: containsMouse
                                 ToolTip.delay: 250
-                                ToolTip.text: root.selectedDupCount > 0 ? ("Permanently delete " + root.selectedDupCount + " selected duplicate file(s) to reclaim disk space.") : "No duplicates selected for deletion. Choose a strategy or click items above."
+                                ToolTip.text: root.selectedDupCount > 0 ? ("Move " + root.selectedDupCount + " selected duplicate file(s) to the Recycle Bin. Empty the Recycle Bin to reclaim the disk space.") : "No duplicates selected for deletion. Choose a strategy or click items above."
                             }
                         }
                     }
@@ -835,171 +962,380 @@ Item {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
 
-                ColumnLayout {
+                Flickable {
                     anchors.fill: parent
-                    spacing: 14
+                    contentHeight: sortColumn.implicitHeight
+                    clip: true
+                    boundsBehavior: Flickable.StopAtBounds
 
-                    Text {
-                        text: "Choose how to automatically organize loose files in this folder into clean subfolders:"
-                        font.family: "Segoe UI, sans-serif"
-                        font.pixelSize: 12
-                        color: "#E2E8F0"
-                    }
+                    ColumnLayout {
+                        id: sortColumn
+                        width: parent.width
+                        spacing: 8
 
-                    // Mode 1: By Type
-                    Rectangle {
-                        Layout.fillWidth: true
-                        implicitHeight: 56
-                        radius: 8
-                        color: root.sortMode === "type" ? "#1B2A40" : "#111622"
-                        border.color: root.sortMode === "type" ? "#38BDF8" : "#232F45"
-                        border.width: 1
+                        Text {
+                            text: "Choose how to automatically organize loose files in this folder into clean subfolders:"
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 11
+                            color: "#E2E8F0"
+                        }
 
-                        RowLayout {
-                            anchors.fill: parent
-                            anchors.margins: 12
-                            spacing: 12
+                        // Mode 1: By Type
+                        Rectangle {
+                            Layout.fillWidth: true
+                            implicitHeight: 48
+                            radius: 8
+                            color: root.sortMode === "type" ? "#1B2A40" : "#111622"
+                            border.color: root.sortMode === "type" ? "#38BDF8" : "#232F45"
+                            border.width: 1
 
-                            Text { text: "🖼️"; font.pixelSize: 20 }
-                            ColumnLayout {
-                                spacing: 2
-                                Layout.fillWidth: true
-                                Text { text: "Sort by File Type"; font.bold: true; font.pixelSize: 12; color: "#F8FAFC" }
-                                Text { text: "Groups into Images/, Videos/, Audio/, Archives/, Documents/, and Other/"; font.pixelSize: 10; color: "#94A3B8" }
+                            Text {
+                                id: sortIcon1
+                                anchors.left: parent.left
+                                anchors.leftMargin: 14
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: "🖼️"
+                                font.pixelSize: 18
                             }
+
                             Rectangle {
+                                id: sortCircle1
+                                anchors.right: parent.right
+                                anchors.rightMargin: 14
+                                anchors.verticalCenter: parent.verticalCenter
                                 width: 18; height: 18; radius: 9
                                 color: root.sortMode === "type" ? "#38BDF8" : "transparent"
                                 border.color: "#38BDF8"; border.width: 1.5
                             }
-                        }
-                        MouseArea {
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: root.sortMode = "type"
-                            ToolTip.visible: containsMouse
-                            ToolTip.delay: 250
-                            ToolTip.text: "Sort by File Type\nAutomatically creates Images/, Videos/, Audio/, Archives/, and Documents/ folders and sorts loose files into them."
-                        }
-                    }
 
-                    // Mode 2: By Date
-                    Rectangle {
-                        Layout.fillWidth: true
-                        implicitHeight: 56
-                        radius: 8
-                        color: root.sortMode === "date" ? "#1B2A40" : "#111622"
-                        border.color: root.sortMode === "date" ? "#38BDF8" : "#232F45"
-                        border.width: 1
-
-                        RowLayout {
-                            anchors.fill: parent
-                            anchors.margins: 12
-                            spacing: 12
-
-                            Text { text: "📅"; font.pixelSize: 20 }
                             ColumnLayout {
-                                spacing: 2
-                                Layout.fillWidth: true
-                                Text { text: "Sort by Date Modified"; font.bold: true; font.pixelSize: 12; color: "#F8FAFC" }
-                                Text { text: "Groups files into YYYY-MM/ subfolders based on file modification timestamps"; font.pixelSize: 10; color: "#94A3B8" }
+                                anchors.left: sortIcon1.right
+                                anchors.leftMargin: 10
+                                anchors.right: sortCircle1.left
+                                anchors.rightMargin: 10
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: 1
+                                Text { text: "Sort by File Type"; font.bold: true; font.pixelSize: 11; color: "#F8FAFC" }
+                                Text { text: "Groups into Images/, Videos/, Audio/, Archives/, Documents/, and Other/"; font.pixelSize: 10; color: "#94A3B8"; elide: Text.ElideRight; Layout.fillWidth: true }
                             }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.sortMode = "type"
+                                ToolTip.visible: containsMouse
+                                ToolTip.delay: 250
+                                ToolTip.text: "Sort by File Type\nAutomatically creates Images/, Videos/, Audio/, Archives/, and Documents/ folders and sorts loose files into them."
+                            }
+                        }
+
+                        // Mode 2: By Date
+                        Rectangle {
+                            Layout.fillWidth: true
+                            implicitHeight: 48
+                            radius: 8
+                            color: root.sortMode === "date" ? "#1B2A40" : "#111622"
+                            border.color: root.sortMode === "date" ? "#38BDF8" : "#232F45"
+                            border.width: 1
+
+                            Text {
+                                id: sortIcon2
+                                anchors.left: parent.left
+                                anchors.leftMargin: 14
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: "📅"
+                                font.pixelSize: 18
+                            }
+
                             Rectangle {
+                                id: sortCircle2
+                                anchors.right: parent.right
+                                anchors.rightMargin: 14
+                                anchors.verticalCenter: parent.verticalCenter
                                 width: 18; height: 18; radius: 9
                                 color: root.sortMode === "date" ? "#38BDF8" : "transparent"
                                 border.color: "#38BDF8"; border.width: 1.5
                             }
-                        }
-                        MouseArea {
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: root.sortMode = "date"
-                            ToolTip.visible: containsMouse
-                            ToolTip.delay: 250
-                            ToolTip.text: "Sort by Date Modified\nGroups files into YYYY-MM subfolders (e.g. 2026-09/, 2026-10/) based on file modification timestamps."
-                        }
-                    }
 
-                    // Mode 3: By Extension
-                    Rectangle {
-                        Layout.fillWidth: true
-                        implicitHeight: 56
-                        radius: 8
-                        color: root.sortMode === "extension" ? "#1B2A40" : "#111622"
-                        border.color: root.sortMode === "extension" ? "#38BDF8" : "#232F45"
-                        border.width: 1
-
-                        RowLayout {
-                            anchors.fill: parent
-                            anchors.margins: 12
-                            spacing: 12
-
-                            Text { text: "🏷️"; font.pixelSize: 20 }
                             ColumnLayout {
-                                spacing: 2
-                                Layout.fillWidth: true
-                                Text { text: "Sort by Extension"; font.bold: true; font.pixelSize: 12; color: "#F8FAFC" }
-                                Text { text: "Groups files into PNG/, JPG/, MP4/, etc. based on file extension"; font.pixelSize: 10; color: "#94A3B8" }
+                                anchors.left: sortIcon2.right
+                                anchors.leftMargin: 10
+                                anchors.right: sortCircle2.left
+                                anchors.rightMargin: 10
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: 1
+                                Text { text: "Sort by Date Modified"; font.bold: true; font.pixelSize: 11; color: "#F8FAFC" }
+                                Text { text: "Groups files into YYYY-MM/ subfolders based on file modification timestamps"; font.pixelSize: 10; color: "#94A3B8"; elide: Text.ElideRight; Layout.fillWidth: true }
                             }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.sortMode = "date"
+                                ToolTip.visible: containsMouse
+                                ToolTip.delay: 250
+                                ToolTip.text: "Sort by Date Modified\nGroups files into YYYY-MM subfolders (e.g. 2026-09/, 2026-10/) based on file modification timestamps."
+                            }
+                        }
+
+                        // Mode 3: By Extension
+                        Rectangle {
+                            Layout.fillWidth: true
+                            implicitHeight: 48
+                            radius: 8
+                            color: root.sortMode === "extension" ? "#1B2A40" : "#111622"
+                            border.color: root.sortMode === "extension" ? "#38BDF8" : "#232F45"
+                            border.width: 1
+
+                            Text {
+                                id: sortIcon3
+                                anchors.left: parent.left
+                                anchors.leftMargin: 14
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: "🏷️"
+                                font.pixelSize: 18
+                            }
+
                             Rectangle {
+                                id: sortCircle3
+                                anchors.right: parent.right
+                                anchors.rightMargin: 14
+                                anchors.verticalCenter: parent.verticalCenter
                                 width: 18; height: 18; radius: 9
                                 color: root.sortMode === "extension" ? "#38BDF8" : "transparent"
                                 border.color: "#38BDF8"; border.width: 1.5
                             }
+
+                            ColumnLayout {
+                                anchors.left: sortIcon3.right
+                                anchors.leftMargin: 10
+                                anchors.right: sortCircle3.left
+                                anchors.rightMargin: 10
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: 1
+                                Text { text: "Sort by Extension"; font.bold: true; font.pixelSize: 11; color: "#F8FAFC" }
+                                Text { text: "Groups files into PNG/, JPG/, MP4/, etc. based on file extension"; font.pixelSize: 10; color: "#94A3B8"; elide: Text.ElideRight; Layout.fillWidth: true }
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.sortMode = "extension"
+                                ToolTip.visible: containsMouse
+                                ToolTip.delay: 250
+                                ToolTip.text: "Sort by Extension\nGroups files into subfolders named after their extension (e.g. PNG/, JPG/, MP4/, ZIP/)."
+                            }
                         }
-                        MouseArea {
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: root.sortMode = "extension"
-                            ToolTip.visible: containsMouse
-                            ToolTip.delay: 250
-                            ToolTip.text: "Sort by Extension\nGroups files into subfolders named after their extension (e.g. PNG/, JPG/, MP4/, ZIP/)."
+
+                        // Option 4: Dump / Flatten Everything into Single Folder
+                        Rectangle {
+                            Layout.fillWidth: true
+                            implicitHeight: 48
+                            radius: 8
+                            color: root.sortMode === "flatten" ? "#1B2234" : "#0F1420"
+                            border.color: root.sortMode === "flatten" ? "#F59E0B" : "#212B3D"
+                            border.width: 1
+
+                            Text {
+                                id: sortIcon4
+                                anchors.left: parent.left
+                                anchors.leftMargin: 14
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: "📦"
+                                font.pixelSize: 18
+                            }
+
+                            Rectangle {
+                                id: sortCircle4
+                                anchors.right: parent.right
+                                anchors.rightMargin: 14
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 18; height: 18; radius: 9
+                                color: root.sortMode === "flatten" ? "#F59E0B" : "transparent"
+                                border.color: "#F59E0B"; border.width: 1.5
+                            }
+
+                            ColumnLayout {
+                                anchors.left: sortIcon4.right
+                                anchors.leftMargin: 10
+                                anchors.right: sortCircle4.left
+                                anchors.rightMargin: 10
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: 1
+                                Text { text: "Dump Everything into Single Folder (Flatten)"; font.bold: true; font.pixelSize: 11; color: "#F8FAFC" }
+                                Text { text: "Extracts all files from subfolders into this main folder and cleans up empty folders"; font.pixelSize: 10; color: "#94A3B8"; elide: Text.ElideRight; Layout.fillWidth: true }
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.sortMode = "flatten"
+                                ToolTip.visible: containsMouse
+                                ToolTip.delay: 250
+                                ToolTip.text: "Dump Everything into Single Folder\nMoves all files nested in any subfolder directly into this main folder. Automatically appends (1), (2) to duplicate names and cleans up empty subfolders."
+                            }
                         }
-                    }
 
-                    Item { Layout.fillHeight: true }
+                        // Recursive Subfolders Option (relevant for categorization modes)
+                        Rectangle {
+                            visible: root.sortMode !== "flatten"
+                            Layout.fillWidth: true
+                            implicitHeight: 38
+                            radius: 8
+                            color: root.sortRecursive ? "#16253B" : "#0F1420"
+                            border.color: root.sortRecursive ? "#38BDF8" : "#212B3D"
+                            border.width: 1
 
-                    // Sort Result Feedback
-                    Text {
-                        visible: root.sortResultMsg.length > 0
-                        text: root.sortResultMsg
-                        font.family: "Segoe UI, sans-serif"
-                        font.pixelSize: 11
-                        font.weight: 600
-                        color: "#10B981"
-                        Layout.alignment: Qt.AlignHCenter
-                    }
+                            Rectangle {
+                                id: recCheckbox
+                                anchors.left: parent.left
+                                anchors.leftMargin: 14
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 16
+                                height: 16
+                                radius: 4
+                                color: root.sortRecursive ? "#38BDF8" : "transparent"
+                                border.color: root.sortRecursive ? "#38BDF8" : "#475569"
+                                border.width: 1.5
 
-                    // Organize Button
-                    Rectangle {
-                        Layout.fillWidth: true
-                        implicitHeight: 38
-                        radius: 6
-                        color: orgBtnMouse.containsMouse ? "#059669" : "#047857"
-                        border.color: "#10B981"
-                        border.width: 1
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: "✓"
+                                    font.pixelSize: 11
+                                    font.bold: true
+                                    color: "#0F172A"
+                                    visible: root.sortRecursive
+                                }
+                            }
 
+                            ColumnLayout {
+                                anchors.left: recCheckbox.right
+                                anchors.leftMargin: 10
+                                anchors.right: parent.right
+                                anchors.rightMargin: 14
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: 1
+
+                                Text {
+                                    text: "Apply recursively to all post subfolders"
+                                    font.family: "Segoe UI, sans-serif"
+                                    font.pixelSize: 11
+                                    font.weight: 600
+                                    color: "#F8FAFC"
+                                }
+                                Text {
+                                    text: "Sorts attachments inside each individual post folder (e.g. Creator/[Post 1]/Images/, Creator/[Post 2]/Videos/)"
+                                    font.family: "Segoe UI, sans-serif"
+                                    font.pixelSize: 9
+                                    color: "#94A3B8"
+                                    elide: Text.ElideRight
+                                    Layout.fillWidth: true
+                                }
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.sortRecursive = !root.sortRecursive
+                                ToolTip.visible: containsMouse
+                                ToolTip.delay: 250
+                                ToolTip.text: "Recursive Subfolder Sorting\nWhen enabled, iterates through all post subfolders and categorizes loose attachments into Images/, Videos/, etc. inside each post folder."
+                            }
+                        }
+
+                        // Spacing before organize action
+                        Item { Layout.preferredHeight: 4 }
+
+                        // Organize Button
+                        Rectangle {
+                            Layout.fillWidth: true
+                            implicitHeight: 38
+                            radius: 6
+                            color: root.isPathBlocked ? "#1E2433" : (root.sortMode === "flatten" ? (orgBtnMouse.containsMouse ? "#D97706" : "#B45309") : (orgBtnMouse.containsMouse ? "#059669" : "#047857"))
+                            border.color: root.isPathBlocked ? "#2D3748" : (root.sortMode === "flatten" ? "#F59E0B" : "#10B981")
+                            border.width: 1
+                            opacity: root.isPathBlocked ? 0.35 : 1.0
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: root.isPathBlocked ? "Organizing Disabled on System Root" : (root.isSorting ? "Working…" : (root.sortMode === "flatten" ? "Dump & Flatten All Files Now" : "Organize Folder Now"))
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 12
+                                font.weight: 700
+                                color: "#FFFFFF"
+                            }
+                            Springy { hover: orgBtnMouse.containsMouse; pressed: orgBtnMouse.pressed }
+                            MouseArea {
+                                id: orgBtnMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: root.isPathBlocked ? Qt.ForbiddenCursor : Qt.PointingHandCursor
+                                onClicked: {
+                                    if (!root.isPathBlocked) {
+                                        root.executeAutoSort()
+                                    }
+                                }
+                                ToolTip.visible: containsMouse
+                                ToolTip.delay: 250
+                                ToolTip.text: root.isPathBlocked ?
+                                    ("Action Blocked: Cannot execute Auto-Sort on Windows system drive root (" + (root.pathSafety ? root.pathSafety.drive_letter : "C:") + "\\)") :
+                                    (root.sortMode === "flatten" ?
+                                        "Dump & Flatten All Files Now\nMoves all files from subfolders into this main folder and removes empty subfolders." :
+                                        ("Organize Folder Now\nMove loose files in this folder into clean subfolders using the '" + (root.sortMode === "type" ? "File Type" : (root.sortMode === "date" ? "Date Modified" : "Extension")) + "' strategy." + (root.sortRecursive ? " (Recursive: enabled)" : "")))
+                            }
+                        }
+
+                        // Sort Result Feedback
                         Text {
-                            anchors.centerIn: parent
-                            text: "Organize Folder Now"
+                            visible: root.sortResultMsg.length > 0
+                            text: root.sortResultMsg
                             font.family: "Segoe UI, sans-serif"
-                            font.pixelSize: 12
-                            font.weight: 700
-                            color: "#FFFFFF"
+                            font.pixelSize: 11
+                            font.weight: 600
+                            color: "#10B981"
+                            wrapMode: Text.Wrap
+                            horizontalAlignment: Text.AlignHCenter
+                            Layout.fillWidth: true
                         }
-                        MouseArea {
-                            id: orgBtnMouse
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: root.executeAutoSort()
-                            ToolTip.visible: containsMouse
-                            ToolTip.delay: 250
-                            ToolTip.text: "Organize Folder Now\nMove loose files in this folder into clean subfolders using the '" + (root.sortMode === "type" ? "File Type" : (root.sortMode === "date" ? "Date Modified" : "Extension")) + "' strategy."
+
+                        // Undo the last Flatten of this folder
+                        Rectangle {
+                            visible: root.canUndoFlatten
+                            Layout.alignment: Qt.AlignHCenter
+                            implicitHeight: 28
+                            implicitWidth: undoFlattenLabel.implicitWidth + 28
+                            radius: 6
+                            color: undoFlattenMouse.containsMouse ? "#1E273A" : "transparent"
+                            border.color: "#F59E0B"
+                            border.width: 1
+                            opacity: root.isSorting ? 0.5 : 1.0
+                            Text {
+                                id: undoFlattenLabel
+                                anchors.centerIn: parent
+                                text: "Undo flatten"
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 11
+                                font.weight: 600
+                                color: "#FCD34D"
+                            }
+                            MouseArea {
+                                id: undoFlattenMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.undoFlatten()
+                                ToolTip.visible: containsMouse
+                                ToolTip.delay: 250
+                                ToolTip.text: "Move the files of the last flatten back into the folders they came from."
+                            }
                         }
+
+                        Item { Layout.fillHeight: true }
                     }
                 }
             }

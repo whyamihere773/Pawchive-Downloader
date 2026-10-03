@@ -1,0 +1,9 @@
+# Optional: offline AI character recognition (Settings -> AI & Recognition)
+# Install with:  pip install -r requirements-ai.txt
+numpy>=1.26.0
+onnxruntime>=1.17.0          # Windows GPU: replace with onnxruntime-directml; NVIDIA: onnxruntime-gpu
+tokenizers>=0.15.0
+
+# Optional "deep reasoner" model (larger download, slower). Needs a C/C++ compiler on most systems
+# unless a prebuilt wheel exists for your Python version:
+# llama-cpp-python>=0.2.80

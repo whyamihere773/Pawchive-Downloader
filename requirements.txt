@@ -9,3 +9,6 @@ mutagen>=1.47.0
 pyinstaller>=6.5.0
 telethon>=1.35.0
 qrcode>=7.4.0
+psutil>=5.9.0
+brotli>=1.1.0            # Pawchive answers in Brotli; without it every Pawchive request fails
+beautifulsoup4>=4.12.0   # Pawchive favorites

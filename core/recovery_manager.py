@@ -6,9 +6,7 @@ and multi-artist / multi-platform session tracking.
 """
 
 import os
-import sys
 import json
-import time
 import shutil
 import datetime
 import threading
@@ -31,6 +29,8 @@ class RecoveryManager:
         self.retry_spillover_file = os.path.join(self.config_dir, "retry_spillover.json")
         self._write_lock = threading.Lock()
         self._async_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="recovery_writer")
+        self._async_checkpoint_busy = threading.Event()   # a background checkpoint write is queued / running
+        self._generation = 0   # bumped by discard_recovery(); stale background writes are skipped
 
     @staticmethod
     def _detect_platform(service: str, domain: str = "", url: str = "") -> str:
@@ -216,8 +216,21 @@ class RecoveryManager:
             return False
 
         if async_write:
+            # On slow drives a write can take longer than the 30 s between checkpoints: don't pile them up
+            if self._async_checkpoint_busy.is_set():
+                return True
+            self._async_checkpoint_busy.set()
+
+            generation = self._generation
+
+            def _job(t, b, s, st):
+                try:
+                    self._save_checkpoint_sync(t, b, s, st, generation=generation)
+                finally:
+                    self._async_checkpoint_busy.clear()
+
             self._async_executor.submit(
-                self._save_checkpoint_sync,
+                _job,
                 list(tasks),
                 list(batches) if batches else None,
                 dict(settings) if settings else None,
@@ -231,9 +244,14 @@ class RecoveryManager:
         tasks: List[Any],
         batches: Optional[List[Dict[str, Any]]] = None,
         settings: Optional[Dict[str, Any]] = None,
-        status: str = "interrupted"
+        status: str = "interrupted",
+        generation: Optional[int] = None
     ) -> bool:
         with self._write_lock:
+            # A background write queued before the journal was discarded (download finished or
+            # cancelled) must not bring it back: that showed "Unfinished download detected" next start
+            if generation is not None and generation != self._generation:
+                return False
             try:
                 summary = self.build_summary(tasks, batches)
                 raw_tasks = [
@@ -400,13 +418,15 @@ class RecoveryManager:
     def discard_recovery(self) -> bool:
         """Purges all recovery journal files (.json, .bak, .tmp)."""
         purged = False
-        for fpath in [self.journal_file, self.bak_file, self.tmp_file]:
-            if os.path.exists(fpath):
-                try:
-                    os.remove(fpath)
-                    purged = True
-                except Exception as e:
-                    logger.warning(f"Could not remove recovery file {fpath}: {e}", category="session")
+        with self._write_lock:
+            self._generation += 1      # background writes queued before this are dropped
+            for fpath in [self.journal_file, self.bak_file, self.tmp_file]:
+                if os.path.exists(fpath):
+                    try:
+                        os.remove(fpath)
+                        purged = True
+                    except Exception as e:
+                        logger.warning(f"Could not remove recovery file {fpath}: {e}", category="session")
         if purged:
             logger.info("Recovery journal files discarded.", category="session")
         return purged

@@ -1,8 +1,8 @@
 {
-    "version": "1.2.1",
+    "version": "1.2.2",
     "commit": "",
     "short_commit": "",
-    "date": "2026-09-30",
+    "date": "2026-10-03",
     "channel": "release",
     "history": [
         {
@@ -114,6 +114,11 @@
             "version": "1.2.1",
             "date": "2026-09-30",
             "notes": "Asynchronous Multi-Directory Archive Rebuilder to sync and index local download folders across drives into the download archive database, broad file-type subfolder grouping (/Images, /Video, /Archive), adaptive threading toggle restored in the download interface, removed duplicate extension filter from Engine settings so it only appears in Downloader, and skip retry on HTTP 404 permanently missing files."
+        },
+        {
+            "version": "1.2.2",
+            "date": "2026-10-03",
+            "notes": "New Gallery tab (browse downloads with thumbnails, picture viewer and video player, search, favourites, Clean & Organize, Batch Rename, archive compress/extract/preview), early-access Linux support, new updater, Kemono and Coomer turned off (use Pawchive / cum.st), safer per-site logins, resumable and verified downloads, File order in posts option, Watchlist and Scheduler fixes, faster start, full translations and many bug fixes."
         }
     ]
 }

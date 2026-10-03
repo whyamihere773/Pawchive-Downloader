@@ -21,7 +21,8 @@ class MediaTypes:
     AUDIO = "audio"
     LINKS = "links"
 
-    IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".svg", ".psd", ".clip", ".sai"}
+    IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".svg", ".psd", ".clip", ".sai",
+                  ".avif", ".jfif", ".tif", ".tiff", ".heic", ".heif"}
     VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v", ".flv", ".wmv"}
     AUDIO_EXTS = {".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".opus"}
     ARCHIVE_EXTS = {".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".iso"}
@@ -56,6 +57,61 @@ class MediaTypes:
         }:
             return "Audio"
         return "Other"
+
+
+# Scripts written without spaces between words: \b word boundaries never match inside them
+_NO_SPACE_SCRIPT = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af\u0e00-\u0e7f]")
+
+
+def contains_term(text: str, term: str) -> bool:
+    """Whole-word match for Latin-script terms; plain substring match for Japanese, Chinese, Korean
+    and Thai terms (their titles have no spaces, so "初音ミクのイラスト" contains "初音ミク")."""
+    if not term or not text:
+        return False
+    if _NO_SPACE_SCRIPT.search(term):
+        return term.casefold() in text.casefold()
+    return re.search(r"\b" + re.escape(term) + r"\b", text, re.IGNORECASE) is not None
+
+
+def _plain_text(html: str) -> str:
+    """Post content without HTML tags (so skip words don't match inside links or attributes)."""
+    return re.sub(r"<[^>]+>", " ", html or "")
+
+
+# Windows refuses paths of 260+ characters unless long paths are enabled system-wide
+WINDOWS_MAX_PATH = 250
+
+
+def fit_path_for_windows(path: str, max_len: int = WINDOWS_MAX_PATH) -> str:
+    """Shorten a too-long Windows path: first the file name, then the deepest folder names.
+    Shortened parts keep their start and get a short hash, so different names stay different."""
+    import sys as _sys
+    import hashlib as _hashlib
+    if _sys.platform != "win32" or len(os.path.abspath(path)) <= max_len:
+        return path
+
+    def _short(name: str, keep: int, keep_ext: bool) -> str:
+        stem, ext = os.path.splitext(name) if keep_ext else (name, "")
+        digest = _hashlib.md5(name.encode("utf-8", "replace")).hexdigest()[:6]
+        keep = max(8, keep - len(ext) - 7)
+        return f"{stem[:keep].rstrip(' ._')}_{digest}{ext}"
+
+    folder, name = os.path.split(os.path.abspath(path))
+    # The folder part is shortened the same way for every file in it (it never depends on the
+    # file name), so files of one post never end up split across differently shortened folders.
+    room = max_len - len(folder) - 1
+    if room < 60:
+        parts = folder.split(os.sep)
+        i = len(parts) - 1
+        while len(os.sep.join(parts)) > max_len - 61 and i > 1:
+            if len(parts[i]) > 24:
+                parts[i] = _short(parts[i], 24, False)
+            i -= 1
+        folder = os.sep.join(parts)
+        room = max_len - len(folder) - 1
+    if len(name) > room:
+        name = _short(name, room, True)
+    return os.path.join(folder, name)
 
 
 class FilenameStyles:
@@ -145,7 +201,8 @@ class FilterOptions:
         redownload_small_files: bool = False,
         exact_extensions: str = "",
         skip_retry_404: bool = False,
-        group_file_type: str = "none"
+        group_file_type: str = "none",
+        file_order: str = "posted"
     ):
         self.characters = characters
         self.character_scope = character_scope
@@ -189,6 +246,9 @@ class FilterOptions:
         self.redownload_small_files = bool(redownload_small_files)
         self.skip_retry_404 = bool(skip_retry_404)
         self.group_file_type = str(group_file_type).lower() if str(group_file_type).lower() in ("none", "post", "creator") else "none"
+        # Order of the files inside a post: "posted", "reversed" or "name" (see core/file_order.py)
+        from core.file_order import normalize_file_order
+        self.file_order = normalize_file_order(file_order)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize filter options to dictionary for persistence."""
@@ -235,6 +295,7 @@ class FilterOptions:
             "exact_extensions": self.exact_extensions,
             "skip_retry_404": self.skip_retry_404,
             "group_file_type": self.group_file_type,
+            "file_order": self.file_order,
         }
 
     @classmethod
@@ -285,6 +346,7 @@ class FilterOptions:
             exact_extensions=d.get("exact_extensions", ""),
             skip_retry_404=bool(d.get("skip_retry_404", False)),
             group_file_type=d.get("group_file_type", "none"),
+            file_order=d.get("file_order", "posted"),
         )
 
 
@@ -417,7 +479,8 @@ class FilterEngine:
         expr = m.group(1).strip()
 
         # Range: A - B or A..B or A to B
-        range_m = re.match(r'^([\d.]+\s*(?:[KMGTP]?B)?)\s*(?:-|–|\.\.|to|<=)\s*([\d.]+\s*(?:[KMGTP]?B)?)$', expr, re.IGNORECASE)
+        unit = r"(?:[KMGTP]i?B|[KMGTP])?"
+        range_m = re.match(rf'^([\d.]+\s*{unit})\s*(?:-|–|\.\.|to|<=)\s*([\d.]+\s*{unit})$', expr, re.IGNORECASE)
         if range_m:
             min_b = cls._parse_size_str(range_m.group(1))
             max_b = cls._parse_size_str(range_m.group(2))
@@ -426,17 +489,17 @@ class FilterEngine:
             return (min_b, max_b)
 
         # Minimum only: >= A or > A or A+
-        gt_m = re.match(r'^(?:>=|>|\+)?\s*([\d.]+\s*(?:[KMGTP]?B)?)\+?$', expr, re.IGNORECASE)
+        gt_m = re.match(rf'^(?:>=|>|\+)?\s*([\d.]+\s*{unit})\+?$', expr, re.IGNORECASE)
         if expr.startswith(('>', '>=')) or expr.endswith('+'):
-            return (cls._parse_size_str(gt_m.group(1)), None)
+            return (cls._parse_size_str(gt_m.group(1)) or None, None) if gt_m else (None, None)
 
         # Maximum only: <= B or < B
-        lt_m = re.match(r'^(?:<=|<)\s*([\d.]+\s*(?:[KMGTP]?B)?)$', expr, re.IGNORECASE)
+        lt_m = re.match(rf'^(?:<=|<)\s*([\d.]+\s*{unit})$', expr, re.IGNORECASE)
         if lt_m:
             return (None, cls._parse_size_str(lt_m.group(1)))
 
         # Single number (backward compatible: min MB if no unit, or unit-aware)
-        single_m = re.match(r'^([\d.]+\s*(?:[KMGTP]?B)?)$', expr, re.IGNORECASE)
+        single_m = re.match(rf'^([\d.]+\s*{unit})$', expr, re.IGNORECASE)
         if single_m:
             return (cls._parse_size_str(single_m.group(1)), None)
 
@@ -521,11 +584,11 @@ class FilterEngine:
 
         if options.skip_words and options.skip_scope in ("posts", "both"):
             skip_list = cls._parse_comma_list(options.skip_words)
+            plain_content = _plain_text(content)
             for word in skip_list:
                 if word.startswith("[") and word.endswith("]"):
                     continue
-                if re.search(r"\b" + re.escape(word) + r"\b", title, re.IGNORECASE) or \
-                   re.search(r"\b" + re.escape(word) + r"\b", content, re.IGNORECASE):
+                if contains_term(title, word) or contains_term(plain_content, word):
                     return False, f"Post contains skipped word: '{word}'"
 
         if options.characters:
@@ -535,13 +598,13 @@ class FilterEngine:
             if options.character_scope == "title":
                 search_text = title
             elif options.character_scope == "content":
-                search_text = content
+                search_text = _plain_text(content)
             elif options.character_scope == "comments":
                 comments = post.get("comments_text", "")
                 search_text = f"{title}\n{comments}"
             else:
                 comments = post.get("comments_text", "")
-                search_text = f"{title}\n{content}\n{comments}"
+                search_text = f"{title}\n{_plain_text(content)}\n{comments}"
 
             for char_term in char_list:
                 term_clean = char_term.strip("()")
@@ -550,7 +613,7 @@ class FilterEngine:
                     sub_terms = [term_clean]
 
                 for st in sub_terms:
-                    if re.search(r"\b" + re.escape(st) + r"\b", search_text, re.IGNORECASE):
+                    if contains_term(search_text, st):
                         matched = True
                         break
                 if matched:
@@ -599,8 +662,11 @@ class FilterEngine:
             for word in skip_list:
                 if word.startswith("[") and word.endswith("]"):
                     continue
-                pattern = r"(?:^|[_\-\s])" + re.escape(word) + r"(?:[_\-\s]|$)"
-                if re.search(pattern, stem, re.IGNORECASE):
+                if _NO_SPACE_SCRIPT.search(word):
+                    hit = word.casefold() in stem.casefold()
+                else:
+                    hit = re.search(r"(?:^|[_\-\s])" + re.escape(word) + r"(?:[_\-\s]|$)", stem, re.IGNORECASE) is not None
+                if hit:
                     return False, f"File contains skipped word: '{word}'"
 
         # Exact File Extension Filter
@@ -801,10 +867,10 @@ class FilterEngine:
                     full_url = full_url.replace("/thumbnail/data/", "/data/")
                     if "img.pawchive.pw" in full_url:
                         full_url = full_url.replace("img.pawchive.pw", "file.pawchive.pw")
-                    elif "img.kemono.su" in full_url:
-                        full_url = full_url.replace("img.kemono.su", "c1.kemono.su")
-                    elif "img.coomer.su" in full_url:
-                        full_url = full_url.replace("img.coomer.su", "c1.coomer.su")
+                    elif re.search(r"img\.kemono\.[a-z]+", full_url):
+                        full_url = re.sub(r"img\.kemono\.[a-z]+", "kemono.cr", full_url)
+                    elif re.search(r"img\.coomer\.[a-z]+", full_url):
+                        full_url = re.sub(r"img\.coomer\.[a-z]+", "coomer.st", full_url)
                     elif "img.cum.st" in full_url:
                         full_url = full_url.replace("img.cum.st", "cum.st")
 

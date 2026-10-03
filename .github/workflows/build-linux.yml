@@ -8,9 +8,15 @@ on:
     branches: [ "main", "experimental" ]
   workflow_dispatch:
 
+permissions:
+  contents: write      # attach the Linux build to tagged releases
+
 jobs:
   build-linux:
-    runs-on: ubuntu-latest
+    # Build on an older base: the binaries need the glibc they were built against (or newer), so
+    # Ubuntu 22.04 (glibc 2.35) makes one build run on Ubuntu 22.04+, Debian 12+, Fedora, Arch,
+    # openSUSE Tumbleweed, Mint 21+, CachyOS... (ubuntu-latest would exclude many of them).
+    runs-on: ubuntu-22.04
 
     steps:
     - name: Checkout repository
@@ -21,22 +27,27 @@ jobs:
       with:
         python-version: "3.11"
 
-    - name: Install system dependencies (OpenGL, Qt6 libs, 7zip, yt-dlp, Tkinter)
+    - name: Install system dependencies (OpenGL, Qt6 X11/Wayland libs, 7zip, ffmpeg)
       run: |
+        # The libxcb-* libraries get bundled into the build, so users don't need them installed
+        # (Qt 6.5+ can't open a window on X11 without libxcb-cursor0, which many distros lack).
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends \
           libgl1-mesa-dev \
           libxkbcommon-x11-0 \
           libegl1 \
           libdbus-1-3 \
+          libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-image0 libxcb-render-util0 \
+          libxcb-xinerama0 libxcb-shape0 libxcb-xkb1 libwayland-client0 libwayland-cursor0 \
           p7zip-full \
-          ffmpeg \
-          python3-tk
+          ffmpeg
 
     - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
+        # AI character recognition, so the Linux build has it like the Windows one
+        pip install -r requirements-ai.txt
         pip install pyinstaller
 
     - name: Run test suite (if present)
@@ -55,6 +66,8 @@ jobs:
         cp assets/pawchive.png "dist/Pawchive Downloader/" 2>/dev/null || true
         cp assets/icon.png "dist/Pawchive Downloader/" 2>/dev/null || true
         cp pawchive.desktop "dist/Pawchive Downloader/" 2>/dev/null || true
+        cp version.json "dist/Pawchive Downloader/"     # the app and the updater read their version from it
+        test -x "dist/Pawchive Downloader/updater" || { echo "updater binary missing"; exit 1; }
         chmod +x "dist/Pawchive Downloader/pawchive"
         chmod +x "dist/Pawchive Downloader/updater" 2>/dev/null || true
         chmod +x "dist/Pawchive Downloader/pawchive.desktop" 2>/dev/null || true
@@ -76,3 +89,10 @@ jobs:
           dist/Pawchive-Downloader-v*-Linux-x86_64.tar.gz
           dist/Pawchive Downloader/
         retention-days: 14
+
+    # Tagged releases get the Linux build attached, so the in-app updater can find it
+    - name: Attach to GitHub release
+      if: startsWith(github.ref, 'refs/tags/v')
+      uses: softprops/action-gh-release@v2
+      with:
+        files: dist/Pawchive-Downloader-v*-Linux-x86_64.tar.gz

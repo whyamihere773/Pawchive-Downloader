@@ -204,6 +204,17 @@ SmoothFlickable {
                         if (root.bridge) root.bridge.openDownloadFolder()
                     }
                 }
+
+                StyledButton {
+                    text: root.tr("btn_gallery", "Gallery")
+                    iconText: "🖼"
+                    variant: "ghost"
+                    implicitWidth: 86
+                    tooltip: root.tr("btn_gallery_tip", "Browse the current (or last) download's folder in the Gallery tab")
+                    onClicked: {
+                        if (root.bridge) root.bridge.showDownloadsInGallery()
+                    }
+                }
             }
         }
 
@@ -1815,6 +1826,35 @@ SmoothFlickable {
                         onCheckedChanged: if (root.bridge) root.bridge.fileIndexPrefix = checked
                     }
 
+                    // Which file of a post is #1 (index prefix, numbered names, download order)
+                    Row {
+                        spacing: 8
+                        height: 28
+
+                        Text {
+                            text: root.tr("opt_file_order", "File order in posts:")
+                            font.family: "Segoe UI, Inter, sans-serif"
+                            font.pixelSize: 12
+                            color: fileOrderCombo.value !== "posted" ? "#F1F5F9" : "#94A3B8"
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+
+                        StyledComboBox {
+                            id: fileOrderCombo
+                            implicitHeight: 28
+                            implicitWidth: 150
+                            anchors.verticalCenter: parent.verticalCenter
+                            model: [
+                                { text: root.tr("file_order_posted", "As posted"), value: "posted" },
+                                { text: root.tr("file_order_reversed", "Reversed"), value: "reversed" },
+                                { text: root.tr("file_order_name", "By file name"), value: "name" }
+                            ]
+                            value: root.bridge ? root.bridge.fileOrder : "posted"
+                            tooltip: root.tr("opt_file_order_tip", "Which file of a post comes first: it is downloaded first and gets #1 with the index prefix and numbered file names.\n\nAs posted: the order the site shows.\nReversed: for creators who upload the newest version first.\nBy file name: sorted by name with numbers counted properly (2 before 10), in any language.")
+                            onValuePicked: function(v) { if (root.bridge) root.bridge.fileOrder = v }
+                        }
+                    }
+
                     Row {
                         spacing: 8
 
@@ -2807,7 +2847,7 @@ SmoothFlickable {
 
                         TextArea {
                             id: batchInput
-                            placeholderText: "https://kemono.su/patreon/user/12345\nhttps://coomer.su/onlyfans/user/67890\nhttps://cum.st/creators/onlyfans/32696630\nhttps://bunkr.cr/a/example"
+                            placeholderText: "https://kemono.cr/patreon/user/12345\nhttps://coomer.st/onlyfans/user/67890\nhttps://cum.st/creators/onlyfans/32696630\nhttps://bunkr.cr/a/example"
                             background: Rectangle {
                                 color: "#141922"
                                 border.color: batchInput.activeFocus ? "#7C3AED" : "#1E2433"

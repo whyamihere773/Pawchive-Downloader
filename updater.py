@@ -1,1070 +1,1014 @@
 """
-Pawchive Downloader - Standalone Companion Updater.
-Packaged as a lightweight onefile GUI application (console hidden).
-Handles downloading, staging, zero-lock file synchronization, and application relaunch.
+Pawchive Downloader — updater.
+
+Started by the app with `--plan <file>` (written by services.update_service.launch_updater),
+after which the app closes itself. Shows a QML window when a display is available, otherwise
+updates in the console. Works on Windows and every Linux distribution; on its own it can also
+check for and install the latest version (run it with no arguments).
+
+    updater(.exe) --plan plan.json [--no-wait] [--console]
+    python updater.py                      # check GitHub and update this copy
 """
 
-import os
-import sys
-import time
-import json
-import shutil
-import zipfile
-import tarfile
-import tempfile
 import argparse
+import json
+import os
 import subprocess
+import sys
 import threading
-import urllib.request
-from typing import Optional
+import time
+from typing import Any, Dict, List, Optional
 
-# GUI: Tkinter (standard library, zero external DLL dependency on Windows)
-try:
-    import tkinter as tk
-    from tkinter import ttk
-    HAS_TKINTER = True
-except (ImportError, Exception):
-    HAS_TKINTER = False
+# Running from source: make the app's packages importable whatever the working folder is
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if not getattr(sys, "frozen", False) and _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+from services import update_installer as ui  # noqa: E402
+from services import update_service as us  # noqa: E402
 
 
-def find_matching_release_asset(assets: list, platform_name: str = sys.platform) -> str:
-    """
-    Selects the best release asset for the current OS platform.
-    - On Linux: prefers archives matching 'linux', 'cachyos', 'arch', 'ubuntu' ending in .tar.gz, .tgz, or .zip.
-    - On Windows: prefers archives matching 'win' or 'windows' ending in .zip or .exe.
-    - On macOS: prefers archives matching 'darwin', 'mac', 'osx' ending in .dmg, .zip, or .tar.gz.
-    """
-    is_win = platform_name == "win32"
-    is_linux = platform_name.startswith("linux")
-    is_mac = platform_name == "darwin"
+# ── Plan ────────────────────────────────────────────────────────────────────
+def load_plan(args: argparse.Namespace) -> Dict[str, Any]:
+    if args.plan:
+        with open(args.plan, "r", encoding="utf-8") as f:
+            plan = json.load(f)
+        plan["_plan_path"] = args.plan
+    elif args.download_url:
+        # Older versions of the app started the updater with these flags
+        target = os.path.abspath(args.target_dir or us.get_app_dir())
+        is_source = bool(args.source) or not getattr(sys, "frozen", False)
+        plan = {
+            "target_dir": target, "pid": args.pid, "download_url": args.download_url, "sha256": "", "size": 0,
+            "kind": ("source-git" if os.path.isdir(os.path.join(target, ".git")) else "source-archive") if is_source else "release",
+            "is_source": is_source, "commit": args.commit or "", "branch": us.GITHUB_BRANCH,
+            "from_display": "", "to_display": args.version or "", "to_version": args.version or "", "notes": "",
+            "python_exe": args.python_exe or (sys.executable if is_source else ""), "app_executable": "",
+            "repo_url": f"https://github.com/{us.GITHUB_OWNER}/{us.GITHUB_REPO}.git",
+        }
+    else:
+        is_source = not getattr(sys, "frozen", False)
+        plan = {"target_dir": us.get_app_dir(), "pid": 0, "_manual": True, "is_source": is_source,
+                "python_exe": sys.executable if is_source else "", "app_executable": ""}
+    if args.no_wait:
+        plan["no_wait"] = True
+    plan["target_dir"] = os.path.abspath(plan["target_dir"])
+    return plan
 
-    candidates = []
-    for asset in assets:
-        name = asset.get("name", "").lower()
-        url = asset.get("browser_download_url", "")
-        if not url:
-            continue
 
-        score = 0
-        if is_linux:
-            if any(k in name for k in ("linux", "cachyos", "ubuntu", "arch", "debian", "x86_64")):
-                score += 15
-            if "win" in name or name.endswith(".exe"):
-                score -= 30
-            if name.endswith((".tar.gz", ".tgz")):
-                score += 8
-            elif name.endswith(".zip"):
-                score += 3
-        elif is_win:
-            if "win" in name or "windows" in name:
-                score += 15
-            if "linux" in name or "darwin" in name or "mac" in name:
-                score -= 30
-            if name.endswith(".zip"):
-                score += 8
-            elif name.endswith(".exe"):
-                score += 5
-        elif is_mac:
-            if any(k in name for k in ("mac", "darwin", "osx")):
-                score += 15
-            if "win" in name or "linux" in name:
-                score -= 30
-            if name.endswith((".dmg", ".zip", ".tar.gz")):
-                score += 8
+def plan_from_check(plan: Dict[str, Any]) -> Dict[str, Any]:
+    """Manual run: ask GitHub what to install."""
+    info = us.check_for_updates(timeout=15)
+    if not info.get("update_available"):
+        return {**plan, "_uptodate": True, "_message": info.get("error") or info.get("message") or "You're up to date."}
+    built = us.build_update_plan(info)
+    built.update({"pid": 0, "target_dir": plan["target_dir"], "_manual": True})
+    return built
 
-        if score > 0:
-            candidates.append((score, url))
 
-    if candidates:
-        candidates.sort(key=lambda x: x[0], reverse=True)
-        return candidates[0][1]
+def save_plan(plan: Dict[str, Any]) -> str:
+    path = plan.get("_plan_path")
+    if not path:
+        import tempfile
+        path = os.path.join(tempfile.mkdtemp(prefix="pawchive_plan_"), "plan.json")
+        plan["_plan_path"] = path
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({k: v for k, v in plan.items() if not k.startswith("_")}, f, indent=1)
+    return path
 
-    # Fallback matching
-    for asset in assets:
-        name = asset.get("name", "").lower()
-        url = asset.get("browser_download_url", "")
-        if is_linux and (name.endswith((".tar.gz", ".tgz")) or ("linux" in name and name.endswith(".zip"))):
-            return url
-        if is_win and (name.endswith(".zip") or name.endswith(".exe")) and "linux" not in name:
-            return url
 
+def drop_plan(plan: Dict[str, Any]) -> None:
+    path = plan.get("_plan_path", "")
+    folder = os.path.dirname(path)
+    if path and os.path.basename(folder).startswith("pawchive_plan_"):
+        import shutil
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+def elevate(plan: Dict[str, Any]) -> bool:
+    """Windows: start the updater again with administrator rights (Windows shows its own prompt)."""
+    if sys.platform != "win32":
+        return False
+    import ctypes
+    path = save_plan(plan)
+    if getattr(sys, "frozen", False):
+        exe, args = os.path.abspath(sys.executable), ["--plan", path, "--no-wait"]
+    else:
+        exe, args = us.gui_python(sys.executable), [os.path.abspath(__file__), "--plan", path, "--no-wait"]
+    rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, subprocess.list2cmdline(args), plan["target_dir"], 1)
+    return int(rc) > 32
+
+
+# ── Error → what the user can do ────────────────────────────────────────────
+def actions_for(code: str) -> List[str]:
+    if code == "cancelled":
+        return ["open", "close"]
+    if code in ("locked", "permission"):
+        return (["admin"] if sys.platform == "win32" else []) + ["retry", "open"]
+    if code == "local_changes":
+        return ["stash", "keep"]
+    if code in ("diverged", "wrong_branch"):
+        return ["open", "close"]
+    if code == "git_failed":
+        return ["archive", "open"]
+    return ["retry", "open"]
+
+
+def error_title(code: str) -> str:
+    return {
+        "cancelled": "Update cancelled",
+        "app_running": "Pawchive is still open",
+        "network": "Couldn't download the update",
+        "verify": "The download didn't check out",
+        "disk": "Not enough free space",
+        "locked": "Some files are in use",
+        "permission": "No permission to update this folder",
+        "local_changes": "You've changed some app files",
+        "diverged": "Your copy has its own commits",
+        "wrong_branch": "You're on a different branch",
+        "git_failed": "git couldn't update this folder",
+    }.get(code, "The update didn't finish")
+
+
+def error_hint(code: str) -> str:
+    return {
+        "cancelled": "Nothing was changed.",
+        "locked": "Another program (often an antivirus scan) is holding them. Your previous version was restored.",
+        "permission": ("Your previous version was restored. Try again as administrator." if sys.platform == "win32"
+                       else "Your previous version was restored. The app folder needs to be writable by your user."),
+        "local_changes": "Updating would replace your edits. You can keep them safe with git stash and update, or keep "
+                         "your changes and skip this update.",
+        "diverged": "It can't simply be moved to the new version. Update it with git (git pull).",
+        "wrong_branch": f"Switch to '{us.GITHUB_BRANCH}' or update with git yourself.",
+        "git_failed": "You can download the new files instead (a backup is kept until it succeeds).",
+    }.get(code, "Nothing was changed. You can try again.")
+
+
+# ── Console mode ────────────────────────────────────────────────────────────
+class ConsoleReporter(ui.Reporter):
+    def __init__(self, labels: Dict[str, str]):
+        self.labels = labels
+        self._last = 0.0
+
+    def step(self, step_id: str, state: str) -> None:
+        mark = {"active": "…", "done": "✓", "failed": "✗", "skipped": "–"}.get(state, " ")
+        if state != "active" or step_id in self.labels:
+            print(f"[{mark}] {self.labels.get(step_id, step_id)}", flush=True)
+
+    def progress(self, fraction: Optional[float], detail: str = "") -> None:
+        now = time.time()
+        if now - self._last >= 1.5 and detail:
+            self._last = now
+            pct = f"{int(fraction * 100):3d}%  " if fraction is not None else ""
+            print(f"      {pct}{detail}", flush=True)
+
+
+def run_console(plan: Dict[str, Any], log: ui.UpdateLog) -> int:
+    if plan.get("_manual"):
+        plan = plan_from_check(plan)
+        if plan.get("_uptodate"):
+            print(plan["_message"])
+            return 0
+    edition = f" ({plan['edition_label']})" if plan.get("edition_label") else ""
+    print(f"Updating Pawchive Downloader{edition} {plan.get('from_display') or ''} -> {plan.get('to_display') or 'latest'}", flush=True)
+    rep = ConsoleReporter(dict(ui.steps_for(plan)))
+    result = ui.run_update(plan, rep, log)
+    if result["ok"]:
+        if result["warning"]:
+            print("[!] " + result["warning"])
+        print("Update complete. Starting Pawchive…", flush=True)
+        ui.relaunch(plan, log)
+        drop_plan(plan)
+        return 0
+    print(f"[!] {error_title(result['code'])}: {result['message']} {error_hint(result['code'])}", flush=True)
+    if log.path:
+        print(f"    Details: {log.path}")
+    if result["code"] != "app_running":
+        ui.relaunch(plan, log)      # bring back the version that's still installed
+    drop_plan(plan)
+    return 1
+
+
+def gui_possible(force_console: bool) -> bool:
+    if force_console or os.environ.get("PAWCHIVE_UPDATER_CONSOLE"):
+        return False
+    if sys.platform.startswith("linux") and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        return False
+    try:
+        import PySide6.QtGui  # noqa: F401
+        import PySide6.QtQml  # noqa: F401
+        import PySide6.QtQuick  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+# ── Window ──────────────────────────────────────────────────────────────────
+def find_icon(target_dir: str) -> str:
+    """The app's paw icon: next to the app, inside a build's _internal folder, or bundled with the updater."""
+    roots = [target_dir, os.path.join(target_dir, "_internal"), getattr(sys, "_MEIPASS", ""),
+             os.path.dirname(os.path.abspath(__file__))]
+    for root in filter(None, roots):
+        for name in ("assets/pawchive.png", "assets/icon.png", "pawchive.png", "icon.png"):
+            p = os.path.join(root, *name.split("/"))
+            if os.path.isfile(p):
+                return p
     return ""
 
 
-def extract_archive(archive_file: str, dest_dir: str):
-    """Safely extracts both .zip and .tar.gz / .tgz / .tar archives."""
-    if tarfile.is_tarfile(archive_file) or archive_file.lower().endswith((".tar.gz", ".tgz", ".tar.bz2", ".tar")):
-        with tarfile.open(archive_file, "r:*") as tf:
-            tf.extractall(dest_dir)
-    else:
-        with zipfile.ZipFile(archive_file, "r") as zf:
-            zf.extractall(dest_dir)
+def run_gui(plan: Dict[str, Any], log: ui.UpdateLog) -> int:
+    from PySide6.QtCore import Property, QObject, QTimer, QUrl, Signal, Slot
+    from PySide6.QtGui import QDesktopServices, QGuiApplication, QIcon
+    from PySide6.QtQml import QQmlApplicationEngine
 
+    app = QGuiApplication.instance() or QGuiApplication(sys.argv)
+    app.setApplicationName("PawchiveUpdater")
+    app.setApplicationDisplayName("Pawchive Downloader Updater")
+    icon_path = find_icon(plan["target_dir"])
+    if icon_path:
+        app.setWindowIcon(QIcon(icon_path))
 
-# Files and folders that must NEVER be touched during an update
-PROTECTED_DIRS = {
-    "config", "downloads", "temp", "logs", "venv", ".venv", "env",
-    "__pycache__", ".git", ".idea", ".vscode", "scratch", "data", "models"
-}
-PROTECTED_FILES = {
-    "settings.json", "watchlist.json", "known.txt", "cookies.txt",
-    "link_vault.json", "link_vault.json.bak", "storage_pools.json", "schedules.json",
-    "download_archive.db", ".env", ".env.local"
-}
+    class Controller(QObject):
+        changed = Signal()
+        _event = Signal(str, "QVariant")   # worker thread → window thread (queued)
 
-# Extra wait time after PID exits before touching exe files (Windows handle-release delay)
-_EXE_RELEASE_WAIT = 1.5
+        def __init__(self):
+            super().__init__()
+            self.plan = plan
+            self._steps: List[Any] = []
+            self._states: List[str] = []
+            self._progress = -1.0
+            self._detail = ""
+            self._phase = "running"     # running | success | error | uptodate
+            self._can_cancel = True
+            self._title = ""
+            self._text = ""
+            self._details = ""
+            self._warning = ""
+            self._code = ""
+            self._actions: List[str] = []
+            self._countdown = 0
+            self._shake = 0
+            self._cancel = threading.Event()
+            self._installing = False
+            self._worker: Optional[threading.Thread] = None
+            self._timer = QTimer(self)
+            self._timer.setInterval(1000)
+            self._timer.timeout.connect(self._tick)
+            self._event.connect(self._on_event)
 
+        # ── properties (read-only for QML; one change signal keeps this small) ──
+        stepLabels = Property("QVariantList", lambda self: [s[1] for s in self._steps], notify=changed)
+        stepStates = Property("QVariantList", lambda self: list(self._states), notify=changed)
+        progress = Property(float, lambda self: self._progress, notify=changed)
+        detail = Property(str, lambda self: self._detail, notify=changed)
+        phase = Property(str, lambda self: self._phase, notify=changed)
+        canCancel = Property(bool, lambda self: self._can_cancel and self._phase == "running", notify=changed)
+        title = Property(str, lambda self: self._title, notify=changed)
+        text = Property(str, lambda self: self._text, notify=changed)
+        details = Property(str, lambda self: self._details, notify=changed)
+        warning = Property(str, lambda self: self._warning, notify=changed)
+        actions = Property("QVariantList", lambda self: list(self._actions), notify=changed)
+        countdown = Property(int, lambda self: self._countdown, notify=changed)
+        shake = Property(int, lambda self: self._shake, notify=changed)
+        code = Property(str, lambda self: self._code, notify=changed)
+        fromVersion = Property(str, lambda self: self.plan.get("from_display") or "", notify=changed)
+        edition = Property(str, lambda self: self.plan.get("edition_label")
+                           or us.edition_label(bool(self.plan.get("is_source")),
+                                               os.path.isdir(os.path.join(self.plan["target_dir"], ".git"))),
+                           notify=changed)
+        toVersion = Property(str, lambda self: self.plan.get("to_display") or "", notify=changed)
+        notes = Property(str, lambda self: self.plan.get("notes") or "", notify=changed)
+        isWindows = Property(bool, lambda self: sys.platform == "win32", constant=True)
+        hasLog = Property(bool, lambda self: bool(log.path), constant=True)
+        iconUrl = Property(str, lambda self: QUrl.fromLocalFile(icon_path).toString() if icon_path else "", constant=True)
 
-def is_pid_running(pid: int) -> bool:
-    """Check if process with given PID is still active on Windows."""
-    if pid <= 0:
-        return False
-    if sys.platform == "win32":
-        try:
-            import ctypes
-            SYNCHRONIZE = 0x00100000
-            handle = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, pid)
-            if not handle:
-                return False
-            STILL_ACTIVE = 259
-            code = ctypes.c_ulong()
-            ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
-            ctypes.windll.kernel32.CloseHandle(handle)
-            return code.value == STILL_ACTIVE
-        except Exception:
-            return False
-    else:
-        try:
-            os.kill(pid, 0)
-            return True
-        except OSError:
-            return False
-
-
-class UpdaterApp:
-    def __init__(
-        self,
-        root: tk.Tk,
-        target_dir: str,
-        pid: int,
-        download_url: str,
-        version: str,
-        is_source: bool = False,
-        python_exe: str = ""
-    ):
-        self.root = root
-        self.target_dir = os.path.abspath(target_dir)
-        self.pid = pid
-        self.download_url = download_url
-        self.version = version or "Latest"
-        self.is_source = is_source
-        self.python_exe = python_exe or sys.executable
-        self._cancel_requested = False
-
-        self._setup_window()
-        self._setup_styles()
-        self._create_widgets()
-
-        # Start background update worker
-        threading.Thread(target=self._run_update_pipeline, daemon=True).start()
-
-    def _setup_window(self):
-        self.root.title("Pawchive Downloader Updater")
-        self.root.geometry("480x280")
-        self.root.resizable(False, False)
-        self.root.configure(bg="#121214")
-
-        # Center on screen
-        self.root.update_idletasks()
-        w = self.root.winfo_width()
-        h = self.root.winfo_height()
-        x = (self.root.winfo_screenwidth() // 2) - (w // 2)
-        y = (self.root.winfo_screenheight() // 2) - (h // 2)
-        self.root.geometry(f"+{x}+{y}")
-
-        # Set application icon if exists
-        icon_path = os.path.join(self.target_dir, "assets", "icon.ico")
-        if os.path.exists(icon_path):
-            try:
-                self.root.iconbitmap(icon_path)
-            except Exception:
-                pass
-
-    def _setup_styles(self):
-        self.style = ttk.Style(self.root)
-        self.style.theme_use("clam")
-
-        # Custom purple progressbar
-        self.style.configure(
-            "Purple.Horizontal.TProgressbar",
-            troughcolor="#1e1e24",
-            background="#a855f7",
-            darkcolor="#9333ea",
-            lightcolor="#c084fc",
-            bordercolor="#1e1e24",
-            thickness=10
-        )
-
-    def _create_widgets(self):
-        # Outer Card
-        card = tk.Frame(self.root, bg="#18181b", bd=1, relief="flat", highlightbackground="#27272a", highlightthickness=1)
-        card.pack(fill="both", expand=True, padx=16, pady=16)
-
-        # Header with Logo & Title
-        header_frame = tk.Frame(card, bg="#18181b")
-        header_frame.pack(fill="x", padx=20, pady=(18, 10))
-
-        title_label = tk.Label(
-            header_frame,
-            text="Pawchive Downloader",
-            font=("Segoe UI", 14, "bold"),
-            fg="#f4f4f5",
-            bg="#18181b"
-        )
-        title_label.pack(side="left")
-
-        self.ver_badge = tk.Label(
-            header_frame,
-            text=f"Updating to {self.version}",
-            font=("Segoe UI", 9, "bold"),
-            fg="#a855f7",
-            bg="#27272a",
-            padx=8,
-            pady=2
-        )
-        self.ver_badge.pack(side="right")
-
-        # Status text
-        self.status_label = tk.Label(
-            card,
-            text="Preparing update...",
-            font=("Segoe UI", 10),
-            fg="#e4e4e7",
-            bg="#18181b",
-            anchor="w"
-        )
-        self.status_label.pack(fill="x", padx=20, pady=(14, 6))
-
-        # Progress bar
-        self.progress_var = tk.DoubleVar(value=0.0)
-        self.progress_bar = ttk.Progressbar(
-            card,
-            variable=self.progress_var,
-            maximum=100.0,
-            style="Purple.Horizontal.TProgressbar"
-        )
-        self.progress_bar.pack(fill="x", padx=20, pady=(0, 6))
-
-        # Sub-status / Speed details
-        self.detail_label = tk.Label(
-            card,
-            text="Please wait while the update is applied...",
-            font=("Segoe UI", 8),
-            fg="#71717a",
-            bg="#18181b",
-            anchor="w"
-        )
-        self.detail_label.pack(fill="x", padx=20, pady=(0, 16))
-
-        # Footer button area
-        btn_frame = tk.Frame(card, bg="#18181b")
-        btn_frame.pack(fill="x", padx=20, pady=(0, 12))
-
-        self.cancel_btn = tk.Button(
-            btn_frame,
-            text="Cancel",
-            font=("Segoe UI", 9),
-            fg="#a1a1aa",
-            bg="#27272a",
-            activebackground="#3f3f46",
-            activeforeground="#f4f4f5",
-            bd=0,
-            padx=14,
-            pady=4,
-            cursor="hand2",
-            command=self._on_cancel
-        )
-        self.cancel_btn.pack(side="right")
-
-    def _set_status(self, status: str, detail: str = "", progress: Optional[float] = None):
-        def _update():
-            self.status_label.config(text=status)
-            if detail is not None:
-                self.detail_label.config(text=detail)
-            if progress is not None:
-                self.progress_var.set(progress)
-        self.root.after(0, _update)
-
-    def _on_cancel(self):
-        self._cancel_requested = True
-        self._set_status("Cancelling update...", "Cleaning up temporary files...")
-        self.root.after(1000, self.root.destroy)
-
-    def _clean_stale_old_files(self):
-        """Remove any leftover *.old files from a previous update attempt."""
-        for root_d, _dirs, files in os.walk(self.target_dir):
-            for f in files:
-                if f.endswith(".old"):
-                    try:
-                        os.remove(os.path.join(root_d, f))
-                    except Exception:
-                        pass
-
-    def _safe_delete(self, path: str):
-        """
-        Delete a file as safely as possible without admin.
-        Strategy: rename to .old first (works even on locked/AV-scanned files
-        because rename only touches the directory entry), then delete the .old.
-        If .old deletion fails it stays harmlessly until the next update.
-        """
-        if not os.path.exists(path):
-            return
-        old_path = path + ".old"
-        # Remove any stale .old before renaming
-        try:
-            if os.path.exists(old_path):
-                os.remove(old_path)
-        except Exception:
-            pass
-        try:
-            os.rename(path, old_path)   # Works even on memory-mapped/locked files!
-        except Exception:
-            return  # Cannot even rename — leave the file, copy will try to overwrite
-        try:
-            os.remove(old_path)
-        except Exception:
-            pass  # Locked by AV or still mapped — harmless, cleaned next update
-
-    def _safe_copy(self, src: str, dst: str) -> bool:
-        """
-        Copy src to dst, handling the case where dst is still locked.
-        Renames dst -> dst.old first (rename is allowed on locked files),
-        then copies src to the real dst name.
-        Returns True on success, False if the file could not be written.
-        """
-        if os.path.exists(dst):
-            old_path = dst + ".old"
-            try:
-                if os.path.exists(old_path):
-                    os.remove(old_path)
-            except Exception:
-                pass
-            try:
-                os.rename(dst, old_path)  # Side-step the lock
-            except Exception:
-                pass  # If rename also fails, try a direct overwrite below
-        try:
-            shutil.copy2(src, dst)
-        except Exception:
-            return False  # Could not write — file is truly stuck
-        # Best-effort cleanup of the renamed old file
-        old_path = dst + ".old"
-        if os.path.exists(old_path):
-            try:
-                os.remove(old_path)
-            except Exception:
-                pass  # Stays as .old, cleaned on next update — no harm
-        return True
-
-    def _relaunch_as_admin(self):
-        """
-        Re-launch the updater with administrator privileges using Windows UAC.
-        Uses ShellExecuteW with the 'runas' verb so Windows shows the native
-        UAC prompt — we never store or request credentials ourselves.
-        """
-        import ctypes
-        if getattr(sys, "frozen", False):
-            exe = os.path.abspath(sys.executable)
-            params = (
-                f'--target-dir "{self.target_dir}" '
-                f'--pid 0 '
-                f'--download-url "{self.download_url}" '
-                f'--version "{self.version}" '
-                f'--temp-runner'
-            )
-        else:
-            exe = self.python_exe or sys.executable
-            script_path = os.path.abspath(__file__)
-            source_flag = "--source " if self.is_source else ""
-            params = (
-                f'"{script_path}" '
-                f'--target-dir "{self.target_dir}" '
-                f'--pid 0 '
-                f'--download-url "{self.download_url}" '
-                f'--version "{self.version}" '
-                f'{source_flag}'
-                f'--python-exe "{exe}" '
-                f'--temp-runner'
-            )
-        try:
-            ctypes.windll.shell32.ShellExecuteW(
-                None,       # hwnd
-                "runas",    # verb  — triggers UAC elevation
-                exe,
-                params,
-                None,       # working dir
-                1           # SW_SHOWNORMAL
-            )
-        except Exception as e:
-            self._set_status("Could not elevate", f"Error: {e}", progress=0.0)
-            return
-        # Close this instance — the elevated copy takes over
-        self.root.after(300, self.root.destroy)
-
-    def _show_lock_error_dialog(self, failed_files: list):
-        """
-        Show a recovery dialog when some files could not be installed due to
-        file locks. Offers two options:
-          1. Run as Administrator — relaunches via UAC (Windows handles the prompt)
-          2. Try Later           — closes the updater; user can run updater.exe
-                                   from the install folder manually
-        """
-        def _build():
-            dlg = tk.Toplevel(self.root)
-            dlg.title("Update could not finish")
-            dlg.geometry("460x290")
-            dlg.resizable(False, False)
-            dlg.configure(bg="#121214")
-            dlg.grab_set()  # Modal
-            dlg.transient(self.root)
-
-            # Center on parent
-            dlg.update_idletasks()
-            px = self.root.winfo_x() + (self.root.winfo_width()  - 460) // 2
-            py = self.root.winfo_y() + (self.root.winfo_height() - 290) // 2
-            dlg.geometry(f"+{px}+{py}")
-
-            card = tk.Frame(dlg, bg="#18181b", highlightbackground="#27272a", highlightthickness=1)
-            card.pack(fill="both", expand=True, padx=14, pady=14)
-
-            tk.Label(
-                card,
-                text="The app didn't fully close in time",
-                font=("Segoe UI", 11, "bold"),
-                fg="#f4f4f5", bg="#18181b"
-            ).pack(pady=(16, 8))
-
-            explanation = (
-                "Windows is still holding on to some of the old app files — "
-                "this usually happens when your antivirus is scanning them or "
-                "Windows is slow releasing them after the app closed.\n\n"
-                "The update has been downloaded and is ready to install. "
-                "You just need to choose how to finish it:"
-            )
-            tk.Label(
-                card,
-                text=explanation,
-                font=("Segoe UI", 9),
-                fg="#a1a1aa", bg="#18181b",
-                justify="left", wraplength=410, anchor="w"
-            ).pack(padx=16, pady=(0, 14), fill="x")
-
-            btn_row = tk.Frame(card, bg="#18181b")
-            btn_row.pack(padx=16, fill="x")
-
-            def on_admin():
-                dlg.destroy()
-                threading.Thread(target=self._relaunch_as_admin, daemon=True).start()
-
-            def on_later():
-                dlg.destroy()
-                self._set_status(
-                    "Update ready — finish it when you're ready",
-                    "Open the install folder and run 'updater.exe' to apply the update.",
-                    progress=0.0
-                )
-                self.root.after(0, lambda: self.cancel_btn.config(
-                    text="Close", state="normal", command=self.root.destroy
-                ))
-
-            # Primary action
-            admin_btn = tk.Button(
-                btn_row,
-                text="Retry as Administrator  (Recommended)",
-                font=("Segoe UI", 9, "bold"),
-                fg="#ffffff", bg="#a855f7",
-                activebackground="#9333ea", activeforeground="#ffffff",
-                bd=0, padx=16, pady=7, cursor="hand2",
-                command=on_admin, anchor="w"
-            )
-            admin_btn.pack(fill="x", pady=(0, 6))
-
-            # Hint under primary button
-            tk.Label(
-                btn_row,
-                text="Windows will ask if you want to allow the update — click Yes to continue.",
-                font=("Segoe UI", 8),
-                fg="#52525b", bg="#18181b",
-                anchor="w"
-            ).pack(fill="x", pady=(0, 10))
-
-            # Secondary action
-            later_btn = tk.Button(
-                btn_row,
-                text="I'll do it later",
-                font=("Segoe UI", 9),
-                fg="#a1a1aa", bg="#27272a",
-                activebackground="#3f3f46", activeforeground="#f4f4f5",
-                bd=0, padx=16, pady=6, cursor="hand2",
-                command=on_later, anchor="w"
-            )
-            later_btn.pack(fill="x")
-
-            # Hint under secondary button
-            tk.Label(
-                btn_row,
-                text="Run 'updater.exe' from the app folder whenever you're ready.",
-                font=("Segoe UI", 8),
-                fg="#52525b", bg="#18181b",
-                anchor="w"
-            ).pack(fill="x", pady=(2, 0))
-
-        self.root.after(0, _build)
-
-    def _delete_non_protected(self):
-        """Remove all non-protected items from target_dir using safe rename strategy."""
-        for entry in os.listdir(self.target_dir):
-            entry_lower = entry.lower()
-            full_path = os.path.join(self.target_dir, entry)
-
-            if entry_lower in PROTECTED_DIRS:
-                continue
-            if entry_lower in PROTECTED_FILES:
-                continue
-            if entry_lower == "updater.exe":
-                # Running from %TEMP% already — will be overwritten by copy step
-                continue
-            # Skip .old debris (already renamed from a previous pass)
-            if entry.endswith(".old"):
-                continue
-
-            if os.path.isdir(full_path):
-                shutil.rmtree(full_path, ignore_errors=True)
-            else:
-                self._safe_delete(full_path)
-
-    def _try_git_update(self) -> bool:
-        """
-        Attempts to update a source Git repository using native git commands.
-        Returns True if successful and the application was relaunched; False to fall back to archive download.
-        """
-        try:
-            ver_res = subprocess.run(
-                ["git", "--version"],
-                cwd=self.target_dir,
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            if ver_res.returncode != 0:
-                return False
-
-            self._set_status("Fetching latest Git updates...", "Connecting to remote repository...", progress=25.0)
-
-            branch_res = subprocess.run(
-                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                cwd=self.target_dir,
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            branch = branch_res.stdout.strip() if branch_res.returncode == 0 and branch_res.stdout.strip() else "main"
-
-            self._set_status(f"Updating branch '{branch}'...", "Pulling latest changes...", progress=50.0)
-
-            # Pull latest changes
-            pull_res = subprocess.run(
-                ["git", "pull", "--rebase", "origin", branch],
-                cwd=self.target_dir,
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
-            if pull_res.returncode != 0:
-                pull_res = subprocess.run(
-                    ["git", "pull", "origin", branch],
-                    cwd=self.target_dir,
-                    capture_output=True,
-                    text=True,
-                    timeout=60
-                )
-
-            if pull_res.returncode == 0:
-                self._set_status("Git sync complete!", "Checking requirements...", progress=85.0)
-                req_path = os.path.join(self.target_dir, "requirements.txt")
-                if os.path.exists(req_path) and self.python_exe:
-                    try:
-                        self._set_status("Installing dependencies...", "pip install -r requirements.txt", progress=90.0)
-                        subprocess.run(
-                            [self.python_exe, "-m", "pip", "install", "-r", req_path],
-                            cwd=self.target_dir,
-                            capture_output=True,
-                            timeout=60
-                        )
-                    except Exception:
-                        pass
-
-                self._set_status("Update complete!", "Relaunching Pawchive Downloader...", progress=100.0)
-                time.sleep(0.8)
-                self._relaunch()
-                self.root.after(500, self.root.destroy)
-                return True
-        except Exception as e:
-            print(f"[!] Git update failed, falling back to archive: {e}")
-        return False
-
-    def _relaunch(self):
-        """Relaunch the updated application."""
-        if self.is_source:
-            main_py = os.path.join(self.target_dir, "main.py")
-            if os.path.exists(main_py):
-                py_exe = self.python_exe or sys.executable
-                subprocess.Popen([py_exe, main_py], cwd=self.target_dir)
+        # ── running ──
+        def start(self):
+            if self.plan.get("_manual"):
+                self._phase = "running"
+                self._steps = [("check", "Checking for updates")]
+                self._states = ["active"]
+                self.changed.emit()
+                threading.Thread(target=self._check_worker, daemon=True).start()
                 return
+            self._steps = ui.steps_for(self.plan)
+            self._states = ["pending"] * len(self._steps)
+            self._phase, self._title, self._text, self._details, self._warning = "running", "", "", "", ""
+            self._actions, self._progress, self._detail = [], -1.0, ""
+            self._can_cancel, self._installing = True, False
+            self._cancel.clear()
+            self.changed.emit()
+            self._worker = threading.Thread(target=self._work, daemon=False)
+            self._worker.start()
 
-        exe_path = ""
-        if sys.platform == "win32":
-            cand = os.path.join(self.target_dir, "Pawchive Downloader.exe")
-            if os.path.exists(cand):
-                exe_path = cand
-            else:
-                for f in os.listdir(self.target_dir):
-                    f_l = f.lower()
-                    if f_l.endswith(".exe") and "updater" not in f_l and not f_l.startswith("7z") and not f_l.startswith("yt-dlp"):
-                        exe_path = os.path.join(self.target_dir, f)
-                        break
-        else:
-            for name in ["pawchive", "Pawchive Downloader"]:
-                cand = os.path.join(self.target_dir, name)
-                if os.path.exists(cand):
-                    exe_path = cand
-                    break
+        def _check_worker(self):
+            self._event.emit("checked", plan_from_check(self.plan))
 
-        if exe_path and os.path.exists(exe_path):
-            subprocess.Popen([exe_path], cwd=self.target_dir)
+        def _work(self):
+            ctrl = self
 
-    def _run_update_pipeline(self):
-        try:
-            # 1. Wait for Pawchive Downloader to completely terminate
-            if self.pid > 0:
-                self._set_status("Closing Pawchive Downloader...", "Waiting for process to unlock files...")
-                start_wait = time.time()
-                while is_pid_running(self.pid):
-                    if self._cancel_requested:
-                        return
-                    if time.time() - start_wait > 15:
-                        break
-                    time.sleep(0.3)
+            class Rep(ui.Reporter):
+                def step(self, step_id, state):
+                    ctrl._event.emit("step", [step_id, state])
 
-            # Extra buffer for Windows to fully release file handles (no admin needed)
-            time.sleep(_EXE_RELEASE_WAIT)
+                def progress(self, fraction, detail=""):
+                    ctrl._event.emit("progress", [-1.0 if fraction is None else float(fraction), detail])
 
-            # Fast path for Git source checkouts
-            git_dir = os.path.join(self.target_dir, ".git")
-            if self.is_source and os.path.isdir(git_dir):
-                if self._try_git_update():
+                def cancelled(self):
+                    return ctrl._cancel.is_set()
+
+                def install_started(self):
+                    ctrl._event.emit("installing", True)
+
+            result = ui.run_update(self.plan, Rep(), log)
+            self._event.emit("result", result)
+
+        @Slot(str, "QVariant")
+        def _on_event(self, kind, value):
+            if kind == "step":
+                ids = [s[0] for s in self._steps]
+                if value[0] in ids:
+                    self._states[ids.index(value[0])] = value[1]
+                    if value[1] == "active":
+                        self._progress, self._detail = -1.0, ""
+            elif kind == "progress":
+                self._progress, self._detail = value[0], value[1]
+            elif kind == "installing":
+                self._installing, self._can_cancel = True, False
+            elif kind == "checked":
+                if value.get("_uptodate"):
+                    self._phase, self._title, self._text = "uptodate", "You're up to date", value.get("_message", "")
+                    self._states = ["done"]
+                    self._actions = ["open", "close"]
+                else:
+                    self.plan = value
+                    self.start()
                     return
+            elif kind == "result":
+                self._finish(value)
+            self.changed.emit()
 
-            # 2. Prepare directories in temporary directory
-            temp_base = tempfile.gettempdir()
-            updater_work_dir = os.path.join(temp_base, f"pawchive_update_{int(time.time())}")
-            ext = ".tar.gz" if ".tar" in self.download_url.lower() else ".zip"
-            zip_dest = os.path.join(updater_work_dir, f"update{ext}")
-            staging_dir = os.path.join(updater_work_dir, "staging")
-            os.makedirs(staging_dir, exist_ok=True)
-
-            # 3. Download Release Package
-            self._set_status("Connecting to GitHub...", "Resolving release package...", progress=5.0)
-            req = urllib.request.Request(self.download_url, headers={"User-Agent": "Pawchive-Updater/1.0"})
-
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                total_size = int(resp.headers.get("Content-Length", 0))
-                downloaded = 0
-                start_t = time.time()
-                last_ui_t = start_t
-
-                with open(zip_dest, "wb") as out_f:
-                    while True:
-                        if self._cancel_requested:
-                            shutil.rmtree(updater_work_dir, ignore_errors=True)
-                            return
-                        chunk = resp.read(64 * 1024)
-                        if not chunk:
-                            break
-                        out_f.write(chunk)
-                        downloaded += len(chunk)
-
-                        now = time.time()
-                        if now - last_ui_t >= 0.25 or downloaded == total_size:
-                            last_ui_t = now
-                            pct = (downloaded / total_size * 100) if total_size > 0 else 50.0
-                            elapsed = max(0.001, now - start_t)
-                            speed_mb = (downloaded / elapsed) / (1024 * 1024)
-                            mb_done = downloaded / (1024 * 1024)
-                            mb_total = total_size / (1024 * 1024)
-
-                            rem_sec = int((total_size - downloaded) / max(1, downloaded / elapsed)) if total_size > 0 else 0
-                            eta_str = f"ETA: {rem_sec}s" if rem_sec < 120 else f"ETA: {rem_sec // 60}m {rem_sec % 60}s"
-
-                            status = f"Downloading update ({int(pct)}%)..."
-                            detail = f"{mb_done:.1f} MB / {mb_total:.1f} MB • {speed_mb:.1f} MB/s • {eta_str}"
-                            self._set_status(status, detail, progress=5.0 + (pct * 0.75))
-
-            # 4. Extract Package (supports both .zip and .tar.gz)
-            self.root.after(0, lambda: self.cancel_btn.config(state="disabled"))
-            self._set_status("Extracting update package...", "Verifying files...", progress=82.0)
-
-            extract_archive(zip_dest, staging_dir)
-
-            # Locate root directory inside zip/tar if nested
-            stage_root = staging_dir
-            entries = [os.path.join(staging_dir, e) for e in os.listdir(staging_dir)]
-            if len(entries) == 1 and os.path.isdir(entries[0]):
-                stage_root = entries[0]
-
-            # 5. Clean up .old debris from any previous failed update
-            self._set_status("Preparing installation...", "Cleaning up previous update debris...", progress=84.0)
-            self._clean_stale_old_files()
-
-            # 6. For compiled builds: clean slate non-protected files
-            # For source mode: NEVER wipe directory; copy updated files directly!
-            if not self.is_source:
-                self._set_status("Clearing old version...", "Removing outdated application files...", progress=87.0)
-                self._delete_non_protected()
-
-            # 7. Copy fresh files into target directory
-            self._set_status("Installing update...", "Copying new application files...", progress=91.0)
-
-            copied_count = 0
-            failed_files: list = []
-            for root_d, dirs, files in os.walk(stage_root):
-                rel = os.path.relpath(root_d, stage_root)
-                first = rel.split(os.sep)[0] if rel != "." else ""
-
-                # Skip protected dirs from the new zip too (shouldn't exist, but be safe)
-                if first.lower() in PROTECTED_DIRS:
-                    dirs[:] = []
-                    continue
-
-                dest_folder = self.target_dir if rel == "." else os.path.join(self.target_dir, rel)
-                os.makedirs(dest_folder, exist_ok=True)
-
-                for file_name in files:
-                    if file_name.lower() in PROTECTED_FILES:
-                        continue
-                    s_file = os.path.join(root_d, file_name)
-                    d_file = os.path.join(dest_folder, file_name)
-                    if self._safe_copy(s_file, d_file):
-                        copied_count += 1
-                    else:
-                        failed_files.append(d_file)
-
-            # If any files failed to copy, offer admin elevation or try-later
-            if failed_files:
-                self._set_status(
-                    "Some files could not be replaced",
-                    f"{len(failed_files)} file(s) are still locked. Choose how to proceed.",
-                    progress=92.0
-                )
-                self._show_lock_error_dialog(failed_files)
-                shutil.rmtree(updater_work_dir, ignore_errors=True)
-                return  # Do not relaunch until user decides
-
-            # Synchronize dependencies if running from source
-            if self.is_source:
-                req_path = os.path.join(self.target_dir, "requirements.txt")
-                if os.path.exists(req_path) and self.python_exe:
-                    try:
-                        self._set_status("Checking dependencies...", "pip install -r requirements.txt", progress=95.0)
-                        subprocess.run(
-                            [self.python_exe, "-m", "pip", "install", "-r", req_path],
-                            cwd=self.target_dir,
-                            capture_output=True,
-                            timeout=60
-                        )
-                    except Exception:
-                        pass
-
-            self._set_status("Finalizing update...", f"Installed {copied_count} files successfully.", progress=98.0)
-            time.sleep(0.5)
-
-            # Clean up temporary work directory
-            shutil.rmtree(updater_work_dir, ignore_errors=True)
-
-            # Restore execution bits on Linux for executables
-            if sys.platform != "win32":
-                for bin_name in ["pawchive", "updater", "7za", "yt-dlp", "pawchive.desktop"]:
-                    bp = os.path.join(self.target_dir, bin_name)
-                    if os.path.exists(bp):
-                        try:
-                            st = os.stat(bp)
-                            os.chmod(bp, st.st_mode | 0o755)
-                        except Exception:
-                            pass
-
-            # 8. Relaunch Application
-            self._set_status("Update complete!", "Relaunching Pawchive Downloader...", progress=100.0)
-            time.sleep(0.8)
-
-            self._relaunch()
-            self.root.after(500, self.root.destroy)
-
-        except Exception as err:
-            self._set_status("Update Failed", f"Error: {err}", progress=0.0)
-            self.root.after(0, lambda: self.cancel_btn.config(text="Close", state="normal", command=self.root.destroy))
-
-
-def run_headless_update(
-    target_dir: str,
-    pid: int,
-    download_url: str,
-    version: str,
-    is_source: bool = False,
-    python_exe: str = ""
-):
-    """Fallback CLI update pipeline when Tkinter is not available (common on minimal Linux/Docker)."""
-    print(f"[*] Starting Pawchive Downloader CLI updater (Target: {version or 'latest'})...")
-    python_exe = python_exe or sys.executable
-
-    if pid > 0:
-        print("[*] Waiting for previous application process to exit...")
-        start_wait = time.time()
-        while is_pid_running(pid):
-            if time.time() - start_wait > 15:
-                break
-            time.sleep(0.3)
-    time.sleep(_EXE_RELEASE_WAIT)
-
-    # Git-native update fast path
-    git_dir = os.path.join(target_dir, ".git")
-    if is_source and os.path.isdir(git_dir):
-        try:
-            ver_res = subprocess.run(["git", "--version"], cwd=target_dir, capture_output=True, text=True, timeout=5)
-            if ver_res.returncode == 0:
-                print("[*] Detected Git repository. Running git pull...")
-                branch_res = subprocess.run(
-                    ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                    cwd=target_dir, capture_output=True, text=True, timeout=5
-                )
-                branch = branch_res.stdout.strip() if branch_res.returncode == 0 and branch_res.stdout.strip() else "main"
-                pull_res = subprocess.run(["git", "pull", "--rebase", "origin", branch], cwd=target_dir, capture_output=True, text=True, timeout=60)
-                if pull_res.returncode != 0:
-                    pull_res = subprocess.run(["git", "pull", "origin", branch], cwd=target_dir, capture_output=True, text=True, timeout=60)
-                if pull_res.returncode == 0:
-                    print("[+] Git pull successful!")
-                    req_path = os.path.join(target_dir, "requirements.txt")
-                    if os.path.exists(req_path) and python_exe:
-                        try:
-                            subprocess.run([python_exe, "-m", "pip", "install", "-r", req_path], cwd=target_dir, capture_output=True, timeout=60)
-                        except Exception:
-                            pass
-                    main_py = os.path.join(target_dir, "main.py")
-                    if os.path.exists(main_py):
-                        print(f"[*] Relaunching: {main_py}")
-                        subprocess.Popen([python_exe, main_py], cwd=target_dir)
-                    return
-        except Exception as e:
-            print(f"[!] Git update error, falling back to archive: {e}")
-
-    temp_base = tempfile.gettempdir()
-    updater_work_dir = os.path.join(temp_base, f"pawchive_update_{int(time.time())}")
-    ext = ".tar.gz" if ".tar" in download_url.lower() else ".zip"
-    zip_dest = os.path.join(updater_work_dir, f"update{ext}")
-    staging_dir = os.path.join(updater_work_dir, "staging")
-    os.makedirs(staging_dir, exist_ok=True)
-
-    try:
-        print(f"[*] Downloading update from {download_url}...")
-        req = urllib.request.Request(download_url, headers={"User-Agent": "Pawchive-Updater/1.0"})
-        with urllib.request.urlopen(req, timeout=45) as resp, open(zip_dest, "wb") as out_f:
-            shutil.copyfileobj(resp, out_f)
-
-        print("[*] Extracting update package...")
-        extract_archive(zip_dest, staging_dir)
-
-        stage_root = staging_dir
-        entries = [os.path.join(staging_dir, e) for e in os.listdir(staging_dir)]
-        if len(entries) == 1 and os.path.isdir(entries[0]):
-            stage_root = entries[0]
-
-        print("[*] Installing updated files...")
-        copied = 0
-        for root_d, dirs, files in os.walk(stage_root):
-            rel = os.path.relpath(root_d, stage_root)
-            first = rel.split(os.sep)[0] if rel != "." else ""
-            if first.lower() in PROTECTED_DIRS:
-                dirs[:] = []
-                continue
-            dest_folder = target_dir if rel == "." else os.path.join(target_dir, rel)
-            os.makedirs(dest_folder, exist_ok=True)
-            for file_name in files:
-                if file_name.lower() in PROTECTED_FILES:
-                    continue
-                s_file = os.path.join(root_d, file_name)
-                d_file = os.path.join(dest_folder, file_name)
-                try:
-                    shutil.copy2(s_file, d_file)
-                    copied += 1
-                except Exception as ex:
-                    print(f"[!] Warning: could not copy {file_name}: {ex}")
-
-        print(f"[+] Update complete! Installed {copied} files.")
-        shutil.rmtree(updater_work_dir, ignore_errors=True)
-
-        # Restore Linux permissions
-        if sys.platform != "win32":
-            for bin_name in ["pawchive", "updater", "7za", "yt-dlp", "pawchive.desktop"]:
-                bp = os.path.join(target_dir, bin_name)
-                if os.path.exists(bp):
-                    try:
-                        st = os.stat(bp)
-                        os.chmod(bp, st.st_mode | 0o755)
-                    except Exception:
-                        pass
-
-        # Relaunch
-        if is_source:
-            main_py = os.path.join(target_dir, "main.py")
-            if os.path.exists(main_py):
-                print(f"[*] Relaunching source: {main_py}...")
-                subprocess.Popen([python_exe, main_py], cwd=target_dir)
+        def _finish(self, r):
+            self._code = r.get("code", "")
+            if r.get("ok"):
+                self._phase = "success"
+                self._title = "Updated to " + (self.plan.get("to_display") or "the latest version")
+                self._warning = r.get("warning", "")
+                self._actions = ["open", "close"]
+                self._countdown = 8 if self._warning else 4
+                self._timer.start()
                 return
+            self._phase = "error"
+            self._title = error_title(self._code)
+            self._text = (r.get("message", "") + " " + error_hint(self._code)).strip()
+            self._details = r.get("details", "")
+            self._actions = actions_for(self._code)
+            self._shake += 1
+            if self._code == "cancelled":
+                self._countdown = 4          # bring the app back on its own
+                self._timer.start()
 
-        exe_path = ""
-        if sys.platform == "win32":
-            cand = os.path.join(target_dir, "Pawchive Downloader.exe")
-            if os.path.exists(cand):
-                exe_path = cand
-            else:
-                for f in os.listdir(target_dir):
-                    f_l = f.lower()
-                    if f_l.endswith(".exe") and "updater" not in f_l and not f_l.startswith("7z") and not f_l.startswith("yt-dlp"):
-                        exe_path = os.path.join(target_dir, f)
-                        break
-        else:
-            for name in ["pawchive", "Pawchive Downloader"]:
-                cand = os.path.join(target_dir, name)
-                if os.path.exists(cand):
-                    exe_path = cand
-                    break
+        def _tick(self):
+            self._countdown -= 1
+            if self._countdown <= 0:
+                self._timer.stop()
+                self.act("open")
+            self.changed.emit()
 
-        if exe_path and os.path.exists(exe_path):
-            print(f"[*] Relaunching {exe_path}...")
-            subprocess.Popen([exe_path], cwd=target_dir)
+        # ── buttons ──
+        @Slot()
+        def cancel(self):
+            if self._phase == "running" and self._can_cancel:
+                self._cancel.set()
+                self._detail = "Cancelling…"
+                self.changed.emit()
 
-    except Exception as e:
-        print(f"[!] Update error: {e}")
-        shutil.rmtree(updater_work_dir, ignore_errors=True)
+        @Slot()
+        def nudge(self):
+            self._shake += 1
+            self.changed.emit()
+
+        @Slot(str)
+        def act(self, action):
+            self._timer.stop()
+            if action == "open":
+                if self._code not in ("app_running",):
+                    ui.relaunch(self.plan, log)
+                self._quit()
+            elif action == "close":
+                self._quit()
+            elif action == "retry":
+                self.plan["no_wait"] = False
+                self.start()
+            elif action == "admin":
+                if elevate(self.plan):
+                    QGuiApplication.quit()       # the elevated updater carries on
+                else:
+                    self._text = "Windows didn't allow running as administrator."
+                    self._shake += 1
+                    self.changed.emit()
+            elif action == "stash":
+                self.plan["stash_changes"] = True
+                self.start()
+            elif action == "keep":
+                ui.relaunch(self.plan, log)
+                self._quit()
+            elif action == "archive":
+                self.plan["force_archive"] = True
+                self.start()
+            elif action == "log" and log.path:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(log.path))
+
+        @Slot(result=bool)
+        def canClose(self):
+            return not self._installing or self._phase != "running"
+
+        @Slot()
+        def windowClosing(self):
+            if self._phase == "running" and self._can_cancel:
+                self.cancel()
+            elif self._phase != "running":
+                self._quit()
+
+        def _quit(self):
+            drop_plan(self.plan)
+            QGuiApplication.quit()
+
+    ctrl = Controller()
+    engine = QQmlApplicationEngine()
+    engine.rootContext().setContextProperty("upd", ctrl)
+    engine.loadData(UPDATER_QML.encode("utf-8"), QUrl("pawchive-updater.qml"))
+    if not engine.rootObjects():
+        log.write("QML window failed to load; falling back to console mode")
+        return run_console(plan, log)
+    ctrl.start()
+    rc = app.exec()
+    if ctrl._worker and ctrl._worker.is_alive():
+        ctrl._worker.join(timeout=600)       # never leave mid-install
+    return rc
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Pawchive Downloader Standalone Companion Updater")
-    parser.add_argument("--target-dir", default="", help="Installation root of Pawchive Downloader")
-    parser.add_argument("--pid", type=int, default=0, help="PID of the running main app to wait for")
-    parser.add_argument("--download-url", default="", help="Direct download URL for the update package")
-    parser.add_argument("--version", default="", help="Target version string to display")
-    parser.add_argument("--temp-runner", action="store_true", help="Internal flag: running from temp location")
-    parser.add_argument("--source", action="store_true", help="Running from source code repository/tree")
-    parser.add_argument("--python-exe", default="", help="Python interpreter to use for source execution")
+# Spring presets (the same "weight" feel as the app's own buttons and cards): light parts snap,
+# heavy parts settle.
+#   light  : spring 5.5  damping 0.28  mass 0.55
+#   medium : spring 4.2  damping 0.34  mass 1.0
+#   heavy  : spring 3.4  damping 0.36  mass 1.6
+UPDATER_QML = r'''
+import QtQuick
+import QtQuick.Window
+import QtQuick.Layouts
 
+// Looks like the app itself (same colours, cards, buttons and progress bar as Theme.qml).
+Window {
+    id: win
+    visible: true
+    width: 560
+    height: 540
+    minimumWidth: 480
+    minimumHeight: 460
+    title: "Pawchive Downloader Update"
+    color: "#0F1117"
+
+    readonly property string ff: "Segoe UI, Inter, Roboto, sans-serif"
+    readonly property string mono: "Cascadia Code, Consolas, Fira Code, monospace"
+    readonly property color primary: "#38BDF8"
+    readonly property color success: "#10B981"
+    readonly property color danger: "#EF4444"
+    readonly property color warning: "#F59E0B"
+    readonly property bool running: upd.phase === "running"
+    readonly property color tone: upd.phase === "error" ? (upd.code === "cancelled" ? warning : danger)
+                                : (running ? primary : success)
+
+    function activeIndex() {
+        var s = upd.stepStates
+        for (var i = 0; i < s.length; i++)
+            if (s[i] === "active" || s[i] === "failed") return i
+        return -1
+    }
+
+    onClosing: (close) => {
+        if (!upd.canClose()) { close.accepted = false; upd.nudge(); return }
+        if (running) { close.accepted = false; upd.windowClosing(); return }
+        upd.windowClosing()
+    }
+
+    // ── Pieces shared with the app's look ──
+    component Btn: Rectangle {
+        id: btn
+        property string label: ""
+        property string variant: "default"        // default | primary | ghost
+        property bool active: true
+        signal clicked()
+        implicitWidth: Math.max(80, btnText.implicitWidth + 24)
+        implicitHeight: 34
+        radius: 8
+        color: !active ? "#1F232B"
+             : variant === "primary" ? (btnMouse.pressed ? "#0284C7" : (btnMouse.containsMouse ? "#0EA5E9" : "#38BDF8"))
+             : variant === "ghost" ? (btnMouse.containsMouse ? "#242B38" : "transparent")
+             : (btnMouse.pressed ? "#1E222A" : (btnMouse.containsMouse ? "#2C3340" : "#222732"))
+        border.color: !active ? "#2A303C" : variant === "ghost" ? "transparent"
+                    : variant === "primary" ? "#38BDF8" : (btnMouse.containsMouse ? "#475569" : "#333A48")
+        Behavior on color { ColorAnimation { duration: 160; easing.type: Easing.OutCubic } }
+        // light spring, same as StyledButton
+        scale: btnMouse.pressed ? 0.945 : (btnMouse.containsMouse && active ? 1.025 : 1.0)
+        Behavior on scale { SpringAnimation { spring: 5.2; damping: 0.35; mass: 0.75; epsilon: 0.005 } }
+        Text {
+            id: btnText
+            anchors.centerIn: parent
+            text: btn.label
+            font.family: win.ff; font.pixelSize: 12; font.weight: Font.Medium
+            color: !btn.active ? "#64748B" : btn.variant === "primary" ? "#0F172A"
+                 : (btn.variant === "ghost" && btnMouse.containsMouse ? "#38BDF8" : "#E2E8F0")
+        }
+        MouseArea {
+            id: btnMouse
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: btn.clicked()
+        }
+    }
+
+    component Card: Rectangle {
+        id: card
+        property int delay: 0
+        property real enter: 0
+        color: "#181B22"
+        border.color: "#282E3D"
+        radius: 10
+        // settles into place when the window opens (medium weight)
+        opacity: enter
+        transform: Translate { y: (1 - card.enter) * 14 }
+        Behavior on enter { SpringAnimation { spring: 4.0; damping: 0.38; mass: 1.0; epsilon: 0.002 } }
+        Timer { running: true; interval: card.delay + 40; onTriggered: card.enter = 1 }
+    }
+
+    // ── Header (like the app's top bar) ──
+    Rectangle {
+        id: header
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        height: 64
+        color: "#151820"
+        Rectangle { anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; height: 1; color: "#1E2330" }
+
+        RowLayout {
+            anchors.fill: parent
+            anchors.leftMargin: 20
+            anchors.rightMargin: 20
+            spacing: 12
+
+            Item {
+                Layout.preferredWidth: 30
+                Layout.preferredHeight: 30
+                Image {
+                    id: logo
+                    anchors.fill: parent
+                    source: upd.iconUrl
+                    sourceSize: Qt.size(64, 64)
+                    fillMode: Image.PreserveAspectFit
+                    smooth: true
+                    visible: status === Image.Ready
+                }
+                Rectangle {
+                    anchors.fill: parent
+                    visible: logo.status !== Image.Ready
+                    radius: 8
+                    color: "#1E293B"
+                    border.color: "#2A303F"
+                    Text { anchors.centerIn: parent; text: "P"; font.family: win.ff; font.pixelSize: 15; font.bold: true; color: win.primary }
+                }
+            }
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 1
+                Text {
+                    text: "Pawchive Downloader"
+                    font.family: win.ff; font.pixelSize: 15; font.weight: Font.DemiBold
+                    color: "#F1F5F9"
+                }
+                Row {
+                    spacing: 6
+                    Text {
+                        text: upd.phase === "success" ? "Updated" : (upd.phase === "uptodate" ? "Up to date"
+                            : (upd.phase === "error" ? "Update stopped" : "Updating"))
+                        font.family: win.ff; font.pixelSize: 12; color: "#94A3B8"
+                    }
+                    Text {
+                        visible: upd.fromVersion.length > 0
+                        text: upd.fromVersion
+                        font.family: win.mono; font.pixelSize: 11; color: "#94A3B8"
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+                    Text {
+                        visible: upd.fromVersion.length > 0 && upd.toVersion.length > 0
+                        text: "→"
+                        font.pixelSize: 12; color: "#64748B"
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+                    Text {
+                        visible: upd.toVersion.length > 0
+                        text: upd.toVersion
+                        font.family: win.mono; font.pixelSize: 11; color: win.primary
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+                    // Which edition is being updated: Windows build, Linux build or source code
+                    Rectangle {
+                        visible: upd.edition.length > 0
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: editionText.implicitWidth + 12
+                        height: 18
+                        radius: 4
+                        color: "#161E2E"
+                        border.color: "#1E293B"
+                        Text {
+                            id: editionText
+                            anchors.centerIn: parent
+                            text: upd.edition
+                            font.family: win.ff; font.pixelSize: 10; font.weight: Font.Medium
+                            color: "#A78BFA"
+                        }
+                    }
+                }
+            }
+            Item { Layout.fillWidth: true }
+
+            // Status badge (like the inline badges next to the app's progress bar)
+            Rectangle {
+                Layout.preferredHeight: 22
+                Layout.preferredWidth: badgeText.implicitWidth + 16
+                radius: 5
+                color: Qt.rgba(win.tone.r, win.tone.g, win.tone.b, 0.12)
+                border.color: Qt.rgba(win.tone.r, win.tone.g, win.tone.b, 0.35)
+                Behavior on color { ColorAnimation { duration: 220 } }
+                Text {
+                    id: badgeText
+                    anchors.centerIn: parent
+                    text: win.running ? ("Step " + Math.max(1, win.activeIndex() + 1) + " of " + Math.max(1, upd.stepLabels.length))
+                        : (upd.phase === "error" ? (upd.code === "cancelled" ? "Cancelled" : "Stopped") : "Done")
+                    font.family: win.mono; font.pixelSize: 10; font.weight: Font.Medium
+                    color: win.tone
+                }
+            }
+        }
+    }
+
+    // ── Body ──
+    Item {
+        id: body
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: header.bottom
+        anchors.bottom: footer.top
+        anchors.margins: 20
+
+        // a short damped shake when something needs attention
+        property real kick: 0
+        transform: Translate { x: body.kick }
+        Behavior on kick { SpringAnimation { spring: 9; damping: 0.2; mass: 0.5; epsilon: 0.05 } }
+        property int shakes: upd.shake
+        onShakesChanged: { kickTimer.restart(); body.kick = 10 }
+        Timer { id: kickTimer; interval: 40; onTriggered: body.kick = 0 }
+
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 12
+
+            // Progress + steps
+            Card {
+                Layout.fillWidth: true
+                Layout.preferredHeight: progressCol.implicitHeight + 28
+                ColumnLayout {
+                    id: progressCol
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.margins: 14
+                    spacing: 10
+
+                    // Current step + detail
+                    RowLayout {
+                        Layout.fillWidth: true
+                        visible: win.running
+                        spacing: 8
+                        Text {
+                            text: (upd.stepLabels[win.activeIndex()] || "Starting") + ":"
+                            font.family: win.ff; font.pixelSize: 11; font.weight: Font.DemiBold
+                            color: win.primary
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: upd.detail
+                            elide: Text.ElideRight
+                            font.family: win.mono; font.pixelSize: 11; color: "#94A3B8"
+                        }
+                        Text {
+                            visible: upd.progress >= 0
+                            text: Math.round(upd.progress * 100) + "%"
+                            font.family: win.mono; font.pixelSize: 11; color: "#CBD5E1"
+                        }
+                    }
+
+                    // Progress bar (spring fill; a sliding segment when the size isn't known)
+                    Rectangle {
+                        id: track
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 6
+                        visible: win.running
+                        radius: 3
+                        color: "#1A2234"
+                        clip: true
+                        property real shown: upd.progress < 0 ? 0 : upd.progress
+                        Behavior on shown { SpringAnimation { spring: 3.0; damping: 0.42; mass: 1.0; epsilon: 0.001 } }
+                        Rectangle {
+                            visible: upd.progress >= 0
+                            width: track.width * Math.max(0, Math.min(1, track.shown))
+                            height: parent.height
+                            radius: 3
+                            color: win.primary
+                        }
+                        Rectangle {
+                            id: slider
+                            visible: upd.progress < 0
+                            width: track.width * 0.25
+                            height: parent.height
+                            radius: 3
+                            color: win.primary
+                            opacity: 0.8
+                            SequentialAnimation on x {
+                                running: slider.visible
+                                loops: Animation.Infinite
+                                NumberAnimation { from: -slider.width; to: track.width; duration: 1400; easing.type: Easing.InOutQuad }
+                            }
+                        }
+                    }
+
+                    // Result (drops in with weight when the update ends)
+                    Rectangle {
+                        id: result
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: resultCol.implicitHeight + 22
+                        visible: !win.running
+                        radius: 8
+                        color: "#0B0E14"
+                        border.color: Qt.rgba(win.tone.r, win.tone.g, win.tone.b, 0.45)
+                        property real drop: win.running ? 0 : 1
+                        Behavior on drop { SpringAnimation { spring: 3.4; damping: 0.36; mass: 1.6; epsilon: 0.002 } }
+                        opacity: drop
+                        transform: Translate { y: (1 - result.drop) * -10 }
+                        Rectangle { x: 0; y: 8; width: 3; height: parent.height - 16; radius: 1.5; color: win.tone }
+                        ColumnLayout {
+                            id: resultCol
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            anchors.leftMargin: 16
+                            anchors.rightMargin: 12
+                            anchors.topMargin: 11
+                            spacing: 5
+                            Text {
+                                Layout.fillWidth: true
+                                text: upd.title
+                                wrapMode: Text.WordWrap
+                                font.family: win.ff; font.pixelSize: 13; font.bold: true; color: "#F1F5F9"
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                visible: text.length > 0
+                                text: upd.text
+                                wrapMode: Text.WordWrap
+                                font.family: win.ff; font.pixelSize: 12; color: "#CBD5E1"
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                visible: upd.warning.length > 0
+                                text: "⚠ " + upd.warning
+                                wrapMode: Text.WordWrap
+                                font.family: win.ff; font.pixelSize: 12; color: "#FBBF24"
+                            }
+                            Text {
+                                visible: upd.countdown > 0
+                                text: "Opening Pawchive in " + upd.countdown + "s"
+                                font.family: win.mono; font.pixelSize: 11; color: "#64748B"
+                            }
+                        }
+                    }
+
+                    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: "#222A3A" }
+
+                    // Steps
+                    Column {
+                        Layout.fillWidth: true
+                        spacing: 4
+                        Repeater {
+                            model: upd.stepLabels
+                            delegate: Item {
+                                id: stepRow
+                                width: parent.width
+                                height: 22
+                                readonly property string st: upd.stepStates[index] || "pending"
+
+                                Item {
+                                    id: mark
+                                    width: 16; height: 16
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    Rectangle {
+                                        anchors.centerIn: parent
+                                        width: 6; height: 6; radius: 3
+                                        color: "#334155"
+                                        visible: stepRow.st === "pending"
+                                    }
+                                    Canvas {
+                                        id: spinner
+                                        anchors.centerIn: parent
+                                        width: 14; height: 14
+                                        visible: stepRow.st === "active"
+                                        onPaint: {
+                                            var c = getContext("2d")
+                                            c.reset()
+                                            c.lineWidth = 2
+                                            c.strokeStyle = "#38BDF8"
+                                            c.lineCap = "round"
+                                            c.beginPath()
+                                            c.arc(7, 7, 5.5, 0, Math.PI * 1.5)
+                                            c.stroke()
+                                        }
+                                        RotationAnimation on rotation {
+                                            running: spinner.visible
+                                            loops: Animation.Infinite
+                                            from: 0; to: 360; duration: 900
+                                        }
+                                    }
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: stepRow.st === "failed" ? "✕" : (stepRow.st === "skipped" ? "–" : "✓")
+                                        visible: pop > 0.01
+                                        font.family: win.ff; font.pixelSize: 13; font.bold: true
+                                        color: stepRow.st === "failed" ? win.danger : (stepRow.st === "skipped" ? "#475569" : win.success)
+                                        // light spring pop when a step finishes
+                                        property real pop: (stepRow.st === "done" || stepRow.st === "failed" || stepRow.st === "skipped") ? 1 : 0
+                                        Behavior on pop { SpringAnimation { spring: 5.5; damping: 0.28; mass: 0.55; epsilon: 0.002 } }
+                                        scale: pop
+                                    }
+                                }
+                                Text {
+                                    anchors.left: mark.right
+                                    anchors.leftMargin: 10
+                                    anchors.right: parent.right
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    elide: Text.ElideRight
+                                    text: modelData + (stepRow.st === "skipped" ? "  ·  not needed" : "")
+                                    font.family: win.ff
+                                    font.pixelSize: 12
+                                    font.weight: stepRow.st === "active" ? Font.Medium : Font.Normal
+                                    color: stepRow.st === "active" ? "#F1F5F9" : (stepRow.st === "done" ? "#94A3B8"
+                                         : (stepRow.st === "failed" ? "#FCA5A5" : "#64748B"))
+                                    Behavior on color { ColorAnimation { duration: 180 } }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // What's new (CardSection style)
+            Card {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                delay: 70
+                visible: upd.notes.length > 0
+                clip: true
+                Row {
+                    id: notesHead
+                    x: 14; y: 12
+                    spacing: 8
+                    Text { text: "📝"; font.pixelSize: 13; anchors.verticalCenter: parent.verticalCenter }
+                    Text {
+                        text: "What's new" + (upd.toVersion.length > 0 ? " in " + upd.toVersion : "")
+                        font.family: win.ff; font.pixelSize: 12; font.weight: Font.DemiBold
+                        color: "#CBD5E1"
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+                }
+                Flickable {
+                    id: notesFlick
+                    anchors.fill: parent
+                    anchors.topMargin: 40
+                    anchors.leftMargin: 14
+                    anchors.rightMargin: 14
+                    anchors.bottomMargin: 10
+                    contentHeight: notesText.implicitHeight
+                    clip: true
+                    boundsBehavior: Flickable.StopAtBounds
+                    Text {
+                        id: notesText
+                        width: notesFlick.width - 8
+                        text: upd.notes
+                        textFormat: Text.MarkdownText
+                        wrapMode: Text.WordWrap
+                        font.family: win.ff; font.pixelSize: 12; color: "#CBD5E1"
+                        linkColor: win.primary
+                        onLinkActivated: (link) => Qt.openUrlExternally(link)
+                    }
+                }
+                // thin scroll indicator
+                Rectangle {
+                    visible: notesFlick.contentHeight > notesFlick.height
+                    x: parent.width - 6
+                    y: notesFlick.y + notesFlick.visibleArea.yPosition * notesFlick.height
+                    width: 3
+                    height: notesFlick.visibleArea.heightRatio * notesFlick.height
+                    radius: 1.5
+                    color: "#334155"
+                }
+            }
+            Item { Layout.fillHeight: true; visible: upd.notes.length === 0 }
+        }
+    }
+
+    // ── Footer ──
+    Rectangle {
+        id: footer
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        height: 58
+        color: "#151820"
+        Rectangle { anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; height: 1; color: "#1E2330" }
+
+        Btn {
+            anchors.left: parent.left
+            anchors.leftMargin: 20
+            anchors.verticalCenter: parent.verticalCenter
+            visible: upd.hasLog && upd.phase === "error"
+            variant: "ghost"
+            label: "Show log"
+            onClicked: upd.act("log")
+        }
+
+        Row {
+            anchors.right: parent.right
+            anchors.rightMargin: 20
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 8
+            Btn {
+                visible: win.running
+                label: "Cancel"
+                active: upd.canCancel
+                onClicked: upd.canCancel ? upd.cancel() : upd.nudge()
+            }
+            Repeater {
+                model: upd.actions.slice().reverse()       // main action on the right
+                delegate: Btn {
+                    readonly property var names: ({
+                        "open": "Open Pawchive", "close": "Close", "retry": "Try again",
+                        "admin": "Try again as administrator", "stash": "Save my changes and update",
+                        "keep": "Keep my changes", "archive": "Download the files instead"
+                    })
+                    label: names[modelData] || modelData
+                    variant: index === upd.actions.length - 1 ? "primary" : "default"
+                    onClicked: upd.act(modelData)
+                }
+            }
+        }
+    }
+}
+'''
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Pawchive Downloader updater")
+    parser.add_argument("--plan", default="", help="Update plan written by the app")
+    parser.add_argument("--no-wait", action="store_true", help="Don't wait for the app to close")
+    parser.add_argument("--console", action="store_true", help="Update in the console, without a window")
+    # Older versions of the app started the updater with these
+    parser.add_argument("--target-dir", default="")
+    parser.add_argument("--pid", type=int, default=0)
+    parser.add_argument("--download-url", default="")
+    parser.add_argument("--version", default="")
+    parser.add_argument("--source", action="store_true")
+    parser.add_argument("--python-exe", default="")
+    parser.add_argument("--commit", default="")
+    parser.add_argument("--temp-runner", action="store_true")
     args = parser.parse_args()
 
-    target_dir = args.target_dir
-    if not target_dir:
-        if getattr(sys, "frozen", False):
-            target_dir = os.path.dirname(os.path.abspath(sys.executable))
-        else:
-            target_dir = os.path.dirname(os.path.abspath(__file__))
-
-    is_source = args.source or (not getattr(sys, "frozen", False))
-    python_exe = args.python_exe or sys.executable
-
-    download_url = args.download_url
-    version = args.version
-    if not download_url:
+    try:
+        plan = load_plan(args)
+    except (OSError, ValueError) as e:
+        print(f"Couldn't read the update plan: {e}")
+        return 2
+    log = ui.UpdateLog(plan["target_dir"], plan)
+    log.write(f"plan: { {k: v for k, v in plan.items() if k != 'notes'} }")
+    if gui_possible(args.console):
         try:
-            req = urllib.request.Request(
-                "https://api.github.com/repos/whyamihere773/Pawchive-Downloader/releases/latest",
-                headers={"User-Agent": "Pawchive-Updater/1.0"}
-            )
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                if not version:
-                    version = data.get("tag_name", "")
-                download_url = find_matching_release_asset(data.get("assets", []))
-        except Exception:
-            pass
-
-    if not download_url:
-        print("❌ Error: No download package URL provided and could not query GitHub releases.")
-        sys.exit(1)
-
-    # Self-relocation:
-    # If running from inside target_dir, copy self to tempdir
-    # so target_dir/updater.exe or updater.py is not locked and can be cleanly updated!
-    if not args.temp_runner:
-        temp_dir = tempfile.gettempdir()
-        if getattr(sys, "frozen", False):
-            my_exe = os.path.abspath(sys.executable)
-            ext = ".exe" if sys.platform == "win32" else ""
-            temp_updater = os.path.join(temp_dir, f"pawchive_updater_run_{int(time.time())}{ext}")
-            try:
-                shutil.copy2(my_exe, temp_updater)
-                if sys.platform != "win32":
-                    try:
-                        os.chmod(temp_updater, 0o755)
-                    except Exception:
-                        pass
-                cmd = [
-                    temp_updater,
-                    "--target-dir", target_dir,
-                    "--pid", str(args.pid),
-                    "--download-url", download_url,
-                    "--version", version,
-                    "--temp-runner"
-                ]
-                subprocess.Popen(cmd)
-                sys.exit(0)
-            except Exception:
-                pass  # Fall back to running in-place
-        else:
-            my_script = os.path.abspath(__file__)
-            temp_script = os.path.join(temp_dir, f"pawchive_updater_run_{int(time.time())}.py")
-            try:
-                shutil.copy2(my_script, temp_script)
-                cmd = [
-                    python_exe,
-                    temp_script,
-                    "--target-dir", target_dir,
-                    "--pid", str(args.pid),
-                    "--download-url", download_url,
-                    "--version", version,
-                    "--source",
-                    "--python-exe", python_exe,
-                    "--temp-runner"
-                ]
-                subprocess.Popen(cmd)
-                sys.exit(0)
-            except Exception:
-                pass  # Fall back to running in-place
-
-    if not HAS_TKINTER:
-        run_headless_update(target_dir, args.pid, download_url, version, is_source=is_source, python_exe=python_exe)
-        sys.exit(0)
-
-    root = tk.Tk()
-    app = UpdaterApp(
-        root=root,
-        target_dir=target_dir,
-        pid=args.pid,
-        download_url=download_url,
-        version=version,
-        is_source=is_source,
-        python_exe=python_exe
-    )
-    root.mainloop()
+            return run_gui(plan, log)
+        except Exception as e:  # a broken display setup shouldn't stop the update
+            log.write(f"window mode failed ({e!r}); using console mode")
+    return run_console(plan, log)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

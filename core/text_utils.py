@@ -67,6 +67,24 @@ def sanitize_filesystem_name(name: Optional[str], fallback: str = "item", max_le
     return safe or fallback
 
 
+_WINDOWS_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+
+
+def safe_file_name(name: Optional[str], fallback: str = "file", max_len: int = 200) -> str:
+    """One file name that always stays inside its folder.
+
+    For names chosen by other people (Telegram uploaders, album sites): any folder part is dropped
+    ("..\\..\\x.bat" -> "x.bat", "C:\\Windows\\y.exe" -> "y.exe"), characters Windows or Linux refuse
+    are replaced (":" would otherwise write into a hidden NTFS stream), and reserved Windows device
+    names such as CON or NUL.txt get a prefix.
+    """
+    raw = str(name or "").replace("\\", "/").split("/")[-1]
+    safe = sanitize_filesystem_name(raw, fallback=fallback, max_len=max_len)
+    if safe.split(".", 1)[0].upper() in _WINDOWS_RESERVED_NAMES:
+        safe = "_" + safe
+    return safe
+
+
 def strip_html_tags(html_str: Optional[str]) -> str:
     """
     Converts HTML markup into clean readable plaintext:

@@ -7,12 +7,10 @@ Night Owl off-peak windows, user-locked concurrency settings, and Windows sleep 
 import os
 import sys
 import json
-import time
 import uuid
 import shutil
 import datetime
 import threading
-import ctypes
 from typing import Dict, Any, List, Optional, Callable
 
 if __name__ == "__main__" or "core" not in sys.modules:
@@ -22,11 +20,6 @@ if __name__ == "__main__" or "core" not in sys.modules:
 
 from core.logger import logger
 
-# Windows kernel power management constants
-ES_CONTINUOUS = 0x80000000
-ES_SYSTEM_REQUIRED = 0x00000001
-ES_AWAYMODE_REQUIRED = 0x00000040
-
 
 class TaskScheduler:
     """
@@ -35,7 +28,10 @@ class TaskScheduler:
 
     def __init__(self, config_dir: Optional[str] = None):
         if not config_dir:
-            config_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config")
+            from core.path_utils import get_config_dir, migrate_legacy_files
+            config_dir = get_config_dir()
+            migrate_legacy_files(config_dir, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config"),
+                                 ("schedules.json", "schedules.json.bak"))
         self.config_dir = config_dir
         os.makedirs(self.config_dir, exist_ok=True)
 
@@ -57,6 +53,7 @@ class TaskScheduler:
         self._running: bool = False
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
+        self._log_once_keys = set()      # messages the 10-second loop should only log once
         self._sleep_lock_active: bool = False
 
         # Callbacks
@@ -193,7 +190,7 @@ class TaskScheduler:
         with self._lock:
             for s in self.schedules:
                 if s.get("id") == sched_id:
-                    s["name"] = name.strip() or ("Watchlist Delta Sync" if target_type == "watchlist" else "Creator Download")
+                    s["name"] = name.strip() or ("Watchlist Sync" if target_type == "watchlist" else "Creator Download")
                     s["target_type"] = target_type
                     s["target_url"] = target_url.strip()
                     s["trigger_type"] = trigger_type
@@ -282,28 +279,19 @@ class TaskScheduler:
             return True
 
     def acquire_sleep_lock(self):
-        """Prevents Windows system sleep and standby while downloads are active."""
+        """Keeps the computer awake (when "prevent sleep" is on). The app calls this for as long as
+        downloads run; the scheduler used to hold it only for the moment a schedule started."""
         if not self.prevent_sleep:
             return
-
-        if sys.platform == "win32" and not self._sleep_lock_active:
-            try:
-                flags = ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED
-                ctypes.windll.kernel32.SetThreadExecutionState(flags)
-                self._sleep_lock_active = True
-                logger.debug("Windows Sleep Prevention activated (Away Mode ON).", category="scheduler")
-            except Exception as e:
-                logger.debug(f"Could not set execution state: {e}", category="scheduler")
+        from core.power import sleep_inhibitor
+        sleep_inhibitor.set_active(True)
+        self._sleep_lock_active = True
 
     def release_sleep_lock(self):
-        """Releases sleep prevention lock, restoring default power management."""
-        if sys.platform == "win32" and self._sleep_lock_active:
-            try:
-                ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS)
-                self._sleep_lock_active = False
-                logger.debug("Windows Sleep Prevention released.", category="scheduler")
-            except Exception as e:
-                logger.debug(f"Could not reset execution state: {e}", category="scheduler")
+        """Lets the computer sleep normally again."""
+        from core.power import sleep_inhibitor
+        sleep_inhibitor.set_active(False)
+        self._sleep_lock_active = False
 
     def start(self):
         """Starts the background scheduler thread."""
@@ -321,7 +309,6 @@ class TaskScheduler:
         self._stop_event.set()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2.0)
-        self.release_sleep_lock()
         logger.info("Task Scheduler stopped.", category="scheduler")
 
     def _scheduler_loop(self):
@@ -346,15 +333,26 @@ class TaskScheduler:
                     try:
                         next_run_dt = datetime.datetime.fromisoformat(next_run_str)
                     except Exception:
+                        key = ("bad_time", sched.get("id"), next_run_str)
+                        if key not in self._log_once_keys:
+                            self._log_once_keys.add(key)
+                            logger.warning(
+                                f"Schedule '{sched.get('name', '?')}' has an unreadable next run time ({next_run_str!r}), "
+                                f"so it won't run. Edit or re-create the schedule to fix it.",
+                                category="scheduler"
+                            )
                         continue
 
                     if now >= next_run_dt:
                         # Time to trigger! Check Night Owl window
                         if self.night_owl_enabled and not self.is_in_night_owl_window(now.time()):
-                            logger.info(
-                                f"Schedule '{sched['name']}' trigger reached, but currently outside Night Owl window ({self.night_owl_start}–{self.night_owl_end}). Waiting...",
-                                category="scheduler"
-                            )
+                            key = ("night_owl", sched.get("id"), next_run_str)
+                            if key not in self._log_once_keys:      # once per due run, not every 10 seconds
+                                self._log_once_keys.add(key)
+                                logger.info(
+                                    f"Schedule '{sched['name']}' trigger reached, but currently outside Night Owl window ({self.night_owl_start}–{self.night_owl_end}). Waiting...",
+                                    category="scheduler"
+                                )
                             continue
 
                         # Execute schedule
@@ -369,7 +367,6 @@ class TaskScheduler:
         target_type = sched.get("target_type", "watchlist")
         logger.info(f"⏰ [SCHEDULER] Triggering schedule '{sched_name}' ({target_type})...", category="scheduler")
 
-        self.acquire_sleep_lock()
         try:
             sched["status"] = "running"
             now = datetime.datetime.now()
@@ -394,8 +391,6 @@ class TaskScheduler:
             sched["status"] = f"error: {e}"
             self.save()
             logger.error(f"✖ [SCHEDULER] Error executing '{sched_name}': {e}", category="scheduler")
-        finally:
-            self.release_sleep_lock()
 
 
 # Global Singleton

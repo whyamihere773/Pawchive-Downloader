@@ -5,7 +5,7 @@ channel metadata resolution, and download controls to PySide6 / QML.
 """
 
 from PySide6.QtCore import QObject, Signal, Slot, Property, QTimer
-from typing import Dict, Any, List, Optional
+from typing import List, Optional
 from services.telegram_service import TelegramService
 
 
@@ -119,6 +119,7 @@ class TelegramBridge(QObject):
         self._relayQrUpdated.emit(data_url)
 
     def _on_auth_state(self, state: str, message: str):
+        self._auth_answered = True
         self._relayAuthState.emit(state, message)
 
     def _on_flood_wait(self, seconds: int):
@@ -216,21 +217,45 @@ class TelegramBridge(QObject):
         self.statusMessageChanged.emit()
         self.qrCodeDataUrlChanged.emit()
 
+    def _login_step(self, fn, *args):
+        """Runs a login step in the background: each one waits for Telegram's servers (up to 15 s)
+        and used to freeze the window meanwhile. Results arrive through the usual state signals."""
+        import threading
+        if getattr(self, "_login_step_running", False):
+            return
+        self._login_step_running = True
+        self._status_message = "Contacting Telegram…"
+        self.statusMessageChanged.emit()
+
+        self._auth_answered = False
+
+        def _worker():
+            try:
+                fn(*args)
+            except Exception as e:
+                self._relayAuthState.emit("error", f"Telegram login failed: {e}")
+                self._auth_answered = True
+            finally:
+                self._login_step_running = False
+            if not self._auth_answered:      # no answer at all (e.g. timed out)
+                self._relayAuthState.emit("error", "Telegram didn't answer in time. Please try again.")
+        threading.Thread(target=_worker, daemon=True, name="TelegramLogin").start()
+
     @Slot(str)
     def sendPhoneCode(self, phone: str):
-        self._service.send_phone_code(phone.strip())
+        self._login_step(self._service.send_phone_code, phone.strip())
 
     @Slot(str)
     def verifyPhoneCode(self, code: str):
-        self._service.verify_phone_code(code.strip())
+        self._login_step(self._service.verify_phone_code, code.strip())
 
     @Slot(str)
     def submit2faPassword(self, password: str):
-        self._service.submit_2fa_password(password)
+        self._login_step(self._service.submit_2fa_password, password)
 
     @Slot(str)
     def loginWithBotToken(self, token: str):
-        self._service.login_with_bot_token(token.strip())
+        self._login_step(self._service.login_with_bot_token, token.strip())
 
     @Slot()
     def disconnectAccount(self):
@@ -289,14 +314,12 @@ class TelegramBridge(QObject):
     @Slot(str, int, list, int)
     @Slot(str, int, list, int, bool)
     def fetchMessages(self, target: str, limit: int, media_types: List[str], max_size_mb: int, for_selection: bool = False):
-        import logging, sys
-        print(f">>> FETCH_MESSAGES CALLED: target={target}, limit={limit}, types={media_types}, max_size={max_size_mb}, for_selection={for_selection}", flush=True)
-        logger = logging.getLogger("pawchive")
-        logger.info(f"[TelegramBridge] fetchMessages called: target={target}, limit={limit}, media_types={media_types}, max_size_mb={max_size_mb}, for_selection={for_selection}")
+        from core.logger import logger
+        logger.debug(f"Fetching Telegram messages: target={target}, limit={limit}, types={media_types}, "
+                     f"max size={max_size_mb} MB, for selection={for_selection}", category="telegram")
 
         def _worker():
             try:
-                print(">>> WORKER STARTED", flush=True)
                 msgs = self._service.fetch_channel_messages(
                     target=target,
                     limit=limit,
@@ -304,14 +327,13 @@ class TelegramBridge(QObject):
                     max_size_mb=max_size_mb,
                     fetch_thumbnails=for_selection
                 )
-                print(f">>> WORKER GOT {len(msgs)} messages", flush=True)
+                logger.debug(f"Telegram: got {len(msgs)} message(s) from {target}.", category="telegram")
                 if for_selection:
                     self.channelMessagesForSelectionReady.emit(msgs)
                 else:
                     self.channelMessagesReady.emit(msgs)
-                print(">>> SIGNAL EMITTED", flush=True)
             except Exception as e:
-                print(f">>> WORKER EXCEPTION: {e}", flush=True)
+                logger.exception(f"Couldn't fetch Telegram messages from {target}", category="telegram")
                 self.channelResolutionFailed.emit(str(e))
 
         import threading

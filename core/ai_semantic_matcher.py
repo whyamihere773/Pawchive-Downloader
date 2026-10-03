@@ -7,6 +7,7 @@ Known.txt and master character databases using ONNX Runtime.
 import os
 import re
 import sys
+import threading
 import time
 import unicodedata
 from typing import Optional, List, Dict, Any, Tuple
@@ -15,6 +16,9 @@ import numpy as np
 from core.logger import logger
 from core.hardware_detector import HardwareDetector
 from services.model_manager import ModelManager
+
+# A loaded model is unloaded after this long without being used (it reloads on its next use).
+IDLE_UNLOAD_SECONDS = 300
 
 
 class WordPieceTokenizer:
@@ -124,6 +128,8 @@ class SemanticMatcher:
         self.session = None
         self.tokenizer: Optional[WordPieceTokenizer] = None
         self.hardware_name = "Uninitialized"
+        self._lock = threading.RLock()        # held while the model is used, so it's never unloaded mid-use
+        self._last_used = 0.0
 
         # Cached index: list of (canonical_entry, franchise, character) and corresponding matrix
         self._cached_items: List[Tuple[str, str, str]] = []
@@ -136,6 +142,10 @@ class SemanticMatcher:
 
     def initialize(self) -> bool:
         """Loads ONNX runtime session with GPU/DirectML/CPU execution providers."""
+        with self._lock:
+            return self._initialize_locked()
+
+    def _initialize_locked(self) -> bool:
         if not self.is_available():
             return False
         if self.session is not None and (self.tokenizer is not None or getattr(self, "hf_tokenizer", None) is not None):
@@ -172,8 +182,43 @@ class SemanticMatcher:
             logger.error(f"Failed to initialize SemanticMatcher session: {e}", category="ai")
             return False
 
+    def is_loaded(self) -> bool:
+        return self.session is not None
+
+    def unload(self) -> bool:
+        """Free the model's memory (it loads again on its next use). The Known index is kept."""
+        with self._lock:
+            if self.session is None:
+                return False
+            self.session = None
+            self.tokenizer = None
+            self.hf_tokenizer = None
+            logger.debug("Semantic matcher model unloaded.", category="ai")
+            return True
+
+    def unload_if_idle(self, idle_seconds: float = IDLE_UNLOAD_SECONDS) -> bool:
+        """Unload when unused for idle_seconds. Never waits for, or interrupts, a lookup in progress."""
+        if self.session is None or time.monotonic() - self._last_used < idle_seconds:
+            return False
+        if not self._lock.acquire(blocking=False):
+            return False
+        try:
+            if self.session is None or time.monotonic() - self._last_used < idle_seconds:
+                return False
+            return self.unload()
+        finally:
+            self._lock.release()
+
     def embed_text(self, text: str) -> Optional[np.ndarray]:
         """Calculates normalized 384-dimensional embedding vector for a given text."""
+        with self._lock:
+            self._last_used = time.monotonic()
+            try:
+                return self._embed_text_locked(text)
+            finally:
+                self._last_used = time.monotonic()
+
+    def _embed_text_locked(self, text: str) -> Optional[np.ndarray]:
         if not self.initialize() or self.session is None:
             return None
 

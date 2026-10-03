@@ -69,6 +69,7 @@ Item {
 
     function tr(key, fallback) {
         if (typeof Lang === "undefined" || !Lang) return fallback !== undefined ? fallback : key
+        var _ = Lang.activeLanguage      // re-translate when the language changes
         var res = Lang.t(key)
         return (res && res !== key) ? res : (fallback !== undefined ? fallback : res)
     }
@@ -167,6 +168,11 @@ Item {
     function inspectPost(postId) {
         for (var i = 0; i < allPosts.length; i++) {
             if (allPosts[i].id === postId) {
+                // Listed in the order they'll be numbered ("File order in posts"); each file keeps
+                // its own ticked state, so re-sorting never changes the selection
+                if (bridge && allPosts[i].files && allPosts[i].files.length > 1) {
+                    allPosts[i].files = bridge.orderPostFiles(allPosts[i].files)
+                }
                 inspectedPost = allPosts[i]
                 postFilesModel.clear()
                 var selInPost = 0
@@ -411,6 +417,15 @@ Item {
 
     ListModel {
         id: postFilesModel
+    }
+
+    Connections {
+        target: modalRoot.bridge
+        function onFileOrderChanged() {
+            if (!modalRoot.inspectedPost) return
+            modalRoot.lightboxVisible = false
+            modalRoot.inspectPost(modalRoot.inspectedPost.id)
+        }
     }
 
     // Semi-transparent backdrop overlay
@@ -1230,6 +1245,20 @@ Item {
                                     font.weight: Font.Bold
                                     color: "#F1F5F9"
                                     Layout.fillWidth: true
+                                }
+
+                                // Which file is #1 (same setting as "File order in posts" in the Downloader tab)
+                                StyledComboBox {
+                                    implicitHeight: 28
+                                    implicitWidth: 140
+                                    model: [
+                                        { text: modalRoot.tr("file_order_posted", "As posted"), value: "posted" },
+                                        { text: modalRoot.tr("file_order_reversed", "Reversed"), value: "reversed" },
+                                        { text: modalRoot.tr("file_order_name", "By file name"), value: "name" }
+                                    ]
+                                    value: modalRoot.bridge ? modalRoot.bridge.fileOrder : "posted"
+                                    tooltip: modalRoot.tr("tip_file_order_modal", "Order of the files: #1 is downloaded first and numbered first. This is the \"File order in posts\" setting from the Downloader tab.")
+                                    onValuePicked: function(v) { if (modalRoot.bridge) modalRoot.bridge.fileOrder = v }
                                 }
 
                                 // View Switcher: Gallery Mode vs List Mode (Physical Newtonian Spring Slider)

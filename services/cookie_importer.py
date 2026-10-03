@@ -15,7 +15,7 @@ import sqlite3
 import tempfile
 import ctypes
 from ctypes import wintypes
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional
 
 if __name__ == "__main__" or "core" not in sys.modules:
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -278,6 +278,33 @@ class BrowserCookieImporter:
             "expiry": expiry_info
         }
 
+    @staticmethod
+    def _firefox_default_profiles(profiles_dir: str) -> set:
+        """Folders of the profile(s) Firefox uses by default, read from profiles.ini."""
+        import configparser
+        result = set()
+        for ini in (os.path.join(profiles_dir, "profiles.ini"), os.path.join(os.path.dirname(profiles_dir), "profiles.ini")):
+            if not os.path.exists(ini):
+                continue
+            base = os.path.dirname(ini)
+            cp = configparser.RawConfigParser()
+            try:
+                cp.read(ini, encoding="utf-8")
+            except Exception:
+                continue
+            for section in cp.sections():
+                path = cp.get(section, "Path", fallback="") if section.startswith("Profile") else ""
+                if section.startswith("Install"):
+                    path = cp.get(section, "Default", fallback="")      # current Firefox: per-install default
+                elif not (path and cp.get(section, "Default", fallback="0") == "1"):
+                    continue
+                if not path:
+                    continue
+                relative = cp.get(section, "IsRelative", fallback="1") == "1" or section.startswith("Install")
+                full = os.path.join(base, path) if relative else path
+                result.add(os.path.normcase(os.path.normpath(full)))
+        return result
+
     @classmethod
     def import_from_firefox(cls, profiles_dir: str) -> Dict[str, Any]:
         """
@@ -300,8 +327,13 @@ class BrowserCookieImporter:
         if not candidate_dbs:
             raise FileNotFoundError("Firefox cookies.sqlite not found in profiles")
 
-        # Sort candidate DBs by most recently modified first
-        candidate_dbs.sort(key=lambda x: x[1], reverse=True)
+        # The profile Firefox actually uses (profiles.ini) first, then the others, newest first
+        default_dirs = cls._firefox_default_profiles(profiles_dir)
+
+        def _rank(item):
+            folder = os.path.normcase(os.path.dirname(item[0]))
+            return (0 if folder in default_dirs else 1, -item[1])
+        candidate_dbs.sort(key=_rank)
 
         extracted = {}
         min_expiry = float("inf")
@@ -311,6 +343,13 @@ class BrowserCookieImporter:
             temp_db = os.path.join(temp_dir, "cookies.sqlite")
             try:
                 shutil.copy2(cookie_db_path, temp_db)
+                # While Firefox runs, recent cookies are still in the write-ahead log next to the file
+                for suffix in ("-wal", "-shm"):
+                    if os.path.exists(cookie_db_path + suffix):
+                        try:
+                            shutil.copy2(cookie_db_path + suffix, temp_db + suffix)
+                        except OSError:
+                            pass
                 conn = sqlite3.connect(temp_db)
                 cursor = conn.cursor()
 

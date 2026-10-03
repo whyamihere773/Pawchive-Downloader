@@ -19,8 +19,10 @@ class ArchivePasswordManager:
 
     def __init__(self, config_dir: Optional[str] = None):
         if not config_dir:
-            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            config_dir = os.path.join(base_dir, "config")
+            from core.path_utils import get_config_dir, migrate_legacy_files
+            config_dir = get_config_dir()
+            migrate_legacy_files(config_dir, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config"),
+                                 ("decompressor_passwords.json", "archive_password_map.json"))
         self.config_dir = config_dir
         self.passwords_file = os.path.join(self.config_dir, "decompressor_passwords.json")
         self.archive_map_file = os.path.join(self.config_dir, "archive_password_map.json")
@@ -163,7 +165,7 @@ class ArchivePasswordManager:
                 self._creator_passwords[c].append(p)
                 self._rebuild_flat_passwords_unlocked()
                 self._save_passwords()
-                logger.info(f"Added password to Decompressor Password Bank [{c}]: {p}", category="decompressor")
+                logger.info(f"Added a password to the Decompressor Password Bank [{c}] ({len(p)} characters).", category="decompressor")
                 return True
         return False
 
@@ -215,7 +217,7 @@ class ArchivePasswordManager:
                 self._rebuild_flat_passwords_unlocked()
                 self._save_passwords()
                 self._save_archive_map()
-                logger.info(f"Removed password from Decompressor Password Bank: {p}", category="decompressor")
+                logger.info("Removed a password from the Decompressor Password Bank.", category="decompressor")
                 return True
         return False
 

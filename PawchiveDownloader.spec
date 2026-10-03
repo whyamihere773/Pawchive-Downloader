@@ -53,6 +53,7 @@ hidden_imports = [
     'gdown',
     'requests',
     'urllib3',
+    'brotli',            # Pawchive replies in Brotli; without it every Pawchive request failed
     'PIL',
     'PIL.Image',
     'PIL.WebPImagePlugin',
@@ -171,11 +172,55 @@ exe = EXE(
     version=os.path.join(project_root, 'version_info.txt'),  # EXE metadata (publisher, version)
 )
 
+# 2. Companion updater (QML window). It shares '_internal' with the app and runs from the install
+#    folder; files it replaces are moved aside first, which works even while they're in use.
+a_updater = Analysis(
+    ['updater.py'],
+    pathex=[project_root],
+    binaries=[],
+    datas=[],
+    hiddenimports=['services.update_installer', 'services.update_service',
+                   'PySide6.QtGui', 'PySide6.QtQml', 'PySide6.QtQuick'],
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=['tkinter', 'matplotlib', 'scipy', 'pandas', 'unittest', 'pytest', 'IPython', 'notebook'],
+    win_no_prefer_redirects=False,
+    win_private_assemblies=False,
+    cipher=block_cipher,
+    noarchive=False,
+)
+pyz_updater = PYZ(a_updater.pure, a_updater.zipped_data, cipher=block_cipher)
+exe_updater = EXE(
+    pyz_updater,
+    a_updater.scripts,
+    [],
+    exclude_binaries=True,
+    name='updater',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,
+    console=False,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    icon=icon_path,
+    contents_directory='_internal',
+    version=os.path.join(project_root, 'version_info_updater.txt'),
+)
+
 coll = COLLECT(
     exe,
     a.binaries,
     a.zipfiles,
     a.datas,
+    exe_updater,
+    a_updater.binaries,
+    a_updater.zipfiles,
+    a_updater.datas,
     strip=False,
     upx=False,              # Disabled: UPX is a major AV/ML false-positive trigger
     upx_exclude=[],

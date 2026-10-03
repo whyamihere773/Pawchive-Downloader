@@ -12,8 +12,9 @@ import subprocess
 import threading
 import json
 import re
+import datetime
 from typing import Optional, Dict, Any, List, Tuple
-from PySide6.QtCore import QObject, Signal, Property, Slot, Qt, QUrl, QCoreApplication
+from PySide6.QtCore import QObject, Signal, Property, Slot, Qt, QUrl, QCoreApplication, QTimer
 from PySide6.QtGui import QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import QFileDialog, QApplication
 
@@ -22,9 +23,36 @@ if __name__ == "__main__" or "core" not in sys.modules:
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
 
+from core.watchlist_manager import post_id_is_newer  # noqa: F401  (kept for older imports)
+
+
+def _post_order_key(date: str, post_id: str):
+    pid = str(post_id or "")
+    return (str(date or "")[:10], int(pid) if pid.isdigit() else -1)
+
+
+def watchlist_cutoff(done_posts, unfinished_posts):
+    """Where the Watchlist's "downloaded up to" point may move, from what actually finished.
+
+    done_posts / unfinished_posts: iterables of (date, post_id). The point only advances through
+    posts that are older than every post that didn't finish (failed, cancelled, never started), so
+    nothing is skipped by a later check. Returns (post_id, date, ids_of_done_posts_on_that_date),
+    or ("", "", []) when nothing can be recorded.
+    """
+    done = [(str(d or "")[:10], str(p or "")) for d, p in done_posts if d]
+    unfinished = [(str(d or "")[:10], str(p or "")) for d, p in unfinished_posts if d]
+    if unfinished:
+        first_open = min(_post_order_key(d, p) for d, p in unfinished)
+        done = [(d, p) for d, p in done if _post_order_key(d, p) < first_open]
+    if not done:
+        return "", "", []
+    newest_date, newest_pid = max(done, key=lambda dp: _post_order_key(*dp))
+    day_ids = sorted({p for d, p in done if d == newest_date and p})
+    return newest_pid, newest_date, day_ids
 from core.logger import logger
 from core.parser import KemonoURLParser, URLParseResult
 from core.filter_engine import FilterEngine, FilterOptions, FilenameStyles
+from core.file_order import normalize_file_order, order_files
 from core.api_client import KemonoApiClient
 from core.downloader import KemonoDownloader, DownloadTask
 from core.session_manager import SessionManager
@@ -49,7 +77,8 @@ from services.cloud_downloader import (
     download_dropbox_link,
     download_gofile_link
 )
-from core.text_utils import clean_text, sanitize_filesystem_name
+from core.text_utils import clean_text, sanitize_filesystem_name, safe_file_name
+from core.path_utils import unique_name_in_batch
 from core.archive_manager import ArchiveManager
 from core.archive_rebuilder import ArchiveRebuilder, ArchiveRebuildOptions
 from services.model_manager import ModelManager, MODEL_CATALOG
@@ -162,6 +191,7 @@ class AppBridge(QObject):
 
     tagFolderModeChanged      = Signal()
     groupFileTypeChanged      = Signal()
+    fileOrderChanged          = Signal()
     watchlistChanged          = Signal()
     watchlistCheckStarted     = Signal()
     watchlistCheckFinished    = Signal(int)  # total new posts found
@@ -203,17 +233,24 @@ class AppBridge(QObject):
     # File Explorer & Media Gallery signals
     folderStatsCalculated     = Signal(str, 'qint64', 'qint64', 'qint64')  # (path, total_size, file_count, folder_count)
     galleryBookmarksChanged   = Signal()
+    drivesUpdated             = Signal('QVariantList')   # drives with fresh free space (Gallery)
+    galleryShowRequested      = Signal(str, bool)   # (path, is_dir): other tabs ask the Gallery to open a place
 
     _progressSignal    = Signal(dict)    # carries progress info dict
     _taskSignal        = Signal(object)  # carries a DownloadTask object
     _finishedSignal    = Signal(bool, str)
     _throttledSignal   = Signal(int)     # carries new worker concurrency count
     _pauseSignal       = Signal(bool)    # carries pause state (True=paused, False=resumed)
-    _creatorSignal     = Signal(str)     # carries resolved creator name
+    _creatorSignal     = Signal(str, str)  # (link it was looked up for, resolved creator name)
     _setTasksSignal    = Signal(list)    # safely sends new task list to GUI thread
     _appendTasksSignal = Signal(list)    # safely appends new tasks to GUI thread queue
     _watchlistResultSignal = Signal(list)  # carries per-entry new-post lists
     _watchlistArtistResultSignal = Signal(str, str, int)  # (userId, service, newCount)
+    _scheduledCreatorSyncSignal = Signal(str)  # scheduler thread -> GUI thread
+    # Slow folder scans run in the background; QML gets the answer here: (request id, result)
+    asyncResultReady = Signal(str, 'QVariant')
+    # A switched-off site (Kemono / Coomer) was used: (message, same link on the replacement site or "", context)
+    providerDisabled = Signal(str, str, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -257,8 +294,9 @@ class AppBridge(QObject):
         self._skip_words = ""
         self._skip_scope = saved_settings.get("skip_scope", "posts")
         self._remove_words = ""
-        self._date_after = str(saved_settings.get("date_after", ""))
-        self._date_before = str(saved_settings.get("date_before", ""))
+        # Date range filters apply to one download; remembering them silently skipped posts later
+        self._date_after = ""
+        self._date_before = ""
         self._date_auto_scan_pages = bool(saved_settings.get("date_auto_scan_pages", True))
         self._min_file_size = str(saved_settings.get("min_file_size", ""))
         self._max_file_size = str(saved_settings.get("max_file_size", ""))
@@ -314,6 +352,16 @@ class AppBridge(QObject):
         except Exception:
             vault_cookie = ""
         self._cookie_string = vault_cookie or saved_settings.get("cookie", "")
+        self._cookie_save_timer = QTimer(self)
+        self._cookie_save_timer.setSingleShot(True)
+        self._cookie_save_timer.setInterval(800)
+        self._cookie_save_timer.timeout.connect(self._persist_cookie)
+        # Downloader-tab settings are saved shortly after the last change (sliders and text boxes
+        # change many times in a row); they used to be saved only when some other setting changed
+        self._settings_save_timer = QTimer(self)
+        self._settings_save_timer.setSingleShot(True)
+        self._settings_save_timer.setInterval(500)
+        self._settings_save_timer.timeout.connect(self.saveSettings)
         self._user_agent = saved_settings.get("user_agent", "")
         self._download_delay = float(saved_settings.get("download_delay", 2.0))
         self._save_post_metadata = bool(saved_settings.get("save_post_metadata", True))
@@ -353,6 +401,7 @@ class AppBridge(QObject):
         self._creator_name = ""
         self._tag_folder_mode = bool(saved_settings.get("tag_folder_mode", False))
         self._group_file_type = str(saved_settings.get("group_file_type", "none"))
+        self._file_order = normalize_file_order(saved_settings.get("file_order", "posted"))
         self._telegram_safety_acknowledged = bool(saved_settings.get("telegram_safety_acknowledged", False))
         self._telegram_liability_acknowledged = bool(saved_settings.get("telegram_liability_acknowledged", False))
         self._telegram_pending_action = ""
@@ -361,9 +410,10 @@ class AppBridge(QObject):
         self._watchlist_manager = WatchlistManager(self.session_manager.config_dir)
         self._watchlist_manager.load()
         self._watchlist_model = WatchlistModel(self._watchlist_manager, self)
-        self._watchlist_pending_updates: Dict[Tuple[str, str], Tuple[str, str]] = {}
+        # Watchlist downloads: new posts that needed no files (already saved or filtered out),
+        # counted as done when the download finishes
+        self._watchlist_pending_updates: Dict[Tuple[str, str], List[Tuple[str, str]]] = {}
         self._watchlist_result_signal_connected = False
-        self._watchlistResultSignal.connect(self._handle_watchlist_result, Qt.QueuedConnection)
         self._watchlist_apply_global_settings = bool(saved_settings.get("watchlist_apply_global_settings", True))
 
         # Bulk Decompressor
@@ -452,6 +502,10 @@ class AppBridge(QObject):
         self._appendTasksSignal.connect(self._handle_append_tasks, Qt.QueuedConnection)
         self._watchlistResultSignal.connect(self._handle_watchlist_result, Qt.QueuedConnection)
         self._watchlistArtistResultSignal.connect(self._handle_watchlist_artist_result, Qt.QueuedConnection)
+        self._scheduledCreatorSyncSignal.connect(self._handle_scheduled_creator_sync, Qt.QueuedConnection)
+        # Keep the computer awake while downloads run (Scheduler → "Sleep prevention")
+        self._scheduled_sweep_retry = False
+        self.isDownloadingChanged.connect(self._update_sleep_prevention)
 
         # Auto-check watchlist entries on startup (background, non-blocking)
         if any(e.auto_check for e in self._watchlist_manager.entries):
@@ -473,7 +527,7 @@ class AppBridge(QObject):
         if self._user_agent:
             self.api_client.set_user_agent(self._user_agent)
 
-        logger.info(f"filename style loaded: 'post_title'", category="system")
+        logger.info(f"Filename style loaded: '{self._filename_style}'", category="system")
         logger.info(f"Skip words scope loaded: '{self._skip_scope}'", category="system")
         logger.info(f"Character filter scope set to default: '{self._character_scope}'", category="system")
         if self._has_saved_session:
@@ -499,7 +553,7 @@ class AppBridge(QObject):
                     self.creatorNameChanged.emit()
                     threading.Thread(
                         target=self._async_resolve_creator_name,
-                        args=(parsed,),
+                        args=(parsed, val_clean),
                         daemon=True
                     ).start()
                     if self._favorite_mode:
@@ -557,6 +611,7 @@ class AppBridge(QObject):
         if self._download_dir != val:
             self._download_dir = val
             self.downloadDirChanged.emit()
+            self._settings_save_timer.start()
             try:
                 from core.storage_pool_manager import storage_pool_manager
                 storage_pool_manager.set_primary_dir(val)
@@ -583,6 +638,7 @@ class AppBridge(QObject):
         if self._character_scope != val:
             self._character_scope = val
             self.characterScopeChanged.emit()
+            self._settings_save_timer.start()
 
     @Property(str, notify=skipWordsChanged)
     def skipWords(self) -> str:
@@ -603,6 +659,7 @@ class AppBridge(QObject):
         if self._skip_scope != val:
             self._skip_scope = val
             self.skipScopeChanged.emit()
+            self._settings_save_timer.start()
 
     @Property(str, notify=removeWordsChanged)
     def removeWords(self) -> str:
@@ -853,6 +910,7 @@ class AppBridge(QObject):
         if self._scan_content_images != val:
             self._scan_content_images = val
             self.scanContentImagesChanged.emit()
+            self._settings_save_timer.start()
 
     @Property(bool, notify=downloadPawchiveTemporaryFilesChanged)
     def downloadPawchiveTemporaryFiles(self) -> bool:
@@ -874,6 +932,7 @@ class AppBridge(QObject):
         if self._compress_webp != val:
             self._compress_webp = val
             self.compressWebpChanged.emit()
+            self._settings_save_timer.start()
 
     @Property(bool, notify=writeAudioMetadataChanged)
     def writeAudioMetadata(self) -> bool:
@@ -895,6 +954,7 @@ class AppBridge(QObject):
         if self._keep_duplicates != val:
             self._keep_duplicates = val
             self.keepDuplicatesChanged.emit()
+            self._settings_save_timer.start()
 
     @Property(bool, notify=favoriteModeChanged)
     def favoriteMode(self) -> bool:
@@ -945,7 +1005,8 @@ class AppBridge(QObject):
                 return True
 
         # No URL or invalid URL: check if ANY provider is logged in
-        if not any(auth_manager.is_logged_in(p) for p in ("kemono", "coomer", "pawchive", "cumst")):
+        from core.providers import is_disabled
+        if not any(auth_manager.is_logged_in(p) for p in ("kemono", "coomer", "pawchive", "cumst") if not is_disabled(p)):
             logger.warning("⭐ Favorite Mode requires a connected account.", category="auth")
             self.favoriteAuthRequired.emit("Kemono")
             return False
@@ -961,6 +1022,7 @@ class AppBridge(QObject):
         if self._subfolder_per_post != val:
             self._subfolder_per_post = val
             self.subfolderPerPostChanged.emit()
+            self._settings_save_timer.start()
 
     @Property(bool, notify=datePrefixChanged)
     def datePrefix(self) -> bool:
@@ -993,6 +1055,7 @@ class AppBridge(QObject):
         if self._separate_folders_by_known != val:
             self._separate_folders_by_known = val
             self.separateFoldersByKnownChanged.emit()
+            self._settings_save_timer.start()
 
     @Property(bool, notify=downloadRevisionsChanged)
     def downloadRevisions(self) -> bool:
@@ -1003,6 +1066,7 @@ class AppBridge(QObject):
         if self._download_revisions != val:
             self._download_revisions = val
             self.downloadRevisionsChanged.emit()
+            self._settings_save_timer.start()
 
     @Property(bool, notify=adaptiveThreadingChanged)
     def adaptiveThreading(self) -> bool:
@@ -1047,9 +1111,9 @@ class AppBridge(QObject):
             self.saveSettings()
             if hasattr(self.downloader, "current_options") and self.downloader.current_options:
                 self.downloader.current_options.auto_retry_at_end = val
-            if val and not self._is_downloading and self._queue_model.failedCount > 0:
+            if val and not self._is_downloading and self._has_failed_tasks():
                 logger.info("Auto-Retry enabled with failed tasks present — starting retry queue...", category="downloader")
-                self.retryFailed()
+                self._retry_failed(include_cancelled=False)
 
     @Slot()
     def toggleAutoRetry(self):
@@ -1057,9 +1121,9 @@ class AppBridge(QObject):
         if not self._auto_retry_at_end:
             self.autoRetryAtEnd = True
         else:
-            if not self._is_downloading and self._queue_model.failedCount > 0:
+            if not self._is_downloading and self._has_failed_tasks():
                 logger.info("Auto-Retry activated for failed tasks...", category="downloader")
-                self.retryFailed()
+                self._retry_failed(include_cancelled=False)
             else:
                 self.autoRetryAtEnd = False
 
@@ -1088,6 +1152,7 @@ class AppBridge(QObject):
         if self._manga_mode != val:
             self._manga_mode = val
             self.mangaModeChanged.emit()
+            self._settings_save_timer.start()
 
     @Property(str, notify=filenameStyleChanged)
     def filenameStyle(self) -> str:
@@ -1147,6 +1212,7 @@ class AppBridge(QObject):
             self._threads_count = max(1, min(self._max_cpu_threads, val))
             self.downloader.max_workers = self._threads_count
             self.threadsCountChanged.emit()
+            self._settings_save_timer.start()
 
     @Property(int, notify=maxCpuThreadsChanged)
     def maxCpuThreads(self) -> int:
@@ -1190,13 +1256,18 @@ class AppBridge(QObject):
         if self._cookie_string != val:
             self._cookie_string = val
             self.api_client.set_cookie(val)
-            try:
-                from core.auth_manager import auth_manager
-                auth_manager.set_credential("kemono", {"cookie": val})
-                self.providersChanged.emit()
-            except Exception:
-                pass
+            self._cookie_save_timer.start()      # saved once typing stops
             self.cookieStringChanged.emit()
+
+    @Slot()
+    def _persist_cookie(self):
+        try:
+            from core.auth_manager import auth_manager
+            # The general cookie is kept in the vault's "kemono" slot (never in settings.json)
+            auth_manager.set_credential("kemono", {"cookie": self._cookie_string})
+            self.providersChanged.emit()
+        except Exception as e:
+            logger.debug(f"Could not save the cookie: {e}", category="auth")
 
     @Property(str, notify=userAgentChanged)
     def userAgent(self) -> str:
@@ -1208,6 +1279,7 @@ class AppBridge(QObject):
             self._user_agent = val
             self.api_client.set_user_agent(val)
             self.userAgentChanged.emit()
+            self._settings_save_timer.start()
 
     @Property(bool, notify=isDownloadingChanged)
     def isDownloading(self) -> bool:
@@ -1390,6 +1462,19 @@ class AppBridge(QObject):
     def getArchiveStatistics(self):
         return self.archive_manager.get_statistics()
 
+    @Slot(str, str, str, str, str)
+    def getArchiveDataAsync(self, request_id: str, query: str = "", service: str = "all",
+                            fileType: str = "all", sortBy: str = "creator_az"):
+        """The Archive view's data, read in the background (a big archive froze the window on every
+        refresh, every 1.5 s while downloading)."""
+        def _load():
+            return {
+                "hierarchy": self.archive_manager.get_hierarchical_records(
+                    query=query, service=service, file_type=fileType, sort_by=sortBy),
+                "statistics": self.archive_manager.get_statistics(),
+            }
+        self._run_async(request_id, _load)
+
     @Slot(int, result=bool)
     def deleteArchiveRecord(self, recordId: int) -> bool:
         ok = self.archive_manager.delete_record(recordId)
@@ -1449,14 +1534,12 @@ class AppBridge(QObject):
                     candidates.extend(storage_pool_manager.overflow_dirs)
             except Exception:
                 pass
+            artist_dirs = []
             try:
-                if self._watchlist_manager:
-                    for item in self._watchlist_manager.get_all():
-                        if str(item.user_id) == str(creatorId) and str(item.service).lower() == str(service).lower():
-                            if getattr(item, "download_folder", None):
-                                candidates.append(item.download_folder)
-                            if getattr(item, "folder_path", None):
-                                candidates.append(item.folder_path)
+                # The creator's Watchlist folders are scanned as they are, whatever their name
+                for item in list(self._watchlist_manager.entries if self._watchlist_manager else []):
+                    if str(item.user_id) == str(creatorId) and str(item.service).lower() == str(service).lower():
+                        artist_dirs.extend(d for d in [item.download_dir, *(item.download_dirs or [])] if d)
             except Exception:
                 pass
 
@@ -1468,7 +1551,8 @@ class AppBridge(QObject):
                 creator_id=creatorId,
                 creator_name=creatorName,
                 candidate_dirs=candidates,
-                progress_callback=_prog
+                progress_callback=_prog,
+                known_artist_dirs=artist_dirs
             )
             self.archiveCreatorVerificationFinished.emit(service, creatorId, res)
             self.archiveUpdated.emit()
@@ -1698,7 +1782,11 @@ class AppBridge(QObject):
 
     @Property(str, notify=aiHardwareInfoChanged)
     def aiHardwareBadge(self) -> str:
-        info = HardwareDetector.get_hardware_info()
+        info = HardwareDetector.cached_info()
+        if info is None:
+            # Detected in the background; the badge updates when it's known
+            HardwareDetector.probe_async(lambda: self.aiHardwareInfoChanged.emit())
+            return "Detecting hardware…"
         return str(info.get("provider_name", "CPU Mode"))
 
     @Property(bool, notify=aiRecognitionEnabledChanged)
@@ -1739,6 +1827,9 @@ class AppBridge(QObject):
 
     @Slot(str, result="QVariant")
     def getAiModelStatus(self, model_key: str):
+        if HardwareDetector.cached_info() is None:
+            # Hardware is detected in the background; the AI section refreshes when it's known
+            HardwareDetector.probe_async(lambda: self.aiHardwareInfoChanged.emit())
         return self.model_manager.get_status(model_key)
 
     @Slot(str)
@@ -1751,6 +1842,14 @@ class AppBridge(QObject):
 
     @Slot(str, result=bool)
     def deleteAiModel(self, model_key: str) -> bool:
+        # A loaded model keeps its files open (Windows won't delete them), so unload it first
+        km = getattr(self, "known_manager", None)
+        for engine in (getattr(km, "semantic_matcher", None), getattr(km, "contextual_reasoner", None)):
+            if engine is not None and hasattr(engine, "unload"):
+                try:
+                    engine.unload()
+                except Exception:
+                    logger.exception("Couldn't unload an AI model before deleting it", category="ai")
         res = self.model_manager.delete_model(model_key)
         self.aiRecognitionEnabledChanged.emit()
         return res
@@ -1787,7 +1886,7 @@ class AppBridge(QObject):
             "tier0": t0_str,
             "tier1": t1_str,
             "final": final_str,
-            "hardware": HardwareDetector.get_hardware_info().get("provider_name", "CPU")
+            "hardware": (HardwareDetector.cached_info() or {}).get("provider_name", "Detecting hardware…")
         }
 
     # Model Properties
@@ -1856,6 +1955,32 @@ class AppBridge(QObject):
             self._group_file_type = val
             self.groupFileTypeChanged.emit()
             self.saveSettings()
+
+    @Property(str, notify=fileOrderChanged)
+    def fileOrder(self) -> str:
+        """Order of the files inside a post: "posted", "reversed" or "name"."""
+        return self._file_order
+
+    @fileOrder.setter
+    def fileOrder(self, val: str):
+        val = normalize_file_order(val)
+        if self._file_order != val:
+            self._file_order = val
+            self.fileOrderChanged.emit()
+            self._settings_save_timer.start()
+
+    @Slot("QVariantList", result="QVariantList")
+    def orderPostFiles(self, files):
+        """A post's files in the order they'll be numbered (for the Post Selection window).
+
+        Each file remembers its place on the site ("postedIndex"), so switching the order back and
+        forth always starts from the posted order.
+        """
+        items = [dict(f) for f in (files or []) if isinstance(f, dict)]
+        for i, f in enumerate(items):
+            f.setdefault("postedIndex", i)
+        items.sort(key=lambda f: int(f.get("postedIndex") or 0))
+        return order_files(items, self._file_order, lambda f: str(f.get("name") or ""))
 
     @Property(bool, notify=harvestedLinksChanged)
     def hasHarvestedLinks(self) -> bool:
@@ -2055,7 +2180,8 @@ class AppBridge(QObject):
             download_revisions=self._download_revisions,
             adaptive_threading=self._adaptive_threading,
             threads_locked=self._threads_locked,
-            auto_retry_at_end=self._auto_retry_at_end,
+            # Scheduled runs with "Sweep auto-retry pass" retry failed files at the end
+            auto_retry_at_end=self._auto_retry_at_end or getattr(self, "_scheduled_sweep_retry", False),
             manga_mode=self._manga_mode,
             filename_style=self._filename_style,
             filename_template=self._filename_template,
@@ -2074,7 +2200,8 @@ class AppBridge(QObject):
             max_file_size=self._max_file_size,
             write_audio_metadata=self._write_audio_metadata,
             skip_retry_404=self._skip_retry_404,
-            group_file_type=self._group_file_type
+            group_file_type=self._group_file_type,
+            file_order=self._file_order
         )
 
     def _get_link_identity(self, parsed: URLParseResult) -> tuple[str, str, Optional[str], str]:
@@ -2127,6 +2254,8 @@ class AppBridge(QObject):
         parsed_current = None
         if url_input:
             parsed_current = KemonoURLParser.parse(url_input)
+            if parsed_current.is_valid and self._refuse_if_disabled(url_input):
+                return
             if parsed_current.is_valid:
                 if parsed_current.provider == "telegram":
                     has_pending_telegram = any(
@@ -2232,30 +2361,27 @@ class AppBridge(QObject):
             if not self.checkFavoriteModeAuth():
                 return
 
-        has_leftover = (len(self.downloader.tasks) > 0) or (self._queue_model.rowCount() > 0) or self._has_recovery_session
-        if has_leftover:
-            old_creators = set()
-            for t in self.downloader.tasks or self._queue_model.tasks:
-                c = getattr(t, "creator_name", "")
-                if c:
-                    old_creators.add(c)
-            old_desc = ", ".join(list(old_creators)[:2]) if old_creators else "previous"
-            logger.warning(
-                f"⚠️ Discarding previous interrupted session ({old_desc}) to start fresh download for new link: {url_input}",
-                category="downloader"
-            )
-            self.sessionDiscardedWarning.emit(old_desc)
+        # Files already in the queue (or left by an interrupted session) are kept: the new link's
+        # files are added to them. This used to throw the queue and the crash-recovery journal away.
+        # A queue holding only finished files is cleared, so it doesn't keep growing.
+        current = self.downloader.tasks or self._queue_model.tasks
+        if current and all(t.status in ("completed", "skipped") for t in current):
             self._queue_model.clear()
             self._active_queue_model.clear()
-            self._queued_links.clear()
             self.downloader.reset_state()
-            self.recovery_manager.discard_recovery()
-            self.session_manager.discard_session()
+        if self._has_recovery_session and not self.downloader.tasks and self._queue_model.rowCount() == 0:
+            recovered = self._load_recovery_tasks()
+            if recovered:
+                self._queue_model.setTasks(recovered)
+                self._active_queue_model.setTasks(recovered)
+                self.downloader.tasks = list(recovered)
+                left = sum(1 for t in recovered if t.status not in ("completed", "skipped"))
+                logger.info(f"Kept {left} unfinished file(s) from the interrupted session in the queue.", category="session")
             self._has_recovery_session = False
-            self._has_saved_session = False
             self._recovery_summary = {}
             self.hasRecoverySessionChanged.emit()
-            self.hasSavedSessionChanged.emit()
+        if not self.downloader.tasks and self._queue_model.rowCount() > 0:
+            self.downloader.tasks = list(self._queue_model.tasks)
 
 
         _, identity_key, _, _ = self._get_link_identity(parsed_current)
@@ -2297,6 +2423,8 @@ class AppBridge(QObject):
                 parsed = KemonoURLParser.parse(u)
                 if not parsed.is_valid:
                     logger.error(f"Invalid URL: {parsed.error_msg} ({u})", category="parser")
+                    continue
+                if self._refuse_if_disabled(u):
                     continue
 
                 link_type, identity_key, parent_artist_key, display_name = self._get_link_identity(parsed)
@@ -2364,6 +2492,10 @@ class AppBridge(QObject):
         if not parsed.is_valid:
             self.postSelectionError.emit(parsed.error_msg or "Invalid URL")
             return
+        if self._refuse_if_disabled(url_input):
+            from core.providers import disabled_message
+            self.postSelectionError.emit(disabled_message(url_input))
+            return
 
         if self._favorite_mode:
             if not self.checkFavoriteModeAuth():
@@ -2384,15 +2516,15 @@ class AppBridge(QObject):
                     if parsed.provider == "bunkr":
                         album_title, files = fetch_bunkr_album(parsed.raw_url, resolve_files=True)
                         creator_name = clean_text(album_title) or "Bunkr Album"
-                        posts = [{"id": f["url"], "title": f.get("filename", "File"), "published": "", "file": {"path": f["url"]}, "attachments": []} for f in files]
+                        posts = [{"id": f["url"], "title": f.get("filename", "File"), "published": "", "file": {"path": f["url"], "name": f.get("filename", "")}, "attachments": []} for f in files]
                     elif parsed.provider == "erome":
                         album_title, files = fetch_erome_album(parsed.raw_url)
                         creator_name = clean_text(album_title) or "Erome Album"
-                        posts = [{"id": f["url"], "title": f.get("filename", "File"), "published": "", "file": {"path": f["url"]}, "attachments": []} for f in files]
+                        posts = [{"id": f["url"], "title": f.get("filename", "File"), "published": "", "file": {"path": f["url"], "name": f.get("filename", "")}, "attachments": []} for f in files]
                     elif parsed.provider == "nhentai":
                         gallery_title, files = fetch_nhentai_gallery(parsed.post_id or parsed.raw_url)
                         creator_name = clean_text(gallery_title) or f"Gallery {parsed.post_id}"
-                        posts = [{"id": f["url"], "title": f.get("filename", "File"), "published": "", "file": {"path": f["url"]}, "attachments": []} for f in files]
+                        posts = [{"id": f["url"], "title": f.get("filename", "File"), "published": "", "file": {"path": f["url"], "name": f.get("filename", "")}, "attachments": []} for f in files]
                     elif parsed.provider == "telegram":
                         self._telegram_pending_action = "select"
                         if not TelegramService.instance().is_logged_in():
@@ -2545,7 +2677,7 @@ class AppBridge(QObject):
                         "published": published,
                         "thumbnail": thumb_url,
                         "fileCount": len(post_files),
-                        "files": post_files,
+                        "files": [dict(pf, postedIndex=i) for i, pf in enumerate(post_files)],
                         "selected": True
                     })
 
@@ -2573,18 +2705,14 @@ class AppBridge(QObject):
         def _worker():
             try:
                 from core.auth_manager import auth_manager
-                domain = "kemono.su"
-                prov_id = "kemono"
-                if not auth_manager.is_logged_in("kemono"):
-                    if auth_manager.is_logged_in("coomer"):
-                        domain = "coomer.su"
-                        prov_id = "coomer"
-                    elif auth_manager.is_logged_in("pawchive"):
-                        domain = "pawchive.pw"
-                        prov_id = "pawchive"
-                    elif auth_manager.is_logged_in("cumst"):
-                        domain = "cum.st"
-                        prov_id = "cumst"
+                from core.providers import is_disabled
+                # The first site with a login that isn't switched off (Kemono / Coomer are off for now)
+                domain, prov_id = "pawchive.pw", "pawchive"
+                for _dom, _prov in (("kemono.cr", "kemono"), ("coomer.st", "coomer"),
+                                    ("pawchive.pw", "pawchive"), ("cum.st", "cumst")):
+                    if not is_disabled(_prov) and auth_manager.is_logged_in(_prov):
+                        domain, prov_id = _dom, _prov
+                        break
 
                 saved_cookie = auth_manager.get_credential(prov_id, "cookie")
                 if saved_cookie:
@@ -2687,18 +2815,20 @@ class AppBridge(QObject):
         os.makedirs(folder, exist_ok=True)
 
         tasks = []
+        taken = set()      # an album can hold different files with the same name
         for f in files:
             extra = f.get("extra_data", {}) if isinstance(f.get("extra_data"), dict) else {}
             cid = str(f.get("channel_id") or extra.get("channel_id", ""))
             mid = int(f.get("message_id") or extra.get("message_id", 0))
             f_obj = f.get("file") if isinstance(f.get("file"), dict) else {}
-            fn = f.get("filename") or f_obj.get("name") or f"file_{mid}"
+            # The uploader chooses this name: it must never lead outside the folder
+            fn = safe_file_name(f.get("filename") or f_obj.get("name"), fallback=f"file_{mid}")
             url = f.get("url") or f_obj.get("path") or f"tg://{cid}/{mid}"
             fsize = int(f.get("file_size") or f_obj.get("size") or 0)
 
             t = DownloadTask(
                 url=url,
-                target_path=os.path.join(folder, fn),
+                target_path=unique_name_in_batch(folder, fn, taken),
                 post_title=creator_name,
                 creator_name=creator_name,
                 service="telegram",
@@ -2990,8 +3120,14 @@ class AppBridge(QObject):
 
     def _async_fetch_and_start(self, parsed: URLParseResult, auto_start: bool):
         try:
+            if self._refuse_if_disabled(getattr(parsed, "raw_url", "") or parsed.domain):
+                self._is_downloading = bool(self.downloader._is_running)
+                self._status_text = "Progress: Idle"
+                self.isDownloadingChanged.emit()
+                self.statusTextChanged.emit()
+                return
             if self._scan_cancel_event.is_set():
-                self._is_downloading = False
+                self._is_downloading = bool(self.downloader._is_running)
                 self._status_text = "Progress: Cancelled"
                 self.isDownloadingChanged.emit()
                 self.statusTextChanged.emit()
@@ -3009,10 +3145,11 @@ class AppBridge(QObject):
                     creator_name = clean_text(album_title) or "Bunkr Album"
                     folder_name = sanitize_filesystem_name(creator_name, fallback="Bunkr Album")
                     folder = os.path.join(self._download_dir, f"Bunkr - {folder_name}")
+                    taken = set()      # an album can hold different files with the same name
                     for f in files:
                         t = DownloadTask(
                             url=f["url"],
-                            target_path=os.path.join(folder, f["filename"]),
+                            target_path=unique_name_in_batch(folder, f["filename"], taken),
                             post_title=creator_name,
                             creator_name=creator_name,
                             service="bunkr",
@@ -3028,10 +3165,11 @@ class AppBridge(QObject):
                     creator_name = clean_text(album_title) or "Erome Album"
                     folder_name = sanitize_filesystem_name(creator_name, fallback="Erome Album")
                     folder = os.path.join(self._download_dir, f"Erome - {folder_name}")
+                    taken = set()      # an album can hold different files with the same name
                     for f in files:
                         t = DownloadTask(
                             url=f["url"],
-                            target_path=os.path.join(folder, f["filename"]),
+                            target_path=unique_name_in_batch(folder, f["filename"], taken),
                             post_title=creator_name,
                             creator_name=creator_name,
                             service="erome",
@@ -3046,10 +3184,11 @@ class AppBridge(QObject):
                     creator_name = clean_text(gallery_title) or f"Gallery {parsed.post_id}"
                     folder_name = sanitize_filesystem_name(creator_name, fallback=f"Gallery {parsed.post_id}")
                     folder = os.path.join(self._download_dir, f"nHentai - {folder_name}")
+                    taken = set()      # an album can hold different files with the same name
                     for f in files:
                         t = DownloadTask(
                             url=f["url"],
-                            target_path=os.path.join(folder, f["filename"]),
+                            target_path=unique_name_in_batch(folder, f["filename"], taken),
                             post_title=creator_name,
                             creator_name=creator_name,
                             service="nhentai",
@@ -3062,7 +3201,7 @@ class AppBridge(QObject):
                 elif parsed.provider == "telegram":
                     self._telegram_pending_action = "download"
                     if not TelegramService.instance().is_logged_in():
-                        self._is_downloading = False
+                        self._is_downloading = bool(self.downloader._is_running)
                         self.isDownloadingChanged.emit()
                         self.telegramAuthRequested.emit(bool(parsed.extra_data.get("is_private", False)))
                         return
@@ -3074,7 +3213,7 @@ class AppBridge(QObject):
                             folder_name = sanitize_filesystem_name(creator_name, fallback="Telegram")
                             folder = os.path.join(self._download_dir, f"Telegram - {folder_name}")
                             os.makedirs(folder, exist_ok=True)
-                            fn = post.get("filename") or f"file_{post['id']}"
+                            fn = safe_file_name(post.get("filename"), fallback=f"file_{post['id']}")
                             t = DownloadTask(
                                 url=post["url"],
                                 target_path=os.path.join(folder, fn),
@@ -3091,7 +3230,7 @@ class AppBridge(QObject):
                             )
                             tasks.append(t)
                     else:
-                        self._is_downloading = False
+                        self._is_downloading = bool(self.downloader._is_running)
                         self.isDownloadingChanged.emit()
                         self.telegramScopeRequested.emit(
                             str(parsed.user_id),
@@ -3113,7 +3252,7 @@ class AppBridge(QObject):
                 self.creatorNameChanged.emit()
 
                 if self._scan_cancel_event.is_set():
-                    self._is_downloading = False
+                    self._is_downloading = bool(self.downloader._is_running)
                     self._status_text = "Progress: Cancelled"
                     self.isDownloadingChanged.emit()
                     self.statusTextChanged.emit()
@@ -3156,7 +3295,7 @@ class AppBridge(QObject):
                             logger.info(f"⭐ Favorite Mode filter: {len(posts)} of {before_cnt} post(s) matched user favorites.", category="downloader")
 
                 if self._scan_cancel_event.is_set():
-                    self._is_downloading = False
+                    self._is_downloading = bool(self.downloader._is_running)
                     self._status_text = "Progress: Cancelled"
                     self.isDownloadingChanged.emit()
                     self.statusTextChanged.emit()
@@ -3164,7 +3303,7 @@ class AppBridge(QObject):
 
                 if not posts:
                     logger.warning(f"No posts found for {creator_name} ({parsed.service}).", category="api")
-                    self._is_downloading = False
+                    self._is_downloading = bool(self.downloader._is_running)
                     self._status_text = "Progress: Idle (0 posts found)"
                     self.isDownloadingChanged.emit()
                     self.statusTextChanged.emit()
@@ -3181,7 +3320,7 @@ class AppBridge(QObject):
                             p["comments_text"] = "\n".join(c.get("content", "") for c in comms if isinstance(c, dict))
 
                 if self._scan_cancel_event.is_set():
-                    self._is_downloading = False
+                    self._is_downloading = bool(self.downloader._is_running)
                     self._status_text = "Progress: Cancelled"
                     self.isDownloadingChanged.emit()
                     self.statusTextChanged.emit()
@@ -3233,7 +3372,7 @@ class AppBridge(QObject):
                 )
 
             if self._scan_cancel_event.is_set():
-                self._is_downloading = False
+                self._is_downloading = bool(self.downloader._is_running)
                 self._status_text = "Progress: Cancelled"
                 self.isDownloadingChanged.emit()
                 self.statusTextChanged.emit()
@@ -3241,7 +3380,7 @@ class AppBridge(QObject):
 
             if options.file_type == "links":
                 h_count = len(self.downloader.harvested_links_records)
-                self._is_downloading = False
+                self._is_downloading = bool(self.downloader._is_running)
                 self._status_text = f"Links extraction complete ({h_count} links found). Ready to download or export."
                 self.isDownloadingChanged.emit()
                 self.statusTextChanged.emit()
@@ -3249,8 +3388,13 @@ class AppBridge(QObject):
                 return
 
             if not tasks:
+                self._is_downloading = bool(self.downloader._is_running)
+                if getattr(self.downloader, "last_build_cancelled", False):
+                    self._status_text = "Progress: Cancelled"
+                    self.isDownloadingChanged.emit()
+                    self.statusTextChanged.emit()
+                    return
                 logger.warning("No files matched filtering criteria.", category="downloader")
-                self._is_downloading = False
                 self._status_text = "Progress: Idle (All files filtered out)"
                 self.isDownloadingChanged.emit()
                 self.statusTextChanged.emit()
@@ -3265,28 +3409,12 @@ class AppBridge(QObject):
             )
             self.downloadHistoryChanged.emit()
 
-            # Auto-track artist in watchlist immediately if not a single post / external provider
+            # Auto-track artist in watchlist immediately if not a single post / external provider.
+            # Nothing is recorded as downloaded yet: that happens when the download finishes, from the
+            # posts that actually downloaded (recording the newest post here marked posts excluded by
+            # filters, failed or cancelled as downloaded, so the Watchlist never offered them).
             if not parsed.is_single_post and not parsed.is_external_provider and parsed.user_id:
                 try:
-                    latest_pid = ""
-                    latest_pdate = ""
-                    for p in posts:
-                        pub = p.get("published") or p.get("added") or ""
-                        if isinstance(pub, (int, float)):
-                            try:
-                                d_str = datetime.datetime.fromtimestamp(pub).strftime("%Y-%m-%d")
-                            except Exception:
-                                d_str = str(pub)
-                        else:
-                            p_str = str(pub)
-                            d_str = p_str.split("T")[0] if "T" in p_str else (p_str[:10] if p_str else "")
-                        pid = str(p.get("id", ""))
-                        if d_str and d_str > latest_pdate:
-                            latest_pdate = d_str
-                            latest_pid = pid
-                        elif not latest_pdate and not latest_pid and pid:
-                            latest_pid = pid
-
                     canonical_url = getattr(parsed, "raw_url", "") or f"https://{parsed.domain}/{parsed.service}/user/{parsed.user_id}"
                     target_download_dir = ""
                     if artist_dir:
@@ -3309,8 +3437,6 @@ class AppBridge(QObject):
                         user_id=parsed.user_id,
                         service=parsed.service,
                         domain=parsed.domain,
-                        last_post_id=latest_pid,
-                        last_post_date=latest_pdate,
                         download_dir=target_download_dir,
                         options=options.to_dict() if hasattr(options, "to_dict") else {},
                     )
@@ -3321,7 +3447,8 @@ class AppBridge(QObject):
 
 
             if auto_start:
-                if self.downloader._is_running:
+                if self.downloader._is_running or self.downloader.tasks:
+                    # Running, or files kept in the queue: add to it (starts the queue when idle)
                     self._appendTasksSignal.emit(tasks)
                     self.downloader.append_tasks(tasks, options=options, cookie_str=self._cookie_string)
                 else:
@@ -3342,7 +3469,7 @@ class AppBridge(QObject):
 
         except Exception as e:
             logger.error(f"Error during task initialization: {e}", category="downloader")
-            self._is_downloading = False
+            self._is_downloading = bool(self.downloader._is_running)
             self._has_error = True
             self._last_error_message = str(e)
             self.isDownloadingChanged.emit()
@@ -3368,18 +3495,14 @@ class AppBridge(QObject):
         def _worker():
             try:
                 from core.auth_manager import auth_manager
-                domain = "kemono.su"
-                prov_id = "kemono"
-                if not auth_manager.is_logged_in("kemono"):
-                    if auth_manager.is_logged_in("coomer"):
-                        domain = "coomer.su"
-                        prov_id = "coomer"
-                    elif auth_manager.is_logged_in("pawchive"):
-                        domain = "pawchive.pw"
-                        prov_id = "pawchive"
-                    elif auth_manager.is_logged_in("cumst"):
-                        domain = "cum.st"
-                        prov_id = "cumst"
+                from core.providers import is_disabled
+                # The first site with a login that isn't switched off (Kemono / Coomer are off for now)
+                domain, prov_id = "pawchive.pw", "pawchive"
+                for _dom, _prov in (("kemono.cr", "kemono"), ("coomer.st", "coomer"),
+                                    ("pawchive.pw", "pawchive"), ("cum.st", "cumst")):
+                    if not is_disabled(_prov) and auth_manager.is_logged_in(_prov):
+                        domain, prov_id = _dom, _prov
+                        break
 
                 saved_cookie = auth_manager.get_credential(prov_id, "cookie")
                 if saved_cookie:
@@ -3430,10 +3553,7 @@ class AppBridge(QObject):
                     self.statusTextChanged.emit()
                     return
 
-                self._queue_model.clear()
-                self._queue_model.setTasks(tasks)
-                if hasattr(self, "_active_queue_model") and self._active_queue_model:
-                    self._active_queue_model.setTasks(tasks)
+                self._setTasksSignal.emit(tasks)      # models change on the GUI thread only
                 self.downloader.tasks = list(tasks)
                 self.downloader.start_download_queue(
                     tasks=self.downloader.tasks,
@@ -3455,6 +3575,19 @@ class AppBridge(QObject):
         if self._has_recovery_session and self._recovery_summary:
             self.recoverySessionDetected.emit(self._recovery_summary)
 
+    def _load_recovery_tasks(self, checkpoint: Optional[dict] = None) -> List[DownloadTask]:
+        """The files of the crash-recovery journal, checked against what's on disk."""
+        checkpoint = checkpoint or self.recovery_manager.load_checkpoint() or {}
+        loaded_tasks: List[DownloadTask] = []
+        for t_dict in checkpoint.get("tasks", []) or []:
+            try:
+                task = DownloadTask.from_dict(t_dict)
+            except Exception:
+                continue
+            self._verify_task_on_disk(task)
+            loaded_tasks.append(task)
+        return loaded_tasks
+
     @Slot()
     def resumeRecoverySession(self):
         """
@@ -3467,27 +3600,10 @@ class AppBridge(QObject):
             logger.warning("No recovery checkpoint found to resume.", category="session")
             return
 
-        raw_tasks = checkpoint.get("tasks", [])
-        if not raw_tasks:
+        loaded_tasks = self._load_recovery_tasks(checkpoint)
+        if not loaded_tasks:
             logger.warning("Recovery checkpoint contains no tasks.", category="session")
             return
-
-        loaded_tasks: List[DownloadTask] = []
-        for t_dict in raw_tasks:
-            task = DownloadTask.from_dict(t_dict)
-            # Disk verification to skip already downloaded files
-            if os.path.exists(task.target_path):
-                actual_sz = os.path.getsize(task.target_path)
-                if task.file_size > 0 and actual_sz >= task.file_size:
-                    task.status = "completed"
-                    task.downloaded_bytes = task.file_size
-                    task.progress_pct = 100
-                elif actual_sz > 0:
-                    task.downloaded_bytes = actual_sz
-                    task.status = "pending"
-            elif task.status in ("downloading", "retrying"):
-                task.status = "pending"
-            loaded_tasks.append(task)
 
         # Populate models
         self._queue_model.setTasks(loaded_tasks)
@@ -3566,26 +3682,87 @@ class AppBridge(QObject):
 
     @Slot()
     def onAppClosing(self):
-        """Called when user closes the window — preserves active session and stops threads cleanly."""
-        if self._is_downloading:
-            logger.info("Application closing: saving active session and stopping threads...", category="system")
-            if self._queue_model.tasks:
-                self.recovery_manager.save_checkpoint(
-                    tasks=self._queue_model.tasks,
-                    batches=self._queue_model.groups,
-                    settings=vars(self._get_filter_options()),
-                    status="paused"
-                )
+        """Called when user closes the window — preserves active session and stops threads cleanly.
+
+        Runs once (the window's close and the app's aboutToQuit both call it). Downloads are
+        stopped first, then the session is saved on a helper thread: on a slow drive that save can
+        take many seconds, and doing it on the window thread froze the window instead of closing it.
+        """
+        if getattr(self, "_closing_handled", False):
+            return
+        self._closing_handled = True
+
+        # Settings or a cookie changed just before closing are still waiting for their delayed save
+        try:
+            if self._settings_save_timer.isActive():
+                self._settings_save_timer.stop()
+                self.saveSettings()
+            if self._cookie_save_timer.isActive():
+                self._cookie_save_timer.stop()
+                self._persist_cookie()
+        except Exception as e:
+            logger.debug(f"Couldn't save settings while closing: {e}", category="system")
+
+        was_downloading = self._is_downloading
+        # The queue is kept whenever it has unfinished files, also when nothing was downloading
+        # (files added with "Add to queue" but not started yet used to be lost on exit)
+        queued = list(self._queue_model.tasks) if self._queue_model.tasks else list(self.downloader.tasks or [])
+        has_unfinished = any(t.status in ("pending", "downloading", "retrying") for t in queued)
+        tasks = queued if (was_downloading or has_unfinished) else []
+        batches = list(self._queue_model.groups) if tasks else None
+        settings = vars(self._get_filter_options()) if tasks else None
+        all_tasks = self._queue_model.getTasks() if self._queue_model else (self.downloader.tasks if self.downloader else [])
+        failed_or_cancelled = [t for t in all_tasks if t.status in ("failed", "cancelled")]
+
+        if was_downloading:
+            logger.info("Application closing: stopping downloads and saving the session...", category="system")
             self.downloader.cancel()
-        if self.recovery_manager:
-            tasks = self._queue_model.getTasks() if self._queue_model else (self.downloader.tasks if self.downloader else [])
-            failed_or_cancelled = [t for t in tasks if t.status in ("failed", "cancelled")]
-            if failed_or_cancelled:
-                self.recovery_manager.dump_retries(failed_or_cancelled, async_write=False)
+
+        def _persist():
+            try:
+                self.session_manager.flush_history()
+            except Exception:
+                pass
+            try:
+                if tasks:
+                    self.recovery_manager.save_checkpoint(tasks=tasks, batches=batches, settings=settings,
+                                                          status="paused" if was_downloading else "interrupted")
+                if failed_or_cancelled and self.recovery_manager:
+                    self.recovery_manager.dump_retries(failed_or_cancelled, async_write=False)
+            except Exception as e:
+                logger.warning(f"Couldn't save the session while closing: {e}", category="system")
+
+        try:
+            from core.power import sleep_inhibitor
+            sleep_inhibitor.set_active(False)
+        except Exception:
+            pass
+
+        # History is always written; the queue / retries when there are any
+        saver = threading.Thread(target=_persist, name="SaveOnClose")   # not daemon: allowed to finish
+        saver.start()
+        saver.join(timeout=4.0)
+        if saver.is_alive():
+            logger.info("Still saving the session in the background (slow drive)…", category="system")
+
+    def _has_failed_tasks(self) -> bool:
+        """True if any task actually failed. Tasks the user cancelled don't count."""
+        tasks = self.downloader.tasks or (self._queue_model.tasks if self._queue_model else [])
+        if any(t.status == "failed" for t in tasks):
+            return True
+        try:
+            spilled = self.recovery_manager.load_retries() or []
+        except Exception:
+            spilled = []
+        return any((d.get("status") if isinstance(d, dict) else getattr(d, "status", "")) == "failed" for d in spilled)
 
     @Slot()
     def retryFailed(self):
-        """Retries all failed tasks in the queue."""
+        """Retries all failed and cancelled tasks in the queue (the manual Retry Failed button)."""
+        self._retry_failed(include_cancelled=True)
+
+    def _retry_failed(self, include_cancelled: bool = True):
+        """Shared retry logic. Automatic retries pass include_cancelled=False."""
         options = self._get_filter_options()
         self._is_downloading = True
         self.isDownloadingChanged.emit()
@@ -3603,7 +3780,7 @@ class AppBridge(QObject):
                 if self._queue_model:
                     self._queue_model.addTasks(restored)
 
-        count = self.downloader.retry_failed_tasks(options, self._cookie_string)
+        count = self.downloader.retry_failed_tasks(options, self._cookie_string, include_cancelled=include_cancelled)
         if count == 0 and not self.downloader.is_running:
             self._is_downloading = False
             self.isDownloadingChanged.emit()
@@ -3985,7 +4162,8 @@ class AppBridge(QObject):
                         creator_prof = self.archive_manager.get_creator_character_profile(
                             service=service,
                             creator_id=creator,
-                            creator_name=creator
+                            creator_name=creator,
+                            base_dirs=[base_dir]
                         )
                     matched_hierarchy = self.known_manager.find_matching_hierarchy(
                         title, tags=tags, filenames=cloud_filenames, content=content, creator_profile=creator_prof
@@ -4089,19 +4267,33 @@ class AppBridge(QObject):
 
                 workers_per_link = max(1, min(self._threads_count, 8))
                 ok = False
+
+                def _cloud_log(msg):
+                    # The cloud downloaders report everything through one callback; ❌ / ⚠ mark problems
+                    text = str(msg)
+                    if "❌" in text:
+                        logger.error(text, category="cloud", details=f"link: {url}")
+                    elif "⚠" in text:
+                        logger.warning(text, category="cloud", details=f"link: {url}")
+                    else:
+                        logger.info(text, category="cloud")
+
                 try:
                     if platform == "mega":
-                        ok = download_mega_link(url, target_dir, log_func=lambda msg: logger.info(msg, category="downloader"), progress_callback=_prog, cancel_event=self._cloud_cancel_event, pause_event=self._cloud_pause_event, max_workers=workers_per_link, skip_words=filter_opts.skip_words, options=filter_opts)
+                        ok = download_mega_link(url, target_dir, log_func=_cloud_log, progress_callback=_prog, cancel_event=self._cloud_cancel_event, pause_event=self._cloud_pause_event, max_workers=workers_per_link, skip_words=filter_opts.skip_words, options=filter_opts)
                     elif platform in ("gdrive", "google drive"):
-                        ok = download_gdrive_link(url, target_dir, log_func=lambda msg: logger.info(msg, category="downloader"), progress_callback=_prog, cancel_event=self._cloud_cancel_event, pause_event=self._cloud_pause_event, skip_words=filter_opts.skip_words, options=filter_opts)
+                        ok = download_gdrive_link(url, target_dir, log_func=_cloud_log, progress_callback=_prog, cancel_event=self._cloud_cancel_event, pause_event=self._cloud_pause_event, skip_words=filter_opts.skip_words, options=filter_opts)
                     elif platform == "dropbox":
-                        ok = download_dropbox_link(url, target_dir, log_func=lambda msg: logger.info(msg, category="downloader"), progress_callback=_prog, cancel_event=self._cloud_cancel_event, pause_event=self._cloud_pause_event, skip_words=filter_opts.skip_words, options=filter_opts)
+                        ok = download_dropbox_link(url, target_dir, log_func=_cloud_log, progress_callback=_prog, cancel_event=self._cloud_cancel_event, pause_event=self._cloud_pause_event, skip_words=filter_opts.skip_words, options=filter_opts)
                     elif platform == "gofile":
-                        ok = download_gofile_link(url, target_dir, log_func=lambda msg: logger.info(msg, category="downloader"), progress_callback=_prog, cancel_event=self._cloud_cancel_event, pause_event=self._cloud_pause_event, max_workers=workers_per_link, skip_words=filter_opts.skip_words, options=filter_opts)
+                        ok = download_gofile_link(url, target_dir, log_func=_cloud_log, progress_callback=_prog, cancel_event=self._cloud_cancel_event, pause_event=self._cloud_pause_event, max_workers=workers_per_link, skip_words=filter_opts.skip_words, options=filter_opts)
                     else:
                         logger.warning(f"Platform '{platform}' cannot be directly auto-downloaded (URL: {url}).", category="downloader")
                 except Exception as ex:
-                    logger.error(f"Error downloading {url}: {ex}", category="downloader")
+                    logger.exception(f"Error downloading {url}: {ex}", category="cloud")
+
+                if not ok and not self._cloud_cancel_event.is_set():
+                    logger.warning(f"☁️ [{platform.upper()}] ({idx}/{total}) didn't finish: {url}", category="cloud")
 
                 with progress_lock:
                     if ok:
@@ -4153,23 +4345,56 @@ class AppBridge(QObject):
 
     @Slot()
     def exportLogs(self):
+        """Save a copy of this session's full log file (not just what the console panel still shows)."""
+        stamp = time.strftime("%Y-%m-%d_%H-%M-%S")
         save_path, _ = QFileDialog.getSaveFileName(
             None,
-            "Export Console Logs",
-            os.path.join(self._download_dir, "kemono_console.log"),
+            "Export Log",
+            os.path.join(self._download_dir, f"Pawchive log {stamp}.log"),
             "Log Files (*.log *.txt);;All Files (*)"
         )
         if save_path:
             try:
-                with open(save_path, "w", encoding="utf-8") as f:
-                    f.write(self._log_model.get_all_text())
-                logger.success(f"Console logs exported to: {save_path}", category="logger")
-            except Exception as e:
-                logger.error(f"Failed to export console logs: {e}", category="logger")
+                session_file = logger.get_current_log_file()
+                if session_file and os.path.isfile(session_file):
+                    shutil.copyfile(session_file, save_path)
+                else:
+                    with open(save_path, "w", encoding="utf-8") as f:
+                        f.write(self._log_model.get_all_text())
+                logger.success(f"Log exported to: {save_path}", category="logger")
+            except Exception:
+                logger.exception("Failed to export the log", category="logger")
 
     @Slot()
     def clearLogs(self):
         self._log_model.clearLogs()
+
+    @Slot(str)
+    def logsUsageAsync(self, request_id: str):
+        """logsUsage in the background (answer: asyncResultReady). Sizing thousands of log files
+        held up the Settings page while it opened."""
+        self._run_async(request_id, self.logsUsage)
+
+    @Slot(result="QVariant")
+    def logsUsage(self) -> dict:
+        """How many log files there are and how much space they take (Settings → Logs)."""
+        u = logger.logs_usage()
+        return {
+            "files": u["files"],
+            "bytes": u["bytes"],
+            "text": f"{u['files']:,} file{'s' if u['files'] != 1 else ''} · {FilterEngine.format_size_str(u['bytes'])}",
+            "folder": logger.get_logs_dir(),
+        }
+
+    @Slot(result="QVariant")
+    def deleteAllLogs(self) -> dict:
+        """Delete every log file except the one this session is writing. Only runs when the user asks."""
+        r = logger.delete_all_logs()
+        text = f"Deleted {r['deleted']:,} log file(s), freed {FilterEngine.format_size_str(r['freed'])}."
+        if r["failed"]:
+            text += f" {r['failed']} file(s) couldn't be deleted (in use or read-only)."
+        logger.info(text + " (Requested from Settings.)", category="logger")
+        return {"deleted": r["deleted"], "failed": r["failed"], "text": text}
 
     @Slot()
     def openLogsFolder(self):
@@ -4249,6 +4474,8 @@ class AppBridge(QObject):
         logger.info(f"Loaded {len(urls)} URLs for batch processing.", category="batch")
         for u in urls:
             parsed = KemonoURLParser.parse(u)
+            if parsed.is_valid and self._refuse_if_disabled(u):
+                continue
             if parsed.is_valid:
                 link_type, identity_key, parent_artist_key, display_name = self._get_link_identity(parsed)
                 if identity_key in self._queued_links:
@@ -4406,7 +4633,6 @@ class AppBridge(QObject):
         settings_dict = {
             "download_dir": self._download_dir,
             "threads": self._threads_count,
-            "cookie": self._cookie_string,
             "user_agent": self._user_agent,
             "page_start": 1,
             "page_end": 999999,
@@ -4445,8 +4671,6 @@ class AppBridge(QObject):
             "download_thumbnails_only": self._download_thumbnails_only,
             "fallback_to_thumbnails": self._fallback_to_thumbnails,
             "redownload_small_files": self._redownload_small_files,
-            "date_after": self._date_after,
-            "date_before": self._date_before,
             "date_auto_scan_pages": self._date_auto_scan_pages,
             "enable_download_archive": self._enable_download_archive,
             "download_pawchive_temporary_files": self._download_pawchive_temporary_files,
@@ -4460,6 +4684,7 @@ class AppBridge(QObject):
             "telegram_liability_acknowledged": self._telegram_liability_acknowledged,
             "skip_retry_404": self._skip_retry_404,
             "group_file_type": self._group_file_type,
+            "file_order": self._file_order,
             "watchlist_apply_global_settings": self._watchlist_apply_global_settings
         }
         self.session_manager.save_settings(settings_dict, silent=True)
@@ -4510,6 +4735,8 @@ class AppBridge(QObject):
 
         self._queue_model.updateTask(task)
         self._active_queue_model.updateTask(task)
+        if task.status == "completed":
+            self._invalidate_folder_stats(getattr(task, "target_path", ""))
         if task.status == "completed" and self._enable_download_archive:
             now = time.time()
             if now - self._last_archive_emit_time >= 1.5:
@@ -4517,11 +4744,29 @@ class AppBridge(QObject):
                 self.archiveRecordCountChanged.emit()
                 self.archiveUpdated.emit()
 
+    def _invalidate_folder_stats(self, file_path: str):
+        """Forget the Gallery's cached totals for every folder above a new file. They are checked
+        against a folder's own date, which doesn't change when files land in its subfolders, so a
+        creator folder kept showing its old size and file count."""
+        if not file_path or not self._folder_stats_cache:
+            return
+        folder = os.path.normpath(os.path.dirname(file_path))
+        while folder:
+            self._folder_stats_cache.pop(folder, None)
+            parent = os.path.dirname(folder)
+            if parent == folder:
+                break
+            folder = parent
+
     @Slot(int)
     def _handle_throttled(self, new_count: int):
+        old_count = self._threads_count
         self._threads_count = new_count
         self.threadsCountChanged.emit()
-        logger.info(f"UI concurrency slider auto-throttled to {new_count} threads due to rate limiting.", category="system")
+        if new_count < old_count:
+            logger.info(f"Download threads lowered to {new_count} to avoid rate limiting.", category="system")
+        elif new_count > old_count:
+            logger.debug(f"Download threads raised to {new_count}.", category="system")
 
     @Slot(bool)
     def _handle_pause_changed(self, paused: bool):
@@ -4620,12 +4865,16 @@ class AppBridge(QObject):
             overall_pct = (downloaded_bytes_sum / total_bytes_sum * 100.0) if total_bytes_sum > 0 else (100.0 if completed_count == len(all_tasks) and all_tasks else 0.0)
 
             unique_creators = sorted(list(set(t.creator_name for t in all_tasks if t.creator_name)))
-            unique_sources = sorted(list(set(t.url for t in all_tasks if t.url)))
+            try:
+                from services import update_service as _us
+                app_version = str(_us._read_version_file(_us.get_app_dir()).get("version") or "")
+            except Exception:
+                app_version = ""
 
             snapshot = {
                 "_summary": {
                     "title": "Pawchive Downloader Queue State Backup",
-                    "app_version": "1.2.1",
+                    "app_version": app_version,
                     "exported_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "creators": unique_creators,
                     "total_batches": len(self._queue_model.groups),
@@ -4641,7 +4890,7 @@ class AppBridge(QObject):
                 "settings": {
                     "download_dir": self._download_dir,
                     "threads": self._threads_count,
-                    "cookie": self._cookie_string,
+                    # (no login cookie: exported files get shared, and the cookie is your login)
                     "user_agent": self._user_agent,
                     "manga_mode": self._manga_mode,
                     "subfolder_per_post": self._subfolder_per_post,
@@ -4702,31 +4951,66 @@ class AppBridge(QObject):
             with open(file_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
 
-            raw_tasks = data.get("tasks", [])
-            if not raw_tasks and not isinstance(raw_tasks, list):
+            raw_tasks = data.get("tasks", []) if isinstance(data, dict) else []
+            if not isinstance(raw_tasks, list) or not raw_tasks:
                 raise ValueError("The selected JSON file does not contain a valid 'tasks' list.")
 
+            # Where the files were meant to go on the computer that exported the queue
+            old_root = ""
+            if isinstance(data.get("settings"), dict):
+                old_root = str(data["settings"].get("download_dir") or "")
+            if not old_root and isinstance(data.get("_summary"), dict):
+                old_root = str(data["_summary"].get("destination_directory") or "")
+
             loaded_tasks: List[DownloadTask] = []
+            moved_inside = 0
+            skipped_links = 0
             for t_dict in raw_tasks:
+                if not isinstance(t_dict, dict):
+                    continue
                 task = DownloadTask.from_dict(t_dict)
-                # Disk verification
-                if os.path.exists(task.target_path):
-                    actual_sz = os.path.getsize(task.target_path)
-                    if task.file_size > 0 and actual_sz >= task.file_size:
-                        task.status = "completed"
-                        task.downloaded_bytes = task.file_size
-                    elif actual_sz > 0:
-                        task.downloaded_bytes = actual_sz
-                        task.status = "pending"
-                elif task.status == "downloading":
-                    task.status = "pending"
+                if not re.match(r"^(https?|tg)://", task.url or "", re.IGNORECASE):
+                    skipped_links += 1
+                    continue
+                safe_path, was_moved = self._safe_import_path(task.target_path, old_root)
+                if not safe_path:
+                    skipped_links += 1
+                    continue
+                task.target_path = safe_path
+                moved_inside += int(was_moved)
+                self._verify_task_on_disk(task)
                 loaded_tasks.append(task)
+            if moved_inside:
+                logger.warning(
+                    f"{moved_inside} file(s) in the imported queue pointed outside your download folders; "
+                    f"they'll be saved inside {self._download_dir} instead.", category="session")
+            if skipped_links:
+                logger.warning(f"{skipped_links} entr(y/ies) in the imported queue had no usable link and were left out.",
+                               category="session")
 
             if merge_mode == "replace":
                 self._queue_model.setTasks(loaded_tasks)
                 self._active_queue_model.setTasks(loaded_tasks)
                 self.downloader.tasks = list(loaded_tasks)
             else:
+                # Only files not already queued: the list and the downloader must agree (files the
+                # downloader ignored as duplicates used to show up as rows that never downloaded)
+                if not self.downloader.tasks and self._queue_model.tasks:
+                    self.downloader.tasks = list(self._queue_model.tasks)
+                seen = set()
+                for t in self.downloader.tasks:
+                    seen.add((t.url, t.target_path))
+                    if t.file_id:
+                        seen.add(t.file_id)
+                fresh = []
+                for t in loaded_tasks:
+                    if (t.url, t.target_path) in seen or (t.file_id and t.file_id in seen):
+                        continue
+                    seen.add((t.url, t.target_path))
+                    if t.file_id:
+                        seen.add(t.file_id)
+                    fresh.append(t)
+                loaded_tasks = fresh
                 self._queue_model.appendTasks(loaded_tasks)
                 self._active_queue_model.appendTasks(loaded_tasks)
                 self.downloader.append_tasks(loaded_tasks)
@@ -4743,6 +5027,74 @@ class AppBridge(QObject):
         except Exception as e:
             logger.error(f"Failed to import queue state: {e}", category="session")
             self.importFailed.emit(str(e))
+
+    def _allowed_download_roots(self) -> List[str]:
+        roots = [self._download_dir]
+        try:
+            from core.storage_pool_manager import storage_pool_manager
+            roots.extend(storage_pool_manager.overflow_dirs or [])
+        except Exception:
+            pass
+        try:
+            for e in list(self._watchlist_manager.entries):
+                roots.extend(d for d in [e.download_dir, *(e.download_dirs or [])] if d)
+        except Exception:
+            pass
+        return [os.path.normpath(os.path.abspath(r)) for r in roots if r]
+
+    def _safe_import_path(self, target_path: str, old_root: str = ""):
+        """Where an imported queue file may be saved: (path, pointed_somewhere_unexpected).
+
+        A queue file can come from anywhere, so its paths are never trusted as they are: one could
+        otherwise make the app write files into any folder (e.g. the Windows Startup folder).
+        Paths inside your download folders are kept; paths under the exporting computer's download
+        folder are moved under yours; anything else is placed inside your download folder.
+        """
+        if not target_path or not self._download_dir:
+            return "", False
+        from core.filter_engine import FilterEngine
+        base = os.path.normpath(os.path.abspath(self._download_dir))
+
+        def _inside(p: str, root: str) -> bool:
+            try:
+                return os.path.commonpath([os.path.normcase(p), os.path.normcase(root)]) == os.path.normcase(root)
+            except ValueError:
+                return False
+
+        norm = os.path.normpath(os.path.abspath(target_path)) if os.path.isabs(target_path) else ""
+        if norm and any(_inside(norm, r) and norm != r for r in self._allowed_download_roots()):
+            return norm, False
+        # Rebuild the path from its last folders, cleaned, inside the download folder
+        rel = ""
+        if old_root and norm:
+            old = os.path.normpath(os.path.abspath(old_root))
+            if _inside(norm, old) and norm != old:
+                rel = os.path.relpath(norm, old)
+        parts = [p for p in re.split(r"[\\/]+", rel or target_path) if p and p not in (".", "..") and not p.endswith(":")]
+        if not parts:
+            return "", False
+        if not rel:
+            parts = parts[-3:]          # creator / post / file
+        clean = [FilterEngine.clean_filesystem_text(p, max_len=150, fallback="file") for p in parts]
+        new_path = os.path.normpath(os.path.join(base, *clean))
+        if not _inside(new_path, base) or new_path == base:
+            return "", False
+        return new_path, not rel       # True: the path pointed somewhere unexpected
+
+    @staticmethod
+    def _verify_task_on_disk(task) -> None:
+        """Marks a restored file finished when it's already saved (downloads are written to
+        "<name>.part" first, so a file under its real name is complete)."""
+        if os.path.exists(task.target_path) and os.path.getsize(task.target_path) > 0:
+            actual_sz = os.path.getsize(task.target_path)
+            if task.file_size <= 0 or actual_sz >= task.file_size:
+                task.status = "completed"
+                task.downloaded_bytes = actual_sz
+                task.progress_pct = 100
+                return
+            task.status = "pending"
+        elif task.status in ("downloading", "retrying"):
+            task.status = "pending"
 
     def _execute_post_action(self):
         """Shows 15-second countdown modal — actual action runs only if user doesn't cancel."""
@@ -4805,36 +5157,52 @@ class AppBridge(QObject):
                     app.quit()
                 else:
                     sys.exit(0)
-            elif action == "shutdown":
-                if sys.platform == "win32":
-                    subprocess.run(["shutdown", "/s", "/f", "/t", "5", "/c", "Pawchive Downloader: shutting down..."], check=False)
-                elif sys.platform == "darwin":
-                    subprocess.run(["osascript", "-e", 'tell app "System Events" to shut down'], check=False)
+            elif action in ("shutdown", "restart", "sleep", "hibernate"):
+                for cmd in self._power_commands(action):
+                    try:
+                        # (sleep / hibernate return only after the computer wakes up again)
+                        res = subprocess.run(cmd, check=False, capture_output=True, text=True,
+                                             timeout=None if action in ("sleep", "hibernate") else 30,
+                                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                    except (OSError, subprocess.SubprocessError) as e:
+                        logger.debug(f"'{cmd[0]}' unavailable: {e}", category="system")
+                        continue
+                    if res.returncode == 0:
+                        break
+                    logger.debug(f"'{' '.join(cmd)}' failed ({res.returncode}): {(res.stderr or '').strip()[:200]}", category="system")
                 else:
-                    subprocess.run(["shutdown", "-h", "now"], check=False)
-            elif action == "restart":
-                if sys.platform == "win32":
-                    subprocess.run(["shutdown", "/r", "/f", "/t", "5", "/c", "Pawchive Downloader: restarting..."], check=False)
-                elif sys.platform == "darwin":
-                    subprocess.run(["osascript", "-e", 'tell app "System Events" to restart'], check=False)
-                else:
-                    subprocess.run(["shutdown", "-r", "now"], check=False)
-            elif action == "sleep":
-                if sys.platform == "win32":
-                    subprocess.run(["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"], check=False)
-                elif sys.platform == "darwin":
-                    subprocess.run(["pmset", "sleepnow"], check=False)
-                else:
-                    subprocess.run(["systemctl", "suspend"], check=False)
-            elif action == "hibernate":
-                if sys.platform == "win32":
-                    subprocess.run(["shutdown", "/h", "/f"], check=False)
-                elif sys.platform == "darwin":
-                    subprocess.run(["pmset", "sleepnow"], check=False)
-                else:
-                    subprocess.run(["systemctl", "hibernate"], check=False)
+                    logger.error(f"Couldn't {action} the computer automatically (not allowed for this user?).", category="system")
         except Exception as e:
             logger.error(f"Failed to execute post-download action '{action}': {e}", category="system")
+
+    @staticmethod
+    def _power_commands(action: str) -> list:
+        """Commands to try, in order, for a power action after downloads finish.
+
+        Windows: no forced close of other apps (with a delay, "shutdown" force-closes them and
+        unsaved work is lost); the app already showed its own countdown. Linux: systemctl works for
+        a normal desktop user, "shutdown -h now" needs root and is only a fallback.
+        """
+        if sys.platform == "win32":
+            return {
+                "shutdown": [["shutdown", "/s", "/t", "0"]],
+                "restart": [["shutdown", "/r", "/t", "0"]],
+                "sleep": [["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"]],
+                "hibernate": [["shutdown", "/h"]],
+            }.get(action, [])
+        if sys.platform == "darwin":
+            return {
+                "shutdown": [["osascript", "-e", 'tell app "System Events" to shut down']],
+                "restart": [["osascript", "-e", 'tell app "System Events" to restart']],
+                "sleep": [["pmset", "sleepnow"]],
+                "hibernate": [["pmset", "sleepnow"]],
+            }.get(action, [])
+        return {
+            "shutdown": [["systemctl", "poweroff"], ["loginctl", "poweroff"], ["shutdown", "-h", "now"]],
+            "restart": [["systemctl", "reboot"], ["loginctl", "reboot"], ["shutdown", "-r", "now"]],
+            "sleep": [["systemctl", "suspend"], ["loginctl", "suspend"]],
+            "hibernate": [["systemctl", "hibernate"], ["loginctl", "hibernate"]],
+        }.get(action, [])
 
     @Slot(bool, str)
     def _handle_finished(self, success: bool, message: str):
@@ -4843,7 +5211,10 @@ class AppBridge(QObject):
             return
         self._is_downloading = False
         self._active_queue_model.clear()
-        
+        self._scheduled_sweep_retry = False
+        # Links that finished can be queued again (e.g. to fetch a creator's newer posts later)
+        self._queued_links.clear()
+
         # Calculate actual completed percentage
         tasks = self._queue_model.getTasks()
         if tasks:
@@ -4919,11 +5290,12 @@ class AppBridge(QObject):
                 except Exception as e:
                     logger.warning(f"Could not generate desktop report: {e}", category="system")
 
-            # 4. Auto-add / update completed artist in watchlist
+            # 4. Auto-add / update completed artist in watchlist. "Downloaded up to" only moves through
+            # posts whose files all finished (completed or skipped by the filters).
             try:
                 tasks_done = self._queue_model.getTasks()
                 if tasks_done:
-                    # Group completed tasks by (service, user_id or creator_name)
+                    # Group tasks by (service, user_id or creator_name)
                     grouped = {}
                     for _t in tasks_done:
                         svc = getattr(_t, "service", "").strip().lower()
@@ -4934,17 +5306,17 @@ class AppBridge(QObject):
                                 grouped[key] = []
                             grouped[key].append(_t)
 
+                    cutoffs = {}
                     for (svc, uid), c_tasks in grouped.items():
-                        c_latest_date = ""
-                        c_latest_pid = ""
+                        posts_state = {}
                         for _t in c_tasks:
-                            t_date = getattr(_t, "post_date", "") or ""
-                            t_pid = getattr(_t, "post_id", "") or ""
-                            if t_date and t_date > c_latest_date:
-                                c_latest_date = t_date
-                                c_latest_pid = t_pid
-                            elif t_date == c_latest_date and t_pid > c_latest_pid:
-                                c_latest_pid = t_pid
+                            pid = str(getattr(_t, "post_id", "") or "")
+                            date = getattr(_t, "post_date", "") or ""
+                            ok = getattr(_t, "status", "") in ("completed", "skipped")
+                            prev = posts_state.get(pid)
+                            posts_state[pid] = (date or (prev[0] if prev else ""), ok and (prev[1] if prev else True))
+                        done_posts = [(d, p) for p, (d, ok) in posts_state.items() if ok]
+                        open_posts = [(d, p) for p, (d, ok) in posts_state.items() if not ok]
 
                         existing = self._watchlist_manager._find(uid, svc)
                         if not existing:
@@ -4952,20 +5324,15 @@ class AppBridge(QObject):
                             existing = next((e for e in self._watchlist_manager.entries if e.service.lower() == svc and (e.creator_name.lower() == t0.creator_name.lower() or e.user_id.lower() == t0.creator_name.lower())), None)
 
                         if existing:
-                            pending = self._watchlist_pending_updates.pop((existing.service.lower(), existing.user_id.lower()), None)
-                            if pending:
-                                p_pid, p_date = pending
-                                if p_date and (not c_latest_date or p_date >= c_latest_date):
-                                    c_latest_date = p_date
-                                    c_latest_pid = p_pid
-                                elif p_date == c_latest_date and p_pid:
-                                    c_latest_pid = p_pid or c_latest_pid
+                            done_posts += self._watchlist_pending_updates.pop((existing.service.lower(), existing.user_id.lower()), None) or []
+                        c_latest_pid, c_latest_date, c_day_ids = watchlist_cutoff(done_posts, open_posts)
+                        cutoffs[(svc, uid)] = (c_latest_pid, c_latest_date)
 
+                        if existing:
                             if c_latest_date or c_latest_pid:
                                 self._watchlist_manager.update_last_download(
                                     existing.user_id, existing.service,
-                                    c_latest_pid or existing.last_post_id,
-                                    c_latest_date or existing.last_post_date
+                                    c_latest_pid, c_latest_date, day_ids=c_day_ids
                                 )
                             # ONLY assign download_dir if it was previously empty (protect manual changes!)
                             if not existing.download_dir:
@@ -4981,7 +5348,9 @@ class AppBridge(QObject):
                     from core.parser import KemonoURLParser
                     _parsed = KemonoURLParser.parse(url_clean) if url_clean else None
                     if _parsed and _parsed.is_valid and not _parsed.is_external_provider and not _parsed.is_single_post:
-                        c_tasks = grouped.get((_parsed.service.lower(), _parsed.user_id.lower()), tasks_done)
+                        c_key = (_parsed.service.lower(), _parsed.user_id.lower())
+                        c_tasks = grouped.get(c_key, tasks_done)
+                        c_latest_pid, c_latest_date = cutoffs.get(c_key, ("", ""))
                         t_dir = self.extract_artist_folder_from_path(
                             c_tasks[0].target_path,
                             self._creator_name or _parsed.user_id,
@@ -4994,8 +5363,8 @@ class AppBridge(QObject):
                             user_id=_parsed.user_id,
                             service=_parsed.service,
                             domain=_parsed.domain,
-                            last_post_id=c_latest_pid if 'c_latest_pid' in locals() else "",
-                            last_post_date=c_latest_date if 'c_latest_date' in locals() else "",
+                            last_post_id=c_latest_pid,
+                            last_post_date=c_latest_date,
                             download_dir=t_dir,
                             options=self._get_filter_options().to_dict(),
                         )
@@ -5008,33 +5377,36 @@ class AppBridge(QObject):
                 logger.debug(f"Watchlist update error on finish: {e}", category="watchlist")
 
 
-    def _async_resolve_creator_name(self, parsed: URLParseResult):
+    def _async_resolve_creator_name(self, parsed: URLParseResult, for_url: str = ""):
         try:
             if parsed.is_external_provider:
                 if parsed.provider == "bunkr":
                     album_title, _ = fetch_bunkr_album(parsed.raw_url, resolve_files=False)
                     if album_title:
-                        self._creatorSignal.emit(clean_text(album_title))
+                        self._creatorSignal.emit(for_url, clean_text(album_title))
                 elif parsed.provider == "erome":
                     album_title, _ = fetch_erome_album(parsed.raw_url)
                     if album_title:
-                        self._creatorSignal.emit(clean_text(album_title))
+                        self._creatorSignal.emit(for_url, clean_text(album_title))
                 elif parsed.provider == "nhentai":
                     gallery_title, _ = fetch_nhentai_gallery(parsed.post_id or parsed.raw_url)
                     if gallery_title:
-                        self._creatorSignal.emit(clean_text(gallery_title))
+                        self._creatorSignal.emit(for_url, clean_text(gallery_title))
                 elif parsed.provider == "saint2":
-                    self._creatorSignal.emit(clean_text(parsed.user_id))
+                    self._creatorSignal.emit(for_url, clean_text(parsed.user_id))
             else:
                 profile = self.api_client.fetch_creator_profile(parsed)
                 name = profile.get("displayName") or profile.get("name") or profile.get("user") or profile.get("username") or parsed.user_id
                 if name:
-                    self._creatorSignal.emit(clean_text(str(name)))
+                    self._creatorSignal.emit(for_url, clean_text(str(name)))
         except Exception:
             pass
 
-    @Slot(str)
-    def _handle_creator_resolved(self, name: str):
+    @Slot(str, str)
+    def _handle_creator_resolved(self, for_url: str, name: str):
+        # Lookups finish in any order: a slow answer for an earlier link must not replace the name
+        if for_url and for_url != (self._current_url or "").strip():
+            return
         cleaned = clean_text(name)
         if cleaned and self._creator_name != cleaned:
             self._creator_name = cleaned
@@ -5061,6 +5433,9 @@ class AppBridge(QObject):
         entry = self._watchlist_manager._find(userId, service)
         if not entry:
             logger.warning(f"checkWatchlistArtist: entry not found for {userId}/{service}", category="watchlist")
+            return
+        if self._refuse_if_disabled(entry.url or entry.domain, context="watchlist"):
+            self.watchlistArtistChecked.emit(userId, service, 0)
             return
 
         self.watchlistArtistChecking.emit(userId, service, True)
@@ -5180,7 +5555,9 @@ class AppBridge(QObject):
         except Exception:
             pass
 
-        return fallback_dir or (os.path.dirname(sample_path) if sample_path else self._download_dir)
+        if fallback_dir:
+            return os.path.join(fallback_dir, f"{clean_c} [{service}]")
+        return os.path.dirname(sample_path) if sample_path else os.path.join(self._download_dir, f"{clean_c} [{service}]")
 
     @Slot(str, str)
     def _get_effective_watchlist_options(self, entry) -> FilterOptions:
@@ -5218,8 +5595,23 @@ class AppBridge(QObject):
             options.characters = ""
             return options
 
+    @staticmethod
+    def _post_day(post: dict) -> str:
+        pub = post.get("published") or post.get("added") or ""
+        if isinstance(pub, (int, float)):
+            try:
+                return datetime.datetime.fromtimestamp(pub).strftime("%Y-%m-%d")
+            except Exception:
+                return ""
+        p_str = str(pub)
+        return p_str.split("T")[0] if "T" in p_str else p_str[:10]
+
     def _process_watchlist_entry_download(self, entry, postIds: Optional[list] = None):
         """Worker logic to fetch, structure, and append download tasks for a single watchlist entry."""
+        from core.providers import is_disabled
+        if is_disabled(entry.url or entry.domain):
+            logger.warning(f"Watchlist: {entry.creator_name!r} is on a switched-off site; skipped.", category="watchlist")
+            return
         new_posts = self._watchlist_manager.get_posts_since(entry, self.api_client)
         if not new_posts:
             logger.info(f"No new posts found for {entry.creator_name!r}.", category="watchlist")
@@ -5259,6 +5651,8 @@ class AppBridge(QObject):
             latest_pdate = p_str.split("T")[0] if "T" in p_str else (p_str[:10] if p_str else "")
 
         options = self._get_effective_watchlist_options(entry)
+        if self._scheduled_sweep_retry:
+            options.auto_retry_at_end = True     # Scheduler → "Sweep auto-retry pass"
 
         artist_folder = self.resolve_artist_download_dir(entry)
         # Ensure the entry knows its download_dir and download_dirs
@@ -5292,8 +5686,12 @@ class AppBridge(QObject):
             user_id=entry.user_id
         )
         if tasks:
-            if not postIds and (latest_pdate or latest_pid):
-                self._watchlist_pending_updates[(entry.service.lower(), entry.user_id.lower())] = (latest_pid, latest_pdate)
+            post_ids_with_files = {str(t.post_id) for t in tasks}
+            no_file_posts = [(self._post_day(p), str(p.get("id", ""))) for p in new_posts
+                             if str(p.get("id", "")) not in post_ids_with_files]
+            if no_file_posts:
+                key = (entry.service.lower(), entry.user_id.lower())
+                self._watchlist_pending_updates.setdefault(key, []).extend(no_file_posts)
             self._appendTasksSignal.emit(tasks)
             self.downloader.append_tasks(tasks, options=options, cookie_str=self._cookie_string)
             if not self._is_downloading and self.downloader._is_running:
@@ -5313,7 +5711,8 @@ class AppBridge(QObject):
                 entry.service,
                 post_ids=req_pids,
                 latest_post_id=latest_pid,
-                latest_post_date=latest_pdate
+                latest_post_date=latest_pdate,
+                day_ids=[str(p.get("id", "")) for p in new_posts if self._post_day(p) == latest_pdate]
             )
             self._watchlist_model.update_new_counts()
             self._watchlist_model.refresh()
@@ -5337,6 +5736,8 @@ class AppBridge(QObject):
         if not entry:
             logger.warning(f"downloadNewPosts: entry not found for {userId}/{service}", category="watchlist")
             return
+        if self._refuse_if_disabled(entry.url or entry.domain, context="watchlist"):
+            return
         if entry.new_post_count == 0 and not postIds:
             logger.info(f"No new posts queued for {entry.creator_name!r} — all up to date.", category="watchlist")
             return
@@ -5349,7 +5750,9 @@ class AppBridge(QObject):
     @Slot()
     def downloadAllNewPosts(self):
         """Batch download new posts for all watchlist artists with pending updates sequentially."""
-        updated_entries = [e for e in self._watchlist_manager.entries if (getattr(e, "new_post_count", 0) or 0) > 0]
+        from core.providers import is_disabled
+        updated_entries = [e for e in self._watchlist_manager.entries
+                           if (getattr(e, "new_post_count", 0) or 0) > 0 and not is_disabled(e.url or e.domain)]
         if not updated_entries:
             logger.info("No watchlist artists have pending updates.", category="watchlist")
             return
@@ -5365,6 +5768,13 @@ class AppBridge(QObject):
         threading.Thread(target=_run_batch, daemon=True).start()
 
     @Slot(str, result=bool)
+    @Slot(str, str, str)
+    def addArtistToWatchlistAsync(self, request_id: str, url: str, custom_download_dir: str = ""):
+        """addArtistToWatchlist in the background (answer: asyncResultReady(request_id, bool)).
+        Looking up the creator's name and newest post used to freeze the window, for a minute
+        when the site was slow."""
+        self._run_async(request_id, self.addArtistToWatchlist, url, custom_download_dir)
+
     @Slot(str, str, result=bool)
     def addArtistToWatchlist(self, url: str, custom_download_dir: str = "") -> bool:
         """
@@ -5378,6 +5788,8 @@ class AppBridge(QObject):
         parsed = KemonoURLParser.parse(raw_url)
         if not parsed.is_valid:
             logger.warning(f"Cannot add to watchlist: invalid URL ({raw_url})", category="watchlist")
+            return False
+        if self._refuse_if_disabled(raw_url):
             return False
 
         creator_name = self.api_client.resolve_creator_name(parsed) or parsed.user_id
@@ -5481,14 +5893,70 @@ class AppBridge(QObject):
 
     @Slot(str, str)
     def redownloadWatchlistEntry(self, userId: str, service: str):
-        """Re-queue the full download for a watched artist (all posts, not just new)."""
+        """Re-queue the full download for a watched artist (all posts, not just new).
+
+        Only this creator's entry in the queue is replaced: their waiting files are taken out and a
+        fresh entry is added, while everything else keeps going. It also works during a download
+        (it used to do nothing then, and otherwise threw the whole queue away). Files of this
+        creator that are downloading right now are left to finish, so no file is downloaded twice
+        at the same time; the fresh entry skips files that are already complete on disk.
+        """
         entry = self._watchlist_manager._find(userId, service)
         if not entry:
             return
-        # Reuse currentUrl approach — set the URL and fire startDownload flow
-        self._current_url = entry.url
-        self.currentUrlChanged.emit()
-        self.startDownload()
+        parsed = KemonoURLParser.parse(entry.url or "")
+        if not parsed.is_valid:
+            logger.error(f"Can't re-download {entry.creator_name or userId}: {parsed.error_msg}", category="watchlist")
+            return
+        if self._refuse_if_disabled(entry.url):
+            return
+
+        removed = self._drop_creator_from_queue(parsed.service, parsed.user_id)
+        _, identity_key, _, display_name = self._get_link_identity(parsed)
+        self._queued_links.add(identity_key)
+        name = entry.creator_name or display_name
+        if removed:
+            logger.info(f"Re-download: replaced {removed} queued file(s) of {name!r} with a fresh entry.", category="watchlist")
+        else:
+            logger.info(f"Re-download: adding {name!r} to the queue.", category="watchlist")
+
+        self._scan_cancel_event.clear()
+        if not self._is_downloading:
+            self._has_error = False
+            self.hasErrorChanged.emit()
+            self._is_downloading = True
+            self.isDownloadingChanged.emit()
+            self.isPausedChanged.emit()
+            self._status_text = "Fetching metadata..."
+            self.statusTextChanged.emit()
+        threading.Thread(target=self._async_fetch_and_start, args=(parsed, True), daemon=True,
+                         name="WatchlistRedownload").start()
+
+    def _drop_creator_from_queue(self, service: str, user_id: str) -> int:
+        """Take one creator's waiting / finished / failed files out of the queue (GUI thread).
+
+        Files of theirs that are downloading right now stay until they finish."""
+        svc, uid = str(service or "").lower(), str(user_id or "").lower()
+        whole = {f"artist_{svc}_{uid}", f"watchlist_{svc}_{uid}", f"gallery_{svc}_{uid}"}
+        post_prefix = f"post_{svc}_{uid}_"
+
+        def mine(t) -> bool:
+            bid = str(getattr(t, "batch_id", "") or "").lower()
+            return bid in whole or bid.startswith(post_prefix)
+
+        tasks = list(self._queue_model.tasks) or list(self.downloader.tasks)
+        batch_ids = {getattr(t, "batch_id", "") for t in tasks if mine(t)}
+        if not batch_ids:
+            return 0
+        # Waiting files are cancelled first, so the running download can't pick one up meanwhile
+        for t in list(self.downloader.tasks) + tasks:
+            if mine(t) and t.status == "pending":
+                t.status = "cancelled"
+        before = len(tasks)
+        for bid in batch_ids:
+            self._queue_model.removeBatch(bid)       # also removes them from the downloader
+        after = len(self._queue_model.tasks) if self._queue_model.tasks else len(self.downloader.tasks)
+        return max(0, before - after)
 
     @Slot(str, str, bool)
     def setWatchlistAutoCheck(self, userId: str, service: str, enabled: bool):
@@ -5656,6 +6124,38 @@ class AppBridge(QObject):
                 )
 
     @Slot(str)
+    def showInGallery(self, path: str):
+        """Switch to the Gallery tab and open this folder (or the folder of this file, highlighted)."""
+        if not path:
+            return
+        norm = os.path.normpath(path)
+        if os.path.isdir(norm):
+            self.galleryShowRequested.emit(norm, True)
+        elif os.path.exists(norm):
+            self.galleryShowRequested.emit(norm, False)
+        else:
+            # The file isn't there (yet): open the closest folder that exists
+            parent = os.path.dirname(norm)
+            while parent and not os.path.isdir(parent) and os.path.dirname(parent) != parent:
+                parent = os.path.dirname(parent)
+            if parent and os.path.isdir(parent):
+                self.galleryShowRequested.emit(parent, True)
+
+    @Slot()
+    def showDownloadsInGallery(self):
+        """Open the Gallery at the folder of the current / last download, or the downloads folder."""
+        folder = ""
+        try:
+            dirs = [os.path.dirname(t.target_path) for t in (self.downloader.tasks or []) if getattr(t, "target_path", "")]
+            if dirs:
+                folder = os.path.commonpath(dirs)
+        except ValueError:
+            folder = ""  # tasks on different drives
+        if not folder or not os.path.isdir(folder):
+            folder = self._download_dir or os.path.expanduser("~")
+        self.showInGallery(folder)
+
+    @Slot(str)
     def openFolder(self, path: str):
         """Open the specified or enclosing directory in the OS file manager."""
         if not path:
@@ -5688,8 +6188,26 @@ class AppBridge(QObject):
         Updates new_post_count on each entry, then emits _watchlistResultSignal
         so the GUI can refresh safely.
         """
+        from core.providers import is_disabled, disabled_message
         total_new = 0
+        skipped_off = [e for e in list(self._watchlist_manager.entries) if is_disabled(e.domain) or is_disabled(e.url)]
+        if skipped_off:
+            logger.warning(
+                f"Watchlist: {len(skipped_off)} artist(s) on a switched-off site were not checked. "
+                + disabled_message(skipped_off[0].url or skipped_off[0].domain), category="watchlist")
+            if not getattr(self, "_warned_disabled_watchlist", False):
+                self._warned_disabled_watchlist = True      # once per run
+                kemono_n = self.kemonoWatchlistCount()
+                msg = (f"Kemono and Coomer are turned off for now because they mostly aren't working, so "
+                       f"{len(skipped_off)} Watchlist artist(s) on those sites weren't checked.")
+                if kemono_n:
+                    msg += " Pawchive has the same creators as Kemono: you can move your Kemono artists there."
+                if len(skipped_off) > kemono_n:
+                    msg += " For Coomer artists, look them up on cum.st and add them again."
+                self.providerDisabled.emit(msg, "", "watchlist")
         for entry in list(self._watchlist_manager.entries):
+            if entry in skipped_off:
+                continue
             try:
                 new = self._watchlist_manager.get_posts_since(entry, self.api_client)
                 entry.new_post_count = len(new)
@@ -5825,6 +6343,9 @@ class AppBridge(QObject):
                 if not parsed.is_valid:
                     logger.error(f"Link Vault Harvest: Invalid artist URL '{clean_url}'", category="vault")
                     self.vaultHarvestFinished.emit(False, "Invalid URL", 0, 0)
+                    return
+                if self._refuse_if_disabled(clean_url):
+                    self.vaultHarvestFinished.emit(False, "Site turned off", 0, 0)
                     return
 
                 # Fetch artist profile
@@ -6143,18 +6664,56 @@ class AppBridge(QObject):
         task_scheduler.prevent_sleep = preventSleep
         task_scheduler.sweep_retry = sweepRetry
         task_scheduler.save()
+        self._update_sleep_prevention()
         self.schedulerChanged.emit()
 
+    @Slot()
+    def _update_sleep_prevention(self):
+        try:
+            from core.task_scheduler import task_scheduler
+            from core.power import sleep_inhibitor
+            sleep_inhibitor.set_active(bool(self._is_downloading and task_scheduler.prevent_sleep))
+        except Exception as e:
+            logger.debug(f"Sleep prevention update failed: {e}", category="system")
+
     def _run_scheduled_watchlist_sync(self):
-        """Called by background TaskScheduler when a Watchlist Sync schedule triggers."""
-        logger.info("Scheduler: Initiating automated Watchlist Sync check...", category="scheduler")
-        self.checkWatchlist()
+        """Called by the TaskScheduler (in its background thread) when a Watchlist Sync schedule
+        triggers: checks every watchlist artist, then downloads their new posts. (It used to only
+        count new posts, so nothing was ever downloaded automatically.)"""
+        from core.task_scheduler import task_scheduler
+        from core.providers import is_disabled
+        logger.info("Scheduler: Watchlist Sync — checking all watchlist artists for new posts...", category="scheduler")
+        self._async_watchlist_check()          # runs right here, in the scheduler's thread
+        updated = [e for e in list(self._watchlist_manager.entries)
+                   if (getattr(e, "new_post_count", 0) or 0) > 0 and not is_disabled(e.domain)]
+        if not updated:
+            logger.info("Scheduler: Watchlist Sync — nothing new to download.", category="scheduler")
+            return
+        self._scheduled_sweep_retry = bool(task_scheduler.sweep_retry)
+        logger.info(f"Scheduler: Watchlist Sync — downloading new posts for {len(updated)} artist(s)...", category="scheduler")
+        for e in updated:
+            try:
+                self._process_watchlist_entry_download(e)
+            except Exception as err:
+                logger.error(f"Scheduler: could not download updates for {e.creator_name!r}: {err}", category="scheduler")
 
     def _run_scheduled_creator_sync(self, url: str):
-        """Called by background TaskScheduler when a Custom Creator schedule triggers."""
+        """Called by the TaskScheduler (background thread) when a Creator schedule triggers.
+        The download is started on the GUI thread."""
         if url:
+            self._scheduledCreatorSyncSignal.emit(url)
+
+    @Slot(str)
+    def _handle_scheduled_creator_sync(self, url: str):
+        from core.task_scheduler import task_scheduler
+        self._scheduled_sweep_retry = bool(task_scheduler.sweep_retry)
+        self.currentUrl = url
+        if self._is_downloading:
+            # A download is already running: add this creator to it instead of skipping the schedule
+            logger.info(f"Scheduler: a download is running — adding '{url}' to the queue.", category="scheduler")
+            self.addToQueue()
+        else:
             logger.info(f"Scheduler: Initiating automated Creator Sync for '{url}'...", category="scheduler")
-            self.currentUrl = url
             self.startDownload()
 
     # ── Integrated File Explorer & Media Gallery ─────────────────────────────
@@ -6173,11 +6732,13 @@ class AppBridge(QObject):
         - Uses os.scandir for direct cached stat retrieval.
         - Provides immediate shallow child counts.
         - Asynchronously calculates deep recursive file count & size in background.
-        - Caps return count to max_entries to guarantee 0 UI lag.
+        - Caps return count to max_entries to guarantee 0 UI lag; the full entry count
+          is still tallied (without stat calls) and exposed via getLastListingTotal().
         """
         if not path:
             path = self._download_dir or os.path.expanduser("~")
 
+        self._last_listing_total = 0
         path = os.path.normpath(os.path.abspath(path))
         if not os.path.exists(path) or not os.path.isdir(path):
             return []
@@ -6191,31 +6752,32 @@ class AppBridge(QObject):
         try:
             with os.scandir(path) as it:
                 count = 0
+                skipped = 0
                 for entry in it:
                     if count >= max_entries:
-                        break
+                        skipped += 1
+                        continue
                     try:
                         is_dir = entry.is_dir(follow_symlinks=False)
                         norm_p = os.path.normpath(entry.path)
                         if is_dir:
-                            # Immediate shallow child count
-                            immediate_children = 0
+                            # Counts and sizes come from the background worker: opening every
+                            # subfolder here to count its items froze the window on big folders
+                            # and network drives. Cached stats are used only while the folder is
+                            # unchanged (they used to be shown even after files were added).
                             try:
-                                with os.scandir(entry.path) as sub_it:
-                                    immediate_children = sum(1 for _ in sub_it)
-                            except (PermissionError, OSError):
-                                pass
-
-                            # Check cache for recursive stats
+                                dir_mtime = entry.stat(follow_symlinks=False).st_mtime
+                            except OSError:
+                                dir_mtime = 0
                             cached = self._folder_stats_cache.get(norm_p)
-                            if cached:
+                            if cached and cached.get("mtime") == dir_mtime:
                                 size = cached["size"]
                                 file_count = cached["files"]
                                 folder_count = cached["dirs"]
                             else:
                                 size = -1
                                 file_count = -1
-                                folder_count = immediate_children
+                                folder_count = -1
                                 subfolders_to_scan.append(norm_p)
 
                             items.append({
@@ -6225,8 +6787,8 @@ class AppBridge(QObject):
                                 "size": size,
                                 "file_count": file_count,
                                 "folder_count": folder_count,
-                                "child_count": immediate_children,
-                                "mtime": os.path.getmtime(entry.path) if not cached else cached.get("mtime", 0),
+                                "child_count": -1,
+                                "mtime": dir_mtime,
                                 "ext": ""
                             })
                         else:
@@ -6248,6 +6810,7 @@ class AppBridge(QObject):
                         count += 1
                     except (PermissionError, OSError):
                         continue
+                self._last_listing_total = count + skipped
         except (PermissionError, OSError):
             return []
 
@@ -6262,6 +6825,11 @@ class AppBridge(QObject):
         # Sort folders first, then alphabetical by name
         items.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
         return items
+
+    @Slot(result=int)
+    def getLastListingTotal(self) -> int:
+        """Total entries in the folder last passed to listDirectory, including any past the cap."""
+        return getattr(self, "_last_listing_total", 0)
 
     def _compute_folder_stats(self, folder_path: str, token: int):
         """Worker function executed in background thread."""
@@ -6353,11 +6921,9 @@ class AppBridge(QObject):
         crumbs.reverse()
         return crumbs
 
-    @Slot(result='QVariantList')
-    def getSystemDrives(self) -> list:
-        """Return available system root drives or volumes with live disk space information."""
-        drives = []
-
+    @staticmethod
+    def _drive_space_info(drive_path: str) -> dict:
+        """Free / total space of one drive, formatted for the Gallery (blank when unknown)."""
         def _fmt_gb(gb_val: float) -> str:
             if gb_val >= 1000:
                 return f"{gb_val / 1024:.1f} TB"
@@ -6366,40 +6932,38 @@ class AppBridge(QObject):
             else:
                 return f"{gb_val:.1f} GB"
 
-        def _get_space_info(drive_path: str) -> dict:
-            try:
-                total, used, free = shutil.disk_usage(drive_path)
-                free_gb = free / (1024**3)
-                total_gb = total / (1024**3)
+        try:
+            total, used, free = shutil.disk_usage(drive_path)
+            free_gb = free / (1024**3)
+            total_gb = total / (1024**3)
 
-                if total_gb >= 1000 and free_gb < 1000:
-                    space_label = f"{_fmt_gb(free_gb)} / {_fmt_gb(total_gb)} (free)"
-                else:
-                    f_num = f"{free_gb:.0f}" if free_gb >= 10 else f"{free_gb:.1f}"
-                    t_num = f"{total_gb:.0f}" if total_gb >= 10 else f"{total_gb:.1f}"
-                    space_label = f"{f_num}/{t_num} GB (free)"
+            if total_gb >= 1000 and free_gb < 1000:
+                space_label = f"{_fmt_gb(free_gb)} / {_fmt_gb(total_gb)}"
+            else:
+                f_num = f"{free_gb:.0f}" if free_gb >= 10 else f"{free_gb:.1f}"
+                t_num = f"{total_gb:.0f}" if total_gb >= 10 else f"{total_gb:.1f}"
+                space_label = f"{f_num}/{t_num} GB"
 
-                pct_free = (free / total * 100) if total > 0 else 0
-                return {
-                    "free_bytes": free,
-                    "total_bytes": total,
-                    "used_bytes": used,
-                    "free_str": _fmt_gb(free_gb),
-                    "total_str": _fmt_gb(total_gb),
-                    "space_label": space_label,
-                    "percent_free": pct_free
-                }
-            except Exception:
-                return {
-                    "free_bytes": 0,
-                    "total_bytes": 0,
-                    "used_bytes": 0,
-                    "free_str": "",
-                    "total_str": "",
-                    "space_label": "",
-                    "percent_free": 100
-                }
+            pct_free = (free / total * 100) if total > 0 else 0
+            return {
+                "free_bytes": free,
+                "total_bytes": total,
+                "used_bytes": used,
+                "free_str": _fmt_gb(free_gb),
+                "total_str": _fmt_gb(total_gb),
+                "space_label": space_label,
+                "percent_free": pct_free
+            }
+        except Exception:
+            return dict(AppBridge._NO_SPACE_INFO)
 
+    _NO_SPACE_INFO = {"free_bytes": 0, "total_bytes": 0, "used_bytes": 0, "free_str": "",
+                      "total_str": "", "space_label": "", "percent_free": 100}
+
+    @staticmethod
+    def _drive_roots() -> list:
+        """[(name, path)] of the drives / volumes to show (instant: nothing is opened)."""
+        roots = []
         if sys.platform == "win32":
             import string
             from ctypes import windll
@@ -6407,25 +6971,76 @@ class AppBridge(QObject):
                 bitmask = windll.kernel32.GetLogicalDrives()
                 for letter in string.ascii_uppercase:
                     if bitmask & 1:
-                        drive_path = f"{letter}:\\"
-                        drive_item = {"name": f"{letter}:", "path": drive_path}
-                        drive_item.update(_get_space_info(drive_path))
-                        drives.append(drive_item)
+                        roots.append((f"{letter}:", f"{letter}:\\"))
                     bitmask >>= 1
             except Exception:
-                fallback = {"name": "C:", "path": "C:\\"}
-                fallback.update(_get_space_info("C:\\"))
-                drives.append(fallback)
+                roots.append(("C:", "C:\\"))
         else:
-            root_item = {"name": "Root (/)", "path": "/"}
-            root_item.update(_get_space_info("/"))
-            drives.append(root_item)
+            roots.append(("Root (/)", "/"))
             home = os.path.expanduser("~")
             if os.path.exists(home):
-                home_item = {"name": "Home (~)", "path": home}
-                home_item.update(_get_space_info(home))
-                drives.append(home_item)
+                roots.append(("Home (~)", home))
+        return roots
+
+    @Slot(result='QVariantList')
+    def getSystemDrives(self) -> list:
+        """The drives with their last known free space, returned right away.
+
+        Asking a drive for its free space can hang (an offline network drive waits for a network
+        timeout), and the Gallery asks on every folder change, so the space is refreshed in the
+        background and sent with drivesUpdated."""
+        cache = getattr(self, "_drive_space_cache", None)
+        if cache is None:
+            cache = self._drive_space_cache = {}
+        drives = []
+        for name, path in self._drive_roots():
+            item = {"name": name, "path": path}
+            item.update(cache.get(path) or self._NO_SPACE_INFO)
+            drives.append(item)
+        self._refresh_drive_space(drives)
         return drives
+
+    def _refresh_drive_space(self, drives: list):
+        now = time.time()
+        if getattr(self, "_drive_refresh_running", False) or now - getattr(self, "_drive_refresh_at", 0.0) < 5.0:
+            return
+        self._drive_refresh_running = True
+        self._drive_refresh_at = now
+        slow = getattr(self, "_slow_drives", None)
+        if slow is None:
+            slow = self._slow_drives = {}
+
+        def _job():
+            try:
+                results, threads = {}, []
+                for d in drives:
+                    path = d["path"]
+                    if slow.get(path, 0.0) > time.time():
+                        continue                  # didn't answer recently: leave it for a minute
+                    def _probe(p=path):
+                        results[p] = self._drive_space_info(p)
+                    t = threading.Thread(target=_probe, daemon=True, name="DriveSpace")
+                    t.start()
+                    threads.append((path, t))
+                deadline = time.time() + 4.0
+                for path, t in threads:
+                    t.join(max(0.0, deadline - time.time()))
+                    if t.is_alive():
+                        slow[path] = time.time() + 60.0
+                self._drive_space_cache.update(results)
+                updated = []
+                for d in drives:
+                    item = {"name": d["name"], "path": d["path"]}
+                    item.update(self._drive_space_cache.get(d["path"]) or self._NO_SPACE_INFO)
+                    updated.append(item)
+                self.drivesUpdated.emit(updated)
+            except RuntimeError:
+                pass      # the app is closing
+            except Exception as e:
+                logger.debug(f"Drive space refresh failed: {e}", category="gallery")
+            finally:
+                self._drive_refresh_running = False
+        threading.Thread(target=_job, daemon=True, name="DriveSpaceRefresh").start()
 
     def _get_default_gallery_bookmarks(self) -> list:
         defaults = []
@@ -6451,13 +7066,15 @@ class AppBridge(QObject):
     def getGalleryBookmarks(self) -> list:
         return self._gallery_bookmarks
 
+    @Slot(str, result=bool)
     @Slot(str, str, result=bool)
     def addGalleryBookmark(self, path: str, name: str = "") -> bool:
         if not path:
             return False
         norm = os.path.normpath(path)
+        norm_case = os.path.normcase(norm)
         for b in self._gallery_bookmarks:
-            if os.path.normpath(b.get("path", "")) == norm:
+            if os.path.normcase(os.path.normpath(b.get("path", ""))) == norm_case:
                 return False
         b_name = name.strip() if name and name.strip() else os.path.basename(norm)
         if not b_name:
@@ -6475,11 +7092,11 @@ class AppBridge(QObject):
     def removeGalleryBookmark(self, path: str) -> bool:
         if not path:
             return False
-        norm = os.path.normpath(path)
+        norm_case = os.path.normcase(os.path.normpath(path))
         before_len = len(self._gallery_bookmarks)
         self._gallery_bookmarks = [
             b for b in self._gallery_bookmarks
-            if os.path.normpath(b.get("path", "")) != norm
+            if os.path.normcase(os.path.normpath(b.get("path", ""))) != norm_case
         ]
         if len(self._gallery_bookmarks) != before_len:
             self.saveSettings()
@@ -6491,9 +7108,9 @@ class AppBridge(QObject):
     def isGalleryBookmarked(self, path: str) -> bool:
         if not path:
             return False
-        norm = os.path.normpath(path)
+        norm_case = os.path.normcase(os.path.normpath(path))
         for b in self._gallery_bookmarks:
-            if os.path.normpath(b.get("path", "")) == norm:
+            if os.path.normcase(os.path.normpath(b.get("path", ""))) == norm_case:
                 return True
         return False
 
@@ -6839,6 +7456,7 @@ class AppBridge(QObject):
         renamed = 0
         failed = 0
         errors = []
+        done = []          # (old, new) of every rename, for the log
 
         to_rename = [item for item in plan if item.get("status") == "ready" and item.get("valid", True)]
         if not to_rename:
@@ -6848,6 +7466,13 @@ class AppBridge(QObject):
         for item in to_rename:
             src = os.path.normpath(item["old_path"])
             dst = os.path.normpath(item["new_path"])
+            safety_src = self.getPathSafetyInfo(src)
+            safety_dst = self.getPathSafetyInfo(dst)
+            if safety_src.get("is_blocked") or safety_src.get("is_drive_root") or safety_dst.get("is_blocked") or safety_dst.get("is_drive_root"):
+                failed += 1
+                errors.append(f"Batch rename blocked on system/root path: {os.path.basename(src)}")
+                continue
+
             if not os.path.exists(src):
                 failed += 1
                 errors.append(f"Source file not found: {os.path.basename(src)}")
@@ -6880,6 +7505,7 @@ class AppBridge(QObject):
                 try:
                     shutil.move(src, dst)
                     renamed += 1
+                    done.append((src, dst))
                 except Exception as e:
                     failed += 1
                     errors.append(f"Cannot rename {os.path.basename(src)}: {e}")
@@ -6889,13 +7515,24 @@ class AppBridge(QObject):
                 os.makedirs(os.path.dirname(final_dst), exist_ok=True)
                 shutil.move(temp_src, final_dst)
                 renamed += 1
+                done.append((orig_src, final_dst))
             except Exception as e:
                 failed += 1
                 errors.append(f"Cannot finalize rename to {os.path.basename(final_dst)}: {e}")
                 try:
                     shutil.move(temp_src, orig_src)
-                except Exception:
-                    pass
+                except Exception as back_err:
+                    # The file is now only reachable under its temporary name: say exactly where
+                    errors.append(f"Couldn't restore the original name either; the file is at {temp_src} ({back_err})")
+                    logger.error(f"Batch rename left a file under a temporary name: {temp_src}", category="gallery",
+                                 details=f"original name: {orig_src}\nintended name: {final_dst}\n{back_err!r}")
+
+        if done:
+            logger.info(f"Batch rename: renamed {renamed} item(s).", category="gallery",
+                        details="\n".join(f"{a}  ->  {b}" for a, b in done))
+        if errors:
+            logger.warning(f"Batch rename: {failed} item(s) couldn't be renamed.", category="gallery",
+                           details="\n".join(errors))
 
         return {
             "success": failed == 0,
@@ -6908,6 +7545,11 @@ class AppBridge(QObject):
     def scanBrokenFiles(self, folder_path: str, recursive: bool = False) -> list:
         """Scan folder for 0-byte files, incomplete download temp files (.part, .crdownload, etc.), and empty folders."""
         if not folder_path or not os.path.exists(folder_path):
+            return []
+
+        safety = self.getPathSafetyInfo(folder_path)
+        if safety.get("is_blocked"):
+            logger.warning(f"scanBrokenFiles blocked on {folder_path} for system safety")
             return []
 
         norm_root = os.path.normpath(os.path.abspath(folder_path))
@@ -7013,30 +7655,135 @@ class AppBridge(QObject):
 
     @Slot('QVariantList', result='QVariantMap')
     def deleteItems(self, paths: list) -> dict:
-        """Safely delete a list of files or empty folders."""
+        """Move files or folders to the Recycle Bin / Trash so deletions can be undone.
+
+        Never falls back to a permanent delete: items the OS cannot trash
+        (e.g. some network drives) are reported as failures instead.
+        """
+        from PySide6.QtCore import QFile
+
         deleted = 0
         failed = 0
         errors = []
+        trashed = []
 
         for p in paths:
             if not p:
                 continue
             norm_p = os.path.normpath(p)
+            safety = self.getPathSafetyInfo(norm_p)
+            if safety.get("is_blocked") or safety.get("is_drive_root"):
+                failed += 1
+                errors.append(f"Deletion blocked for system or root directory: {norm_p}")
+                continue
+            if not os.path.exists(norm_p):
+                failed += 1
+                errors.append(f"Target does not exist: {norm_p}")
+                continue
             try:
-                if os.path.isfile(norm_p):
-                    os.remove(norm_p)
+                if QFile.moveToTrash(norm_p):
                     deleted += 1
-                elif os.path.isdir(norm_p):
-                    os.rmdir(norm_p)
-                    deleted += 1
+                    trashed.append(norm_p)
                 else:
                     failed += 1
-                    errors.append(f"Target does not exist: {norm_p}")
+                    errors.append(f"Could not move {os.path.basename(norm_p)} to the Recycle Bin")
             except Exception as e:
                 failed += 1
                 errors.append(f"Failed deleting {os.path.basename(norm_p)}: {e}")
 
+        if deleted:
+            logger.info(f"Moved {deleted} item(s) to the Recycle Bin.", category="gallery",
+                        details="\n".join(trashed))
+        if errors:
+            logger.warning(f"{failed} item(s) couldn't be moved to the Recycle Bin.", category="gallery",
+                           details="\n".join(errors))
+
         return {"deleted": deleted, "failed": failed, "errors": errors}
+
+    @Slot('QVariantList', str, result='QVariantMap')
+    def moveItems(self, paths: list, destDir: str) -> dict:
+        """Move files or folders into destDir, never overwriting an existing item."""
+        moved = 0
+        failed = 0
+        errors = []
+        moved_pairs = []   # [source, target] for every item that moved, so it can be undone
+        dest = os.path.normpath(destDir or "")
+        if not dest or not os.path.isdir(dest):
+            return {"moved": 0, "failed": len(paths), "errors": [f"Destination folder does not exist: {destDir}"], "pairs": []}
+        dest_safety = self.getPathSafetyInfo(dest)
+        if dest_safety.get("is_blocked"):
+            return {"moved": 0, "failed": len(paths), "errors": [f"Moving into a protected system folder is blocked: {dest}"], "pairs": []}
+
+        dest_case = os.path.normcase(dest)
+        for p in paths:
+            if not p:
+                continue
+            src = os.path.normpath(p)
+            safety = self.getPathSafetyInfo(src)
+            if safety.get("is_blocked") or safety.get("is_drive_root"):
+                failed += 1
+                errors.append(f"Move blocked for system or root directory: {src}")
+                continue
+            if not os.path.exists(src):
+                failed += 1
+                errors.append(f"Target does not exist: {src}")
+                continue
+            if os.path.normcase(os.path.dirname(src)) == dest_case:
+                continue  # already there
+            src_case = os.path.normcase(src)
+            if dest_case == src_case or dest_case.startswith(src_case + os.sep):
+                failed += 1
+                errors.append(f"Cannot move a folder into itself: {os.path.basename(src)}")
+                continue
+            target = os.path.join(dest, os.path.basename(src))
+            if os.path.exists(target):
+                failed += 1
+                errors.append(f"An item named '{os.path.basename(src)}' already exists in the destination")
+                continue
+            try:
+                shutil.move(src, target)
+                moved += 1
+                moved_pairs.append([src, target])
+            except Exception as e:
+                failed += 1
+                errors.append(f"Failed moving {os.path.basename(src)}: {e}")
+
+        if moved:
+            logger.info(f"Moved {moved} item(s) to '{dest}'.", category="gallery",
+                        details="\n".join(f"{a}  ->  {b}" for a, b in moved_pairs))
+        if errors:
+            logger.warning(f"{failed} item(s) couldn't be moved to '{dest}'.", category="gallery",
+                           details="\n".join(errors))
+
+        return {"moved": moved, "failed": failed, "errors": errors, "pairs": moved_pairs}
+
+    @Slot(str, str, result='QVariantMap')
+    def renameItem(self, path: str, newName: str) -> dict:
+        """Rename a single file or folder in place."""
+        src = os.path.normpath(path or "")
+        new_name = (newName or "").strip()
+        if not src or not os.path.exists(src):
+            return {"success": False, "error": "The item no longer exists.", "new_path": ""}
+        if not new_name or new_name in (".", "..") or any(c in new_name for c in '<>:"/\\|?*') or new_name.endswith((".", " ")):
+            return {"success": False, "error": "That name contains characters that aren't allowed.", "new_path": ""}
+        safety = self.getPathSafetyInfo(src)
+        if safety.get("is_blocked") or safety.get("is_drive_root"):
+            return {"success": False, "error": "Renaming is blocked for system or root directories.", "new_path": ""}
+        dst = os.path.join(os.path.dirname(src), new_name)
+        if os.path.normcase(dst) == os.path.normcase(src) and dst == src:
+            return {"success": True, "error": "", "new_path": src}
+        # A case-only rename points at the same file on Windows, so it is not a collision.
+        if os.path.exists(dst) and os.path.normcase(dst) != os.path.normcase(src):
+            return {"success": False, "error": f"An item named '{new_name}' already exists here.", "new_path": ""}
+        try:
+            os.rename(src, dst)
+        except Exception as e:
+            logger.warning(f"Couldn't rename '{os.path.basename(src)}' to '{new_name}': {e}", category="gallery",
+                           details=src)
+            return {"success": False, "error": str(e), "new_path": ""}
+        logger.info(f"Renamed '{os.path.basename(src)}' to '{new_name}'.", category="gallery",
+                    details=f"{src}  ->  {dst}")
+        return {"success": True, "error": "", "new_path": dst}
 
     @Slot(str, bool, result='QVariantList')
     def scanDuplicates(self, folder_path: str, recursive: bool = False) -> list:
@@ -7046,6 +7793,11 @@ class AppBridge(QObject):
         """
         import hashlib
         if not folder_path or not os.path.exists(folder_path):
+            return []
+
+        safety = self.getPathSafetyInfo(folder_path)
+        if safety.get("is_blocked"):
+            logger.warning(f"scanDuplicates blocked on {folder_path} for system safety")
             return []
 
         norm_root = os.path.normpath(os.path.abspath(folder_path))
@@ -7136,16 +7888,549 @@ class AppBridge(QObject):
         duplicate_groups.sort(key=lambda g: g["wasted_size"], reverse=True)
         return duplicate_groups
 
+    @Slot(str, result='QVariantMap')
+    def getPathSafetyInfo(self, path: str) -> dict:
+        """
+        Analyze path to verify safety for bulk operations like Clean, Delete, Auto-Sort, and Batch Rename.
+        Foolproof protection blocking OS drive root, Users folder, Program Files, Python installations,
+        and Windows/application directories on the system drive.
+        """
+        if not path or not path.strip():
+            return {
+                "is_blocked": True,
+                "is_system_root": False,
+                "is_system_dir": False,
+                "is_drive_root": False,
+                "is_other_root": False,
+                "system_drive": "C:",
+                "drive_letter": "",
+                "path": "",
+                "message": "Empty or invalid folder path."
+            }
+
+        norm = os.path.normpath(os.path.abspath(path.strip()))
+        norm_case = os.path.normcase(norm)
+
+        # 1. Detect OS System Drive & System Root
+        windir = os.environ.get("WINDIR") or os.environ.get("SystemRoot") or "C:\\Windows"
+        system_drive_env = os.environ.get("SystemDrive")
+        if not system_drive_env and windir:
+            drive_part, _ = os.path.splitdrive(windir)
+            system_drive_env = drive_part if drive_part else "C:"
+        elif not system_drive_env:
+            system_drive_env = "C:"
+        system_drive = system_drive_env.upper().rstrip(":") + ":"
+        sys_drive_root = system_drive + "\\"
+        norm_sys_root = os.path.normcase(os.path.normpath(sys_drive_root))
+
+        drive, tail = os.path.splitdrive(norm)
+        drive_letter = drive.upper() if drive else ""
+        tail_stripped = tail.strip("\\/")
+
+        if sys.platform == "win32":
+            is_drive_root = bool(drive_letter and (tail_stripped == ""))
+            is_system_root = is_drive_root and (drive_letter == system_drive)
+        else:
+            is_drive_root = (norm == "/" or os.path.ismount(norm))
+            is_system_root = (norm == "/")
+
+        if is_system_root:
+            return {
+                "is_blocked": True,
+                "is_system_root": True,
+                "is_system_dir": False,
+                "is_drive_root": True,
+                "is_other_root": False,
+                "system_drive": system_drive,
+                "drive_letter": drive_letter,
+                "path": norm,
+                "message": f"Operations are permanently disabled on the operating system drive root ({drive_letter}\\) for system stability."
+            }
+
+        # 2. Windows system & core OS directories
+        if sys.platform == "win32":
+            protected_system_dirs = [
+                windir,
+                os.path.join(sys_drive_root, "Windows"),
+                os.path.join(sys_drive_root, "System Volume Information"),
+                os.path.join(sys_drive_root, "$Recycle.Bin"),
+                os.path.join(sys_drive_root, "Recovery"),
+                os.path.join(sys_drive_root, "PerfLogs"),
+                os.path.join(sys_drive_root, "Boot"),
+                os.path.join(sys_drive_root, "Documents and Settings"),
+                os.path.join(sys_drive_root, "MSOCache"),
+                os.path.join(sys_drive_root, "Config.Msi"),
+                os.path.join(sys_drive_root, "inetpub"),
+            ]
+            for s_dir in protected_system_dirs:
+                p_case = os.path.normcase(os.path.normpath(s_dir))
+                if norm_case == p_case or norm_case.startswith(p_case + os.path.sep):
+                    return {
+                        "is_blocked": True,
+                        "is_system_root": False,
+                        "is_system_dir": True,
+                        "is_drive_root": False,
+                        "is_other_root": False,
+                        "system_drive": system_drive,
+                        "drive_letter": drive_letter,
+                        "path": norm,
+                        "message": "Operations are permanently disabled on protected operating system directories."
+                    }
+
+            # Check for $ prefix on system drive (e.g. $Windows.~BT, $WinREAgent)
+            if norm_case.startswith(norm_sys_root) and any(part.startswith("$") for part in norm_case.split(os.path.sep)):
+                return {
+                    "is_blocked": True,
+                    "is_system_root": False,
+                    "is_system_dir": True,
+                    "is_drive_root": False,
+                    "is_other_root": False,
+                    "system_drive": system_drive,
+                    "drive_letter": drive_letter,
+                    "path": norm,
+                    "message": "Operations are permanently disabled on Windows system cache/recovery directories."
+                }
+        else:
+            def _blocked(message: str) -> dict:
+                return {
+                    "is_blocked": True,
+                    "is_system_root": False,
+                    "is_system_dir": True,
+                    "is_drive_root": False,
+                    "is_other_root": False,
+                    "system_drive": system_drive,
+                    "drive_letter": drive_letter,
+                    "path": norm,
+                    "message": message
+                }
+
+            # Removable / extra disks are mounted below these; the disks themselves are allowed
+            # (as drive roots, with double confirmation), the folders holding them are not
+            mount_parents = ["/media", "/mnt", "/run/media", "/Volumes"]
+            protected_unix_dirs = [
+                "/bin", "/boot", "/dev", "/etc", "/lib", "/lib32", "/lib64", "/libx32", "/opt",
+                "/proc", "/root", "/sbin", "/snap", "/sys", "/usr", "/var",
+                "/System", "/Library", "/Applications", "/private", "/cores",
+            ]
+            for u_dir in protected_unix_dirs:
+                if norm == u_dir or norm.startswith(u_dir + "/"):
+                    return _blocked(f"Operations are permanently disabled on protected system directory ({u_dir}).")
+            if norm == "/run" or (norm.startswith("/run/") and not norm.startswith("/run/media/")):
+                return _blocked("Operations are permanently disabled on protected system directory (/run).")
+
+            # Home folders: the same protection Windows gets for C:\Users (this was Windows-only, so
+            # Flatten / Auto-sort / Delete / Batch rename could run on /home/<user> or ~/.ssh)
+            home = os.path.normpath(os.path.expanduser("~"))
+            user_roots = ["/home", "/Users"]
+            if norm in user_roots or norm in mount_parents:
+                return _blocked(f"Operations are permanently disabled on {norm}, which holds user accounts or disks.")
+            if os.path.dirname(norm) in user_roots or norm == home:
+                return _blocked("Operations are permanently disabled directly on a home folder to protect its settings "
+                                "and hidden folders. Please select a subfolder (such as Downloads or Pictures).")
+            for m_parent in ("/media", "/run/media"):
+                if os.path.dirname(norm) == m_parent:      # /media/<user>: holds that user's disks
+                    return _blocked(f"Operations are permanently disabled on {norm}, which holds mounted disks.")
+            in_home = norm.startswith(home + "/") or any(norm.startswith(r + "/") for r in user_roots)
+            if in_home:
+                for part in norm.split("/"):
+                    if part.startswith(".") and part not in (".", ".."):
+                        return _blocked(f"Operations are permanently disabled on hidden application configuration folders ({part}).")
+
+        # 3. Program Files & ProgramData (on any drive)
+        parts = [p.lower() for p in norm_case.split(os.path.sep)]
+        if "program files" in parts or "program files (x86)" in parts or "programdata" in parts or "windowsapps" in parts:
+            return {
+                "is_blocked": True,
+                "is_system_root": False,
+                "is_system_dir": True,
+                "is_drive_root": False,
+                "is_other_root": False,
+                "system_drive": system_drive,
+                "drive_letter": drive_letter,
+                "path": norm,
+                "message": "Operations are permanently disabled inside Program Files / ProgramData to protect installed software."
+            }
+
+        # 4. Users Directory & Profile Roots
+        if sys.platform == "win32":
+            users_dir_case = os.path.normcase(os.path.join(sys_drive_root, "Users"))
+            if norm_case == users_dir_case:
+                return {
+                    "is_blocked": True,
+                    "is_system_root": False,
+                    "is_system_dir": True,
+                    "is_drive_root": False,
+                    "is_other_root": False,
+                    "system_drive": system_drive,
+                    "drive_letter": drive_letter,
+                    "path": norm,
+                    "message": f"Operations are permanently disabled on the Users directory ({drive_letter}\\Users) to protect user account data."
+                }
+
+            # Check if target is directly a User profile root (e.g. C:\Users\silvi or C:\Users\Public)
+            if os.path.normcase(os.path.dirname(norm)) == users_dir_case:
+                return {
+                    "is_blocked": True,
+                    "is_system_root": False,
+                    "is_system_dir": True,
+                    "is_drive_root": False,
+                    "is_other_root": False,
+                    "system_drive": system_drive,
+                    "drive_letter": drive_letter,
+                    "path": norm,
+                    "message": "Operations are permanently disabled directly on your User Profile home folder to protect profile configuration and system directories. Please select a subfolder (such as Downloads or Pictures)."
+                }
+
+            # Inside user directory: AppData, Application Data, Local Settings (except system Temp dir)
+            import tempfile
+            sys_temp_case = os.path.normcase(os.path.normpath(tempfile.gettempdir()))
+            is_temp_dir = (norm_case == sys_temp_case or norm_case.startswith(sys_temp_case + os.path.sep))
+            if not is_temp_dir and ("appdata" in parts or "application data" in parts or "local settings" in parts):
+                return {
+                    "is_blocked": True,
+                    "is_system_root": False,
+                    "is_system_dir": True,
+                    "is_drive_root": False,
+                    "is_other_root": False,
+                    "system_drive": system_drive,
+                    "drive_letter": drive_letter,
+                    "path": norm,
+                    "message": "Operations are permanently disabled inside AppData to protect application configurations and local data."
+                }
+
+            # Inside user directory: dot-configuration folders (.vscode, .cargo, .gemini, etc.)
+            if norm_case.startswith(users_dir_case + os.path.sep):
+                for part in parts:
+                    if part.startswith(".") and part not in (".", ".."):
+                        return {
+                            "is_blocked": True,
+                            "is_system_root": False,
+                            "is_system_dir": True,
+                            "is_drive_root": False,
+                            "is_other_root": False,
+                            "system_drive": system_drive,
+                            "drive_letter": drive_letter,
+                            "path": norm,
+                            "message": f"Operations are permanently disabled on hidden application configuration folders ({part})."
+                        }
+
+        # 5. Python & Runtime Environment Installations
+        for part in parts:
+            if part.startswith(("python", "pymanager", "miniconda", "anaconda", "virtualenv", "venv")):
+                return {
+                    "is_blocked": True,
+                    "is_system_root": False,
+                    "is_system_dir": True,
+                    "is_drive_root": False,
+                    "is_other_root": False,
+                    "system_drive": system_drive,
+                    "drive_letter": drive_letter,
+                    "path": norm,
+                    "message": "Operations are permanently disabled on Python and runtime environment installations."
+                }
+
+        # Check for python executables or venv marker in directory or immediate parent
+        check_dirs = [norm]
+        parent_dir = os.path.dirname(norm)
+        if parent_dir and parent_dir != norm:
+            check_dirs.append(parent_dir)
+        for cd in check_dirs:
+            try:
+                if os.path.exists(os.path.join(cd, "python.exe")) or \
+                   os.path.exists(os.path.join(cd, "py.exe")) or \
+                   os.path.exists(os.path.join(cd, "pyvenv.cfg")) or \
+                   os.path.exists(os.path.join(cd, "Scripts", "pip.exe")):
+                    return {
+                        "is_blocked": True,
+                        "is_system_root": False,
+                        "is_system_dir": True,
+                        "is_drive_root": False,
+                        "is_other_root": False,
+                        "system_drive": system_drive,
+                        "drive_letter": drive_letter,
+                        "path": norm,
+                        "message": "Operations are permanently disabled on Python and runtime environment installations."
+                    }
+            except OSError:
+                pass
+
+        # 6. Apps, Games, Web Servers, and Tool Directories on System Drive (C:\)
+        if sys.platform == "win32" and norm_case.startswith(norm_sys_root):
+            rel_to_sys = os.path.relpath(norm, sys_drive_root)
+            top_folder = rel_to_sys.split(os.path.sep)[0].lower()
+
+            known_c_app_folders = {
+                "games", "xboxgames", "riot games", "steamcmd", "steam", "steamlibrary",
+                "epic games", "gog games", "ubisoft", "battle.net",
+                "qt", "certbot", "xamp", "xampp", "wamp", "nginx", "apache",
+                "tools", "bin", "vcpkg", "mingw", "cygwin", "msys", "llvm",
+                "prism hub", "rootline prism"
+            }
+            if top_folder in known_c_app_folders or top_folder.startswith(("borderless", "app", "game")):
+                return {
+                    "is_blocked": True,
+                    "is_system_root": False,
+                    "is_system_dir": True,
+                    "is_drive_root": False,
+                    "is_other_root": False,
+                    "system_drive": system_drive,
+                    "drive_letter": drive_letter,
+                    "path": norm,
+                    "message": f"Operations are permanently disabled on application and game installation directories ({top_folder})."
+                }
+
+            # Check if top-level directory on C:\ contains application executables/binaries
+            top_abs = os.path.join(sys_drive_root, top_folder)
+            safe_c_folders = {
+                "downloads", "testdownloads", "test", "tmp", "workspace",
+                "media", "data", "backup", "kemono", "pawchive"
+            }
+            if top_folder not in safe_c_folders:
+                try:
+                    for item in os.scandir(top_abs):
+                        ext = os.path.splitext(item.name)[1].lower()
+                        if ext in (".exe", ".dll", ".sys") or item.name.lower().startswith(("uninstall", "unins")):
+                            return {
+                                "is_blocked": True,
+                                "is_system_root": False,
+                                "is_system_dir": True,
+                                "is_drive_root": False,
+                                "is_other_root": False,
+                                "system_drive": system_drive,
+                                "drive_letter": drive_letter,
+                                "path": norm,
+                                "message": f"Operations are permanently disabled on application and software directories ({top_folder})."
+                            }
+                except OSError:
+                    pass
+
+        # 7. Other Root Disks (e.g. D:\)
+        is_other_root = is_drive_root and not is_system_root
+        msg = ""
+        if is_other_root:
+            where = f"{drive_letter}\\" if sys.platform == "win32" else norm
+            msg = f"Target is the root of drive ({where}). Executing operations here affects the entire drive and requires double confirmation."
+
+        return {
+            "is_blocked": False,
+            "is_system_root": False,
+            "is_system_dir": False,
+            "is_drive_root": is_drive_root,
+            "is_other_root": is_other_root,
+            "system_drive": system_drive,
+            "drive_letter": drive_letter,
+            "path": norm,
+            "message": msg
+        }
+
+    def _refuse_if_disabled(self, url_or_domain: str, context: str = "link") -> bool:
+        """True (after telling the user) when the link belongs to a switched-off site.
+        Kemono and Coomer are switched off for now; the message points to Pawchive / cum.st."""
+        from core.providers import is_disabled, disabled_message, alternative_url
+        if not url_or_domain or not is_disabled(url_or_domain):
+            return False
+        msg = disabled_message(url_or_domain)
+        alt = alternative_url(url_or_domain) if "/" in url_or_domain else ""
+        logger.warning(msg + (f" Same link on Pawchive: {alt}" if alt else ""), category="parser")
+        self.providerDisabled.emit(msg, alt, context)
+        return True
+
+    @Slot(result=int)
+    def kemonoWatchlistCount(self) -> int:
+        from core.providers import provider_for_host, KEMONO
+        return sum(1 for e in list(self._watchlist_manager.entries)
+                   if provider_for_host(e.domain) == KEMONO or provider_for_host(e.url) == KEMONO)
+
+    @Slot(result=int)
+    def switchWatchlistToPawchive(self) -> int:
+        """Moves the Watchlist's Kemono artists to Pawchive (it uses the same creator IDs)."""
+        from core.providers import provider_for_host, alternative_url, KEMONO
+        changed = 0
+        with self._watchlist_manager._lock:
+            for e in self._watchlist_manager.entries:
+                if provider_for_host(e.domain) == KEMONO or provider_for_host(e.url) == KEMONO:
+                    new_url = alternative_url(e.url) or f"https://pawchive.pw/{e.service}/user/{e.user_id}"
+                    e.url = new_url
+                    e.domain = "pawchive.pw"
+                    changed += 1
+            if changed:
+                self._watchlist_manager.save()
+        if changed:
+            logger.success(f"Moved {changed} Watchlist artist(s) from Kemono to Pawchive.", category="watchlist")
+            self._watchlist_model.refresh()
+            self.watchlistChanged.emit()
+        return changed
+
+    def _run_async(self, request_id: str, fn, *args) -> None:
+        """Runs fn(*args) in a background thread and sends the result to QML with asyncResultReady.
+        (Scans that ran on the window thread froze the app on big folders.)"""
+        def _job():
+            try:
+                result = fn(*args)
+            except Exception as e:
+                logger.error(f"Background task failed: {e}", category="system")
+                result = None
+            try:
+                self.asyncResultReady.emit(request_id, result)
+            except RuntimeError:
+                pass      # the app is closing
+        threading.Thread(target=_job, daemon=True, name=f"async:{request_id[:24]}").start()
+
+    @Slot(str, str, bool)
+    def scanBrokenFilesAsync(self, request_id: str, folder_path: str, recursive: bool = False):
+        self._run_async(request_id, self.scanBrokenFiles, folder_path, recursive)
+
+    @Slot(str, str, bool)
+    def scanDuplicatesAsync(self, request_id: str, folder_path: str, recursive: bool = False):
+        self._run_async(request_id, self.scanDuplicates, folder_path, recursive)
+
+    @Slot(str, str, str, bool)
+    def autoSortFolderAsync(self, request_id: str, folder_path: str, mode: str = "type", recursive: bool = False):
+        self._run_async(request_id, self.autoSortFolder, folder_path, mode, recursive)
+
+    @Slot(str, str)
+    def undoFlattenAsync(self, request_id: str, folder_path: str):
+        self._run_async(request_id, self.undoFlatten, folder_path)
+
+    @Slot(str, str, 'QVariantList', str, str, str, str, str, str, int, bool, bool, str)
+    def previewBatchRenameAsync(self, request_id: str, folder_path: str, files: list, pattern: str,
+                                find_text: str, replace_text: str, prefix: str, suffix: str, case_mode: str,
+                                start_index: int, include_subfolders: bool, move_to_folder: bool,
+                                destination_folder: str):
+        self._run_async(request_id, self.previewBatchRename, folder_path, list(files or []), pattern, find_text,
+                        replace_text, prefix, suffix, case_mode, start_index, include_subfolders,
+                        move_to_folder, destination_folder)
+
+    @Slot(str, str)
+    def detectNextIndexAsync(self, request_id: str, folder_path: str):
+        self._run_async(request_id, self.detectNextIndex, folder_path)
+
+    @Slot(str, 'QVariantList')
+    def executeBatchRenameAsync(self, request_id: str, plan: list):
+        self._run_async(request_id, self.executeBatchRename, list(plan or []))
+
+    @staticmethod
+    def _flatten_log_path(folder_path: str) -> str:
+        import hashlib
+        from core.path_utils import get_config_dir
+        key = hashlib.md5(os.path.normcase(os.path.normpath(os.path.abspath(folder_path))).encode("utf-8")).hexdigest()
+        return os.path.join(get_config_dir(), "undo", f"flatten_{key}.json")
+
+    @Slot(str, result=bool)
+    def hasFlattenUndo(self, folder_path: str) -> bool:
+        return bool(folder_path) and os.path.exists(self._flatten_log_path(folder_path))
+
+    @Slot(str, result='QVariantMap')
+    def undoFlatten(self, folder_path: str) -> dict:
+        """Moves the files of the last Flatten back into the folders they came from."""
+        import json
+        import shutil
+        log_path = self._flatten_log_path(folder_path)
+        if not os.path.exists(log_path):
+            return {"moved": 0, "errors": ["There is nothing to undo for this folder."]}
+        try:
+            with open(log_path, "r", encoding="utf-8") as f:
+                log = json.load(f)
+        except Exception as e:
+            return {"moved": 0, "errors": [f"The undo record couldn't be read: {e}"]}
+        root = os.path.normpath(os.path.abspath(folder_path))
+        restored, errors = 0, []
+        for src_rel, dst_rel in reversed(log.get("moves", [])):
+            src = os.path.normpath(os.path.join(root, src_rel))
+            dst = os.path.normpath(os.path.join(root, dst_rel))
+            # Never outside the folder, even with an edited record
+            if not (src.startswith(root + os.sep) and dst.startswith(root + os.sep)):
+                continue
+            if not os.path.exists(dst):
+                errors.append(f"{dst_rel} is no longer there")
+                continue
+            if os.path.exists(src):
+                errors.append(f"{src_rel} already exists")
+                continue
+            try:
+                os.makedirs(os.path.dirname(src), exist_ok=True)
+                shutil.move(dst, src)
+                restored += 1
+            except Exception as e:
+                errors.append(f"Could not move {dst_rel} back: {e}")
+        try:
+            os.remove(log_path)
+        except OSError:
+            pass
+        logger.info(f"Undo flatten: moved {restored} file(s) back into their folders in {root}.", category="file")
+        return {"moved": restored, "errors": errors[:20], "mode": "undo"}
+
+    @Slot(str, str, bool, result='QVariantMap')
     @Slot(str, str, result='QVariantMap')
-    def autoSortFolder(self, folder_path: str, mode: str = "type") -> dict:
-        """Auto-organize files in a folder into clean subfolder hierarchies by type, date, or extension."""
+    def autoSortFolder(self, folder_path: str, mode: str = "type", recursive: bool = False) -> dict:
+        """
+        Auto-organize files in a folder into clean subfolder hierarchies by type, date, or extension.
+        When recursive=True, recursively organizes loose attachments inside every post subfolder
+        (e.g. Creator/[Post 1]/Images/, Creator/[Post 2]/Videos/) without re-downloading.
+        """
         import shutil
         if not folder_path or not os.path.exists(folder_path):
             return {"moved": 0, "errors": ["Folder does not exist"]}
 
+        safety = self.getPathSafetyInfo(folder_path)
+        if safety.get("is_blocked"):
+            return {
+                "moved": 0,
+                "errors": [safety.get("message") or "Operation blocked on system root or protected folders."]
+            }
+
         norm_root = os.path.normpath(os.path.abspath(folder_path))
         moved = 0
         errors = []
+
+        # ── Mode: Dump / Flatten (Move everything into root folder) ──────────
+        if mode in ("dump", "flatten"):
+            undo_moves = []
+            try:
+                for root_dir, dirs, files in os.walk(norm_root, topdown=False):
+                    if os.path.normcase(root_dir) == os.path.normcase(norm_root):
+                        continue
+                    for fname in files:
+                        src = os.path.normpath(os.path.join(root_dir, fname))
+                        base, ext = os.path.splitext(fname)
+                        target_file = os.path.normpath(os.path.join(norm_root, fname))
+
+                        if os.path.exists(target_file) and os.path.normcase(src) != os.path.normcase(target_file):
+                            counter = 1
+                            while True:
+                                target_file = os.path.normpath(os.path.join(norm_root, f"{base} ({counter}){ext}"))
+                                if not os.path.exists(target_file):
+                                    break
+                                counter += 1
+
+                        try:
+                            shutil.move(src, target_file)
+                            moved += 1
+                            undo_moves.append([os.path.relpath(src, norm_root), os.path.relpath(target_file, norm_root)])
+                        except Exception as e:
+                            errors.append(f"Could not move {fname}: {e}")
+
+                # Clean up empty subdirectories left behind
+                for root_dir, dirs, files in os.walk(norm_root, topdown=False):
+                    if os.path.normcase(root_dir) == os.path.normcase(norm_root):
+                        continue
+                    try:
+                        os.rmdir(root_dir)
+                    except OSError:
+                        pass
+            except Exception as e:
+                errors.append(f"Flatten/dump error: {e}")
+
+            # A record of every move, so the flatten can be undone (it couldn't be before)
+            if undo_moves:
+                try:
+                    from core.atomic_io import atomic_write_json
+                    atomic_write_json(self._flatten_log_path(norm_root),
+                                      {"folder": norm_root, "created": time.time(), "moves": undo_moves})
+                    logger.info(f"Flatten: moved {moved} file(s) into {norm_root} (can be undone).", category="file")
+                except Exception as e:
+                    logger.warning(f"Flatten: couldn't save the undo record: {e}", category="file")
+            return {"moved": moved, "errors": errors, "mode": "flatten", "undo_available": bool(undo_moves)}
 
         type_map = {
             "image": {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg", ".ico"},
@@ -7155,55 +8440,86 @@ class AppBridge(QObject):
             "document": {".txt", ".pdf", ".json", ".html", ".md", ".epub", ".doc", ".docx"}
         }
 
-        try:
-            entries = [e for e in os.scandir(norm_root) if e.is_file(follow_symlinks=False)]
-        except OSError as e:
-            return {"moved": 0, "errors": [str(e)]}
+        # Names of category folders that shouldn't be nested recursively inside themselves
+        PROTECTED_SUBDIR_NAMES = {
+            "images", "videos", "audio", "archives", "documents", "other"
+        }
 
-        for entry in entries:
-            src = os.path.normpath(entry.path)
-            fname = entry.name
-            base, ext = os.path.splitext(fname)
-            ext_lower = ext.lower()
-
-            if mode == "date":
-                try:
-                    mtime = entry.stat().st_mtime
-                    sub_name = time.strftime("%Y-%m", time.localtime(mtime))
-                except OSError:
-                    sub_name = "Unknown_Date"
-            elif mode == "extension":
-                sub_name = ext_lower.lstrip(".").upper() or "NO_EXT"
-            else:
-                sub_name = "Other"
-                for cat, extensions in type_map.items():
-                    if ext_lower in extensions:
-                        sub_name = cat.capitalize() + "s" if cat in ("image", "video", "archive", "document") else "Audio"
-                        break
-
-            target_dir = os.path.join(norm_root, sub_name)
+        def _sort_single_directory(target_dir_path: str) -> int:
+            nonlocal errors
+            dir_moved = 0
             try:
-                os.makedirs(target_dir, exist_ok=True)
+                entries = [e for e in os.scandir(target_dir_path) if e.is_file(follow_symlinks=False)]
             except OSError as e:
-                errors.append(f"Cannot create directory {sub_name}: {e}")
-                continue
+                errors.append(f"Cannot read {target_dir_path}: {e}")
+                return 0
 
-            target_file = os.path.join(target_dir, fname)
-            if os.path.exists(target_file) and os.path.normcase(src) != os.path.normcase(target_file):
-                counter = 1
-                while True:
-                    target_file = os.path.join(target_dir, f"{base} ({counter}){ext}")
-                    if not os.path.exists(target_file):
-                        break
-                    counter += 1
+            for entry in entries:
+                src = os.path.normpath(entry.path)
+                fname = entry.name
+                base, ext = os.path.splitext(fname)
+                ext_lower = ext.lower()
 
+                if mode == "date":
+                    try:
+                        mtime = entry.stat().st_mtime
+                        sub_name = time.strftime("%Y-%m", time.localtime(mtime))
+                    except OSError:
+                        sub_name = "Unknown_Date"
+                elif mode == "extension":
+                    sub_name = ext_lower.lstrip(".").upper() or "NO_EXT"
+                else:
+                    sub_name = "Other"
+                    for cat, extensions in type_map.items():
+                        if ext_lower in extensions:
+                            sub_name = cat.capitalize() + "s" if cat in ("image", "video", "archive", "document") else "Audio"
+                            break
+
+                dest_dir = os.path.join(target_dir_path, sub_name)
+                try:
+                    os.makedirs(dest_dir, exist_ok=True)
+                except OSError as e:
+                    errors.append(f"Cannot create directory {sub_name} in {target_dir_path}: {e}")
+                    continue
+
+                target_file = os.path.join(dest_dir, fname)
+                if os.path.exists(target_file) and os.path.normcase(src) != os.path.normcase(target_file):
+                    counter = 1
+                    while True:
+                        target_file = os.path.join(dest_dir, f"{base} ({counter}){ext}")
+                        if not os.path.exists(target_file):
+                            break
+                        counter += 1
+
+                try:
+                    shutil.move(src, target_file)
+                    dir_moved += 1
+                except Exception as e:
+                    errors.append(f"Could not move {fname}: {e}")
+
+            return dir_moved
+
+        def _is_sort_folder(name: str) -> bool:
+            """A folder a sort creates (in any mode): sorting inside it again nested folders."""
+            n = name.lower()
+            return (n in PROTECTED_SUBDIR_NAMES or n == "unknown_date"
+                    or re.fullmatch(r"\d{4}-\d{2}", name) is not None
+                    or (mode == "extension" and re.fullmatch(r"[A-Z0-9]{1,10}|NO_EXT", name) is not None))
+
+        # The folders to sort are listed before anything moves, so folders this run creates are skipped
+        targets = [norm_root]
+        if recursive:
             try:
-                shutil.move(src, target_file)
-                moved += 1
+                for root_dir, dirs, _ in os.walk(norm_root):
+                    dirs[:] = [d for d in dirs if not _is_sort_folder(d)]
+                    targets.extend(os.path.join(root_dir, d) for d in dirs)
             except Exception as e:
-                errors.append(f"Could not move {fname}: {e}")
+                errors.append(f"Recursive walk error: {e}")
 
-        return {"moved": moved, "errors": errors}
+        for target in targets:
+            moved += _sort_single_directory(target)
+
+        return {"moved": moved, "errors": errors, "mode": mode}
 
 
 

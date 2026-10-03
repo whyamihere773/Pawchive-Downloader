@@ -6,11 +6,11 @@ with an authenticated AES-256-GCM fallback on non-Windows platforms.
 
 import os
 import sys
+import time
 import uuid
 import hashlib
 import ctypes
 from ctypes import wintypes
-from typing import Optional
 
 from core.logger import logger
 
@@ -19,6 +19,67 @@ try:
     _HAS_CRYPTO = True
 except ImportError:
     _HAS_CRYPTO = False
+
+
+_KEY_FILE_NAME = ".credential_key"
+
+
+def _key_file_path() -> str:
+    try:
+        from core.path_utils import get_config_dir
+        return os.path.join(get_config_dir(), _KEY_FILE_NAME)
+    except Exception:
+        return os.path.join(os.path.expanduser("~"), ".pawchive_credential_key")
+
+
+def _local_key() -> bytes:
+    """A random 256-bit key kept in a private file (owner read/write only), created on first use.
+
+    Replaces the old key derived from the network card's MAC address: that address can't always be
+    read (Python then returns a random number on every start, e.g. in Flatpak/containers) and changes
+    with USB Wi-Fi adapters or docks — either way saved logins could no longer be decrypted.
+    """
+    path = _key_file_path()
+    try:
+        with open(path, "rb") as f:
+            key = f.read()
+        if len(key) == 32:
+            return key
+        # Damaged: keep it aside (never overwrite a key that may still be needed)
+        try:
+            os.replace(path, path + f".damaged-{int(time.time())}")
+        except OSError:
+            pass
+    except FileNotFoundError:
+        pass
+    # Any other read error (permissions, a locked or offline drive) is raised: making a new key
+    # here would overwrite the real one and every saved login would become unreadable for good
+    key = os.urandom(32)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(key)
+        f.flush()
+        try:
+            os.fsync(f.fileno())
+        except OSError:
+            pass
+    os.replace(tmp, path)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    return key
+
+
+def _legacy_mac_key(entropy: bytes) -> bytes:
+    return hashlib.sha256(str(uuid.getnode()).encode("utf-8") + entropy).digest()
+
+
+def needs_reencrypt(enc_payload: bytes) -> bool:
+    """True for data still encrypted with the old MAC-address key (re-save it to upgrade)."""
+    return bool(enc_payload) and enc_payload.startswith(b"AESGCM\x01")
 
 
 class DATA_BLOB(ctypes.Structure):
@@ -60,13 +121,12 @@ def encrypt_credential(raw_bytes: bytes, context: str = "pawchive_telegram") -> 
         except Exception as e:
             logger.debug(f"[Crypto] DPAPI encryption failed, falling back to AES: {e}", category="system")
 
-    # Fallback to AES-256-GCM
+    # Elsewhere (and if DPAPI fails): AES-256-GCM with the private random key file
     if _HAS_CRYPTO:
-        node_id = str(uuid.getnode()).encode("utf-8")
-        key = hashlib.sha256(node_id + entropy).digest()
+        key = hashlib.sha256(_local_key() + entropy).digest()
         cipher = AES.new(key, AES.MODE_GCM)
         ciphertext, tag = cipher.encrypt_and_digest(raw_bytes)
-        return b"AESGCM\x01" + cipher.nonce + tag + ciphertext
+        return b"AESGCM\x02" + cipher.nonce + tag + ciphertext
 
     raise RuntimeError("No cryptographic provider available to secure credential.")
 
@@ -100,13 +160,15 @@ def decrypt_credential(enc_payload: bytes, context: str = "pawchive_telegram") -
         ctypes.windll.kernel32.LocalFree(out_blob.pbData)
         return res
 
-    elif enc_payload.startswith(b"AESGCM\x01") and _HAS_CRYPTO:
+    elif enc_payload[:7] in (b"AESGCM\x01", b"AESGCM\x02") and _HAS_CRYPTO:
         data = enc_payload[7:]
         nonce = data[:16]
         tag = data[16:32]
         ciphertext = data[32:]
-        node_id = str(uuid.getnode()).encode("utf-8")
-        key = hashlib.sha256(node_id + entropy).digest()
+        if enc_payload[6:7] == b"\x02":
+            key = hashlib.sha256(_local_key() + entropy).digest()
+        else:
+            key = _legacy_mac_key(entropy)     # older versions; re-saved with the new key on next save
         cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
         return cipher.decrypt_and_verify(ciphertext, tag)
 

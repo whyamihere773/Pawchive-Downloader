@@ -1,13 +1,13 @@
 """
 Download Archive Database Subsystem
-Provides optional, isolated persistence of successfully downloaded files (gallery-dl / yt-dlp style).
+Provides optional, isolated persistence of successfully downloaded files (a "download archive", the idea
+known from gallery-dl / yt-dlp; the files are this app's own format, not interchangeable with theirs).
 When enabled, subsequent downloads query this database and skip files even if they have been
 moved, unzipped, or deleted locally.
 When disabled, the database is completely inactive and does not touch disk or perform queries.
 """
 
 import os
-import sys
 import re
 import json
 import sqlite3
@@ -818,7 +818,7 @@ class ArchiveManager:
         """
         Export all records to a file.
         Formats:
-        - "txt": gallery-dl compatible plain text format (space-separated: service post_id_file_id)
+        - "txt": plain text list, one "service post_id_file_id" per line (this app's own format)
         - "json": complete metadata JSON structure
         """
         if not os.path.exists(self.db_path):
@@ -882,7 +882,8 @@ class ArchiveManager:
 
     def import_archive(self, filepath: str) -> int:
         """
-        Import records from an existing gallery-dl archive text file or Pawchive JSON export.
+        Import records from a text list exported by this app ("service post_id_file_id" per line) or a
+        Pawchive JSON export. (gallery-dl's own archives are SQLite databases and can't be imported.)
         """
         if not os.path.exists(filepath):
             return 0
@@ -969,13 +970,17 @@ class ArchiveManager:
         creator_id: str,
         creator_name: str = "",
         candidate_dirs: Optional[List[str]] = None,
-        progress_callback: Optional[Any] = None
+        progress_callback: Optional[Any] = None,
+        known_artist_dirs: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
         Verify physical presence of files on disk for a specific creator.
         Checks existing file_path, and if not found, scans candidate directories
         (such as default download directory, watchlist folders, storage pool paths).
         Updates is_missing (0 = present, 1 = missing) and file_path in SQLite.
+
+        The folder scan runs without holding the database lock (it used to block every download
+        worker until the scan of a whole artist tree finished).
         """
         result = {
             "service": service,
@@ -991,7 +996,6 @@ class ArchiveManager:
                 self._init_db_unlocked()
             if self._conn is None:
                 return result
-
             try:
                 cursor = self._conn.cursor()
                 cursor.execute(
@@ -1004,97 +1008,98 @@ class ArchiveManager:
                     (str(service).lower(), str(creator_id))
                 )
                 rows = cursor.fetchall()
-                total = len(rows)
-                result["total"] = total
-                if total == 0:
-                    return result
+            except Exception as e:
+                logger.error(f"Failed to verify archive integrity for {creator_id}: {e}", category="archive")
+                return result
 
-                # 1. Discover potential creator subfolders across candidate directories
-                artist_dirs = set()
-                c_name_clean = (creator_name or "").strip()
-                c_id_clean = str(creator_id or "").strip()
-                svc_clean = str(service or "").strip().lower()
+        total = len(rows)
+        result["total"] = total
+        if total == 0:
+            return result
 
-                if candidate_dirs:
-                    for root_cand in candidate_dirs:
-                        if not root_cand or not os.path.exists(root_cand):
-                            continue
-                        root_cand = os.path.abspath(root_cand)
-                        # Case A: root_cand might itself be the artist directory
-                        base_cand = os.path.basename(root_cand).lower()
-                        if (c_id_clean and c_id_clean.lower() in base_cand) or (c_name_clean and c_name_clean.lower() in base_cand):
-                            artist_dirs.add(root_cand)
+        try:
+            # 1. Creator folders: names must match exactly ("Al" used to match every folder containing "al")
+            from core.filter_engine import FilterEngine
+            c_name_clean = (creator_name or "").strip()
+            c_id_clean = str(creator_id or "").strip()
+            svc_clean = str(service or "").strip().lower()
+            names = {n for n in (c_name_clean, c_id_clean,
+                                 FilterEngine.clean_filesystem_text(c_name_clean, max_len=80, fallback="") if c_name_clean else "")
+                     if n}
+            targets = {n.lower() for n in names} | {f"{n} [{svc_clean}]".lower() for n in names}
 
-                        # Case B: Standard service/artist subfolders
-                        svc_cand = os.path.join(root_cand, svc_clean)
-                        search_roots = [root_cand]
-                        if os.path.exists(svc_cand):
-                            search_roots.append(svc_cand)
-
-                        for s_root in search_roots:
-                            try:
-                                with os.scandir(s_root) as it:
-                                    for entry in it:
-                                        if entry.is_dir():
-                                            name_l = entry.name.lower()
-                                            if (c_id_clean and c_id_clean.lower() in name_l) or (c_name_clean and c_name_clean.lower() in name_l):
-                                                artist_dirs.add(entry.path)
-                            except Exception:
-                                pass
-
-                # 2. Build fast filename index from discovered artist directories
-                # Mapping: filename_lower -> list of full paths
-                indexed_files: Dict[str, List[str]] = {}
-                for a_dir in artist_dirs:
+            artist_dirs = set()
+            for d in known_artist_dirs or []:
+                if d and os.path.isdir(d):
+                    artist_dirs.add(os.path.abspath(d))
+            for root_cand in candidate_dirs or []:
+                if not root_cand or not os.path.isdir(root_cand):
+                    continue
+                root_cand = os.path.abspath(root_cand)
+                if os.path.basename(root_cand).lower() in targets:
+                    artist_dirs.add(root_cand)
+                search_roots = [root_cand]
+                svc_cand = os.path.join(root_cand, svc_clean)
+                if os.path.isdir(svc_cand):
+                    search_roots.append(svc_cand)
+                for s_root in search_roots:
                     try:
-                        for root_dir, _, filenames in os.walk(a_dir):
-                            for fn in filenames:
-                                fn_l = fn.lower()
-                                fp = os.path.join(root_dir, fn)
-                                indexed_files.setdefault(fn_l, []).append(fp)
-                    except Exception as wex:
-                        logger.debug(f"Scan walk error in {a_dir}: {wex}", category="archive")
+                        with os.scandir(s_root) as it:
+                            for entry in it:
+                                if entry.is_dir() and entry.name.lower() in targets:
+                                    artist_dirs.add(entry.path)
+                    except Exception:
+                        pass
 
-                # 3. Check each file record
-                now_str = datetime.datetime.now().isoformat()
-                updates = []  # (is_missing, file_path, last_verified_at, id)
-                present_count = 0
-                missing_count = 0
+            # 2. File name index of those folders
+            indexed_files: Dict[str, List[str]] = {}
+            for a_dir in artist_dirs:
+                try:
+                    for root_dir, _, filenames in os.walk(a_dir):
+                        for fn in filenames:
+                            indexed_files.setdefault(fn.lower(), []).append(os.path.join(root_dir, fn))
+                except Exception as wex:
+                    logger.debug(f"Scan walk error in {a_dir}: {wex}", category="archive")
 
-                for idx, row in enumerate(rows):
-                    r_id, r_post_id, r_fname, r_fpath, r_fsize = row
-                    found_path = ""
+            # 3. Check each record. A file found elsewhere only counts when it belongs to the same post
+            # (its path has the post ID) or has the recorded size; a bare name match ("1.jpg") doesn't.
+            now_str = datetime.datetime.now().isoformat()
+            updates = []  # (is_missing, file_path, last_verified_at, id)
+            present_count = 0
+            missing_count = 0
+            for idx, row in enumerate(rows):
+                r_id, r_post_id, r_fname, r_fpath, r_fsize = row
+                found_path = ""
+                if r_fpath and os.path.exists(r_fpath) and os.path.getsize(r_fpath) > 0:
+                    found_path = r_fpath
+                else:
+                    candidates = indexed_files.get((r_fname or "").strip().lower(), [])
+                    p_match = [c for c in candidates if r_post_id and str(r_post_id) in c]
+                    if p_match:
+                        found_path = p_match[0]
+                    elif candidates and r_fsize:
+                        found_path = next((c for c in candidates if os.path.getsize(c) == int(r_fsize)), "")
+                    elif len(candidates) == 1:
+                        found_path = candidates[0]
 
-                    # (a) Check stored path
-                    if r_fpath and os.path.exists(r_fpath) and os.path.getsize(r_fpath) > 0:
-                        found_path = r_fpath
-                    else:
-                        # (b) Check indexed files
-                        clean_fn = (r_fname or "").strip().lower()
-                        if clean_fn in indexed_files:
-                            candidates = indexed_files[clean_fn]
-                            # Best match: path containing post_id
-                            p_match = [p for p in candidates if str(r_post_id) in p]
-                            if p_match:
-                                found_path = p_match[0]
-                            else:
-                                found_path = candidates[0]
+                if found_path and os.path.exists(found_path):
+                    present_count += 1
+                    updates.append((0, found_path, now_str, r_id))
+                else:
+                    missing_count += 1
+                    updates.append((1, r_fpath or "", now_str, r_id))
 
-                    if found_path and os.path.exists(found_path):
-                        present_count += 1
-                        updates.append((0, found_path, now_str, r_id))
-                    else:
-                        missing_count += 1
-                        updates.append((1, r_fpath or "", now_str, r_id))
+                if progress_callback and (idx % 25 == 0 or idx == total - 1):
+                    try:
+                        progress_callback(idx + 1, total)
+                    except Exception:
+                        pass
 
-                    if progress_callback and (idx % 25 == 0 or idx == total - 1):
-                        try:
-                            progress_callback(idx + 1, total)
-                        except Exception:
-                            pass
-
-                # 4. Batch commit updates
-                cursor.executemany(
+            # 4. Save the results
+            with self._lock:
+                if self._conn is None:
+                    return result
+                self._conn.cursor().executemany(
                     """
                     UPDATE downloaded_files
                     SET is_missing = ?, file_path = ?, last_verified_at = ?
@@ -1104,18 +1109,18 @@ class ArchiveManager:
                 )
                 self._conn.commit()
 
-                result["present"] = present_count
-                result["missing"] = missing_count
-                logger.info(
-                    f"Verified archive integrity for creator {creator_name} ({creator_id}): "
-                    f"{present_count} present, {missing_count} missing out of {total} files.",
-                    category="archive"
-                )
-                return result
+            result["present"] = present_count
+            result["missing"] = missing_count
+            logger.info(
+                f"Verified archive integrity for creator {creator_name} ({creator_id}): "
+                f"{present_count} present, {missing_count} missing out of {total} files.",
+                category="archive"
+            )
+            return result
 
-            except Exception as e:
-                logger.error(f"Failed to verify archive integrity for {creator_id}: {e}", category="archive")
-                return result
+        except Exception as e:
+            logger.error(f"Failed to verify archive integrity for {creator_id}: {e}", category="archive")
+            return result
 
     def remove_missing_for_creator(self, service: str, creator_id: str) -> int:
         """Delete all archive records marked as missing (is_missing = 1) for a creator."""
@@ -1144,13 +1149,19 @@ class ArchiveManager:
         service: str,
         creator_id: str,
         creator_name: Optional[str] = None,
-        limit: int = 5
+        limit: int = 5,
+        base_dirs: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
         Extracts recurring series, characters, folder hierarchies, and recent post titles
         for a given creator from past records in download_archive.db.
         Provides high-value contextual priors for AI reasoning and disambiguation.
+
+        base_dirs: the download folder(s). Only folders between a download folder and the creator
+        folder are franchise / character folders (otherwise the download folder itself, e.g.
+        "KemonoDownloads", was taken for a franchise).
         """
+        bases = [os.path.abspath(b) for b in (base_dirs or []) if b]
         clean_svc = str(service or "").strip().lower()
         clean_cid = str(creator_id or "").strip()
         clean_cname = str(creator_name or "").strip()
@@ -1210,20 +1221,26 @@ class ArchiveManager:
 
                     # Parse file_path to extract franchise/character folder structure
                     if file_path:
-                        normalized_path = os.path.normpath(file_path).replace("\\", "/")
-                        parts = [p for p in normalized_path.split("/") if p]
-                        # Look for creator folder marker like "Creator [service]"
-                        creator_idx = -1
-                        for idx, part in enumerate(parts):
-                            if creator_folder_marker in part.lower():
-                                creator_idx = idx
-                                break
-
-                        # If creator folder was found and preceding folders exist:
-                        # [base_dir, Franchise, Character, Creator [service], ...]
-                        # or [base_dir, Franchise, Creator [service], ...]
-                        if creator_idx >= 1:
-                            hierarchy = parts[:creator_idx]
+                        if bases:
+                            # Folders between the download folder and "Creator [service]":
+                            # [download folder, Franchise, Character, Creator [service], ...]
+                            # or [download folder, Franchise, Creator [service], ...]
+                            full = os.path.abspath(file_path)
+                            base = next((b for b in bases
+                                         if os.path.normcase(full).startswith(os.path.normcase(b) + os.sep)), None)
+                            if base is None:
+                                continue
+                            rel_parts = os.path.relpath(full, base).split(os.sep)[:-1]
+                            creator_idx = next((i for i, part in enumerate(rel_parts)
+                                                if creator_folder_marker in part.lower()), -1)
+                            hierarchy = rel_parts[:creator_idx] if creator_idx >= 0 else []
+                        else:
+                            # Download folder unknown: everything before the creator folder (less exact)
+                            parts = [p for p in os.path.normpath(file_path).replace("\\", "/").split("/") if p]
+                            creator_idx = next((i for i, part in enumerate(parts)
+                                                if creator_folder_marker in part.lower()), -1)
+                            hierarchy = parts[:creator_idx] if creator_idx >= 1 else []
+                        if hierarchy:
                             # Exclude drive letters or generic roots
                             valid_hierarchy = [
                                 h for h in hierarchy

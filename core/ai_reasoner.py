@@ -7,10 +7,14 @@ to deduce character and franchise matches for ambiguous, minimalist, or unsearch
 import os
 import re
 import json
+import threading
 import time
 from typing import Optional, Dict, Any, Tuple, List
 from core.logger import logger
 from services.model_manager import ModelManager
+
+# A loaded model is unloaded after this long without being used (it reloads on its next use).
+IDLE_UNLOAD_SECONDS = 300
 
 
 _LLAMA_CPP_AVAILABLE: Optional[bool] = None
@@ -35,6 +39,8 @@ class ContextualReasoner:
     def __init__(self, model_manager: ModelManager):
         self.model_manager = model_manager
         self._llm_instance = None
+        self._lock = threading.RLock()        # held while the model runs, so it's never unloaded mid-use
+        self._last_used = 0.0
         self._is_loaded = False
         self._engine_failed = False
         self._missing_dep_logged = False
@@ -164,6 +170,38 @@ class ContextualReasoner:
 
         return None
 
+    def is_loaded(self) -> bool:
+        return self._llm_instance is not None
+
+    def unload(self) -> bool:
+        """Free the language model's RAM/VRAM (it loads again on its next use)."""
+        with self._lock:
+            llm, self._llm_instance = self._llm_instance, None
+            if llm is None:
+                return False
+            try:
+                close = getattr(llm, "close", None)       # releases the memory-mapped model file
+                if callable(close):
+                    close()
+            except Exception as e:
+                logger.debug(f"Closing the language model failed: {e}", category="ai")
+            del llm
+            logger.debug("Language model unloaded.", category="ai")
+            return True
+
+    def unload_if_idle(self, idle_seconds: float = IDLE_UNLOAD_SECONDS) -> bool:
+        """Unload when unused for idle_seconds. Never waits for, or interrupts, a run in progress."""
+        if self._llm_instance is None or time.monotonic() - self._last_used < idle_seconds:
+            return False
+        if not self._lock.acquire(blocking=False):
+            return False
+        try:
+            if self._llm_instance is None or time.monotonic() - self._last_used < idle_seconds:
+                return False
+            return self.unload()
+        finally:
+            self._lock.release()
+
     def _run_llm_inference(
         self,
         title: str,
@@ -172,6 +210,20 @@ class ContextualReasoner:
         creator_profile: Optional[Dict[str, Any]]
     ) -> Optional[Tuple[str, str, float]]:
         """Runs local SLM inference with strict timeout and JSON extraction."""
+        with self._lock:
+            self._last_used = time.monotonic()
+            try:
+                return self._run_llm_inference_locked(title, filenames, desc, creator_profile)
+            finally:
+                self._last_used = time.monotonic()
+
+    def _run_llm_inference_locked(
+        self,
+        title: str,
+        filenames: List[str],
+        desc: str,
+        creator_profile: Optional[Dict[str, Any]]
+    ) -> Optional[Tuple[str, str, float]]:
         if not has_llama_cpp() or self._engine_failed:
             return None
 

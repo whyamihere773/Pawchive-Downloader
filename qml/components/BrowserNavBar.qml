@@ -163,8 +163,8 @@ Rectangle {
                             }
                             if (u.indexOf("cum.st") >= 0 || u.indexOf("cum.") >= 0) return "cum.st"
                             if (u.indexOf("pawchive") >= 0) return "pawchive.pw"
-                            if (u.indexOf("kemono") >= 0) return "kemono.su"
-                            if (u.indexOf("coomer") >= 0) return "coomer.su"
+                            if (u.indexOf("kemono") >= 0) return "kemono.cr"
+                            if (u.indexOf("coomer") >= 0) return "coomer.st"
                             if (u.indexOf("bunkr") >= 0 || u.indexOf("balbums") >= 0) return "bunkr.cr"
                             if (u.indexOf("erome") >= 0) return "erome.com"
                             if (u.indexOf("nhentai") >= 0) return "nhentai.net"
@@ -203,7 +203,7 @@ Rectangle {
                     Text {
                         text: (root.bridge && root.bridge.favoriteMode)
                               ? root.tr("ph_nav_favorite_mode", "Enter creator URL (or leave blank to download all Favorites ⭐)...")
-                              : root.tr("ph_nav_default", "Enter creator or post URL (Kemono, Coomer, Telegram, Bunkr, Erome, nHentai)...")
+                              : root.tr("ph_nav_default", "Enter creator or post URL (Pawchive, cum.st, Telegram, Bunkr, Erome, nHentai)...")
                         color: (root.bridge && root.bridge.favoriteMode) ? "#FBBF24" : "#64748B"
                         font: parent.font
                         visible: !parent.text && !parent.activeFocus

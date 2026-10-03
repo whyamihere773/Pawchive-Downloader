@@ -34,6 +34,7 @@ except ImportError:
     StringSession = None
 
 from core.crypto_utils import encrypt_credential, decrypt_credential, patch_telethon_crypto
+from core.text_utils import safe_file_name
 from core.logger import logger
 
 # Automatically apply hardware-accelerated OpenSSL AES-IGE cryptography
@@ -57,9 +58,13 @@ class TelegramService:
             return cls._instance
 
     def __init__(self, data_dir: Optional[str] = None):
-        self.data_dir = data_dir or os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data"
-        )
+        if data_dir:
+            self.data_dir = data_dir
+        else:
+            from core.path_utils import get_data_dir, migrate_legacy_files
+            self.data_dir = os.path.join(get_data_dir(), "data")
+            migrate_legacy_files(self.data_dir, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data"),
+                                 ("telegram_session.enc", "telegram_user.enc", "pawchive_telegram.session"))
         os.makedirs(self.data_dir, exist_ok=True)
         self.session_path = os.path.join(self.data_dir, "pawchive_telegram")
         self.encrypted_session_path = os.path.join(self.data_dir, "telegram_session.enc")
@@ -143,7 +148,11 @@ class TelegramService:
             if not enc_data:
                 return ""
             raw_bytes = decrypt_credential(enc_data, context="pawchive_telegram")
-            return raw_bytes.decode("utf-8", errors="ignore").strip()
+            session_str = raw_bytes.decode("utf-8", errors="ignore").strip()
+            from core.crypto_utils import needs_reencrypt
+            if session_str and needs_reencrypt(enc_data):
+                self._save_encrypted_session_string(session_str)     # move off the old MAC-address key
+            return session_str
         except Exception as e:
             logger.error(f"Failed to decrypt Telegram session: {e}", category="telegram")
             return ""
@@ -740,11 +749,11 @@ class TelegramService:
                 else:
                     peer = target
 
-                print(f">>> TG_SERVICE: resolving entity for peer={peer}", flush=True)
+                logger.debug(f"Telegram: resolving entity for peer={peer}", category="telegram")
                 entity = await client.get_entity(peer)
                 channel_title = getattr(entity, "title", "Telegram")
                 channel_username = getattr(entity, "username", "") or str(getattr(entity, "id", "channel"))
-                print(f">>> TG_SERVICE: entity resolved: title='{channel_title}', id={getattr(entity, 'id', '?')}", flush=True)
+                logger.debug(f"Telegram: entity resolved: title='{channel_title}', id={getattr(entity, 'id', '?')}", category="telegram")
 
                 ent_id = getattr(entity, "id", None)
                 if ent_id:
@@ -805,9 +814,10 @@ class TelegramService:
                         if not fn:
                             ext = ".mp4" if m_type == "video" else (".mp3" if m_type == "audio" else ".bin")
                             fn = f"file_{msg.id}{ext}"
+                        fn = safe_file_name(fn, fallback=f"file_{msg.id}")   # chosen by the uploader
                     else:
                         # Unknown media type
-                        print(f">>> TG_SERVICE: msg {msg.id} has unknown media type: {type(msg.media).__name__}", flush=True)
+                        logger.debug(f"Telegram: msg {msg.id} has unknown media type: {type(msg.media).__name__}", category="telegram")
 
                     if m_type not in media_types:
                         skipped_type += 1
@@ -858,7 +868,7 @@ class TelegramService:
                     if len(items) >= limit:
                         break
 
-                print(f">>> TG_SERVICE: iterated {msg_count} messages, {media_count} with media, {skipped_type} skipped by type, {skipped_size} skipped by size, {len(items)} matched", flush=True)
+                logger.debug(f"Telegram: iterated {msg_count} messages, {media_count} with media, {skipped_type} skipped by type, {skipped_size} skipped by size, {len(items)} matched", category="telegram")
                 return items
             except (errors.SessionRevokedError, errors.AuthKeyUnregisteredError) as e:
                 logger.warning(f"Telegram session was revoked or invalidated: {e}", category="telegram")
@@ -916,6 +926,7 @@ class TelegramService:
                     if not fn:
                         ext = ".mp4" if m_type == "video" else (".mp3" if m_type == "audio" else ".bin")
                         fn = f"file_{msg.id}{ext}"
+                    fn = safe_file_name(fn, fallback=f"file_{msg.id}")   # chosen by the uploader
 
                 caption = msg.message or ""
                 date_str = msg.date.strftime("%Y-%m-%d %H:%M:%S") if msg.date else ""

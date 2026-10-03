@@ -52,6 +52,7 @@ hidden_imports = [
     'gdown',
     'requests',
     'urllib3',
+    'brotli',            # Pawchive replies in Brotli; without it every Pawchive request failed
     'PIL',
     'PIL.Image',
     'PIL.WebPImagePlugin',
@@ -164,18 +165,20 @@ exe = EXE(
     contents_directory='_internal',
 )
 
-# 2. Companion updater standalone binary (shares _internal directory)
+# 2. Companion updater (QML window). Shares '_internal' with the app and runs from the install
+#    folder; Linux lets it replace files that are in use.
 a_updater = Analysis(
     ['updater.py'],
     pathex=[project_root],
     binaries=[],
     datas=[],
-    hiddenimports=['tkinter'],
+    hiddenimports=['services.update_installer', 'services.update_service',
+                   'PySide6.QtGui', 'PySide6.QtQml', 'PySide6.QtQuick'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        'matplotlib', 'scipy', 'pandas', 'unittest', 'pytest', 'IPython', 'notebook'
+        'tkinter', 'matplotlib', 'scipy', 'pandas', 'unittest', 'pytest', 'IPython', 'notebook'
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

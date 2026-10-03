@@ -4,15 +4,13 @@ Manages automatic updating, binary resolution, and background execution of yt-dl
 """
 
 import os
-import re
 import sys
-import json
 import time
 import shutil
 import threading
 import subprocess
 import requests
-from typing import Optional, Callable, Dict, Any, Tuple
+from typing import Optional, Callable, Tuple
 from core.logger import logger
 
 
@@ -93,8 +91,16 @@ class YtDlpManager:
                             f.write(chunk)
                             downloaded += len(chunk)
 
-            if os.path.exists(temp_exe) and os.path.getsize(temp_exe) > 1024 * 1024:
-                shutil.move(temp_exe, self.exe_path)
+            got = os.path.getsize(temp_exe) if os.path.exists(temp_exe) else 0
+            if total_bytes and got != total_bytes:
+                logger.warning(f"yt-dlp download incomplete ({got} of {total_bytes} bytes); not installed.", category="ytdlp")
+                os.remove(temp_exe)
+                return False
+            if got > 1024 * 1024 and not self._checksum_ok(temp_exe):
+                os.remove(temp_exe)
+                return False
+            if got > 1024 * 1024:
+                os.replace(temp_exe, self.exe_path)
                 if sys.platform != "win32":
                     try:
                         os.chmod(self.exe_path, 0o755)
@@ -114,12 +120,46 @@ class YtDlpManager:
                     pass
             return False
 
+    def _checksum_ok(self, path: str) -> bool:
+        """Compares the downloaded file with the SHA-256 list yt-dlp publishes with each release.
+        When the list can't be fetched the file is accepted (it came over HTTPS from GitHub)."""
+        import hashlib
+        try:
+            r = requests.get("https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA2-256SUMS", timeout=20)
+            if r.status_code != 200:
+                return True
+            expected = ""
+            for line in r.text.splitlines():
+                parts = line.split()
+                if len(parts) == 2 and parts[1].lstrip("*") == self.binary_name:
+                    expected = parts[0].lower()
+                    break
+            if not expected:
+                return True
+            h = hashlib.sha256()
+            with open(path, "rb") as f:
+                for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                    h.update(chunk)
+            if h.hexdigest().lower() != expected:
+                logger.error("The downloaded yt-dlp doesn't match its published checksum; it was not installed.", category="ytdlp")
+                return False
+            logger.debug("yt-dlp checksum verified.", category="ytdlp")
+            return True
+        except Exception as e:
+            logger.debug(f"yt-dlp checksum check skipped: {e}", category="ytdlp")
+            return True
+
     def update_binary_via_cli(self) -> bool:
         """
         Runs `yt-dlp.exe -U` to update in-place if binary already exists.
         """
         if not self.is_binary_available():
             return self.download_latest_binary()
+        if not os.path.exists(self.exe_path):
+            # Only a system-wide yt-dlp (Linux package / pip): its package manager updates it
+            # ("-U" used to be run on a local copy that doesn't exist)
+            logger.info("Using the system's yt-dlp; update it with your package manager.", category="ytdlp")
+            return True
 
         try:
             logger.info("Checking for yt-dlp updates...", category="ytdlp")
@@ -193,7 +233,8 @@ class YtDlpManager:
         cancel_event: Optional[threading.Event] = None,
         pause_event: Optional[threading.Event] = None,
         progress_callback: Optional[Callable[[int, int, str, str], None]] = None,
-        timeout: int = 600
+        timeout: int = 600,
+        referer: str = ""
     ) -> Tuple[bool, str]:
         """
         Executes yt-dlp.exe on a media URL, writing output to target_folder with
@@ -226,8 +267,11 @@ class YtDlpManager:
             "--newline",
             "-o", out_template,
             "--progress-template", "download:PROGRESS:%(progress.downloaded_bytes)s/%(progress.total_bytes_estimate|progress.total_bytes)s:%(progress.speed)s:%(progress.eta)s",
-            url
         ]
+        # Domain-locked Vimeo embeds only play when the request says it comes from the creator's site
+        if referer and "vimeo.com" in url.lower():
+            cmd += ["--referer", referer]
+        cmd.append(url)
 
         creationflags = 0
         if sys.platform == "win32":

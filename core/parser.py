@@ -9,6 +9,19 @@ from urllib.parse import urlparse
 from typing import Optional, Dict, Any
 
 
+# Current Kemono / Coomer domains. The old kemono.su / coomer.su / .party addresses no longer
+# resolve, so every Kemono / Coomer link is normalised to these.
+KEMONO_DOMAIN = "kemono.cr"
+COOMER_DOMAIN = "coomer.st"
+
+
+def _canonical_archive_domain(domain: str) -> str:
+    """The domain to use for an archive site link, or '' if the domain isn't one of them."""
+    from core.providers import provider_for_host, KEMONO, COOMER, PAWCHIVE, CUMST
+    return {KEMONO: KEMONO_DOMAIN, COOMER: COOMER_DOMAIN, PAWCHIVE: "pawchive.pw", CUMST: "cum.st"}.get(
+        provider_for_host(domain), "")
+
+
 class URLParseResult:
     def __init__(
         self,
@@ -166,7 +179,7 @@ class KemonoURLParser:
             return URLParseResult("", "", "", raw_url=url, is_valid=False, error_msg="URL cannot be empty.")
 
         url = url.strip()
-        if not url.startswith("http://") and not url.startswith("https://"):
+        if not re.match(r"^https?://", url, re.IGNORECASE):
             url = "https://" + url
 
         # Telegram Private Post (e.g. t.me/c/123456789/45)
@@ -298,24 +311,21 @@ class KemonoURLParser:
                 provider="erome"
             )
 
+        # Kemono-style links (/{service}/user/{id}) — only on the archive sites themselves
         match = cls.KEMONO_PATTERN.match(url)
+        if match and not _canonical_archive_domain(match.group(1)):
+            match = None
         if not match:
             match = cls.CREATORS_PATTERN.match(url)
+            if match and not _canonical_archive_domain(match.group(1)):
+                match = None
         if not match:
             match_posts = cls.POSTS_PATTERN.match(url)
-            if match_posts:
-                domain = match_posts.group(1).lower()
+            if match_posts and _canonical_archive_domain(match_posts.group(1)):
+                domain = _canonical_archive_domain(match_posts.group(1))
                 service = match_posts.group(2).lower()
                 user_id = match_posts.group(3)
                 post_id = match_posts.group(4)
-                if "cum.st" in domain or "cum" in domain:
-                    domain = "cum.st"
-                elif "pawchive" in domain:
-                    domain = "pawchive.pw"
-                elif "kemono" in domain:
-                    domain = "kemono.su"
-                elif "coomer" in domain:
-                    domain = "coomer.su"
                 return URLParseResult(
                     domain=domain,
                     service=service,
@@ -327,19 +337,10 @@ class KemonoURLParser:
                 )
 
         if match:
-            domain = match.group(1).lower()
+            domain = _canonical_archive_domain(match.group(1))
             service = match.group(2).lower()
             user_id = match.group(3)
             post_id = match.group(4) if match.group(4) else None
-
-            if "pawchive" in domain:
-                domain = "pawchive.pw"
-            elif "kemono" in domain:
-                domain = "kemono.su"
-            elif "coomer" in domain:
-                domain = "coomer.su"
-            elif "cum.st" in domain or "cum" in domain:
-                domain = "cum.st"
 
             return URLParseResult(
                 domain=domain,

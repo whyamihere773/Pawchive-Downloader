@@ -31,11 +31,62 @@ Item {
     property var previewPlan: []
     property int readyCount: 0
     property bool isExecuting: false
+    property bool isPreviewing: false
+
+    // Preview, number detection and renaming run in the background (big folders froze the
+    // window on every keystroke); only the newest answer is used
+    property int _requestSeq: 0
+    property string _previewRequest: ""
+    property string _indexRequest: ""
+    property string _renameRequest: ""
+    function _newRequest(kind) { _requestSeq += 1; return "rename-" + kind + "-" + _requestSeq }
+
+    Timer {
+        id: previewDebounce
+        interval: 150
+        repeat: false
+        onTriggered: root._requestPreview()
+    }
+
+    Connections {
+        target: root.bridge
+        ignoreUnknownSignals: true
+        function onAsyncResultReady(requestId, result) {
+            if (requestId === root._previewRequest) {
+                root._previewRequest = ""
+                root.isPreviewing = false
+                root._applyPreview(result || [])
+            } else if (requestId === root._indexRequest) {
+                root._indexRequest = ""
+                var detected = (result === undefined || result === null) ? 1 : result
+                startField.text = "" + detected
+                root.startIndex = detected
+                root.updatePreview()
+            } else if (requestId === root._renameRequest) {
+                root._renameRequest = ""
+                root.isExecuting = false
+                if (result && result.success) {
+                    root.renamed()
+                    root.close()
+                } else {
+                    root.updatePreview()      // show what's left / updated statuses
+                }
+            }
+        }
+    }
+
+    // Safety checks
+    property var pathSafety: (bridge && bridge.getPathSafetyInfo) ? bridge.getPathSafetyInfo(folderPath) : null
+    readonly property bool isPathBlocked: pathSafety ? pathSafety.is_blocked : false
+    readonly property bool isOtherRoot: pathSafety ? pathSafety.is_other_root : false
 
     anchors.fill: parent
     z: 9998
-    visible: isOpen
-
+    // Fades in / out (weight-based motion); no input while closing
+    opacity: isOpen ? 1 : 0
+    visible: opacity > 0.005
+    enabled: isOpen
+    Behavior on opacity { NumberAnimation { duration: 190; easing.type: Easing.OutCubic } }
     function open(currentFolder, files) {
         folderPath = currentFolder || ""
         destinationFolder = currentFolder || ""
@@ -71,14 +122,29 @@ Item {
     }
 
     function updatePreview() {
-        if (!isOpen || !bridge || !bridge.previewBatchRename) return
+        if (!isOpen) return
+        previewDebounce.restart()
+    }
+
+    function detectNextIndex() {
+        if (!bridge || !bridge.detectNextIndexAsync) return
+        var scanTarget = (root.moveToFolder && root.destinationFolder) ? root.destinationFolder : root.folderPath
+        _indexRequest = _newRequest("index")
+        bridge.detectNextIndexAsync(_indexRequest, scanTarget)
+    }
+
+    function _requestPreview() {
+        if (!isOpen || !bridge || !bridge.previewBatchRenameAsync) return
         var filteredList = targetFiles || []
         if (filesOnly && !includeSubfolders) {
             filteredList = filteredList.filter(function(it) {
                 return it && !it.is_dir
             })
         }
-        var plan = bridge.previewBatchRename(
+        isPreviewing = true
+        _previewRequest = _newRequest("preview")
+        bridge.previewBatchRenameAsync(
+            _previewRequest,
             folderPath,
             filteredList,
             renamePattern,
@@ -91,7 +157,10 @@ Item {
             includeSubfolders,
             moveToFolder,
             destinationFolder
-        ) || []
+        )
+    }
+
+    function _applyPreview(plan) {
         previewPlan = plan
 
         var ready = 0
@@ -102,17 +171,10 @@ Item {
     }
 
     function executeRename() {
-        if (!bridge || !bridge.executeBatchRename || readyCount === 0) return
+        if (!bridge || !bridge.executeBatchRenameAsync || readyCount === 0 || root.isPathBlocked || isExecuting) return
         isExecuting = true
-        var res = bridge.executeBatchRename(previewPlan)
-        isExecuting = false
-        if (res && res.success) {
-            root.renamed()
-            root.close()
-        } else {
-            // refresh preview to show updated status / remaining
-            updatePreview()
-        }
+        _renameRequest = _newRequest("run")
+        bridge.executeBatchRenameAsync(_renameRequest, previewPlan)
     }
 
     // Backdrop
@@ -121,11 +183,15 @@ Item {
         color: "#080B11"
         opacity: root.isOpen ? 0.88 : 0.0
         Behavior on opacity { NumberAnimation { duration: 180 } }
-        MouseArea { anchors.fill: parent }
+        // Swallow clicks, hover (card tooltips behind) and the wheel
+        MouseArea { anchors.fill: parent; hoverEnabled: true; onWheel: (wheel) => wheel.accepted = true }
     }
 
     // Modal Card
     Rectangle {
+        // Heavy panel: settles in on a soft spring
+        scale: root.isOpen ? 1.0 : 0.9
+        Behavior on scale { SpringAnimation { spring: 3.4; damping: 0.36; mass: 1.6; epsilon: 0.0008 } }
         width: Math.min(840, parent.width - 40)
         height: Math.min(680, parent.height - 40)
         anchors.centerIn: parent
@@ -172,6 +238,7 @@ Item {
                     border.color: closeBtnMouse.containsMouse ? "#DC2626" : "#2E3A52"
                     border.width: 1
                     Text { anchors.centerIn: parent; text: "✕"; font.pixelSize: 12; font.weight: Font.Bold; color: "#FFFFFF" }
+                    Springy { hover: closeBtnMouse.containsMouse; pressed: closeBtnMouse.pressed }
                     MouseArea {
                         id: closeBtnMouse
                         anchors.fill: parent
@@ -186,6 +253,40 @@ Item {
             }
 
             Rectangle { Layout.fillWidth: true; height: 1; color: "#1F283B" }
+
+            // Safety Warning Banner (Operating System or Root Drive)
+            Rectangle {
+                visible: root.isPathBlocked || root.isOtherRoot
+                Layout.fillWidth: true
+                implicitHeight: 34
+                radius: 6
+                color: root.isPathBlocked ? "#380D12" : "#38230B"
+                border.color: root.isPathBlocked ? "#EF4444" : "#F59E0B"
+                border.width: 1
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 10
+                    anchors.rightMargin: 10
+                    spacing: 8
+
+                    Text {
+                        text: root.isPathBlocked ? "🛡️" : "⚠️"
+                        font.pixelSize: 14
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: root.isPathBlocked ?
+                              ((root.pathSafety && root.pathSafety.message) ? ("Operating System Protection: " + root.pathSafety.message) : "Operating System Protection: Batch renaming is permanently disabled on this path.") :
+                              ("Root Drive Selected (" + (root.pathSafety ? root.pathSafety.drive_letter : "") + "\\): Batch renaming here will affect root-level files. Exercise extreme caution.")
+                        font.family: "Segoe UI, sans-serif"
+                        font.pixelSize: 11
+                        font.weight: 600
+                        color: root.isPathBlocked ? "#FCA5A5" : "#FDE68A"
+                        elide: Text.ElideRight
+                    }
+                }
+            }
 
             // Unified Single-Row Controls Bar
             RowLayout {
@@ -320,20 +421,13 @@ Item {
                                 font.weight: 700
                                 color: "#E0E7FF"
                             }
+                            Springy { hover: autoMouse.containsMouse; pressed: autoMouse.pressed }
                             MouseArea {
                                 id: autoMouse
                                 anchors.fill: parent
                                 hoverEnabled: true
                                 cursorShape: Qt.PointingHandCursor
-                                onClicked: {
-                                    if (root.bridge && root.bridge.detectNextIndex) {
-                                        var scanTarget = (root.moveToFolder && root.destinationFolder) ? root.destinationFolder : root.folderPath
-                                        var detected = root.bridge.detectNextIndex(scanTarget)
-                                        startField.text = "" + detected
-                                        root.startIndex = detected
-                                        root.updatePreview()
-                                    }
-                                }
+                                onClicked: root.detectNextIndex()
                                 ToolTip.visible: containsMouse
                                 ToolTip.delay: 250
                                 ToolTip.text: "Auto-detect Next Number\nScans existing files in target folder or previous numbered volume (e.g. Folder 1 ending at 100) to continue numbering."
@@ -394,6 +488,7 @@ Item {
                                     font.weight: root.caseMode === modelData.mode ? 700 : Font.Normal
                                     color: root.caseMode === modelData.mode ? "#38BDF8" : "#94A3B8"
                                 }
+                                Springy { hover: cmMouse.containsMouse; pressed: cmMouse.pressed }
                                 MouseArea {
                                     id: cmMouse
                                     anchors.fill: parent
@@ -450,6 +545,7 @@ Item {
                             font.weight: 600
                             color: "#38BDF8"
                         }
+                        Springy { hover: chipMouse.containsMouse; pressed: chipMouse.pressed }
                         MouseArea {
                             id: chipMouse
                             anchors.fill: parent
@@ -480,6 +576,7 @@ Item {
                         color: root.filesOnly ? "#38BDF8" : "#161D2B"
                         border.color: "#374151"; border.width: 1
                         Text { visible: root.filesOnly; anchors.centerIn: parent; text: "✓"; font.pixelSize: 9; font.weight: Font.Bold; color: "#0B0E14" }
+                        Springy { hover: filesOnlyMouse.containsMouse; pressed: filesOnlyMouse.pressed }
                         MouseArea {
                             id: filesOnlyMouse
                             anchors.fill: parent
@@ -523,6 +620,7 @@ Item {
                         color: root.includeSubfolders ? "#818CF8" : "#161D2B"
                         border.color: "#374151"; border.width: 1
                         Text { visible: root.includeSubfolders; anchors.centerIn: parent; text: "✓"; font.pixelSize: 9; font.weight: Font.Bold; color: "#0B0E14" }
+                        Springy { hover: subfoldersMouse.containsMouse; pressed: subfoldersMouse.pressed }
                         MouseArea {
                             id: subfoldersMouse
                             anchors.fill: parent
@@ -566,6 +664,7 @@ Item {
                         color: root.moveToFolder ? "#10B981" : "#161D2B"
                         border.color: "#374151"; border.width: 1
                         Text { visible: root.moveToFolder; anchors.centerIn: parent; text: "✓"; font.pixelSize: 9; font.weight: Font.Bold; color: "#0B0E14" }
+                        Springy { hover: moveFolderMouse.containsMouse; pressed: moveFolderMouse.pressed }
                         MouseArea {
                             id: moveFolderMouse
                             anchors.fill: parent
@@ -650,6 +749,7 @@ Item {
                             font.weight: 600
                             color: "#FFFFFF"
                         }
+                        Springy { hover: changeDestMouse.containsMouse; pressed: changeDestMouse.pressed }
                         MouseArea {
                             id: changeDestMouse
                             anchors.fill: parent
@@ -844,6 +944,7 @@ Item {
                     border.width: 1
 
                     Text { anchors.centerIn: parent; text: "Cancel"; font.family: "Segoe UI, sans-serif"; font.pixelSize: 11; color: "#E2E8F0" }
+                    Springy { hover: cancelMouse.containsMouse; pressed: cancelMouse.pressed }
                     MouseArea {
                         id: cancelMouse
                         anchors.fill: parent
@@ -861,33 +962,36 @@ Item {
                     implicitHeight: 32
                     implicitWidth: applyText.implicitWidth + 24
                     radius: 6
-                    color: root.readyCount > 0 ? (applyMouse.containsMouse ? "#4F46E5" : "#4338CA") : "#222634"
-                    border.color: root.readyCount > 0 ? "#6366F1" : "#323747"
+                    color: root.isPathBlocked ? "#1E2433" : (root.readyCount > 0 ? (applyMouse.containsMouse ? "#4F46E5" : "#4338CA") : "#222634")
+                    border.color: root.isPathBlocked ? "#2D3748" : (root.readyCount > 0 ? "#6366F1" : "#323747")
                     border.width: 1
-                    opacity: root.readyCount > 0 ? 1.0 : 0.5
+                    opacity: root.isPathBlocked ? 0.35 : (root.readyCount > 0 ? 1.0 : 0.5)
 
                     Text {
                         id: applyText
                         anchors.centerIn: parent
-                        text: root.isExecuting ? (root.moveToFolder ? "Moving..." : "Renaming...") : ((root.moveToFolder ? "Apply Rename & Move (" : "Apply Rename (") + root.readyCount + ")")
+                        text: root.isPathBlocked ? "Renaming Disabled on System Root" : (root.isExecuting ? (root.moveToFolder ? "Moving..." : "Renaming...") : ((root.moveToFolder ? "Apply Rename & Move (" : "Apply Rename (") + root.readyCount + ")"))
                         font.family: "Segoe UI, sans-serif"
                         font.pixelSize: 11
                         font.weight: 700
                         color: "#FFFFFF"
                     }
+                    Springy { hover: applyMouse.containsMouse; pressed: applyMouse.pressed }
                     MouseArea {
                         id: applyMouse
                         anchors.fill: parent
-                        hoverEnabled: root.readyCount > 0
-                        cursorShape: root.readyCount > 0 ? Qt.PointingHandCursor : Qt.ArrowCursor
+                        hoverEnabled: true
+                        cursorShape: root.isPathBlocked ? Qt.ForbiddenCursor : (root.readyCount > 0 ? Qt.PointingHandCursor : Qt.ArrowCursor)
                         onClicked: {
-                            if (root.readyCount > 0 && !root.isExecuting) {
+                            if (!root.isPathBlocked && root.readyCount > 0 && !root.isExecuting) {
                                 executeRename()
                             }
                         }
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 250
-                        ToolTip.text: root.readyCount > 0 ? ("Execute " + (root.moveToFolder ? "renaming and moving" : "renaming") + " for " + root.readyCount + " files.") : "No files are ready to rename. Adjust your rules or pattern."
+                        ToolTip.text: root.isPathBlocked ?
+                            ("Action Blocked: Cannot execute batch renaming on Windows system drive root (" + (root.pathSafety ? root.pathSafety.drive_letter : "C:") + "\\)") :
+                            (root.readyCount > 0 ? ("Execute " + (root.moveToFolder ? "renaming and moving" : "renaming") + " for " + root.readyCount + " files.") : "No files are ready to rename. Adjust your rules or pattern.")
                     }
                 }
             }

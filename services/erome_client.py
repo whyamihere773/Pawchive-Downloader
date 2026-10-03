@@ -1,6 +1,4 @@
 import re
-import html
-import urllib.parse
 from typing import Tuple, List, Dict, Any, Optional
 import time
 import requests
@@ -83,7 +81,11 @@ def fetch_erome_album(url: str, headers: Optional[dict] = None, timeout: int = 2
 
         file_list = []
         for idx, media_url in enumerate(deduped_urls, 1):
-            ext = media_url.split("?")[0].split(".")[-1] or "mp4"
+            # The extension of the file name only (a URL without one used to give "001.com/xyz")
+            last = media_url.split("?")[0].split("#")[0].rstrip("/").rsplit("/", 1)[-1]
+            ext = last.rsplit(".", 1)[-1].lower() if "." in last else ""
+            if not re.fullmatch(r"[a-z0-9]{2,5}", ext):
+                ext = "mp4"
             fname = f"{album_id}_{idx:03d}.{ext}"
             file_list.append({
                 "url": media_url,

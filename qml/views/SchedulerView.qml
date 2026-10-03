@@ -215,7 +215,7 @@ Item {
                             }
 
                             Text {
-                                text: schedViewRoot.tr("scheduler_subtitle", "Automate Watchlist delta checks, creator backups, off-peak windows, and safeguard connection limits.")
+                                text: schedViewRoot.tr("scheduler_subtitle", "Download new Watchlist posts and creators automatically, at times you choose.")
                                 font.family: "Segoe UI, sans-serif"
                                 font.pixelSize: 12
                                 color: "#94A3B8"
@@ -607,6 +607,17 @@ Item {
                                     }
                                 }
 
+                                // What the window does (it only gates when schedules may start)
+                                Text {
+                                    Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
+                                    text: schedViewRoot.tr("scheduler_night_owl_hint", "Schedules only start inside this window. A download that's already running keeps going after the window ends.")
+                                    font.family: "Segoe UI, sans-serif"
+                                    font.pixelSize: 10
+                                    color: "#94A3B8"
+                                    wrapMode: Text.WordWrap
+                                }
+
                                 // Bottom Row: Sleek Modern Time Window Pill (Spans full available width)
                                 Rectangle {
                                     height: 30
@@ -730,7 +741,7 @@ Item {
                                     Layout.minimumWidth: 0
                                     spacing: 2
                                     Text {
-                                        text: schedViewRoot.tr("scheduler_prevent_sleep_title", "Windows Sleep Prevention")
+                                        text: schedViewRoot.tr("scheduler_prevent_sleep_title", "Sleep Prevention")
                                         font.family: "Segoe UI, sans-serif"
                                         font.pixelSize: 12
                                         font.weight: Font.Bold
@@ -739,7 +750,7 @@ Item {
                                         Layout.fillWidth: true
                                     }
                                     Text {
-                                        text: schedViewRoot.tr("scheduler_prevent_sleep_desc", "Keeps PC awake via Windows kernel while downloading")
+                                        text: schedViewRoot.tr("scheduler_prevent_sleep_desc", "Keeps the computer awake while downloads are running")
                                         font.pixelSize: 11
                                         color: "#94A3B8"
                                         elide: Text.ElideRight
@@ -809,7 +820,7 @@ Item {
                                         Layout.fillWidth: true
                                     }
                                     Text {
-                                        text: schedViewRoot.tr("scheduler_sweep_retry_desc", "Automatically retries any missed 429/timeout files")
+                                        text: schedViewRoot.tr("scheduler_sweep_retry_desc", "Scheduled downloads retry failed files once more at the end")
                                         font.pixelSize: 11
                                         color: "#94A3B8"
                                         elide: Text.ElideRight
@@ -925,7 +936,7 @@ Item {
                         }
 
                         Text {
-                            text: schedViewRoot.tr("scheduler_empty_desc", "Create recurring delta checks for your Watchlist or schedule automatic creator downloads.")
+                            text: schedViewRoot.tr("scheduler_empty_desc", "Schedule Watchlist syncs (new posts are downloaded) or automatic creator downloads.")
                             font.pixelSize: 12
                             color: "#94A3B8"
                             Layout.alignment: Qt.AlignHCenter
@@ -1030,7 +1041,7 @@ Item {
                                     spacing: 8
 
                                     Text {
-                                        text: modelData.name || (modelData.target_type === "watchlist" ? "Watchlist Delta Sync" : "Creator Download")
+                                        text: modelData.name || (modelData.target_type === "watchlist" ? "Watchlist Sync" : "Creator Download")
                                         font.family: "Segoe UI, sans-serif"
                                         font.pixelSize: 13
                                         font.weight: Font.Bold
@@ -1357,7 +1368,7 @@ Item {
                                     spacing: 8
                                     Text { text: "⭐"; font.pixelSize: 12 }
                                     Text {
-                                        text: schedViewRoot.tr("scheduler_target_watchlist", "Watchlist Delta Check")
+                                        text: schedViewRoot.tr("scheduler_target_watchlist", "Watchlist: check & download new posts")
                                         font.pixelSize: 11
                                         font.weight: 600
                                         color: addDialogModal.selectedTarget === "watchlist" ? "#F8FAFC" : "#94A3B8"
@@ -1426,7 +1437,7 @@ Item {
                             Layout.fillWidth: true
                             Layout.minimumWidth: 0
                             Layout.preferredHeight: 34
-                            placeholderText: "https://kemono.su/patreon/user/12345"
+                            placeholderText: "https://kemono.cr/patreon/user/12345"
                             color: "#F8FAFC"
                             placeholderTextColor: "#64748B"
                             font.pixelSize: 12
@@ -1643,7 +1654,7 @@ Item {
                                 hoverEnabled: true
                                 cursorShape: Qt.PointingHandCursor
                                 onClicked: {
-                                    var name = taskNameInput.text.trim() || (addDialogModal.selectedTarget === "watchlist" ? "Watchlist Delta Sync" : "Creator Download")
+                                    var name = taskNameInput.text.trim() || (addDialogModal.selectedTarget === "watchlist" ? "Watchlist Sync" : "Creator Download")
                                     var targetType = addDialogModal.selectedTarget
                                     var targetUrl = targetType === "creator" ? taskUrlInput.text.trim() : ""
                                     var triggerType = addDialogModal.selectedTrigger

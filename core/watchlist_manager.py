@@ -8,10 +8,12 @@ background thread to keep the GUI responsive.
 import json
 import os
 import datetime
+import threading
 from dataclasses import dataclass, field, asdict
 from typing import List, Optional, Dict, Any
 
 from core.logger import logger
+from core.atomic_io import atomic_write_json
 
 
 @dataclass
@@ -31,6 +33,9 @@ class WatchlistEntry:
     options: Dict[str, Any] = field(default_factory=dict)
     ignored_post_ids: List[str] = field(default_factory=list)
     cached_new_posts: List[Dict[str, Any]] = field(default_factory=list)  # transient — discovered new posts
+    # Posts from the last-download date that are already downloaded. Sites with non-numeric post IDs
+    # (Boosty, cum.st) can't tell which same-day post came first, so they're remembered by ID.
+    cutoff_day_ids: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         # Sync primary download_dir with the first valid entry in download_dirs
@@ -72,8 +77,24 @@ class WatchlistEntry:
             options=d.get("options", {}) if isinstance(d.get("options"), dict) else {},
             ignored_post_ids=list(d.get("ignored_post_ids", [])) if isinstance(d.get("ignored_post_ids"), list) else [],
             cached_new_posts=[],
+            cutoff_day_ids=[str(x) for x in d.get("cutoff_day_ids", [])] if isinstance(d.get("cutoff_day_ids"), list) else [],
         )
 
+
+
+def post_id_is_newer(post_id: str, than_id: str) -> bool:
+    """Post IDs grow over time on these sites. For IDs that aren't plain numbers the order is unknown,
+    so this is False (it used to be True for any other ID, which made every post from the last
+    download's date "new" again on every check for Boosty / cum.st creators)."""
+    a, b = str(post_id or "").strip(), str(than_id or "").strip()
+    if a.isdigit() and b.isdigit():
+        return int(a) > int(b)
+    return False
+
+
+def _day(date_str: str) -> str:
+    s = str(date_str or "")
+    return s.split("T")[0] if "T" in s else s[:10]
 
 
 class WatchlistManager:
@@ -89,6 +110,8 @@ class WatchlistManager:
         self.config_dir = config_dir
         self.watchlist_file = os.path.join(config_dir, "watchlist.json")
         self.entries: List[WatchlistEntry] = []
+        # Checks run in background threads while the window edits entries
+        self._lock = threading.RLock()
 
     # ── Persistence ────────────────────────────────────────────────────────────
 
@@ -112,17 +135,37 @@ class WatchlistManager:
             self.entries = []
 
     def save(self):
-        """Persist current entries to disk."""
+        """Persist current entries to disk (crash-safe: a cut-off write never empties the watchlist)."""
         try:
-            os.makedirs(self.config_dir, exist_ok=True)
-            data = {
-                "version": self.VERSION,
-                "entries": [e.to_dict() for e in self.entries]
-            }
-            with open(self.watchlist_file, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
+            with self._lock:
+                data = {
+                    "version": self.VERSION,
+                    "entries": [e.to_dict() for e in self.entries]
+                }
+                atomic_write_json(self.watchlist_file, data, indent=2)
         except Exception as e:
             logger.error(f"Failed to save watchlist: {e}", category="watchlist")
+
+    @staticmethod
+    def _advance_cutoff(e: WatchlistEntry, post_id: str, post_date: str, day_ids: Optional[List[str]] = None):
+        """Moves the "downloaded up to" point forward (never back) and remembers which posts of
+        that day are already downloaded."""
+        post_id = str(post_id or "")
+        day = _day(post_date)
+        ids = {str(i) for i in (day_ids or []) if str(i)}
+        if post_id:
+            ids.add(post_id)
+        cur_day = _day(e.last_post_date)
+        if day and (not cur_day or day > cur_day):
+            e.last_post_date = day
+            e.last_post_id = post_id
+            e.cutoff_day_ids = sorted(ids)
+        elif day and day == cur_day:
+            if post_id and (not e.last_post_id or post_id_is_newer(post_id, e.last_post_id)):
+                e.last_post_id = post_id
+            e.cutoff_day_ids = sorted(set(e.cutoff_day_ids) | ids)
+        elif not day and post_id and not e.last_post_id:
+            e.last_post_id = post_id
 
     # ── CRUD ───────────────────────────────────────────────────────────────────
 
@@ -152,14 +195,17 @@ class WatchlistManager:
         Add or update a watchlist entry.
         Returns True if a new entry was created, False if updated.
         """
+        with self._lock:
+            return self._add_entry_locked(url, creator_name, user_id, service, domain, last_post_id,
+                                          last_post_date, auto_check, download_dir, options)
+
+    def _add_entry_locked(self, url, creator_name, user_id, service, domain, last_post_id,
+                          last_post_date, auto_check, download_dir, options) -> bool:
         existing = self._find(user_id, service)
         if existing:
             # Update last download info but don't touch auto_check preference
-            if last_post_date and (not existing.last_post_date or last_post_date >= existing.last_post_date):
-                existing.last_post_id = last_post_id or existing.last_post_id
-                existing.last_post_date = last_post_date
-            elif last_post_id and not existing.last_post_id:
-                existing.last_post_id = last_post_id
+            if last_post_date or last_post_id:
+                self._advance_cutoff(existing, last_post_id, last_post_date)
             # Update name in case it resolved better
             if creator_name and creator_name != user_id:
                 old_was_numeric = (existing.creator_name == user_id or not existing.creator_name)
@@ -206,6 +252,7 @@ class WatchlistManager:
                 options=options or {},
                 ignored_post_ids=[],
                 cached_new_posts=[],
+                cutoff_day_ids=[str(last_post_id)] if last_post_id else [],
             )
             self.entries.insert(0, entry)
             self.save()
@@ -217,25 +264,34 @@ class WatchlistManager:
 
     def remove_entry(self, user_id: str, service: str) -> bool:
         """Remove entry by (user_id, service). Returns True if removed."""
-        existing = self._find(user_id, service)
-        if existing:
+        with self._lock:
+            existing = self._find(user_id, service)
+            if not existing:
+                return False
             self.entries.remove(existing)
             self.save()
-            logger.info(f"Removed from watchlist: {existing.creator_name!r} [{service}]", category="watchlist")
-            return True
-        return False
+        logger.info(f"Removed from watchlist: {existing.creator_name!r} [{service}]", category="watchlist")
+        return True
 
-    def update_last_download(self, user_id: str, service: str, post_id: str, post_date: str):
+    def update_last_download(self, user_id: str, service: str, post_id: str, post_date: str,
+                             day_ids: Optional[List[str]] = None):
         """Update last-downloaded post metadata after a successful download."""
-        existing = self._find(user_id, service)
-        if existing:
-            if post_date and (not existing.last_post_date or post_date >= existing.last_post_date):
-                existing.last_post_date = post_date
-            if post_id:
-                existing.last_post_id = post_id
-            existing.new_post_count = 0
-            existing.cached_new_posts = []
-            self.save()
+        with self._lock:
+            existing = self._find(user_id, service)
+            if existing:
+                self._advance_cutoff(existing, post_id, post_date, day_ids)
+                cutoff_day = _day(existing.last_post_date)
+                done = {str(i) for i in existing.cutoff_day_ids}
+                # Posts still waiting in the review drawer stay there unless they're now covered
+                existing.cached_new_posts = [
+                    p for p in existing.cached_new_posts
+                    if _day(p.get("published") or p.get("added") or "") > cutoff_day
+                    or (_day(p.get("published") or p.get("added") or "") == cutoff_day and str(p.get("id", "")) not in done
+                        and not (str(p.get("id", "")).isdigit() and existing.last_post_id.isdigit()
+                                 and int(p.get("id")) <= int(existing.last_post_id)))
+                ]
+                existing.new_post_count = len(existing.cached_new_posts)
+                self.save()
 
     def resolve_posts(
         self,
@@ -243,7 +299,8 @@ class WatchlistManager:
         service: str,
         post_ids: Optional[List[str]] = None,
         latest_post_id: str = "",
-        latest_post_date: str = ""
+        latest_post_date: str = "",
+        day_ids: Optional[List[str]] = None
     ) -> bool:
         """
         Mark new posts as resolved (e.g. after download, or when files were already archived / on disk).
@@ -251,32 +308,28 @@ class WatchlistManager:
         If post_ids is given: removes those specific posts from cached_new_posts and updates new_post_count.
         Advances last_post_date and last_post_id safely without regression.
         """
-        existing = self._find(user_id, service)
-        if not existing:
-            return False
+        with self._lock:
+            existing = self._find(user_id, service)
+            if not existing:
+                return False
 
-        if post_ids:
-            p_set = set(str(pid) for pid in post_ids)
-            existing.cached_new_posts = [
-                p for p in getattr(existing, "cached_new_posts", [])
-                if str(p.get("id", "")) not in p_set
-            ]
-            existing.new_post_count = len(existing.cached_new_posts)
-            if existing.new_post_count == 0:
-                if latest_post_date and (not existing.last_post_date or latest_post_date >= existing.last_post_date):
-                    existing.last_post_date = latest_post_date
-                if latest_post_id:
-                    existing.last_post_id = latest_post_id
-        else:
-            if latest_post_date and (not existing.last_post_date or latest_post_date >= existing.last_post_date):
-                existing.last_post_date = latest_post_date
-            if latest_post_id:
-                existing.last_post_id = latest_post_id
-            existing.new_post_count = 0
-            existing.cached_new_posts = []
+            if post_ids:
+                p_set = set(str(pid) for pid in post_ids)
+                existing.cached_new_posts = [
+                    p for p in getattr(existing, "cached_new_posts", [])
+                    if str(p.get("id", "")) not in p_set
+                ]
+                existing.new_post_count = len(existing.cached_new_posts)
+                if existing.new_post_count == 0 and (latest_post_date or latest_post_id):
+                    self._advance_cutoff(existing, latest_post_id, latest_post_date, day_ids)
+            else:
+                if latest_post_date or latest_post_id:
+                    self._advance_cutoff(existing, latest_post_id, latest_post_date, day_ids)
+                existing.new_post_count = 0
+                existing.cached_new_posts = []
 
-        self.save()
-        return True
+            self.save()
+            return True
 
     def set_auto_check(self, user_id: str, service: str, enabled: bool):
         """Toggle the per-entry auto_check flag."""
@@ -417,6 +470,7 @@ class WatchlistManager:
 
         existing.last_post_date = normalized
         existing.last_post_id = ""  # Reset cutoff post id
+        existing.cutoff_day_ids = []
         existing.new_post_count = 0
         existing.cached_new_posts = []
         self.save()
@@ -488,6 +542,9 @@ class WatchlistManager:
         elif cutoff:
             cutoff = cutoff[:10]
         cutoff_id = str(entry.last_post_id or "")
+        known_day_ids = {str(i) for i in getattr(entry, "cutoff_day_ids", []) or []}
+        if cutoff_id:
+            known_day_ids.add(cutoff_id)
 
         # Auto-heal numeric name if needed
         if (entry.creator_name == entry.user_id or not entry.creator_name) and hasattr(api_client, "resolve_creator_name"):
@@ -507,6 +564,7 @@ class WatchlistManager:
         new_posts: List[Dict[str, Any]] = []
         current_page = 1
         page_size = 50
+        largest_page = 0
         max_pages = 100  # Up to 5,000 posts to support deep updates while preventing infinite loops
 
         while current_page <= max_pages:
@@ -553,9 +611,16 @@ class WatchlistManager:
                         if post_id and post_id == cutoff_id:
                             # This is exactly the last-seen post — skip it, mark cutoff reached
                             found_cutoff_id_on_page = True
-                        else:
-                            # Same date but a different post — include (new post on same day)
+                        elif post_id in known_day_ids:
+                            pass   # already downloaded on that day
+                        elif not cutoff_id or post_id_is_newer(post_id, cutoff_id):
+                            # Same date, posted after the last download — new
                             new_posts.append(p)
+                        elif not (post_id.isdigit() and cutoff_id.isdigit()) and getattr(entry, "cutoff_day_ids", None):
+                            # Non-numeric IDs: anything not in the downloaded list for that day is new
+                            new_posts.append(p)
+                        # Same date but older than the last download: already downloaded. (Counting
+                        # these as new made the Watchlist ask for the same posts again on every launch.)
                     # pub < cutoff: skip this post (too old)
                 else:
                     # No cutoff at all — include everything
@@ -565,7 +630,8 @@ class WatchlistManager:
             # 1. This was the last page (fewer posts than page_size)
             # 2. The oldest post on this page is already before the cutoff (no need to go deeper)
             # 3. We found the exact cutoff post id on this page
-            if len(page_posts) < page_size:
+            largest_page = max(largest_page, len(page_posts))
+            if len(page_posts) < largest_page:
                 break
             if cutoff and page_oldest_pub and page_oldest_pub < cutoff:
                 break

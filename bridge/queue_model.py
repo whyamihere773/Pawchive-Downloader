@@ -4,9 +4,10 @@ Exposes an observable QAbstractListModel for active, pending, completed, and fai
 """
 
 import time
-from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt, Signal, Slot, Property, QObject
+from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt, Signal, Slot, Property, QObject, QTimer, QThread
 from typing import List, Dict, Any, Optional
 from core.downloader import DownloadTask
+from core.logger import logger
 
 
 class QueueGroupsModel(QAbstractListModel):
@@ -41,6 +42,12 @@ class QueueGroupsModel(QAbstractListModel):
         self._task_last_group_status: Dict[int, str] = {}
         self._last_progress_time: Dict[str, float] = {}
         self._last_emitted_stats: Dict[str, tuple] = {}
+        # Groups whose numbers changed since the last refresh (refreshed together, a few times a second)
+        self._dirty_groups: set = set()
+        self._flush_timer = QTimer(self)
+        self._flush_timer.setSingleShot(True)
+        self._flush_timer.setInterval(120)
+        self._flush_timer.timeout.connect(self._flush_dirty_groups)
 
     def rowCount(self, parent=QModelIndex()):
         return len(self._groups)
@@ -271,32 +278,33 @@ class QueueGroupsModel(QAbstractListModel):
                 group_task_ids.add(tid)
                 tasks.append(task)
 
-            old_status = self._task_last_group_status.get(tid)
-            status_changed = (old_status != new_status)
             self._task_last_group_status[tid] = new_status
 
-            # Throttle: if status did NOT change and task is already tracked, only byte/speed
-            # progress changed. Throttle recalculation to ~100ms to keep Qt GUI thread fully responsive.
-            now = time.time()
-            if not is_new_task and not status_changed:
-                if now - self._last_progress_time.get(bid, 0.0) < 0.10:
-                    return
+            # Recalculate this group with the next batched refresh instead of right now
+            self._dirty_groups.add(bid)
+            if not self._flush_timer.isActive():
+                self._flush_timer.start()
 
-            self._calc_group_stats(g, tasks)
-
+    def _flush_dirty_groups(self):
+        """Recalculate every group that changed since the last refresh, once each."""
+        dirty, self._dirty_groups = self._dirty_groups, set()
+        for bid in dirty:
+            row = self._row_by_id.get(bid)
+            if row is None or row >= len(self._groups):
+                continue
+            g = self._groups[row]
+            self._calc_group_stats(g, self._tasks_by_id.get(bid, []))
             old_stats = self._last_emitted_stats.get(bid)
             new_stats = (
                 g["totalFiles"], g["completedFiles"], g["skippedFiles"], g["failedFiles"],
                 g["downloadingFiles"], g["pendingFiles"], g["status"]
             )
             idx = self.index(row, 0)
-
             # If structural stats (counts, status) changed, emit full dataChanged
             if old_stats != new_stats:
                 self._last_emitted_stats[bid] = new_stats
                 self.dataChanged.emit(idx, idx)
             else:
-                self._last_progress_time[bid] = now
                 self.dataChanged.emit(idx, idx, [
                     self.ProgressRole,
                     self.TotalProgressRole,
@@ -358,6 +366,7 @@ class QueueModel(QAbstractListModel):
     FileIdRole = Qt.UserRole + 15
     RetryCountRole = Qt.UserRole + 16
     BatchIdRole = Qt.UserRole + 17
+    TargetPathRole = Qt.UserRole + 18
 
     countChanged = Signal()
     filterStatusChanged = Signal()
@@ -374,9 +383,11 @@ class QueueModel(QAbstractListModel):
     batchCancelRequested = Signal(str)
     batchRemoveRequested = Signal(str)
     cleared = Signal()
+    _guiCall = Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._guiCall.connect(self._run_gui_call, Qt.QueuedConnection)
         self._tasks: List[DownloadTask] = []
         self._filter_status: str = "all" # "all", "downloading", "completed", "failed", "pending"
         self._min_file_size: int = 0
@@ -582,6 +593,8 @@ class QueueModel(QAbstractListModel):
             return getattr(task, "retry_count", 0)
         elif role == self.BatchIdRole:
             return getattr(task, "batch_id", "") or f"{task.service}_{task.creator_name}_{task.post_id}"
+        elif role == self.TargetPathRole:
+            return getattr(task, "target_path", "") or ""
 
         return None
 
@@ -603,7 +616,8 @@ class QueueModel(QAbstractListModel):
             self.OriginalIndexRole: b"originalIndex",
             self.FileIdRole: b"fileId",
             self.RetryCountRole: b"retryCount",
-            self.BatchIdRole: b"batchId"
+            self.BatchIdRole: b"batchId",
+            self.TargetPathRole: b"targetPath"
         }
 
     # ── Grouping & Batch View Properties ──────────────────────────────────────
@@ -647,7 +661,23 @@ class QueueModel(QAbstractListModel):
     def groups(self, val):
         pass
 
+
+    @Slot(object)
+    def _run_gui_call(self, fn):
+        fn()
+
+    def _off_gui_thread(self, fn) -> bool:
+        """Models may only change on the GUI thread (a reset from a worker thread can crash the
+        app). Called from another thread, fn is queued for the GUI thread and True is returned."""
+        if QThread.currentThread() is not self.thread():
+            self._guiCall.emit(fn)
+            return True
+        return False
+
     def setTasks(self, tasks: List[DownloadTask]):
+        tasks = list(tasks)
+        if self._off_gui_thread(lambda: self.setTasks(tasks)):
+            return
         self.beginResetModel()
         self._tasks = list(tasks)
         self._task_last_status.clear()
@@ -666,6 +696,9 @@ class QueueModel(QAbstractListModel):
     def appendTasks(self, tasks: List[DownloadTask]) -> int:
         if not tasks:
             return 0
+        tasks = list(tasks)
+        if self._off_gui_thread(lambda: self.appendTasks(tasks)):
+            return len(tasks)
         existing_signatures = set()
         for t in self._tasks:
             existing_signatures.add((t.url, t.target_path))
@@ -879,6 +912,8 @@ class QueueModel(QAbstractListModel):
 
     @Slot()
     def clear(self):
+        if self._off_gui_thread(self.clear):
+            return
         self.beginResetModel()
         self._tasks.clear()
         self._visible_tasks.clear()

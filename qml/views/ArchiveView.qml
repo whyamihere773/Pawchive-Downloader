@@ -47,10 +47,14 @@ Rectangle {
     }
 
     property bool _needsReload: false
+    property int _reloadSeq: 0
+    property string _reloadRequest: ""
+    property bool _reloadAgain: false
 
     Timer {
         id: reloadDebounceTimer
-        interval: 1500
+        // At most one refresh per interval: every finished file asks for one while downloading
+        interval: (root.bridge && root.bridge.isDownloading) ? 8000 : 800
         repeat: false
         onTriggered: {
             if (root.visible) {
@@ -67,7 +71,8 @@ Rectangle {
             root._needsReload = true
             return
         }
-        reloadDebounceTimer.restart()
+        if (!reloadDebounceTimer.running)
+            reloadDebounceTimer.start()
     }
 
     onVisibleChanged: {
@@ -77,14 +82,32 @@ Rectangle {
         }
     }
 
+    // The data is read in the background; a reload asked for while one runs is done right after it
     function reload() {
         if (!root.bridge) return
-        root.hierarchyData = root.bridge.getArchiveHierarchy(root.searchFilter, root.serviceFilter, root.fileTypeFilter, root.sortOrder)
-        root.statistics = root.bridge.getArchiveStatistics()
+        if (root._reloadRequest !== "") {
+            root._reloadAgain = true
+            return
+        }
+        root._reloadSeq += 1
+        root._reloadRequest = "archive-" + root._reloadSeq
+        root.bridge.getArchiveDataAsync(root._reloadRequest, root.searchFilter, root.serviceFilter, root.fileTypeFilter, root.sortOrder)
     }
 
     Connections {
         target: root.bridge
+        function onAsyncResultReady(requestId, result) {
+            if (requestId !== root._reloadRequest) return
+            root._reloadRequest = ""
+            if (result) {
+                root.hierarchyData = result.hierarchy
+                root.statistics = result.statistics
+            }
+            if (root._reloadAgain) {
+                root._reloadAgain = false
+                root.reload()
+            }
+        }
         function onArchiveUpdated() {
             root.scheduleReload()
         }
@@ -388,7 +411,7 @@ Rectangle {
                         iconText: "📥"
                         variant: "outline"
                         implicitHeight: 30
-                        tooltip: root.tr("btn_import_archive_tip", "Import gallery-dl archive.txt or Pawchive JSON export")
+                        tooltip: root.tr("btn_import_archive_tip", "Import an archive list (.txt) or JSON file exported from Pawchive Downloader")
                         onClicked: importFileDialog.open()
                     }
 
@@ -397,7 +420,7 @@ Rectangle {
                         iconText: "📤"
                         variant: "outline"
                         implicitHeight: 30
-                        tooltip: root.tr("btn_export_archive_tip", "Export archive records to gallery-dl TXT or JSON")
+                        tooltip: root.tr("btn_export_archive_tip", "Export archive records as a text list or JSON file")
                         onClicked: exportFileDialog.open()
                     }
 
@@ -1517,7 +1540,7 @@ Rectangle {
                     }
 
                     StyledButton {
-                        text: root.tr("btn_import_archive_empty", "Import gallery-dl archive.txt")
+                        text: root.tr("btn_import_archive_empty", "Import archive file")
                         iconText: "📥"
                         variant: "outline"
                         onClicked: importFileDialog.open()
@@ -2615,7 +2638,7 @@ Rectangle {
         title: root.tr("dialog_export_archive", "Export Download Archive")
         fileMode: FileDialog.SaveFile
         defaultSuffix: "txt"
-        nameFilters: ["gallery-dl Archive (*.txt)", "JSON File (*.json)"]
+        nameFilters: ["Archive list (*.txt)", "JSON File (*.json)"]
         onAccepted: {
             if (root.bridge && selectedFile) {
                 var path = selectedFile.toString()

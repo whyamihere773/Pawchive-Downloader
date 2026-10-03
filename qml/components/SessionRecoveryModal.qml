@@ -14,6 +14,7 @@ Item {
 
     function tr(key, fallback) {
         if (!Lang) return fallback !== undefined ? fallback : key
+        var _ = Lang.activeLanguage      // re-translate when the language changes
         var res = Lang.t(key)
         return (res && res !== key) ? res : (fallback !== undefined ? fallback : res)
     }

@@ -30,12 +30,38 @@ try:
 except ImportError:
     GDRIVE_AVAILABLE = False
 
-from core.logger import logger
 
 MEGA_API_URL = "https://g.api.mega.co.nz"
 
 _active_cloud_resps: set = set()
 _active_cloud_lock = Lock()
+
+_WIN_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL"} | {f"COM{i}" for i in range(1, 10)} | {f"LPT{i}" for i in range(1, 10)}
+
+
+def _safe_name(name, fallback: str = "file") -> str:
+    """A file or folder name from a cloud site, made safe to use as ONE path component.
+
+    Names are chosen by whoever uploaded the files: characters Windows refuses (e.g. "Part 1: Intro")
+    made those files fail, and a name like ".." could place files outside the download folder.
+    """
+    n = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(name or "")).strip().rstrip(". ")
+    if not n or set(n) <= {"."}:
+        n = fallback
+    if n.split(".")[0].upper() in _WIN_RESERVED_NAMES:
+        n = "_" + n
+    return n[:200]
+
+
+def _inside(base: str, path: str) -> bool:
+    """True when path is inside the folder base."""
+    try:
+        b = os.path.normcase(os.path.abspath(base))
+        p = os.path.normcase(os.path.abspath(path))
+        return os.path.commonpath([b, p]) == b and p != b
+    except ValueError:
+        return False
+
 
 def cancel_all_cloud_downloads():
     """Instantly terminates all active cloud download HTTP streams and sockets (Mega, Dropbox, Gofile)."""
@@ -200,7 +226,7 @@ def _process_mega_folder(folder_id: str, folder_key: str, session: requests.Sess
             decrypted_key_raw = _decrypt_mega_key(encrypted_key_b64, master_key_bytes)
             attr_key = _process_file_key(decrypted_key_raw) if node.get('t') == 0 else decrypted_key_raw
             attrs = _decrypt_mega_attribute(node.get('a', ''), attr_key)
-            name = re.sub(r'[<>:"/\\|?*]', '_', attrs.get('n', f"node_{node['h']}"))
+            name = _safe_name(attrs.get('n'), f"node_{node['h']}")
             raw_key_b64 = base64.b64encode(decrypted_key_raw).decode('utf-8')
             decrypted_nodes[node['h']] = {
                 "name": name,
@@ -249,8 +275,12 @@ def download_and_decrypt_mega_file(
     file_name = info['file_name']
     file_size = info.get('file_size', 0)
     dl_url = info['dl_url']
+    file_name = _safe_name(file_name, "mega_file")
     final_path = os.path.join(download_dir, file_name)
     tmp_path = final_path + ".part"
+    if not _inside(download_dir, final_path):
+        log_func(f"   [Mega] ⚠️ Skipping '{file_name}': unsafe file name")
+        return False
 
     os.makedirs(download_dir, exist_ok=True)
 
@@ -407,6 +437,9 @@ def download_mega_link(
                 }
                 sub_dir = os.path.dirname(file_data['relative_path'])
                 save_dir = os.path.join(folder_path, sub_dir) if sub_dir else folder_path
+                if save_dir != folder_path and not _inside(folder_path, save_dir):
+                    log_func(f"   [Mega Worker] ⚠️ Skipping '{file_data['relative_path']}': unsafe folder name")
+                    return
 
                 download_and_decrypt_mega_file(
                     file_info,
@@ -627,7 +660,7 @@ def download_gdrive_link(
                     if isinstance(p, str) and os.path.isfile(p):
                         if _is_quota_error_file(p):
                             os.remove(p)
-                            log_func(f"   [Google Drive] ⚠️ Quota exceeded for one file in folder.")
+                            log_func("   [Google Drive] ⚠️ Quota exceeded for one file in folder.")
                         else:
                             rel_p = os.path.relpath(p, target_folder)
                             fsize = os.path.getsize(p) if os.path.exists(p) else 0
@@ -690,9 +723,7 @@ def download_gdrive_link(
                 resolved_name = os.path.basename(parsed.path) or "gdrive_file"
 
         # Sanitise the resolved filename
-        resolved_name = re.sub(r'[<>:"/\\|?*]', '_', resolved_name).strip('. ')
-        if not resolved_name:
-            resolved_name = f"gdrive_{item_id or 'file'}"
+        resolved_name = _safe_name(resolved_name, f"gdrive_{item_id or 'file'}")
 
         output_path = os.path.join(target_folder, resolved_name)
 
@@ -804,6 +835,7 @@ def download_dropbox_link(
                 cd = r.headers.get('content-disposition', '')
                 fname_match = re.findall(r'filename="?([^"]+)"?', cd)
                 filename = fname_match[0].strip() if fname_match else os.path.basename(parsed.path) or "dropbox_download"
+                filename = _safe_name(filename, "dropbox_download")
                 if not os.path.splitext(filename)[1]:
                     filename += ".zip"
 
@@ -948,11 +980,11 @@ def download_gofile_link(
                     filtered_files.append(f)
             files = filtered_files
             if not files:
-                log_func(f"   [GoFile] All files in folder matched skip filters.")
+                log_func("   [GoFile] All files in folder matched skip filters.")
                 return True
 
         workers = max(1, min(max_workers, 16))
-        folder_name = folder_info.get("name", f"gofile_{content_id}")
+        folder_name = _safe_name(folder_info.get("name"), f"gofile_{content_id}")
         save_path = os.path.join(target_folder, folder_name)
         os.makedirs(save_path, exist_ok=True)
 
@@ -967,10 +999,13 @@ def download_gofile_link(
             if cancel_event and cancel_event.is_set():
                 return
 
-            fname = fobj["name"]
+            fname = _safe_name(fobj.get("name"), f"gofile_file_{fobj.get('id', '')}")
             furl = fobj["link"]
             fsize = fobj.get("size", 0)
             fpath = os.path.join(save_path, fname)
+            if not _inside(save_path, fpath):
+                log_func(f"   [GoFile] ⚠️ Skipping '{fname}': unsafe file name")
+                return
 
             log_func(f"   [GoFile] 🔽 '{fname}'")
 

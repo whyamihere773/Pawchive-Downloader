@@ -4,11 +4,11 @@ Exposes the WatchlistManager's entries as a QAbstractListModel so QML
 ListView and Repeater can bind to them reactively.
 """
 
-from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt, Signal, Slot, Property
+from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt, Signal, Slot, Property, QThread
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from core.watchlist_manager import WatchlistManager
+    pass
 
 
 class WatchlistModel(QAbstractListModel):
@@ -29,9 +29,11 @@ class WatchlistModel(QAbstractListModel):
     DownloadDirsRole = Qt.UserRole + 14
 
     countChanged = Signal()
+    _refreshRequested = Signal()
 
     def __init__(self, watchlist_manager, parent=None):
         super().__init__(parent)
+        self._refreshRequested.connect(self.refresh, Qt.QueuedConnection)
         self._manager = watchlist_manager
         self._search_text: str = ""
         self._service_filter: str = "all"
@@ -192,7 +194,14 @@ class WatchlistModel(QAbstractListModel):
 
     @Slot()
     def refresh(self):
-        """Full model reset — rebuilds sorted display list and notifies QML."""
+        """Full model reset — rebuilds sorted display list and notifies QML.
+
+        Watchlist checks and downloads call this from background threads; resetting a model
+        outside the GUI thread can crash the app, so those calls are passed to the GUI thread.
+        """
+        if QThread.currentThread() is not self.thread():
+            self._refreshRequested.emit()
+            return
         self.beginResetModel()
         self._rebuild_display_entries()
         self.endResetModel()

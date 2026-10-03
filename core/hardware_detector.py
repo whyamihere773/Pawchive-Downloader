@@ -4,10 +4,9 @@ Detects available GPU devices (NVIDIA, AMD Radeon, Intel Arc/UHD) and determines
 execution provider for ONNX Runtime with graceful potato-safe CPU fallbacks.
 """
 
-import os
 import sys
-import platform
-from typing import List, Tuple, Dict, Any, Union, Optional
+import threading
+from typing import List, Tuple, Dict, Any, Optional
 from core.logger import logger
 
 
@@ -15,12 +14,62 @@ class HardwareDetector:
     """Detects graphics hardware and configures optimal ONNX execution providers."""
 
     _cached_device_info: Optional[Dict[str, Any]] = None
+    _probe_lock = threading.Lock()
+    _probe_running = False
+    _probe_callbacks: List[Any] = []
+    _detect_lock = threading.Lock()     # one detection at a time (it starts PowerShell)
+
+    @classmethod
+    def cached_info(cls) -> Optional[Dict[str, Any]]:
+        """The detection result if it's already known, else None (never blocks)."""
+        return cls._cached_device_info
+
+    @classmethod
+    def probe_async(cls, on_done=None) -> None:
+        """Detects the hardware in a background thread (it starts PowerShell and loads ONNX Runtime,
+        which froze the Settings page for a few seconds when done on the GUI thread)."""
+        with cls._probe_lock:
+            if cls._cached_device_info is not None:
+                pass
+            else:
+                if on_done:
+                    cls._probe_callbacks.append(on_done)
+                if not cls._probe_running:
+                    cls._probe_running = True
+                    threading.Thread(target=cls._probe_worker, daemon=True, name="HardwareProbe").start()
+                return
+        if on_done:
+            on_done()
+
+    @classmethod
+    def _probe_worker(cls) -> None:
+        try:
+            cls.get_hardware_info()
+        finally:
+            with cls._probe_lock:
+                cls._probe_running = False
+                callbacks, cls._probe_callbacks = cls._probe_callbacks, []
+            for cb in callbacks:
+                try:
+                    cb()
+                except Exception:
+                    pass
 
     @classmethod
     def get_hardware_info(cls) -> Dict[str, Any]:
-        """Returns detected GPU hardware details and execution provider capability."""
+        """Returns detected GPU hardware details and execution provider capability.
+
+        Blocks while detecting (PowerShell + ONNX Runtime, up to a few seconds): never call it from
+        the window thread before cached_info() has a result; use probe_async() there."""
         if cls._cached_device_info is not None:
             return cls._cached_device_info
+        with cls._detect_lock:          # a second caller waits for the first result instead of probing again
+            if cls._cached_device_info is not None:
+                return cls._cached_device_info
+            return cls._detect_hardware()
+
+    @classmethod
+    def _detect_hardware(cls) -> Dict[str, Any]:
 
         info: Dict[str, Any] = {
             "has_gpu": False,
@@ -36,13 +85,13 @@ class HardwareDetector:
         if sys.platform == "win32":
             try:
                 import subprocess
-                cmd = 'powershell -NoProfile -Command "Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name"'
                 res = subprocess.run(
-                    cmd,
-                    shell=True,
+                    ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                     "Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name"],
                     capture_output=True,
                     text=True,
-                    timeout=5
+                    timeout=5,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)   # no console window flashing up
                 )
                 if res.returncode == 0 and res.stdout.strip():
                     gpus = [line.strip() for line in res.stdout.strip().splitlines() if line.strip()]
