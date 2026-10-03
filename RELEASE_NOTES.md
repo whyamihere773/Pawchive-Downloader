@@ -2,6 +2,12 @@
 
 ---
 
+### 🩹 1.2.3 Hotfix
+
+* **Your watchlist and settings show up again**: The Windows version of 1.2.2 couldn't find your existing watchlist, settings and logins after updating, even though the files were still there. Nothing was lost, and they're all back once you update to 1.2.3.
+
+---
+
 ### ⚠️ Kemono and Coomer Turned Off (for now)
 
 * **Kemono and Coomer are switched off**: Both sites are mostly not working at the moment, so Pawchive no longer uses them. When you use a Kemono link, the app offers the same link on Pawchive, which has the same creators and posts; for Coomer creators, use cum.st.

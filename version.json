@@ -1,5 +1,5 @@
 {
-    "version": "1.2.2",
+    "version": "1.2.3",
     "commit": "",
     "short_commit": "",
     "date": "2026-10-03",
@@ -119,6 +119,11 @@
             "version": "1.2.2",
             "date": "2026-10-03",
             "notes": "New Gallery tab (browse downloads with thumbnails, picture viewer and video player, search, favourites, Clean & Organize, Batch Rename, archive compress/extract/preview), early-access Linux support, new updater, Kemono and Coomer turned off (use Pawchive / cum.st), safer per-site logins, resumable and verified downloads, File order in posts option, Watchlist and Scheduler fixes, faster start, full translations and many bug fixes."
+        },
+        {
+            "version": "1.2.3",
+            "date": "2026-10-03",
+            "notes": "Hotfix: the Windows build looks for settings next to the .exe again, so existing watchlists, settings and logins show up after updating from 1.2.1."
         }
     ]
 }
