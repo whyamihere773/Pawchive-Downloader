@@ -1130,5 +1130,12 @@
   "watchlist_adding": "Ajout…",
   "scheduler_night_owl_hint": "Les planifications ne démarrent que dans cette plage. Un téléchargement déjà en cours continue après la fin de la plage.",
   "tab_loading": "Chargement…",
-  "logs_measuring": "Mesure en cours…"
+  "logs_measuring": "Mesure en cours…",
+  "webp_q_lossless": "Sans perte",
+  "webp_q_high": "Haute",
+  "webp_q_balanced": "Équilibrée",
+  "webp_q_small": "Petite",
+  "webp_q_smallest": "Minimale",
+  "webp_quality_label": "Qualité WebP :",
+  "webp_quality_tip": "Force de compression des images. Sans perte conserve chaque pixel ; Équilibrée se voit à peine et prend bien moins de place ; Petite et Minimale économisent le plus d'espace. Une image reste telle quelle si le WebP ne serait pas plus petit."
 }

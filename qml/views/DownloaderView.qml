@@ -1144,11 +1144,34 @@ SmoothFlickable {
                             onCheckedChanged: if (root.bridge) root.bridge.skipArchives = checked
                         }
 
-                        StyledCheckBox {
-                            text: root.tr("opt_compress_webp", "Compress to WebP")
-                            tooltip: root.tr("opt_compress_webp_tip", "Convert downloaded PNG and JPG images to compressed WebP format")
-                            checked: root.bridge ? root.bridge.compressWebp : false
-                            onCheckedChanged: if (root.bridge) root.bridge.compressWebp = checked
+                        Row {
+                            spacing: 8
+
+                            StyledCheckBox {
+                                id: webpCheck
+                                text: root.tr("opt_compress_webp", "Compress to WebP")
+                                tooltip: root.tr("opt_compress_webp_tip", "Convert downloaded PNG and JPG images to compressed WebP format")
+                                checked: root.bridge ? root.bridge.compressWebp : false
+                                onCheckedChanged: if (root.bridge) root.bridge.compressWebp = checked
+                            }
+
+                            // How strongly (only while compressing)
+                            StyledComboBox {
+                                visible: webpCheck.checked
+                                implicitHeight: 26
+                                implicitWidth: 120
+                                anchors.verticalCenter: webpCheck.verticalCenter
+                                model: [
+                                        { text: root.tr("webp_q_lossless", "Lossless"), value: "lossless" },
+                                        { text: root.tr("webp_q_high", "High"), value: "high" },
+                                        { text: root.tr("webp_q_balanced", "Balanced"), value: "balanced" },
+                                        { text: root.tr("webp_q_small", "Small"), value: "small" },
+                                        { text: root.tr("webp_q_smallest", "Smallest"), value: "smallest" }
+                                    ]
+                                value: root.bridge ? root.bridge.webpQuality : "balanced"
+                                tooltip: root.tr("webp_quality_tip", "How strongly pictures are compressed. Lossless keeps every pixel; Balanced is barely visible and much smaller; Small and Smallest save the most space. A picture is kept as it was if the WebP wouldn't be smaller.")
+                                onValuePicked: function(v) { if (root.bridge) root.bridge.webpQuality = v }
+                            }
                         }
                     }
                 }
@@ -1852,6 +1875,38 @@ SmoothFlickable {
                             value: root.bridge ? root.bridge.fileOrder : "posted"
                             tooltip: root.tr("opt_file_order_tip", "Which file of a post comes first: it is downloaded first and gets #1 with the index prefix and numbered file names.\n\nAs posted: the order the site shows.\nReversed: for creators who upload the newest version first.\nBy file name: sorted by name with numbers counted properly (2 before 10), in any language.")
                             onValuePicked: function(v) { if (root.bridge) root.bridge.fileOrder = v }
+                        }
+                    }
+
+                    // Same switch as in the Quick tab (they stay in sync), with its quality level
+                    Row {
+                        spacing: 8
+                        height: 28
+
+                        StyledCheckBox {
+                            id: webpCheckEngine
+                            text: root.tr("opt_compress_webp", "Compress to WebP")
+                            tooltip: root.tr("opt_compress_webp_tip", "Convert downloaded PNG and JPG images to compressed WebP format")
+                            checked: root.bridge ? root.bridge.compressWebp : false
+                            onCheckedChanged: if (root.bridge) root.bridge.compressWebp = checked
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+
+                        StyledComboBox {
+                            visible: webpCheckEngine.checked
+                            implicitHeight: 28
+                            implicitWidth: 120
+                            anchors.verticalCenter: parent.verticalCenter
+                            model: [
+                                { text: root.tr("webp_q_lossless", "Lossless"), value: "lossless" },
+                                { text: root.tr("webp_q_high", "High"), value: "high" },
+                                { text: root.tr("webp_q_balanced", "Balanced"), value: "balanced" },
+                                { text: root.tr("webp_q_small", "Small"), value: "small" },
+                                { text: root.tr("webp_q_smallest", "Smallest"), value: "smallest" }
+                            ]
+                            value: root.bridge ? root.bridge.webpQuality : "balanced"
+                            tooltip: root.tr("webp_quality_tip", "How strongly pictures are compressed. Lossless keeps every pixel; Balanced is barely visible and much smaller; Small and Smallest save the most space. A picture is kept as it was if the WebP wouldn't be smaller.")
+                            onValuePicked: function(v) { if (root.bridge) root.bridge.webpQuality = v }
                         }
                     }
 

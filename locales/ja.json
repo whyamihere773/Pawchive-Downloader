@@ -1130,5 +1130,12 @@
   "watchlist_adding": "追加中…",
   "scheduler_night_owl_hint": "スケジュールはこの時間帯の中でのみ開始します。すでに実行中のダウンロードは時間帯の終了後も続きます。",
   "tab_loading": "読み込み中…",
-  "logs_measuring": "計測中…"
+  "logs_measuring": "計測中…",
+  "webp_q_lossless": "ロスレス",
+  "webp_q_high": "高",
+  "webp_q_balanced": "バランス",
+  "webp_q_small": "小",
+  "webp_q_smallest": "最小",
+  "webp_quality_label": "WebP 品質:",
+  "webp_quality_tip": "画像をどれだけ圧縮するか。ロスレスはすべてのピクセルを保持し、バランスはほとんど目立たずにずっと小さくなり、小と最小は最も容量を節約します。WebP の方が小さくならない場合、画像はそのまま残ります。"
 }

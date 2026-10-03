@@ -1130,5 +1130,12 @@
   "watchlist_adding": "추가하는 중…",
   "scheduler_night_owl_hint": "예약은 이 시간대 안에서만 시작됩니다. 이미 진행 중인 다운로드는 시간대가 끝난 뒤에도 계속됩니다.",
   "tab_loading": "불러오는 중…",
-  "logs_measuring": "측정하는 중…"
+  "logs_measuring": "측정하는 중…",
+  "webp_q_lossless": "무손실",
+  "webp_q_high": "높음",
+  "webp_q_balanced": "균형",
+  "webp_q_small": "작게",
+  "webp_q_smallest": "가장 작게",
+  "webp_quality_label": "WebP 품질:",
+  "webp_quality_tip": "이미지를 얼마나 강하게 압축할지 정합니다. 무손실은 모든 픽셀을 유지하고, 균형은 거의 티가 나지 않으면서 훨씬 작으며, 작게와 가장 작게는 공간을 가장 많이 절약합니다. WebP가 더 작아지지 않으면 이미지는 그대로 유지됩니다."
 }

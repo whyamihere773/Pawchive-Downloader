@@ -1130,5 +1130,12 @@
   "watchlist_adding": "Wird hinzugefügt…",
   "scheduler_night_owl_hint": "Zeitpläne starten nur innerhalb dieses Fensters. Ein laufender Download wird nach dem Ende des Fensters fortgesetzt.",
   "tab_loading": "Wird geladen…",
-  "logs_measuring": "Wird gemessen…"
+  "logs_measuring": "Wird gemessen…",
+  "webp_q_lossless": "Verlustfrei",
+  "webp_q_high": "Hoch",
+  "webp_q_balanced": "Ausgewogen",
+  "webp_q_small": "Klein",
+  "webp_q_smallest": "Am kleinsten",
+  "webp_quality_label": "WebP-Qualität:",
+  "webp_quality_tip": "Wie stark Bilder komprimiert werden. Verlustfrei behält jedes Pixel; Ausgewogen ist kaum sichtbar und viel kleiner; Klein und Am kleinsten sparen den meisten Platz. Ein Bild bleibt unverändert, wenn das WebP nicht kleiner wäre."
 }

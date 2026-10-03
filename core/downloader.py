@@ -849,7 +849,13 @@ class KemonoDownloader:
             post_info_content = ""
             if options.save_post_metadata:
                 try:
-                    info_path = fit_path_for_windows(os.path.join(post_folder, "post_info.txt"))
+                    # Grouped by type at the creator root, the post's own folders sit inside each type
+                    # folder (Images/<post>, Video/<post>…); the info file goes where a text file of the
+                    # post goes (Other/<post>) instead of a stray <post> folder at the creator root
+                    info_dir = post_folder
+                    if getattr(options, "group_file_type", "none") == "creator" and options.subfolder_per_post and post_subfolder_name:
+                        info_dir = _get_dest_folder("post_info.txt")
+                    info_path = fit_path_for_windows(os.path.join(info_dir, "post_info.txt"))
                     if not os.path.exists(info_path):
                         tags_list = FilterEngine.normalize_tags(post.get("tags"))
                         tags_str = ", ".join(tags_list)
@@ -3549,7 +3555,7 @@ class KemonoDownloader:
 
         # 1. WebP conversion (the task, archive and queue then point at the .webp file)
         if options.compress_to_webp:
-            converted = self._convert_to_webp(task.target_path)
+            converted = self._convert_to_webp(task.target_path, getattr(options, "webp_quality", "balanced"))
             if converted:
                 task.target_path = converted
 
@@ -3564,15 +3570,25 @@ class KemonoDownloader:
                 comment=getattr(task, "post_url", "") or task.url
             )
 
-    def _convert_to_webp(self, file_path: str) -> Optional[str]:
-        """Converts JPG/PNG to WebP; returns the new path, or None when the file was kept as it was."""
+    def _convert_to_webp(self, file_path: str, level: str = "balanced") -> Optional[str]:
+        """Converts JPG/PNG to WebP at the chosen level; returns the new path, or None when the file
+        was kept as it was (also when the WebP wouldn't be smaller, e.g. lossless on a photo)."""
+        from core.filter_engine import WEBP_QUALITY_LEVELS
         try:
             _, ext = os.path.splitext(file_path.lower())
             if ext in (".jpg", ".jpeg", ".png"):
                 webp_path = os.path.splitext(file_path)[0] + ".webp"
                 tmp_path = webp_path + PART_SUFFIX
+                quality = WEBP_QUALITY_LEVELS.get(str(level or "").lower(), 85)
                 with Image.open(file_path) as img:
-                    img.save(tmp_path, "WEBP", quality=85)
+                    if quality is None:
+                        img.save(tmp_path, "WEBP", lossless=True, exact=True, quality=100, method=6)
+                    else:
+                        img.save(tmp_path, "WEBP", quality=quality, method=4)
+                if os.path.getsize(tmp_path) >= os.path.getsize(file_path):
+                    _remove_quietly(tmp_path)
+                    logger.debug(f"Kept {os.path.basename(file_path)}: as WebP it wasn't smaller.", category="downloader")
+                    return None
                 replace_file(tmp_path, webp_path)
                 os.remove(file_path)
                 return webp_path

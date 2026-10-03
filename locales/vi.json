@@ -1130,5 +1130,12 @@
   "watchlist_adding": "Đang thêm…",
   "scheduler_night_owl_hint": "Lịch chỉ bắt đầu trong khung giờ này. Lượt tải đang chạy sẽ tiếp tục sau khi khung giờ kết thúc.",
   "tab_loading": "Đang tải…",
-  "logs_measuring": "Đang đo…"
+  "logs_measuring": "Đang đo…",
+  "webp_q_lossless": "Không mất dữ liệu",
+  "webp_q_high": "Cao",
+  "webp_q_balanced": "Cân bằng",
+  "webp_q_small": "Nhỏ",
+  "webp_q_smallest": "Nhỏ nhất",
+  "webp_quality_label": "Chất lượng WebP:",
+  "webp_quality_tip": "Mức nén ảnh. Không mất dữ liệu giữ nguyên mọi điểm ảnh; Cân bằng gần như không thấy khác biệt mà nhỏ hơn nhiều; Nhỏ và Nhỏ nhất tiết kiệm dung lượng nhất. Ảnh được giữ nguyên nếu bản WebP không nhỏ hơn."
 }

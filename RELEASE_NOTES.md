@@ -31,6 +31,7 @@
 * **Disk space checked per file**: A file only starts downloading when there's room for all of it, instead of failing halfway through.
 * **Names with # or & download correctly**: File names containing special characters no longer break their download link.
 * **Files with the same name are all downloaded**: When an album (Bunkr, Telegram…) has different files with the same name, each one is saved, as "name (2).png" and so on. Before, only the first was kept, or the files could overwrite each other.
+* **No stray post folders with "Creator Root" grouping**: With Group by File Type set to Creator Root, each post's info file now goes into the Other folder instead of creating an extra post folder next to Images, Video and the rest.
 
 ---
 
@@ -39,6 +40,13 @@
 * **File order in posts** *(new option)*: Pick "As posted", "Reversed" or "By file name" in Downloader → Engine → Folder Organization & Naming. Useful for creators who upload the newest version first, so the original gets #1 with the index prefix or numbered file names.
 * **Name order that works in any language**: "By file name" counts numbers properly (2 before 10, "page 9" before "page_10") and understands Japanese and Chinese numerals, full-width characters, accents and other alphabets.
 * **Same order in Select Posts…**: The post preview lists files in the chosen order and has the same switch, so the #1 you see is the #1 you get.
+
+---
+
+### 🗜️ WebP Quality Levels
+
+* **Choose how much to compress**: "Compress to WebP" now has a quality setting: Lossless, High, Balanced (the default, same as before), Small or Smallest.
+* **Never bigger than before**: If a picture wouldn't get smaller as WebP, it's kept as it was.
 
 ---
 

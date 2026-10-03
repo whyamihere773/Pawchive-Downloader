@@ -2084,6 +2084,36 @@ SmoothFlickable {
                             onCheckedChanged: if (root.bridge) root.bridge.compressWebp = checked
                         }
 
+                        // How strongly (only while compressing)
+                        Row {
+                            visible: root.bridge ? root.bridge.compressWebp : false
+                            spacing: 8
+                            leftPadding: 28
+
+                            Text {
+                                text: tr("webp_quality_label", "WebP quality:")
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 12
+                                color: "#94A3B8"
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+
+                            StyledComboBox {
+                                implicitHeight: 28
+                                implicitWidth: 140
+                                model: [
+                                        { text: tr("webp_q_lossless", "Lossless"), value: "lossless" },
+                                        { text: tr("webp_q_high", "High"), value: "high" },
+                                        { text: tr("webp_q_balanced", "Balanced"), value: "balanced" },
+                                        { text: tr("webp_q_small", "Small"), value: "small" },
+                                        { text: tr("webp_q_smallest", "Smallest"), value: "smallest" }
+                                    ]
+                                value: root.bridge ? root.bridge.webpQuality : "balanced"
+                                tooltip: tr("webp_quality_tip", "How strongly pictures are compressed. Lossless keeps every pixel; Balanced is barely visible and much smaller; Small and Smallest save the most space. A picture is kept as it was if the WebP wouldn't be smaller.")
+                                onValuePicked: function(v) { if (root.bridge) root.bridge.webpQuality = v }
+                            }
+                        }
+
                         StyledCheckBox {
                             text: tr("opt_tag_audio_files_settings", "Write creator and post tags to downloaded audio files (MP3/FLAC/M4A)")
                             tooltip: tr("opt_tag_audio_files_tip", "Automatically sets Artist to creator name and Title to post title for seamless import into music managers")

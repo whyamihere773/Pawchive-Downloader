@@ -114,6 +114,10 @@ def fit_path_for_windows(path: str, max_len: int = WINDOWS_MAX_PATH) -> str:
     return os.path.join(folder, name)
 
 
+# "Compress to WebP" levels: Pillow quality (None = lossless)
+WEBP_QUALITY_LEVELS = {"lossless": None, "high": 95, "balanced": 85, "small": 70, "smallest": 50}
+
+
 class FilenameStyles:
     POST_TITLE = "post_title"
     DATE_POST_TITLE = "date_post_title"
@@ -202,7 +206,8 @@ class FilterOptions:
         exact_extensions: str = "",
         skip_retry_404: bool = False,
         group_file_type: str = "none",
-        file_order: str = "posted"
+        file_order: str = "posted",
+        webp_quality: str = "balanced"
     ):
         self.characters = characters
         self.character_scope = character_scope
@@ -249,6 +254,8 @@ class FilterOptions:
         # Order of the files inside a post: "posted", "reversed" or "name" (see core/file_order.py)
         from core.file_order import normalize_file_order
         self.file_order = normalize_file_order(file_order)
+        # How strongly "Compress to WebP" compresses: lossless / high / balanced / small / smallest
+        self.webp_quality = str(webp_quality).lower() if str(webp_quality).lower() in WEBP_QUALITY_LEVELS else "balanced"
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize filter options to dictionary for persistence."""
@@ -296,6 +303,7 @@ class FilterOptions:
             "skip_retry_404": self.skip_retry_404,
             "group_file_type": self.group_file_type,
             "file_order": self.file_order,
+            "webp_quality": self.webp_quality,
         }
 
     @classmethod
@@ -347,6 +355,7 @@ class FilterOptions:
             skip_retry_404=bool(d.get("skip_retry_404", False)),
             group_file_type=d.get("group_file_type", "none"),
             file_order=d.get("file_order", "posted"),
+            webp_quality=d.get("webp_quality", "balanced"),
         )
 
 

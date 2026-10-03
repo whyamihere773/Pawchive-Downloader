@@ -1130,5 +1130,12 @@
   "watchlist_adding": "正在新增…",
   "scheduler_night_owl_hint": "排程只會在此時段內開始。已在進行的下載在時段結束後會繼續。",
   "tab_loading": "正在載入…",
-  "logs_measuring": "正在計算…"
+  "logs_measuring": "正在計算…",
+  "webp_q_lossless": "無損",
+  "webp_q_high": "高",
+  "webp_q_balanced": "均衡",
+  "webp_q_small": "小",
+  "webp_q_smallest": "最小",
+  "webp_quality_label": "WebP 品質:",
+  "webp_quality_tip": "圖片的壓縮強度。無損保留每個像素；均衡幾乎看不出差異且小得多；小與最小最節省空間。若 WebP 不會更小，圖片保持原樣。"
 }

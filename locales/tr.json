@@ -1130,5 +1130,12 @@
   "watchlist_adding": "Ekleniyor…",
   "scheduler_night_owl_hint": "Zamanlamalar yalnızca bu zaman aralığında başlar. Zaten süren bir indirme, aralık bittikten sonra da devam eder.",
   "tab_loading": "Yükleniyor…",
-  "logs_measuring": "Ölçülüyor…"
+  "logs_measuring": "Ölçülüyor…",
+  "webp_q_lossless": "Kayıpsız",
+  "webp_q_high": "Yüksek",
+  "webp_q_balanced": "Dengeli",
+  "webp_q_small": "Küçük",
+  "webp_q_smallest": "En küçük",
+  "webp_quality_label": "WebP kalitesi:",
+  "webp_quality_tip": "Resimlerin ne kadar sıkıştırılacağı. Kayıpsız her pikseli korur; Dengeli neredeyse fark edilmez ve çok daha küçüktür; Küçük ve En küçük en çok yer kazandırır. WebP daha küçük olmayacaksa resim olduğu gibi bırakılır."
 }

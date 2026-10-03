@@ -1130,5 +1130,12 @@
   "watchlist_adding": "Adicionando…",
   "scheduler_night_owl_hint": "Os agendamentos só começam dentro desta janela. Um download que já está em andamento continua depois que a janela termina.",
   "tab_loading": "Carregando…",
-  "logs_measuring": "Medindo…"
+  "logs_measuring": "Medindo…",
+  "webp_q_lossless": "Sem perdas",
+  "webp_q_high": "Alta",
+  "webp_q_balanced": "Equilibrada",
+  "webp_q_small": "Pequena",
+  "webp_q_smallest": "Mínima",
+  "webp_quality_label": "Qualidade WebP:",
+  "webp_quality_tip": "Quanto as imagens são comprimidas. Sem perdas mantém cada pixel; Equilibrada quase não se nota e fica bem menor; Pequena e Mínima economizam mais espaço. A imagem fica como estava se o WebP não for menor."
 }

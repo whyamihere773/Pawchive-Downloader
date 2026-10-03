@@ -115,6 +115,7 @@ class AppBridge(QObject):
     scanContentImagesChanged = Signal()
     downloadPawchiveTemporaryFilesChanged = Signal()
     compressWebpChanged = Signal()
+    webpQualityChanged = Signal()
     writeAudioMetadataChanged = Signal()
     keepDuplicatesChanged = Signal()
     favoriteModeChanged = Signal()
@@ -314,6 +315,7 @@ class AppBridge(QObject):
         self._scan_content_images = saved_settings.get("scan_content_images", True)
         self._download_pawchive_temporary_files = saved_settings.get("download_pawchive_temporary_files", True)
         self._compress_webp = saved_settings.get("compress_webp", False)
+        self._webp_quality = str(saved_settings.get("webp_quality", "balanced"))
         self._write_audio_metadata = bool(saved_settings.get("write_audio_metadata", False))
         self._keep_duplicates = saved_settings.get("keep_duplicates", False)
         self._last_archive_emit_time: float = 0.0
@@ -932,6 +934,22 @@ class AppBridge(QObject):
         if self._compress_webp != val:
             self._compress_webp = val
             self.compressWebpChanged.emit()
+            self._settings_save_timer.start()
+
+    @Property(str, notify=webpQualityChanged)
+    def webpQuality(self) -> str:
+        """How strongly "Compress to WebP" compresses: lossless / high / balanced / small / smallest."""
+        return self._webp_quality
+
+    @webpQuality.setter
+    def webpQuality(self, val: str):
+        from core.filter_engine import WEBP_QUALITY_LEVELS
+        val = str(val or "").lower()
+        if val not in WEBP_QUALITY_LEVELS:
+            val = "balanced"
+        if self._webp_quality != val:
+            self._webp_quality = val
+            self.webpQualityChanged.emit()
             self._settings_save_timer.start()
 
     @Property(bool, notify=writeAudioMetadataChanged)
@@ -2171,6 +2189,7 @@ class AppBridge(QObject):
             redownload_small_files=self._redownload_small_files,
             scan_content_images=self._scan_content_images,
             compress_to_webp=self._compress_webp,
+            webp_quality=self._webp_quality,
             keep_duplicates=self._keep_duplicates,
             favorite_mode=self._favorite_mode,
             subfolder_per_post=self._subfolder_per_post,
@@ -4651,6 +4670,7 @@ class AppBridge(QObject):
             "filename_template": self._filename_template,
             "proxy_url": self._proxy_url,
             "compress_webp": self._compress_webp,
+            "webp_quality": self._webp_quality,
             "keep_duplicates": self._keep_duplicates,
             "scan_content_images": self._scan_content_images,
             "download_delay": self._download_delay,

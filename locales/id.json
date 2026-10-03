@@ -1130,5 +1130,12 @@
   "watchlist_adding": "Menambahkan…",
   "scheduler_night_owl_hint": "Jadwal hanya dimulai di dalam rentang waktu ini. Unduhan yang sedang berjalan tetap berlanjut setelah rentang berakhir.",
   "tab_loading": "Memuat…",
-  "logs_measuring": "Mengukur…"
+  "logs_measuring": "Mengukur…",
+  "webp_q_lossless": "Tanpa kehilangan",
+  "webp_q_high": "Tinggi",
+  "webp_q_balanced": "Seimbang",
+  "webp_q_small": "Kecil",
+  "webp_q_smallest": "Terkecil",
+  "webp_quality_label": "Kualitas WebP:",
+  "webp_quality_tip": "Seberapa kuat gambar dikompresi. Tanpa kehilangan mempertahankan setiap piksel; Seimbang hampir tidak terlihat dan jauh lebih kecil; Kecil dan Terkecil paling menghemat ruang. Gambar dibiarkan apa adanya jika WebP tidak lebih kecil."
 }

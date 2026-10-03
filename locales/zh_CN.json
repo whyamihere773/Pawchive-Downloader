@@ -1130,5 +1130,12 @@
   "watchlist_adding": "正在添加…",
   "scheduler_night_owl_hint": "计划只会在此时间段内开始。已经在进行的下载在时间段结束后会继续。",
   "tab_loading": "正在加载…",
-  "logs_measuring": "正在计算…"
+  "logs_measuring": "正在计算…",
+  "webp_q_lossless": "无损",
+  "webp_q_high": "高",
+  "webp_q_balanced": "均衡",
+  "webp_q_small": "小",
+  "webp_q_smallest": "最小",
+  "webp_quality_label": "WebP 质量:",
+  "webp_quality_tip": "图片的压缩强度。无损保留每个像素；均衡几乎看不出差别且小得多；小和最小最节省空间。如果 WebP 不会更小，图片保持原样。"
 }

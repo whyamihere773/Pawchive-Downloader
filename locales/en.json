@@ -1130,5 +1130,12 @@
   "watchlist_adding": "Adding…",
   "scheduler_night_owl_hint": "Schedules only start inside this window. A download that's already running keeps going after the window ends.",
   "tab_loading": "Loading…",
-  "logs_measuring": "Measuring…"
+  "logs_measuring": "Measuring…",
+  "webp_q_lossless": "Lossless",
+  "webp_q_high": "High",
+  "webp_q_balanced": "Balanced",
+  "webp_q_small": "Small",
+  "webp_q_smallest": "Smallest",
+  "webp_quality_label": "WebP quality:",
+  "webp_quality_tip": "How strongly pictures are compressed. Lossless keeps every pixel; Balanced is barely visible and much smaller; Small and Smallest save the most space. A picture is kept as it was if the WebP wouldn't be smaller."
 }
