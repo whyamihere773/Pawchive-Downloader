@@ -38,11 +38,44 @@ def _is_dir_writable(path: str) -> bool:
         return False
 
 
+_rescued_from_internal = False
+
+
+def _rescue_from_internal() -> None:
+    """Packaged Windows builds keep config/, data/ and dependencies/ next to the .exe. The first 1.2.2
+    build used the ones inside "_internal" instead, so it didn't see the user's settings, watchlist
+    and logins. Anything it saved there is copied next to the .exe, only where no file of that name
+    exists yet (the user's real files always win)."""
+    global _rescued_from_internal
+    if _rescued_from_internal or sys.platform != "win32" or not getattr(sys, "frozen", False):
+        return
+    _rescued_from_internal = True
+    import shutil
+    internal, root = get_base_dir(), get_app_root()
+    if os.path.normcase(os.path.abspath(internal)) == os.path.normcase(os.path.abspath(root)):
+        return
+    for sub in ("config", "data", "dependencies"):
+        src_root = os.path.join(internal, sub)
+        if not os.path.isdir(src_root):
+            continue
+        for dirpath, _dirs, files in os.walk(src_root):
+            dst_dir = os.path.normpath(os.path.join(root, sub, os.path.relpath(dirpath, src_root)))
+            for name in files:
+                dst = os.path.join(dst_dir, name)
+                if os.path.exists(dst):
+                    continue
+                try:
+                    os.makedirs(dst_dir, exist_ok=True)
+                    shutil.copy2(os.path.join(dirpath, name), dst)
+                except OSError:
+                    pass
+
+
 def get_config_dir(custom_dir: Optional[str] = None) -> str:
     """
     Resolve the configuration directory:
     - If custom_dir is provided, use it.
-    - On Windows: prefers portable `<base_dir>/config`.
+    - On Windows: portable `config` next to the .exe (or main.py when running from source).
     - On Linux/macOS:
       - If running from source and `<base_dir>/config` is writable, use it.
       - Otherwise, use `$XDG_CONFIG_HOME/pawchive` (defaults to `~/.config/pawchive`).
@@ -57,12 +90,14 @@ def get_config_dir(custom_dir: Optional[str] = None) -> str:
         os.makedirs(env_dir, exist_ok=True)
         return env_dir
 
-    base_dir = get_base_dir()
-    local_cfg = os.path.join(base_dir, "config")
-
     if sys.platform == "win32":
+        _rescue_from_internal()
+        local_cfg = os.path.join(get_app_root(), "config")
         os.makedirs(local_cfg, exist_ok=True)
         return local_cfg
+
+    base_dir = get_base_dir()
+    local_cfg = os.path.join(base_dir, "config")
 
     # On Linux / POSIX:
     # If running from source (not frozen) and local_cfg is writable, keep local config
@@ -99,7 +134,7 @@ def migrate_legacy_files(new_dir: str, legacy_dir: str, names) -> None:
 def get_data_dir() -> str:
     """
     Resolve data/state directory:
-    - On Windows: `<base_dir>`.
+    - On Windows: the folder of the .exe (or main.py when running from source).
     - On Linux/macOS: `$XDG_DATA_HOME/pawchive` (defaults to `~/.local/share/pawchive`),
       or `<base_dir>` if running from source and writable.
     """
@@ -108,10 +143,11 @@ def get_data_dir() -> str:
         os.makedirs(env_dir, exist_ok=True)
         return env_dir
 
-    base_dir = get_base_dir()
-
     if sys.platform == "win32":
-        return base_dir
+        _rescue_from_internal()
+        return get_app_root()
+
+    base_dir = get_base_dir()
 
     if not getattr(sys, "frozen", False) and _is_dir_writable(base_dir):
         return base_dir
@@ -166,12 +202,14 @@ def get_legacy_logs_dirs() -> list:
 
 def get_dependencies_dir() -> str:
     """Resolve directory where helper binaries (yt-dlp, 7za) reside or should be downloaded."""
-    base_dir = get_base_dir()
-    local_deps = os.path.join(base_dir, "dependencies")
-
     if sys.platform == "win32":
+        _rescue_from_internal()
+        local_deps = os.path.join(get_app_root(), "dependencies")
         os.makedirs(local_deps, exist_ok=True)
         return local_deps
+
+    base_dir = get_base_dir()
+    local_deps = os.path.join(base_dir, "dependencies")
 
     if not getattr(sys, "frozen", False) and _is_dir_writable(local_deps):
         return local_deps
