@@ -7,6 +7,11 @@ on:
   pull_request:
     branches: [ "main", "experimental" ]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Attach the Linux build to this existing release (e.g. v1.2.2); leave empty to only build"
+        required: false
+        default: ""
 
 permissions:
   contents: write      # attach the Linux build to tagged releases
@@ -48,9 +53,11 @@ jobs:
         pip install -r requirements.txt
         # AI character recognition, so the Linux build has it like the Windows one
         pip install -r requirements-ai.txt
-        pip install pyinstaller
+        pip install pyinstaller pytest
 
     - name: Run test suite (if present)
+      env:
+        QT_QPA_PLATFORM: offscreen     # no screen on the build machine
       run: |
         if [ -d "tests" ]; then
           python -m pytest tests/
@@ -91,8 +98,10 @@ jobs:
         retention-days: 14
 
     # Tagged releases get the Linux build attached, so the in-app updater can find it
+    # (or, started by hand with a tag, to that existing release)
     - name: Attach to GitHub release
-      if: startsWith(github.ref, 'refs/tags/v')
+      if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.tag != '')
       uses: softprops/action-gh-release@v2
       with:
+        tag_name: ${{ inputs.tag || github.ref_name }}
         files: dist/Pawchive-Downloader-v*-Linux-x86_64.tar.gz
