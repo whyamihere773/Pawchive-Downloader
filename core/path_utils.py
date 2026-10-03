@@ -4,9 +4,11 @@ Provides clean, transparent resolution between Windows portable folders and
 Linux / macOS XDG Base Directory specifications (~/.config, ~/.local/share).
 """
 
+import hashlib
 import os
+import re
 import sys
-from typing import Optional
+from typing import List, Optional
 
 
 def get_base_dir() -> str:
@@ -197,3 +199,101 @@ def unique_name_in_batch(folder: str, name: str, taken: set) -> str:
         n += 1
     taken.add(os.path.normcase(path))
     return path
+
+
+# ── Post info files ────────────────────────────────────────────────────────
+# A post with its own folder keeps "post_info.txt"; posts sharing one folder (Subfolder per post
+# off) each get "post_info [<post id>].txt" so they don't overwrite or skip each other.
+POST_INFO_NAME = "post_info.txt"
+_POST_INFO_RE = re.compile(r"post_info(?: \[[^\]/\\]+\])?\.txt", re.IGNORECASE)
+
+
+def post_id_tag(post_id) -> str:
+    """The post id as it goes into a file name: album "posts" use a link as their id, which
+    isn't a valid name, so ids that aren't short and plain become a short hash."""
+    tag = str(post_id)
+    if not re.fullmatch(r"[\w.-]{1,40}", tag):
+        tag = hashlib.md5(tag.encode("utf-8")).hexdigest()[:8]
+    return tag
+
+
+def post_info_name(post_id=None) -> str:
+    """'post_info.txt', or 'post_info [<id>].txt' for a post that shares its folder."""
+    if post_id is None or str(post_id) == "":
+        return POST_INFO_NAME
+    return f"post_info [{post_id_tag(post_id)}].txt"
+
+
+def is_post_info_name(name: str) -> bool:
+    return bool(name) and _POST_INFO_RE.fullmatch(name) is not None
+
+
+def post_info_files(folder: str, limit: int = 2000) -> List[str]:
+    """Post info files in `folder`: 'post_info.txt' first, then the per-post ones by name."""
+    try:
+        names = [n for n in os.listdir(folder) if is_post_info_name(n)]
+    except OSError:
+        return []
+    names.sort(key=lambda n: (n.lower() != POST_INFO_NAME, n.lower()))
+    return [os.path.join(folder, n) for n in names[:limit]]
+
+
+def post_info_attached_files(info_path: str) -> List[str]:
+    """The names listed under "--- Attached Files ---" in a post info file."""
+    names: List[str] = []
+    try:
+        with open(info_path, "r", encoding="utf-8", errors="replace") as f:
+            in_files = False
+            for line in f:
+                if line.startswith("--- "):
+                    in_files = line.strip() == "--- Attached Files ---"
+                    continue
+                if in_files and line.strip():
+                    names.append(line.strip())
+    except OSError:
+        pass
+    return names
+
+
+def _lists_file(info_path: str, file_name: str) -> bool:
+    want = file_name.strip().lower()
+    return any(n.lower() == want for n in post_info_attached_files(info_path))
+
+
+_TYPE_FOLDERS = {"images", "video", "archive", "audio", "other"}
+
+
+def info_dirs_for(folder: str) -> List[str]:
+    """Folders that can hold the post info of a file in `folder`: the folder itself and, when
+    files are grouped by type, the matching "Other" folder (where a post's text goes) —
+    Post/Images -> Post/Other, Creator/Images/Post -> Creator/Other/Post."""
+    dirs = [folder]
+    parts = os.path.normpath(folder).split(os.sep)
+    for i in range(len(parts) - 1, max(len(parts) - 3, 0) - 1, -1):
+        if parts[i].lower() in _TYPE_FOLDERS:
+            if parts[i].lower() != "other":
+                dirs.append(os.sep.join(parts[:i] + ["Other"] + parts[i + 1:]))
+            break
+    return dirs
+
+
+def post_info_for_file(folder: str, file_name: str = "", post_id: str = "") -> str:
+    """The post info file in `folder` that belongs to a file of it, or "".
+
+    The post's own one when the id is known, else 'post_info.txt', else the per-post file that
+    lists `file_name` among its attached files."""
+    if post_id:
+        own = os.path.join(folder, post_info_name(post_id))
+        if os.path.isfile(own):
+            return own
+    plain = os.path.join(folder, POST_INFO_NAME)
+    if os.path.isfile(plain):
+        return plain
+    if file_name:
+        stem, ext = os.path.splitext(file_name)
+        # numbered or disambiguated copies ("name [123].ext", "name (2).ext") list the original name
+        base = re.sub(r"(?: \[[^\]]+\])?(?: \(\d+\))?$", "", stem) + ext
+        for info in post_info_files(folder, limit=500):
+            if _lists_file(info, file_name) or (base != file_name and _lists_file(info, base)):
+                return info
+    return ""

@@ -220,10 +220,21 @@ class GalleryToolsBridge(QObject):
         # Walk up a few levels looking for post_info.txt files
         domain = service = user = title = ""
         info_post_url = ""
+        # (beside the file: its post's own info file, also the "Other" folder when grouped by type;
+        # in a folder shared by many posts, any of their info files still gives the creator)
+        from core.path_utils import POST_INFO_NAME, info_dirs_for, post_info_files, post_info_for_file
         probe = folder
-        for _ in range(4):
-            info = os.path.join(probe, "post_info.txt")
-            if os.path.isfile(info):
+        for level in range(4):
+            info = os.path.join(probe, POST_INFO_NAME)
+            if level == 0:
+                info = next((f for f in (post_info_for_file(d, name, post_id) for d in info_dirs_for(folder)) if f), "")
+                if not info:
+                    shared = post_info_files(folder, limit=1)
+                    cm = re.match(r"https?://([^/]+)/([^/]+)/user/([^/?#]+)",
+                                  _parse_post_info(shared[0]).get("creator url", "")) if shared else None
+                    if cm:
+                        domain, service, user = cm.group(1), cm.group(2), cm.group(3)
+            if info and os.path.isfile(info):
                 meta = _parse_post_info(info)
                 cu = meta.get("creator url", "")
                 cm = re.match(r"https?://([^/]+)/([^/]+)/user/([^/?#]+)", cu)

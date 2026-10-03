@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Callable, Set, Tuple
 
 from core.logger import logger
+from core.path_utils import info_dirs_for, is_post_info_name, post_info_attached_files
 
 
 # Ignored filenames and extensions
@@ -112,7 +113,7 @@ def parse_post_info_file(info_path: str) -> Dict[str, str]:
                     m = re.search(r"/(?:user|creator)/([^/?#]+)", v_clean)
                     if m:
                         meta["creator_id"] = m.group(1).strip()
-                elif k_clean == "url":
+                elif k_clean in ("url", "post url"):
                     meta["post_url"] = v_clean
                     # If post_id wasn't found yet, extract from URL /post/12345
                     if "post_id" not in meta:
@@ -230,6 +231,7 @@ class ArchiveRebuilder:
         # 1. Discover all candidate files across all roots
         file_candidates: List[str] = []
         dir_meta_cache: Dict[str, Dict[str, str]] = {}
+        file_meta_cache: Dict[Tuple[str, str], Dict[str, str]] = {}
 
         for root_dir in self.directories:
             if self._stop_event.is_set():
@@ -240,16 +242,26 @@ class ArchiveRebuilder:
                 # Filter out system/ignored subdirectories in-place
                 dirnames[:] = [d for d in dirnames if d.lower() not in IGNORED_DIRNAMES and not d.startswith(".")]
 
-                # Check for post_info.txt in this folder
-                if self.options.detect_post_info and "post_info.txt" in filenames:
-                    info_path = os.path.join(dirpath, "post_info.txt")
-                    parsed = parse_post_info_file(info_path)
-                    if parsed:
-                        dir_meta_cache[dirpath] = parsed
+                # Check for post_info.txt in this folder; posts sharing a folder each have a
+                # "post_info [<id>].txt" that lists the post's files
+                if self.options.detect_post_info:
+                    for fn in filenames:
+                        if not is_post_info_name(fn):
+                            continue
+                        info_path = os.path.join(dirpath, fn)
+                        parsed = parse_post_info_file(info_path)
+                        if not parsed:
+                            continue
+                        if fn.lower() == "post_info.txt":
+                            dir_meta_cache[dirpath] = parsed
+                        else:
+                            for att in post_info_attached_files(info_path):
+                                file_meta_cache.setdefault(
+                                    (os.path.normcase(dirpath), att.lower()), parsed)
 
                 for fn in filenames:
                     fn_lower = fn.lower()
-                    if fn_lower in IGNORED_FILENAMES or fn_lower.startswith("."):
+                    if fn_lower in IGNORED_FILENAMES or fn_lower.startswith(".") or is_post_info_name(fn):
                         continue
                     _, ext = os.path.splitext(fn_lower)
                     if self.options.exclude_temp and ext in IGNORED_EXTENSIONS:
@@ -320,7 +332,7 @@ class ArchiveRebuilder:
             _, ext = os.path.splitext(fn.lower())
 
             # DEDUCE METADATA
-            meta = self._deduce_metadata(file_path, dir_meta_cache)
+            meta = self._deduce_metadata(file_path, dir_meta_cache, file_meta_cache)
             service = meta.get("service") or "kemono"
             creator_id = meta.get("creator_id") or ""
             creator_name = meta.get("creator_name") or "Unknown Creator"
@@ -422,16 +434,27 @@ class ArchiveRebuilder:
         if self.on_finished:
             self.on_finished(self.stats.to_dict())
 
-    def _deduce_metadata(self, file_path: str, dir_meta_cache: Dict[str, Dict[str, str]]) -> Dict[str, str]:
+    def _deduce_metadata(self, file_path: str, dir_meta_cache: Dict[str, Dict[str, str]],
+                         file_meta_cache: Optional[Dict[Tuple[str, str], Dict[str, str]]] = None) -> Dict[str, str]:
         """
         Deduce post metadata using cached post_info.txt files or hierarchy analysis.
         Handles nested file-type folders (/Images, /Video, /Archive, etc.).
         """
         parent_dir = os.path.dirname(file_path)
 
-        # 1. Direct post_info in immediate folder
+        # 1. Direct post_info in immediate folder (or its "Other" twin when grouped by type)
         if parent_dir in dir_meta_cache:
             return dir_meta_cache[parent_dir].copy()
+        info_dirs = info_dirs_for(parent_dir)
+        for d in info_dirs[1:]:
+            if d in dir_meta_cache:
+                return dir_meta_cache[d].copy()
+        if file_meta_cache:
+            name = os.path.basename(file_path).lower()
+            for d in info_dirs:
+                hit = file_meta_cache.get((os.path.normcase(d), name))
+                if hit:
+                    return hit.copy()
 
         # 2. Check if immediate parent is a file-type grouping folder (/Images, /Video, etc.)
         parent_name = os.path.basename(parent_dir)

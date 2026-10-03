@@ -32,6 +32,7 @@
 * **Names with # or & download correctly**: File names containing special characters no longer break their download link.
 * **Files with the same name are all downloaded**: When an album (Bunkr, Telegram…) has different files with the same name, each one is saved, as "name (2).png" and so on. Before, only the first was kept, or the files could overwrite each other.
 * **No stray post folders with "Creator Root" grouping**: With Group by File Type set to Creator Root, each post's info file now goes into the Other folder instead of creating an extra post folder next to Images, Video and the rest.
+* **Every post's info is saved with Subfolder per post off**: Each post now gets its own info file (e.g. "post_info [12345].txt") instead of all posts sharing one file, which only ever kept the first post's info.
 
 ---
 

@@ -32,6 +32,7 @@ from core.filter_engine import FilterEngine, FilterOptions, MediaTypes, fit_path
 from core.providers import cookie_for_url, is_disabled, disabled_message, provider_for_host, KEMONO, COOMER, PAWCHIVE
 from core.atomic_io import replace_file, atomic_write_text
 from core.file_order import order_files
+from core.path_utils import post_id_tag, post_info_name
 from core.known_manager import KnownManager
 from core.session_manager import SessionManager
 from core.archive_manager import ArchiveManager
@@ -851,11 +852,17 @@ class KemonoDownloader:
                 try:
                     # Grouped by type at the creator root, the post's own folders sit inside each type
                     # folder (Images/<post>, Video/<post>…); the info file goes where a text file of the
-                    # post goes (Other/<post>) instead of a stray <post> folder at the creator root
+                    # post goes (Other/<post>) instead of a stray <post> folder at the creator root.
+                    # Without a folder per post, all posts share one folder: each gets its own
+                    # "post_info [<id>].txt" (one shared file kept only the first post's info).
                     info_dir = post_folder
-                    if getattr(options, "group_file_type", "none") == "creator" and options.subfolder_per_post and post_subfolder_name:
-                        info_dir = _get_dest_folder("post_info.txt")
-                    info_path = fit_path_for_windows(os.path.join(info_dir, "post_info.txt"))
+                    info_name = post_info_name()
+                    if not post_subfolder_name:
+                        info_dir = _get_dest_folder(info_name)
+                        info_name = post_info_name(post_id)
+                    elif getattr(options, "group_file_type", "none") == "creator":
+                        info_dir = _get_dest_folder(info_name)
+                    info_path = fit_path_for_windows(os.path.join(info_dir, info_name))
                     if not os.path.exists(info_path):
                         tags_list = FilterEngine.normalize_tags(post.get("tags"))
                         tags_str = ", ".join(tags_list)
@@ -1350,9 +1357,7 @@ class KemonoDownloader:
                         # Collision across DIFFERENT posts (e.g. subfolder_per_post is disabled).
                         # Album "posts" use the file's link as their id: a link in a file name made
                         # an invalid path, so ids that aren't short and plain become a short hash.
-                        pid_tag = str(post_id)
-                        if not re.fullmatch(r"[\w.-]{1,40}", pid_tag):
-                            pid_tag = hashlib.md5(pid_tag.encode("utf-8")).hexdigest()[:8]
+                        pid_tag = post_id_tag(post_id)
                         disambig_name = f"{stem} [{pid_tag}]{ext}"
                         target_path = fit_path_for_windows(os.path.join(target_dest_dir, disambig_name))
                         counter = 2

@@ -23,6 +23,7 @@ from typing import Dict, List, Optional, Set
 from PySide6.QtCore import QObject, Signal, Slot
 
 from core.logger import logger
+from core.path_utils import is_post_info_name, post_info_files
 
 _POST_ID_PREFIX = re.compile(r"^(\d{5,})_")
 _CREATOR_URL = re.compile(r"https?://([^/\s]+)/([^/\s]+)/user/([^/?#\s]+)")
@@ -201,12 +202,14 @@ class GalleryUpdates(QObject):
                         if info:
                             return info
 
-        # 3. post_info.txt here, above, or in the first post folders below
+        # 3. post_info.txt here, above, or in the first post folders below (posts sharing a
+        #    folder each have a "post_info [<id>].txt"; grouped by type they sit in "Other")
         probe = folder
         for _ in range(4):
-            url = _creator_url_from_info(os.path.join(probe, "post_info.txt"))
-            if url:
-                return self._from_url(url, folder, "post info")
+            for info in post_info_files(probe, limit=3):
+                url = _creator_url_from_info(info)
+                if url:
+                    return self._from_url(url, folder, "post info")
             parent = os.path.dirname(probe)
             if parent == probe:
                 break
@@ -219,9 +222,17 @@ class GalleryUpdates(QObject):
                         break
                     if entry.is_dir(follow_symlinks=False):
                         checked += 1
-                        url = _creator_url_from_info(os.path.join(entry.path, "post_info.txt"))
-                        if url:
-                            return self._from_url(url, folder, "post info")
+                        below = [entry.path]
+                        if entry.name.lower() == "other":
+                            try:
+                                below += sorted(e.path for e in os.scandir(entry.path) if e.is_dir(follow_symlinks=False))[:20]
+                            except OSError:
+                                pass
+                        for d in below:
+                            for info in post_info_files(d, limit=3):
+                                url = _creator_url_from_info(info)
+                                if url:
+                                    return self._from_url(url, folder, "post info")
         except OSError:
             pass
 
@@ -300,7 +311,7 @@ class GalleryUpdates(QObject):
                 m = _POST_ID_PREFIX.match(f)
                 if m:
                     known.add(m.group(1))
-                elif f == "post_info.txt":
+                elif is_post_info_name(f):
                     pid = _post_id_from_info(os.path.join(root, f))
                     if pid:
                         known.add(pid)

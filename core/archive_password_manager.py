@@ -290,24 +290,31 @@ class ArchivePasswordManager:
             logger.warning(f"Failed to sync passwords from Link Vault: {e}", category="decompressor")
             return 0
 
-    def parse_folder_info_passwords(self, folder_path: str) -> List[str]:
+    def parse_folder_info_passwords(self, folder_path: str, file_name: str = "") -> List[str]:
         """
         Inspects directory for info.txt, post_info.txt, or *.txt and extracts any
         passwords listed under '--- Detected Password(s) ---' or via smart extraction.
+        Posts sharing a folder each have a "post_info [<id>].txt": only the one that lists
+        `file_name` (the archive) is read, not the other posts'.
         """
         found_passwords: List[str] = []
         if not folder_path or not os.path.exists(folder_path):
             return found_passwords
 
+        from core.path_utils import is_post_info_name, post_info_for_file
         candidate_files = ["info.txt", "post_info.txt"]
         try:
-            all_txt = [f for f in os.listdir(folder_path) if f.lower().endswith(".txt")]
+            all_txt = [f for f in os.listdir(folder_path)
+                       if f.lower().endswith(".txt") and (f.lower() == "post_info.txt" or not is_post_info_name(f))]
             for cf in candidate_files:
                 if cf in all_txt:
                     all_txt.remove(cf)
                     all_txt.insert(0, cf)
         except OSError:
-            all_txt = candidate_files
+            all_txt = list(candidate_files)
+        own = post_info_for_file(folder_path, file_name) if file_name else ""
+        if own and os.path.basename(own) not in all_txt:
+            all_txt.insert(0, os.path.basename(own))
 
         for txt_name in all_txt[:3]:
             txt_path = os.path.join(folder_path, txt_name)
@@ -360,14 +367,18 @@ class ArchivePasswordManager:
         if direct_pw:
             _add(direct_pw)
 
-        # 2. Local folder info.txt / post_info.txt
+        # 2. Local folder info.txt / post_info.txt (grouped by file type, the post's text sits
+        #    in the "Other" folder beside "Archive")
         if archive_path:
+            from core.path_utils import info_dirs_for
             archive_dir = os.path.dirname(os.path.abspath(archive_path))
-            for p in self.parse_folder_info_passwords(archive_dir):
-                _add(p)
+            archive_name = os.path.basename(archive_path)
+            info_dirs = info_dirs_for(archive_dir)
             parent_dir = os.path.dirname(archive_dir)
             if parent_dir and parent_dir != archive_dir:
-                for p in self.parse_folder_info_passwords(parent_dir):
+                info_dirs.append(parent_dir)
+            for d in info_dirs:
+                for p in self.parse_folder_info_passwords(d, archive_name):
                     _add(p)
 
         # 3. Creator-specific passwords from Link Vault
