@@ -125,10 +125,33 @@ def _remove_quietly(path: str) -> None:
         pass
 
 
-def _write_post_info(path: str, content: str) -> None:
+_post_info_lock = threading.Lock()
+
+
+def _write_post_info(path: str, content: str, post_id: str = "") -> None:
     try:
-        if not os.path.exists(path):
-            atomic_write_text(path, content)
+        with _post_info_lock:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            if not os.path.exists(path):
+                atomic_write_text(path, content)
+            else:
+                try:
+                    with open(path, "r", encoding="utf-8", errors="replace") as f:
+                        existing = f.read()
+                except OSError:
+                    existing = ""
+
+                # Avoid duplicate entry if this post was already recorded
+                if post_id and f"Post ID: {post_id}" in existing:
+                    return
+
+                separator = "\n" + "=" * 80 + "\n\n"
+                with open(path, "a", encoding="utf-8", errors="replace") as f:
+                    if existing and not existing.endswith("\n\n"):
+                        if not existing.endswith("\n"):
+                            f.write("\n")
+                        f.write(separator)
+                    f.write(content)
     except Exception as ex:
         logger.debug(f"Could not save {path}: {ex}", category="file")
 
@@ -655,8 +678,8 @@ class KemonoDownloader:
         _batch_paths: Dict[str, Dict[str, Any]] = {}
         _batch_rel_paths: Dict[str, Set[str]] = defaultdict(set)
         _post_dup_counts: Dict[Tuple[str, str], int] = defaultdict(int)
-        build_post_infos: Dict[str, str] = {}
-        build_text_posts: Dict[str, str] = {}
+        build_post_infos: Dict[Tuple[str, str], str] = {}
+        build_text_posts: List[Tuple[str, str, str]] = []
 
         for post_idx, post in enumerate(posts_to_process, 1):
             if _build_cancelled():
@@ -853,17 +876,28 @@ class KemonoDownloader:
                     # Grouped by type at the creator root, the post's own folders sit inside each type
                     # folder (Images/<post>, Video/<post>…); the info file goes where a text file of the
                     # post goes (Other/<post>) instead of a stray <post> folder at the creator root.
-                    # Without a folder per post, all posts share one folder: each gets its own
-                    # "post_info [<id>].txt" (one shared file kept only the first post's info).
+                    # Without a folder per post, all posts share the creator root folder into a single
+                    # "post_info.txt" so the folder isn't cluttered with hundreds of text files.
                     info_dir = post_folder
                     info_name = post_info_name()
                     if not post_subfolder_name:
                         info_dir = _get_dest_folder(info_name)
-                        info_name = post_info_name(post_id)
+                        info_name = post_info_name()
                     elif getattr(options, "group_file_type", "none") == "creator":
                         info_dir = _get_dest_folder(info_name)
                     info_path = fit_path_for_windows(os.path.join(info_dir, info_name))
-                    if not os.path.exists(info_path):
+
+                    should_prepare_info = True
+                    if post_subfolder_name:
+                        should_prepare_info = not os.path.exists(info_path)
+                    elif os.path.exists(info_path):
+                        try:
+                            with open(info_path, "r", encoding="utf-8", errors="replace") as _chk_f:
+                                should_prepare_info = f"Post ID: {post_id}" not in _chk_f.read()
+                        except OSError:
+                            should_prepare_info = True
+
+                    if should_prepare_info:
                         tags_list = FilterEngine.normalize_tags(post.get("tags"))
                         tags_str = ", ".join(tags_list)
 
@@ -1533,19 +1567,20 @@ class KemonoDownloader:
                 except Exception as _pwe:
                     logger.debug(f"Could not save the passwords of post {post_id}: {_pwe}", category="downloader")
             if post_info_path:
+                info_key = (post_info_path, post_id)
                 if post_tasks:
-                    build_post_infos[post_info_path] = post_info_content
+                    build_post_infos[info_key] = post_info_content
                     for _t in post_tasks:
                         _t.post_info_path = post_info_path
                 elif not files_to_process:
-                    build_text_posts[post_info_path] = post_info_content   # a text-only post
+                    build_text_posts.append((post_info_path, post_info_content, post_id))
                 elif os.path.isdir(os.path.dirname(post_info_path)):
-                    _write_post_info(post_info_path, post_info_content)   # its files are already saved
+                    _write_post_info(post_info_path, post_info_content, post_id)
 
         # Post texts: text-only posts are saved now; the others once their first file is downloaded
         self._post_info_pending.update(build_post_infos)
-        for _path, _content in build_text_posts.items():
-            _write_post_info(_path, _content)
+        for _path, _content, _pid in build_text_posts:
+            _write_post_info(_path, _content, _pid)
 
         # In links-only mode, store the harvested links and report summary
         if options.file_type == MediaTypes.LINKS:
@@ -1729,8 +1764,14 @@ class KemonoDownloader:
         return cancelled
 
     def retry_batch_failed(self, batch_id: str, options: Optional[FilterOptions] = None, cookie_str: str = "") -> int:
-        """Resets failed/cancelled tasks in a specific batch to pending."""
-        failed = [t for t in self.tasks if getattr(t, "batch_id", "") == batch_id and t.status in ("failed", "cancelled")]
+        """Resets failed/cancelled tasks in a specific batch to pending and resumes download."""
+        failed = []
+        for t in self.tasks:
+            t_bid = getattr(t, "batch_id", "") or f"{t.service}_{t.creator_name}_{t.post_id}".strip("_")
+            if t_bid == batch_id:
+                if t.status in ("failed", "cancelled") or (not self._is_running and t.status == "pending"):
+                    failed.append(t)
+
         for t in failed:
             t.status = "pending"
             t.error_msg = ""
@@ -1746,7 +1787,7 @@ class KemonoDownloader:
     def remove_batch(self, batch_id: str) -> int:
         """Removes non-active tasks belonging to a batch from the queue."""
         initial_count = len(self.tasks)
-        self.tasks = [t for t in self.tasks if getattr(t, "batch_id", "") != batch_id or t.status == "downloading"]
+        self.tasks = [t for t in self.tasks if (getattr(t, "batch_id", "") or f"{t.service}_{t.creator_name}_{t.post_id}".strip("_")) != batch_id or t.status == "downloading"]
         return initial_count - len(self.tasks)
 
     def _trigger_rate_limit_backoff(self, threads_locked: bool = False):
@@ -1794,7 +1835,11 @@ class KemonoDownloader:
             else getattr(options, "skip_retry_404", False)
         )
         retry_statuses = ("failed", "cancelled") if include_cancelled else ("failed",)
-        all_failed = [t for t in self.tasks if t.status in retry_statuses]
+        all_failed = [
+            t for t in self.tasks
+            if t.status in retry_statuses
+            or (not self._is_running and t.status == "pending" and (getattr(t, "error_msg", "") or getattr(t, "retry_count", 0) > 0))
+        ]
         if not all_failed:
             logger.info("No failed tasks to retry.", category="downloader")
             return 0
@@ -1864,12 +1909,21 @@ class KemonoDownloader:
             if self.current_options
             else getattr(options, "skip_retry_404", False)
         )
+        selected_set = set(selected_ids)
         target_tasks = []
         for t in self.tasks:
-            if t.status in ("failed", "cancelled") and (t.file_id in selected_ids or t.url in selected_ids or t.filename in selected_ids):
-                if skip_404 and ("404" in str(getattr(t, "error_msg", "")).lower() or getattr(t, "http_status", 0) == 404):
-                    continue
-                target_tasks.append(t)
+            is_match = (t.file_id in selected_set or t.url in selected_set or t.filename in selected_set)
+            if not is_match:
+                continue
+            is_eligible = (
+                t.status in ("failed", "cancelled")
+                or (not self._is_running and t.status == "pending")
+            )
+            if not is_eligible:
+                continue
+            if skip_404 and ("404" in str(getattr(t, "error_msg", "")).lower() or getattr(t, "http_status", 0) == 404):
+                continue
+            target_tasks.append(t)
 
         if not target_tasks:
             logger.info("No matching failed tasks found to retry.", category="downloader")
@@ -2060,6 +2114,7 @@ class KemonoDownloader:
                                     task.error_msg = msg[len("Skipped:"):].strip()
                                 task.progress_pct = 100
                                 task.eta_str = "Skipped"
+                                self._write_pending_post_info(task)
                                 if self.on_task_status_changed:
                                     self.on_task_status_changed(task)
                             else:
@@ -2323,11 +2378,15 @@ class KemonoDownloader:
         failed_count = sum(1 for t in self.tasks if t.status == "failed")
         skipped_count = sum(1 for t in self.tasks if t.status == "skipped")
         self._emit_progress(completed_count + skipped_count, failed_count, len(self.tasks), force=True)
-        live_infos = {t.post_info_path for t in self.tasks
+        live_infos = {(t.post_info_path, getattr(t, "post_id", "")) for t in self.tasks
                       if getattr(t, "post_info_path", "") and t.status not in ("completed", "skipped")}
-        for _path in list(self._post_info_pending):
-            if _path not in live_infos:
-                self._post_info_pending.pop(_path, None)
+        live_paths = {p for p, _ in live_infos}
+        for _key in list(self._post_info_pending):
+            if isinstance(_key, tuple):
+                if _key not in live_infos:
+                    self._post_info_pending.pop(_key, None)
+            elif _key not in live_paths:
+                self._post_info_pending.pop(_key, None)
 
         if self._cancel_event.is_set():
             rec = getattr(self.session_manager, "recovery_manager", None)
@@ -2381,10 +2440,13 @@ class KemonoDownloader:
 
     def _write_pending_post_info(self, task: DownloadTask) -> None:
         path = getattr(task, "post_info_path", "")
+        post_id = getattr(task, "post_id", "")
         if path:
-            content = self._post_info_pending.pop(path, None)
+            content = self._post_info_pending.pop((path, post_id), None)
+            if content is None:
+                content = self._post_info_pending.pop(path, None)
             if content is not None:
-                _write_post_info(path, content)
+                _write_post_info(path, content, post_id)
 
     def _collect_pending(self, limit: int, now: float, full: bool = False) -> List[DownloadTask]:
         """Up to `limit` pending files, without walking the whole queue 20 times a second: finished
@@ -3042,95 +3104,62 @@ class KemonoDownloader:
                 resp = None
                 logger.info(f"  ⚡ Activating 4-part parallel chunked download for {task.filename} ({size_str})", category="file")
 
-                # ── Disk-polling progress thread ──────────────────────────────
-                # Instead of relying on in-memory chunk callbacks (which can be
-                # unreliable through the multipart layer), we poll the actual
-                # .partN temp files on disk every 0.5 s and update progress.
-                _poll_stop = threading.Event()
-                _part_paths = [f"{task.target_path}.part{i}" for i in range(4)]
-                _prev_disk_bytes = [0]
-                _last_poll_emit = [time.time()]
-                _last_speed_disk_bytes = [0]
+                _prev_mp_bytes = [0]
+                _last_mp_emit = [time.time()]
+                _last_mp_speed_bytes = [0]
 
-                def _disk_poll():
-                    while not _poll_stop.is_set():
-                        try:
-                            # Sum .partN files (multipart) + .tmp file (fallback single-stream)
-                            _tmp_path = f"{task.target_path}.tmp"
-                            _paths_to_poll = _part_paths + ([_tmp_path] if os.path.exists(_tmp_path) else [])
-                            disk_bytes = sum(
-                                os.path.getsize(p) for p in _paths_to_poll if os.path.exists(p)
-                            )
-                            # NOTE: We deliberately do NOT include task.target_path here.
-                            # After stitching, part/tmp files vanish and the final assembled file
-                            # appears. Counting target_path would double-count those bytes.
+                def _on_mp_progress(curr_bytes: int, total_b: int):
+                    if curr_bytes < _prev_mp_bytes[0]:
+                        _prev_mp_bytes[0] = curr_bytes
+                    else:
+                        delta = curr_bytes - _prev_mp_bytes[0]
+                        if delta > 0:
+                            with self._lock:
+                                self.downloaded_bytes += delta
+                            _prev_mp_bytes[0] = curr_bytes
 
-                            if disk_bytes < _prev_disk_bytes[0]:
-                                # Files on disk dropped (cleanup or error) — reset baseline
-                                _prev_disk_bytes[0] = disk_bytes
-                                delta = 0
+                    task.downloaded_bytes = curr_bytes
+                    if total_b > 0:
+                        task.file_size = total_b
+                        task.progress_pct = min(99, int(curr_bytes / total_b * 100))
+
+                    now_poll = time.time()
+                    dt_poll = now_poll - _last_mp_emit[0]
+                    if dt_poll >= 1.0:
+                        bytes_diff = max(0, curr_bytes - _last_mp_speed_bytes[0])
+                        _last_mp_speed_bytes[0] = curr_bytes
+                        _last_mp_emit[0] = now_poll
+
+                        if task.file_size > 0:
+                            spd_bps = max(0.0, bytes_diff / max(0.1, dt_poll))
+                            task.speed_bps = int(spd_bps)
+                            task.speed_str = KemonoDownloader.format_speed(task.speed_bps)
+                            if task.speed_bps > 0:
+                                rem = max(0, task.file_size - curr_bytes)
+                                s = int(rem / task.speed_bps)
+                                task.eta_str = f"{s//60}m {s%60}s" if s > 60 else f"{s}s"
                             else:
-                                delta = disk_bytes - _prev_disk_bytes[0]
-                                if delta > 0:
-                                    with self._lock:
-                                        self.downloaded_bytes += delta
-                                    _prev_disk_bytes[0] = disk_bytes
+                                task.eta_str = "--"
 
-                            task.downloaded_bytes = disk_bytes
-                            if task.file_size > 0:
-                                task.progress_pct = min(99, int(disk_bytes / task.file_size * 100))
+                        stats = self._queue_stats(now_poll)
+                        completed_c = int(stats.get("done_n", 0))
+                        failed_c = sum(1 for t in self.tasks if t.status == "failed")
+                        self._emit_progress(completed_c, failed_c, len(self.tasks))
 
-                            # Push live speed + overall progress to the global bar once per second
-                            now_poll = time.time()
-                            dt_poll = now_poll - _last_poll_emit[0]
-                            if dt_poll >= 1.0:
-                                bytes_diff = max(0, disk_bytes - _last_speed_disk_bytes[0])
-                                _last_speed_disk_bytes[0] = disk_bytes
-                                _last_poll_emit[0] = now_poll
-                                completed_c = sum(1 for t in self.tasks if t.status == "completed")
-                                failed_c = sum(1 for t in self.tasks if t.status == "failed")
-                                self._emit_progress(completed_c, failed_c, len(self.tasks), force=True)
+                        if self.on_task_status_changed:
+                            self.on_task_status_changed(task)
 
-                                # Compute live speed + ETA for task progress tracking
-                                if task.file_size > 0:
-                                    spd_bps = max(0.0, bytes_diff / max(0.1, dt_poll))
-                                    task.speed_bps = int(spd_bps)
-                                    task.speed_str = KemonoDownloader.format_speed(task.speed_bps)
-                                    if task.speed_bps > 0:
-                                        rem = max(0, task.file_size - disk_bytes)
-                                        s = int(rem / task.speed_bps)
-                                        task.eta_str = f"{s//60}m {s%60}s" if s > 60 else f"{s}s"
-                                    else:
-                                        task.eta_str = "--"
-
-                            if self.on_task_status_changed:
-                                self.on_task_status_changed(task)
-                        except Exception:
-                            pass
-                        _poll_stop.wait(0.5)
-
-
-                _poll_thread = threading.Thread(target=_disk_poll, daemon=True)
-                _poll_thread.start()
-
-                try:
-                    mp_ok, mp_err = download_multipart_file(
-                        url=task.url,
-                        target_path=task.target_path,
-                        headers=req_headers,
-                        num_chunks=4,
-                        progress_callback=None,  # disk poller handles progress
-                        cancel_event=self._cancel_event,
-                        pause_event=self._pause_event,
-                        timeout=30,
-                        session=session
-                    )
-                finally:
-                    _poll_stop.set()
-                    try:
-                        _poll_thread.join(timeout=1.0)
-                    except Exception:
-                        pass
+                mp_ok, mp_err = download_multipart_file(
+                    url=task.url,
+                    target_path=task.target_path,
+                    headers=req_headers,
+                    num_chunks=4,
+                    progress_callback=_on_mp_progress,
+                    cancel_event=self._cancel_event,
+                    pause_event=self._pause_event,
+                    timeout=30,
+                    session=session
+                )
 
                 if mp_ok:
                     final_mp_size = os.path.getsize(task.target_path) if os.path.exists(task.target_path) else 0

@@ -75,18 +75,47 @@ def name_matches(name: str, is_dir: bool, words: List[str], exts: List[str]) -> 
     return all(w in lower for w in words)
 
 
-def _parse_post_info(path: str) -> Dict[str, str]:
-    """Read the header lines the downloader writes into post_info.txt."""
+def _parse_post_info(path: str, target_post_id: str = "", target_file_name: str = "") -> Dict[str, str]:
+    """Read the header lines the downloader writes into post_info.txt.
+    Supports both single-post files and combined multi-post files."""
     meta: Dict[str, str] = {}
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
-            for i, line in enumerate(f):
-                if i > 40 or line.startswith("---"):
+            content = f.read()
+
+        blocks = re.split(r"(?:\r?\n)?={40,}(?:\r?\n)?", content)
+        target_block = ""
+        if target_post_id:
+            for b in blocks:
+                if f"post id: {target_post_id.lower()}" in b.lower():
+                    target_block = b
                     break
-                if ":" not in line:
-                    continue
-                k, v = line.split(":", 1)
-                meta[k.strip().lower()] = v.strip()
+        if not target_block and target_file_name:
+            t_name = target_file_name.lower()
+            for b in blocks:
+                if t_name in b.lower():
+                    in_att = False
+                    for l in b.splitlines():
+                        if l.strip() == "--- Attached Files ---":
+                            in_att = True
+                            continue
+                        elif l.startswith("--- "):
+                            in_att = False
+                        if in_att and l.strip().lower() == t_name:
+                            target_block = b
+                            break
+                    if target_block:
+                        break
+        if not target_block and blocks:
+            target_block = blocks[0]
+
+        for line in target_block.splitlines()[:40]:
+            if line.startswith("---"):
+                break
+            if ":" not in line:
+                continue
+            k, v = line.split(":", 1)
+            meta[k.strip().lower()] = v.strip()
     except OSError:
         pass
     return meta
@@ -235,7 +264,7 @@ class GalleryToolsBridge(QObject):
                     if cm:
                         domain, service, user = cm.group(1), cm.group(2), cm.group(3)
             if info and os.path.isfile(info):
-                meta = _parse_post_info(info)
+                meta = _parse_post_info(info, target_post_id=post_id, target_file_name=name)
                 cu = meta.get("creator url", "")
                 cm = re.match(r"https?://([^/]+)/([^/]+)/user/([^/?#]+)", cu)
                 if cm and not domain:

@@ -3786,7 +3786,7 @@ class AppBridge(QObject):
         self._is_downloading = True
         self.isDownloadingChanged.emit()
 
-        if not self.downloader.tasks and self._queue_model.tasks:
+        if (not self.downloader.tasks or len(self.downloader.tasks) < len(self._queue_model.tasks)) and self._queue_model.tasks:
             self.downloader.tasks = self._queue_model.getTasks()
 
         # If no failed tasks are in memory, check if they were spilled to disk
@@ -3815,7 +3815,7 @@ class AppBridge(QObject):
         self._is_downloading = True
         self.isDownloadingChanged.emit()
 
-        if not self.downloader.tasks and self._queue_model.tasks:
+        if (not self.downloader.tasks or len(self.downloader.tasks) < len(self._queue_model.tasks)) and self._queue_model.tasks:
             self.downloader.tasks = self._queue_model.getTasks()
 
         existing_ids = {t.file_id for t in self.downloader.tasks} | {t.url for t in self.downloader.tasks} | {t.filename for t in self.downloader.tasks}
@@ -3848,7 +3848,7 @@ class AppBridge(QObject):
         self._is_downloading = True
         self.isDownloadingChanged.emit()
 
-        if not self.downloader.tasks and self._queue_model.tasks:
+        if (not self.downloader.tasks or len(self.downloader.tasks) < len(self._queue_model.tasks)) and self._queue_model.tasks:
             self.downloader.tasks = self._queue_model.getTasks()
 
         existing_ids = {t.file_id for t in self.downloader.tasks} | {t.url for t in self.downloader.tasks} | {t.filename for t in self.downloader.tasks}
@@ -4759,10 +4759,9 @@ class AppBridge(QObject):
             self._invalidate_folder_stats(getattr(task, "target_path", ""))
         if task.status == "completed" and self._enable_download_archive:
             now = time.time()
-            if now - self._last_archive_emit_time >= 1.5:
+            if now - self._last_archive_emit_time >= 2.0:
                 self._last_archive_emit_time = now
                 self.archiveRecordCountChanged.emit()
-                self.archiveUpdated.emit()
 
     def _invalidate_folder_stats(self, file_path: str):
         """Forget the Gallery's cached totals for every folder above a new file. They are checked
@@ -4822,8 +4821,19 @@ class AppBridge(QObject):
 
     @Slot(str)
     def _handle_batch_retry(self, batch_id: str):
+        if not self.downloader.tasks and self._queue_model.tasks:
+            self.downloader.tasks = self._queue_model.getTasks()
         options = self._get_filter_options()
-        self.downloader.retry_batch_failed(batch_id, options=options, cookie_str=self._cookie_string)
+        self._is_downloading = True
+        self.isDownloadingChanged.emit()
+        count = self.downloader.retry_batch_failed(batch_id, options=options, cookie_str=self._cookie_string)
+        if count == 0 and not self.downloader.is_running:
+            self._is_downloading = False
+            self.isDownloadingChanged.emit()
+            self._status_text = "Progress: Idle"
+            self.statusTextChanged.emit()
+        elif count > 0:
+            logger.info(f"Retrying {count} tasks for batch '{batch_id}'...", category="downloader")
 
     @Slot(str)
     def _handle_batch_remove(self, batch_id: str):

@@ -81,19 +81,37 @@ class ArchiveRebuildStats:
         }
 
 
-def parse_post_info_file(info_path: str) -> Dict[str, str]:
-    """Parse key metadata out of a post_info.txt or info.txt file."""
-    meta = {}
+def parse_multi_post_info_file(info_path: str) -> List[Tuple[Dict[str, str], List[str]]]:
+    """Parse all posts out of a single or multi-post post_info.txt file.
+    Returns a list of (metadata_dict, attached_files_list) for each post block."""
+    results: List[Tuple[Dict[str, str], List[str]]] = []
     if not os.path.isfile(info_path):
-        return meta
+        return results
 
     try:
         with open(info_path, "r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = line.strip()
-                if not line or ":" not in line:
+            content = f.read()
+
+        blocks = re.split(r"(?:\r?\n)?={40,}(?:\r?\n)?", content)
+        for block in blocks:
+            if not block.strip():
+                continue
+            meta = {}
+            att_files = []
+            in_att = False
+            for line in block.splitlines():
+                line_str = line.strip()
+                if line_str.startswith("--- "):
+                    in_att = (line_str == "--- Attached Files ---")
                     continue
-                k, v = line.split(":", 1)
+                if in_att:
+                    if line_str:
+                        att_files.append(line_str)
+                    continue
+
+                if ":" not in line_str:
+                    continue
+                k, v = line_str.split(":", 1)
                 k_clean = k.strip().lower()
                 v_clean = v.strip()
 
@@ -102,28 +120,33 @@ def parse_post_info_file(info_path: str) -> Dict[str, str]:
                 elif k_clean == "post id":
                     meta["post_id"] = v_clean
                 elif k_clean == "creator":
-                    # Format: CreatorName [service]
                     m = re.match(r"^(.*?)(?:\s*\[(.*?)\])?$", v_clean)
                     if m:
                         meta["creator_name"] = m.group(1).strip()
                         if m.group(2):
                             meta["service"] = m.group(2).strip().lower()
                 elif k_clean == "creator url":
-                    # Extract creator_id from URL like /user/12345 or /creator/12345
                     m = re.search(r"/(?:user|creator)/([^/?#]+)", v_clean)
                     if m:
                         meta["creator_id"] = m.group(1).strip()
                 elif k_clean in ("url", "post url"):
                     meta["post_url"] = v_clean
-                    # If post_id wasn't found yet, extract from URL /post/12345
                     if "post_id" not in meta:
                         m_pid = re.search(r"/post/([^/?#]+)", v_clean)
                         if m_pid:
                             meta["post_id"] = m_pid.group(1).strip()
+            if meta:
+                results.append((meta, att_files))
     except Exception as e:
         logger.debug(f"Error parsing post_info at {info_path}: {e}", category="archive")
 
-    return meta
+    return results
+
+
+def parse_post_info_file(info_path: str) -> Dict[str, str]:
+    """Parse key metadata out of a post_info.txt or info.txt file."""
+    posts = parse_multi_post_info_file(info_path)
+    return posts[0][0] if posts else {}
 
 
 def compute_file_sha256(filepath: str, cancel_flag: Callable[[], bool], chunk_size: int = 65536) -> Tuple[str, int]:
@@ -242,22 +265,22 @@ class ArchiveRebuilder:
                 # Filter out system/ignored subdirectories in-place
                 dirnames[:] = [d for d in dirnames if d.lower() not in IGNORED_DIRNAMES and not d.startswith(".")]
 
-                # Check for post_info.txt in this folder; posts sharing a folder each have a
-                # "post_info [<id>].txt" that lists the post's files
+                # Check for post_info.txt in this folder; posts sharing a folder can have
+                # a combined "post_info.txt" or legacy per-post "post_info [<id>].txt"
                 if self.options.detect_post_info:
                     for fn in filenames:
                         if not is_post_info_name(fn):
                             continue
                         info_path = os.path.join(dirpath, fn)
-                        parsed = parse_post_info_file(info_path)
-                        if not parsed:
+                        posts_data = parse_multi_post_info_file(info_path)
+                        if not posts_data:
                             continue
-                        if fn.lower() == "post_info.txt":
-                            dir_meta_cache[dirpath] = parsed
-                        else:
-                            for att in post_info_attached_files(info_path):
+                        if len(posts_data) == 1 and fn.lower() == "post_info.txt":
+                            dir_meta_cache[dirpath] = posts_data[0][0]
+                        for post_meta, att_list in posts_data:
+                            for att in att_list:
                                 file_meta_cache.setdefault(
-                                    (os.path.normcase(dirpath), att.lower()), parsed)
+                                    (os.path.normcase(dirpath), att.lower()), post_meta)
 
                 for fn in filenames:
                     fn_lower = fn.lower()

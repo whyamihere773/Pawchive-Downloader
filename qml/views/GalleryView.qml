@@ -3892,6 +3892,7 @@ Item {
                                         videoOutput: previewOutput
                                         loops: MediaPlayer.Infinite
                                         Component.onCompleted: play()
+                                        Component.onDestruction: stop()
                                     }
                                     VideoOutput {
                                         id: previewOutput

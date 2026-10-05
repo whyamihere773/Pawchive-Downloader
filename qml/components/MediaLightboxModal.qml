@@ -416,7 +416,9 @@ Item {
         var url = toUrl(itemPath)
         poke()
         if (isVideo || isAudio) {
-            mediaPlayer.source = url
+            if (mediaPlayer.source != url) {
+                mediaPlayer.source = url
+            }
             mediaPlayer.play()
         } else {
             releaseMedia()

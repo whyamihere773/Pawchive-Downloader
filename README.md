@@ -7,7 +7,7 @@
 <p align="center">
   <strong>A modern, high-speed desktop media archiver and downloader for Pawchive, Kemono, Coomer, Telegram, and external cloud hosts.</strong><br>
   Built with Python, PySide6, and modern reactive QML.<br>
-  <em>Engineered for maximum automation: hands-off scheduled syncing, permanent link vaulting, multi-drive overflow, self-healing session recovery, and Telegram channel archiving.</em>
+  <em>Engineered for maximum automation: hands-off scheduled syncing, integrated media gallery, permanent link vaulting, multi-drive overflow, self-healing session recovery, and Telegram channel archiving.</em>
 </p>
 
 <p align="center">
@@ -63,6 +63,7 @@
 > 💡 **Philosophy: Maximum Automation, Minimum Friction**  
 > Pawchive Downloader is designed to take the heavy lifting off your hands. You point it at what you want — and it handles the rest: automated schedules, background link harvesting, multi-drive overflow, self-healing recovery, and intelligent file organisation. You stay in control; the app does the work.
 
+- 🖼️ **Built-in Media Gallery & File Explorer:** Dedicated local media manager and lightbox viewer built right into the app. Seamlessly browse downloaded collections, stream full-resolution video with responsive timeline scrub, play audio, and inspect animated GIFs/WebPs without opening external software. Includes instantaneous recursive subfolder search with syntax filters (`ext:png`, character tags), persistent star ratings and favorites tracked across folder moves, up to 25-step undo history for file operations, live folder monitoring, storage usage breakdowns, and a 1-click **Check for Updates** button to grab new creator posts right from the gallery.
 - ✈️ **Telegram Channel Downloader & Media Browser:** Download photos, videos, and files directly from public channels, private links, and individual posts (`t.me/...`). Features an interactive visual thumbnail post selector with checkboxes, one-click criteria filtering (dates, media types), effortless QR code / phone login, client-side encrypted session storage, and automated anti-ban safeguards (locked 2-thread concurrency & FloodWait cooldowns).
 - 🧹 **Automatic Memory Cleanup Daemon *(WIP)*:** Periodic memory management daemon that continuously monitors process memory, sweeping cyclic objects and reclaiming unused RAM during massive download sessions to keep long-running tasks light and stable.
 - 🛑 **Sub-Second Multi-Service Cancellation:** Universal instant abort across multi-part files, child `yt-dlp` video processes, cloud mirrors (Mega, Dropbox, GoFile), and Telegram downloads in less than a second.
@@ -96,6 +97,14 @@
 - 🔢 **Sequential File Indexing:** Files are numbered (`001_`, `002_`, ...) to preserve chronological viewing order without relying on filesystem time sorting.
 - 🎯 **Advanced Smart Filtering:** Filter by character names, series, keywords, file categories (images, videos, audio, archives), or minimum file size thresholds.
 - 📖 **Manga & Comic Order:** Chronologically sequences files and folders (`001 - Title`) so chapters stay in proper sequential order in image viewers.
+
+### 🎨 Local Media Gallery & File Management
+- 🖼️ **Integrated Media Player & Lightbox:** Fluid video, audio, and image viewer with timeline scrub, animation decoding, and zoom controls.
+- ⭐ **Persistent Favorites & Star Ratings:** Rate files and organize favorites with metadata tracked across disk moves and renames.
+- 🔍 **Live Recursive Search & File-Type Filters:** Search deeply nested download directories in real time with batch streaming and syntax filters (`ext:png`, character tags).
+- ↩️ **Safety Undo Stack:** Up to 25 steps of instantaneous undo for accidental moves, renames, or copies.
+- 🔄 **In-Gallery Creator Sync:** Detects which creator owns the viewed folder and lets you check for and queue new posts in a single click without leaving the gallery.
+- 📊 **Per-Folder Storage Analytics:** Live disk breakdown showing file counts, folder hierarchy, and consumed disk space.
 
 ### 📊 Auditing, Recovery & Settings
 - 📊 **Desktop Completion Reports:** Generates rich visual HTML summaries and plaintext audit reports directly to your Desktop upon download completion (opt-in).
@@ -138,7 +147,7 @@
 ### Option A: Pre-compiled Windows Binary (Recommended for most users)
 
 1. Head over to the **[Latest Release](https://github.com/whyamihere773/Pawchive-Downloader/releases/latest)** page.
-2. Download `Pawchive-Downloader-v1.2.3-Windows.zip`.
+2. Download `Pawchive-Downloader-v1.2.4-Windows.zip`.
 3. Extract the ZIP archive anywhere on your computer.
 4. Run `Pawchive Downloader.exe` — that's it!
 
@@ -249,7 +258,7 @@ Feedback, bug reports, and pull requests are warmly welcome!
 - **Telegram:** `telegram-downloader`, `telegram downloader`, `telegram channel downloader`, `telegram media downloader`, `telegram media archiver`, `telegram scraper`, `t.me downloader`
 - **Cloud & Hosts:** `mega-downloader`, `megadownloader`, `mega downloader`, `mega folder downloader`, `mega decryptor`, `mega decrypter`, `google drive downloader`, `gdrive downloader`, `dropbox downloader`, `gofile downloader`, `bunkr downloader`, `pixeldrain downloader`, `catbox downloader`
 - **Patreon & Creator Sites:** `patreon-downloader`, `patreondownloader`, `patreon downloader`, `patreon scraper`, `patreon ripper`, `patreon archiver`, `fanbox-downloader`, `fanboxdownloader`, `fanbox downloader`, `fantia-downloader`, `fantiadownloader`, `fantia downloader`, `subscribestar-downloader`, `subscribestar downloader`, `boosty downloader`, `gumroad downloader`
-- **Archiving & Utilities:** `media-downloader`, `mediadownloader`, `media downloader`, `media grabber`, `media archiver`, `data-hoarder`, `datahoarder`, `data hoarder`, `data-hoarding`, `datahoarding`, `data hoarding`, `batch downloader`, `bulk downloader`, `pyside6`, `qml`, `yt-dlp`
+- **Archiving & Utilities:** `media-downloader`, `mediadownloader`, `media downloader`, `media grabber`, `media archiver`, `data-hoarder`, `datahoarder`, `data hoarder`, `data-hoarding`, `datahoarding`, `data hoarding`, `batch downloader`, `bulk downloader`, `pyside6`, `qml`, `yt-dlp`, `media-gallery`, `gallery`, `image-viewer`
 
 </details>
 

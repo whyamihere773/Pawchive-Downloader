@@ -1,7 +1,3 @@
-# Pawchive Downloader: files the app, Python and the build tools create while you use them.
-# Nothing here is part of the source code.
-
-# ── Python ────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
@@ -15,13 +11,9 @@ env/
 ENV/
 .env
 *.env
-
-# ── Build output (build.py / PyInstaller) ─────────────────────────────────
 build/
 dist/
 *.spec.bak
-
-# ── Test and lint caches ──────────────────────────────────────────────────
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
@@ -29,22 +21,15 @@ dist/
 htmlcov/
 .tox/
 .hypothesis/
-
-# ── Your data: settings, logins, history, Watchlist, archive ──────────────
-# The app keeps these next to the source when run from a checkout.
 config/*
 !config/settings.example.json
 !config/archive.db
 data/
 logs/
 *.log
-
-# ── Downloads in progress and temporary files ─────────────────────────────
 *.part
 *.tmp
 *.crdownload
-
-# ── Tools and models the app downloads for you ────────────────────────────
 dependencies/*.exe
 dependencies/yt-dlp*
 dependencies/7z*
@@ -53,17 +38,11 @@ dependencies/*.zip
 dependencies/*.tar.gz
 *.onnx
 *.gguf
-
-# ── In-app updater leftovers ──────────────────────────────────────────────
 .pawchive_update_state.json
 .install_manifest.json
 .update_backup/
-
-# ── Gallery files written inside your download folders ────────────────────
 .pawchive_gallery_marks.json
 .pawchive_gallery_creator_links.json
-
-# ── Editors and operating systems ─────────────────────────────────────────
 .vscode/
 .idea/
 *.swp

@@ -235,6 +235,67 @@ class QueueGroupsModel(QAbstractListModel):
 
         self.endResetModel()
 
+    def add_tasks_batch(self, new_tasks: List[DownloadTask]):
+        """Fast incremental batch insertion of newly queued tasks without wiping all existing groups."""
+        if not new_tasks:
+            return
+        if not self._groups:
+            self.rebuild(new_tasks)
+            return
+
+        tasks_by_batch: Dict[str, List[DownloadTask]] = {}
+        for t in new_tasks:
+            bid = getattr(t, "batch_id", "") or f"{t.service}_{t.creator_name}_{t.post_id}".strip("_") or "batch_default"
+            tasks_by_batch.setdefault(bid, []).append(t)
+
+        new_groups_to_insert = []
+        for bid, b_tasks in tasks_by_batch.items():
+            if bid not in self._row_by_id:
+                sample_t = b_tasks[0]
+                post_title = sample_t.post_title or "Media Collection"
+                if bid.startswith("artist_") or bid.startswith("creator_"):
+                    post_title = "All Works / Posts"
+                g = {
+                    "batchId": bid,
+                    "creatorName": sample_t.creator_name or "Unknown Creator",
+                    "postTitle": post_title,
+                    "service": sample_t.service or "kemono",
+                    "postId": sample_t.post_id or "",
+                }
+                new_groups_to_insert.append((bid, g, b_tasks))
+            else:
+                group_task_ids = self._task_ids_by_group.setdefault(bid, set())
+                t_list = self._tasks_by_id.setdefault(bid, [])
+                for t in b_tasks:
+                    tid = id(t)
+                    if tid not in group_task_ids:
+                        group_task_ids.add(tid)
+                        t_list.append(t)
+                    self._task_last_group_status[tid] = getattr(t, "status", "")
+                self._dirty_groups.add(bid)
+
+        if new_groups_to_insert:
+            start_row = len(self._groups)
+            end_row = start_row + len(new_groups_to_insert) - 1
+            self.beginInsertRows(QModelIndex(), start_row, end_row)
+            for idx, (bid, g, b_tasks) in enumerate(new_groups_to_insert):
+                row = start_row + idx
+                self._row_by_id[bid] = row
+                self._tasks_by_id[bid] = list(b_tasks)
+                self._task_ids_by_group[bid] = {id(t) for t in b_tasks}
+                for t in b_tasks:
+                    self._task_last_group_status[id(t)] = getattr(t, "status", "")
+                self._calc_group_stats(g, b_tasks)
+                self._groups.append(g)
+                self._last_emitted_stats[bid] = (
+                    g["totalFiles"], g["completedFiles"], g["skippedFiles"], g["failedFiles"],
+                    g["downloadingFiles"], g["pendingFiles"], g["status"]
+                )
+            self.endInsertRows()
+
+        if self._dirty_groups and not self._flush_timer.isActive():
+            self._flush_timer.start()
+
     def update_task(self, task: DownloadTask):
         bid = getattr(task, "batch_id", "") or f"{task.service}_{task.creator_name}_{task.post_id}".strip("_")
         if not bid:
@@ -730,7 +791,7 @@ class QueueModel(QAbstractListModel):
         self.countChanged.emit()
         self.countsChanged.emit()
         self.failedCountChanged.emit()
-        self._groups_model.rebuild(self._tasks)
+        self._groups_model.add_tasks_batch(deduped)
         self.groupsChanged.emit()
         return len(deduped)
 
@@ -813,7 +874,7 @@ class QueueModel(QAbstractListModel):
         self.beginResetModel()
         for t in self._tasks:
             bid = getattr(t, "batch_id", "") or f"{t.service}_{t.creator_name}_{t.post_id}".strip("_")
-            if bid == batch_id and t.status in ("failed", "cancelled"):
+            if bid == batch_id and (t.status in ("failed", "cancelled") or t.status == "pending"):
                 t.status = "pending"
                 t.error_msg = ""
                 t.retry_count = getattr(t, "retry_count", 0) + 1
@@ -826,6 +887,7 @@ class QueueModel(QAbstractListModel):
         self.failedCountChanged.emit()
         self._groups_model.rebuild(self._tasks)
         self.groupsChanged.emit()
+        self.batchRetryRequested.emit(batch_id)
 
     def updateTask(self, task: DownloadTask):
         try:
@@ -962,7 +1024,11 @@ class QueueModel(QAbstractListModel):
     @Slot()
     def retryFailed(self):
         """Flags all failed and cancelled tasks as pending and emits retryRequested."""
-        failed = [t for t in self._tasks if t.status in ("failed", "cancelled")]
+        failed = [
+            t for t in self._tasks
+            if t.status in ("failed", "cancelled")
+            or (t.status == "pending" and (getattr(t, "retry_count", 0) > 0 or getattr(t, "error_msg", "")))
+        ]
         if not failed:
             return
         self.beginResetModel()
@@ -1005,7 +1071,7 @@ class QueueModel(QAbstractListModel):
 
         failed = []
         for t in self._tasks:
-            if t.status in ("failed", "cancelled"):
+            if t.status in ("failed", "cancelled") or (t.status == "pending" and (getattr(t, "retry_count", 0) > 0 or getattr(t, "error_msg", ""))):
                 err_msg = t.error_msg or ("Download cancelled by user" if t.status == "cancelled" else "Download failed")
                 if skip_404 and ("404" in str(err_msg).lower() or getattr(t, "http_status", 0) == 404):
                     continue
@@ -1067,7 +1133,7 @@ class QueueModel(QAbstractListModel):
         """Flags only the user-selected failed/cancelled tasks for retry."""
         selected_set = set(selected_file_ids)
         for t in self._tasks:
-            if t.status in ("failed", "cancelled") and (t.file_id in selected_set or t.url in selected_set or t.filename in selected_set):
+            if (t.status in ("failed", "cancelled") or t.status == "pending") and (t.file_id in selected_set or t.url in selected_set or t.filename in selected_set):
                 t.retry_count = getattr(t, "retry_count", 0) + 1
                 t.retry_capped = False
                 t.status = "pending"

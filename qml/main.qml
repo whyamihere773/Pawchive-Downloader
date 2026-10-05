@@ -2607,8 +2607,8 @@ ApplicationWindow {
         id: archiveRebuildModal
         bridge: appBridge
         onRebuildCompleted: {
-            if (archiveLoader.item && typeof archiveLoader.item.reload === "function") {
-                archiveLoader.item.reload();
+            if (archiveLoader.item && typeof archiveLoader.item.scheduleReload === "function") {
+                archiveLoader.item.scheduleReload();
             }
         }
     }

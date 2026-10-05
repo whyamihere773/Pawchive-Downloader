@@ -39,6 +39,8 @@ class ArchiveManager:
         self._enabled = bool(enabled)
         self._lock = threading.Lock()
         self._conn: Optional[sqlite3.Connection] = None
+        self._stats_cache: Optional[Dict[str, Any]] = None
+        self._stats_cache_time: float = 0.0
 
         if self._enabled:
             self._init_db()
@@ -148,59 +150,64 @@ class ArchiveManager:
 
             # Data repair and migration for legacy, imported, or partially-populated databases
             try:
-                # 1. Backfill file_ext from filename if missing or empty
-                cursor.execute(
-                    "SELECT id, filename FROM downloaded_files "
-                    "WHERE (file_ext IS NULL OR file_ext = '') "
-                    "  AND filename IS NOT NULL AND filename != '';"
-                )
-                rows_to_fix = cursor.fetchall()
-                if rows_to_fix:
-                    ext_updates = []
-                    for r_id, r_fn in rows_to_fix:
-                        _, ext = os.path.splitext(r_fn)
-                        ext_updates.append((ext.lower(), r_id))
-                    cursor.executemany("UPDATE downloaded_files SET file_ext = ? WHERE id = ?;", ext_updates)
+                cursor.execute("PRAGMA user_version;")
+                v_row = cursor.fetchone()
+                schema_ver = int(v_row[0] or 0) if v_row else 0
+                if schema_ver < 2:
+                    # 1. Backfill file_ext from filename if missing or empty
+                    cursor.execute(
+                        "SELECT id, filename FROM downloaded_files "
+                        "WHERE (file_ext IS NULL OR file_ext = '') "
+                        "  AND filename IS NOT NULL AND filename != '';"
+                    )
+                    rows_to_fix = cursor.fetchall()
+                    if rows_to_fix:
+                        ext_updates = []
+                        for r_id, r_fn in rows_to_fix:
+                            _, ext = os.path.splitext(r_fn)
+                            ext_updates.append((ext.lower(), r_id))
+                        cursor.executemany("UPDATE downloaded_files SET file_ext = ? WHERE id = ?;", ext_updates)
 
-                # 2. Repair empty/NULL service
-                self._conn.execute("""
-                    UPDATE downloaded_files
-                    SET service = 'unknown'
-                    WHERE service IS NULL OR TRIM(service) = '';
-                """)
+                    # 2. Repair empty/NULL service
+                    self._conn.execute("""
+                        UPDATE downloaded_files
+                        SET service = 'unknown'
+                        WHERE service IS NULL OR TRIM(service) = '';
+                    """)
 
-                # 3. Synchronize / repair creator_name and creator_id
-                self._conn.execute("""
-                    UPDATE downloaded_files
-                    SET creator_name = creator_id
-                    WHERE (creator_name IS NULL OR TRIM(creator_name) = '')
-                      AND creator_id IS NOT NULL AND TRIM(creator_id) != '';
-                """)
-                self._conn.execute("""
-                    UPDATE downloaded_files
-                    SET creator_id = creator_name
-                    WHERE (creator_id IS NULL OR TRIM(creator_id) = '')
-                      AND creator_name IS NOT NULL AND TRIM(creator_name) != '';
-                """)
-                self._conn.execute("""
-                    UPDATE downloaded_files
-                    SET creator_id = 'unknown', creator_name = 'Unknown Creator'
-                    WHERE (creator_id IS NULL OR TRIM(creator_id) = '')
-                      AND (creator_name IS NULL OR TRIM(creator_name) = '');
-                """)
+                    # 3. Synchronize / repair creator_name and creator_id
+                    self._conn.execute("""
+                        UPDATE downloaded_files
+                        SET creator_name = creator_id
+                        WHERE (creator_name IS NULL OR TRIM(creator_name) = '')
+                          AND creator_id IS NOT NULL AND TRIM(creator_id) != '';
+                    """)
+                    self._conn.execute("""
+                        UPDATE downloaded_files
+                        SET creator_id = creator_name
+                        WHERE (creator_id IS NULL OR TRIM(creator_id) = '')
+                          AND creator_name IS NOT NULL AND TRIM(creator_name) != '';
+                    """)
+                    self._conn.execute("""
+                        UPDATE downloaded_files
+                        SET creator_id = 'unknown', creator_name = 'Unknown Creator'
+                        WHERE (creator_id IS NULL OR TRIM(creator_id) = '')
+                          AND (creator_name IS NULL OR TRIM(creator_name) = '');
+                    """)
 
-                # 4. Repair empty/NULL post_id and post_title
-                self._conn.execute("""
-                    UPDATE downloaded_files
-                    SET post_id = COALESCE(NULLIF(TRIM(file_id), ''), CAST(id AS TEXT), 'unknown')
-                    WHERE post_id IS NULL OR TRIM(post_id) = '';
-                """)
-                self._conn.execute("""
-                    UPDATE downloaded_files
-                    SET post_title = 'Archived Files'
-                    WHERE (post_title IS NULL OR TRIM(post_title) = '')
-                      AND (post_id = 'unknown' OR post_id = '0');
-                """)
+                    # 4. Repair empty/NULL post_id and post_title
+                    self._conn.execute("""
+                        UPDATE downloaded_files
+                        SET post_id = COALESCE(NULLIF(TRIM(file_id), ''), CAST(id AS TEXT), 'unknown')
+                        WHERE post_id IS NULL OR TRIM(post_id) = '';
+                    """)
+                    self._conn.execute("""
+                        UPDATE downloaded_files
+                        SET post_title = 'Archived Files'
+                        WHERE (post_title IS NULL OR TRIM(post_title) = '')
+                          AND (post_id = 'unknown' OR post_id = '0');
+                    """)
+                    self._conn.execute("PRAGMA user_version = 2;")
             except Exception as e_repair:
                 logger.debug(f"Archive repair migration notice: {e_repair}", category="archive")
 
@@ -344,6 +351,7 @@ class ArchiveManager:
                     )
                 )
                 self._conn.commit()
+                self._stats_cache = None
                 return True
             except Exception as e:
                 logger.warning(f"Failed to record file in download archive: {e}", category="archive")
@@ -527,8 +535,12 @@ class ArchiveManager:
                             "service": clean_svc,
                             "creator_name": display_creator,
                             "creator_id": clean_cid or clean_cname or "unknown",
+                            "missing_count": 0,
                             "files": []
                         }
+
+                    if r_missing_int == 1:
+                        c_entry["posts_map"][p_key]["missing_count"] += 1
 
                     # Format file size string
                     fsize_int = int(r_fsize or 0)
@@ -543,9 +555,11 @@ class ArchiveManager:
                     else:
                         size_str = ""
 
-                    # Format downloaded_at string
+                    # Format downloaded_at string (fast-path string slicing for ISO timestamps)
                     date_display = str(r_down_at or "")
-                    if date_display:
+                    if len(date_display) >= 16 and (date_display[10] in ("T", " ")):
+                        date_display = f"{date_display[:10]} {date_display[11:16]}"
+                    elif date_display:
                         try:
                             dt = datetime.datetime.fromisoformat(date_display)
                             date_display = dt.strftime("%Y-%m-%d %H:%M")
@@ -617,6 +631,11 @@ class ArchiveManager:
 
     def get_statistics(self) -> Dict[str, Any]:
         """Return comprehensive telemetry regarding the archive database."""
+        now = time.time()
+        with self._lock:
+            if self._stats_cache is not None and (now - self._stats_cache_time < 20.0):
+                return dict(self._stats_cache)
+
         stats = {
             "total_files": 0,
             "total_creators": 0,
@@ -717,6 +736,8 @@ class ArchiveManager:
                 stats["verified_files"] = int(cursor.fetchone()[0] or 0)
 
                 stats["total_links"] = stats["category_counts"].get("links", 0)
+                self._stats_cache = dict(stats)
+                self._stats_cache_time = now
                 return stats
             except Exception as e:
                 logger.error(f"Failed to calculate archive statistics: {e}", category="archive")
@@ -735,6 +756,7 @@ class ArchiveManager:
             try:
                 self._conn.execute("DELETE FROM downloaded_files WHERE id = ?;", (int(record_id),))
                 self._conn.commit()
+                self._stats_cache = None
                 return True
             except Exception as e:
                 logger.error(f"Failed to delete archive record {record_id}: {e}", category="archive")
@@ -758,6 +780,7 @@ class ArchiveManager:
                 )
                 affected = cursor.rowcount
                 self._conn.commit()
+                self._stats_cache = None
                 return affected
             except Exception as e:
                 logger.error(f"Failed to delete archive records for post {post_id}: {e}", category="archive")
@@ -789,6 +812,7 @@ class ArchiveManager:
                     )
                 affected = cursor.rowcount
                 self._conn.commit()
+                self._stats_cache = None
                 return affected
             except Exception as e:
                 logger.error(f"Failed to delete archive records for creator {creator_id}: {e}", category="archive")
@@ -808,6 +832,7 @@ class ArchiveManager:
                 self._conn.execute("DELETE FROM downloaded_files;")
                 self._conn.commit()
                 self._conn.execute("VACUUM;")
+                self._stats_cache = None
                 logger.info("🗑️ Download Archive Database cleared.", category="archive")
                 return True
             except Exception as e:
@@ -958,6 +983,7 @@ class ArchiveManager:
                 )
                 imported_count = cursor.rowcount
                 self._conn.commit()
+                self._stats_cache = None
                 logger.info(f"📥 Successfully imported {imported_count} archive records from '{filepath}'", category="archive")
                 return imported_count
             except Exception as e:
@@ -1139,6 +1165,7 @@ class ArchiveManager:
                 )
                 deleted = cursor.rowcount
                 self._conn.commit()
+                self._stats_cache = None
                 return deleted
             except Exception as e:
                 logger.error(f"Failed to remove missing records for creator {creator_id}: {e}", category="archive")

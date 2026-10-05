@@ -1574,21 +1574,7 @@ Rectangle {
                     property var creatorModel: modelData
                     property bool isCollapsed: !(root.expandedCreators && root.expandedCreators[creatorModel.creator_name])
 
-                    property int creatorMissingCount: {
-                        if (typeof creatorModel.missing_count !== "undefined") return creatorModel.missing_count
-                        var count = 0
-                        if (creatorModel && creatorModel.posts) {
-                            for (var p = 0; p < creatorModel.posts.length; p++) {
-                                var post = creatorModel.posts[p]
-                                if (post.files) {
-                                    for (var f = 0; f < post.files.length; f++) {
-                                        if (post.files[f].is_missing === 1) count++
-                                    }
-                                }
-                            }
-                        }
-                        return count
-                    }
+                    property int creatorMissingCount: (creatorModel && typeof creatorModel.missing_count === "number") ? creatorModel.missing_count : 0
                     property int creatorTotalCount: creatorModel.total_files || 0
                     property bool isCreatorSomeMissing: creatorMissingCount > 0 && creatorMissingCount < creatorTotalCount
                     property bool isCreatorAllMissing: creatorTotalCount > 0 && creatorMissingCount >= creatorTotalCount
@@ -2089,14 +2075,7 @@ Rectangle {
                                         property string postKey: creatorModel.creator_name + "_" + postModel.post_id
                                         property bool isPostCollapsed: root.searchFilter.length === 0 && !(root.expandedPosts && root.expandedPosts[postKey])
 
-                                        property int missingCount: {
-                                            if (!postModel || !postModel.files) return 0
-                                            var count = 0
-                                            for (var i = 0; i < postModel.files.length; i++) {
-                                                if (postModel.files[i].is_missing === 1) count++
-                                            }
-                                            return count
-                                        }
+                                        property int missingCount: (postModel && typeof postModel.missing_count === "number") ? postModel.missing_count : 0
                                         property int totalFiles: (postModel && postModel.files) ? postModel.files.length : (postModel.file_count || 0)
                                         property bool isSomeMissing: missingCount > 0 && missingCount < totalFiles
                                         property bool isAllMissing: totalFiles > 0 && missingCount >= totalFiles

@@ -172,18 +172,41 @@ def _do_download_multipart_file(
         ranges.append((i, start_byte, end_byte))
 
     os.makedirs(os.path.dirname(os.path.abspath(target_path)), exist_ok=True)
-    part_files = [f"{target_path}.part{i}" for i in range(num_chunks)]
+    temp_final = f"{target_path}.tmp"
+    try:
+        with open(temp_final, "wb") as f:
+            f.truncate(total_size)
+    except Exception as e:
+        if os.path.exists(temp_final):
+            try:
+                os.remove(temp_final)
+            except OSError:
+                pass
+        is_disk_full = (
+            getattr(e, "errno", None) == 28
+            or getattr(e, "winerror", None) == 112
+            or "space" in str(e).lower()
+        )
+        if is_disk_full:
+            return False, f"Disk full: {e}"
+        return _fallback_single_download(
+            url, target_path, req_headers, progress_callback, cancel_event, pause_event, timeout, req_session
+        )
+
     downloaded_bytes_per_chunk = [0] * num_chunks
     lock = threading.Lock()
+    last_progress_emit = [0.0]
 
-    def _update_global_progress():
+    def _update_global_progress(force: bool = False):
         if progress_callback:
-            with lock:
-                curr_total = sum(downloaded_bytes_per_chunk)
-            progress_callback(curr_total, total_size)
+            now = time.time()
+            if force or (now - last_progress_emit[0] >= 0.1):
+                last_progress_emit[0] = now
+                with lock:
+                    curr_total = sum(downloaded_bytes_per_chunk)
+                progress_callback(curr_total, total_size)
 
     def _download_chunk(chunk_idx: int, start: int, end: int) -> Tuple[bool, str]:
-        part_path = part_files[chunk_idx]
         chunk_headers = dict(req_headers)
         chunk_headers["Range"] = f"bytes={start}-{end}"
         expected_len = end - start + 1
@@ -204,7 +227,8 @@ def _do_download_multipart_file(
                             continue
 
                         written = 0
-                        with open(part_path, "wb") as f:
+                        with open(temp_final, "r+b") as f:
+                            f.seek(start)
                             for chunk in resp.iter_content(chunk_size=CHUNK_BUFFER_SIZE):
                                 if cancel_event and cancel_event.is_set():
                                     return False, "Cancelled"
@@ -223,6 +247,7 @@ def _do_download_multipart_file(
                                     _update_global_progress()
 
                         if written == expected_len:
+                            _update_global_progress(force=True)
                             return True, ""
                     finally:
                         with _active_multipart_lock:
@@ -254,7 +279,11 @@ def _do_download_multipart_file(
                 cancel_all_multipart()
                 for f in futures:
                     f.cancel()
-                _cleanup_parts(part_files)
+                if os.path.exists(temp_final):
+                    try:
+                        os.remove(temp_final)
+                    except OSError:
+                        pass
                 return False, "Download cancelled"
             time.sleep(0.05)
 
@@ -268,7 +297,11 @@ def _do_download_multipart_file(
     # Check for failures
     for success, err in results:
         if not success:
-            _cleanup_parts(part_files)
+            if os.path.exists(temp_final):
+                try:
+                    os.remove(temp_final)
+                except OSError:
+                    pass
             if cancel_event and cancel_event.is_set():
                 return False, "Download cancelled"
             if "disk full" in err.lower():
@@ -278,28 +311,24 @@ def _do_download_multipart_file(
                 url, target_path, req_headers, progress_callback, cancel_event, pause_event, timeout, req_session
             )
 
-    # 4. Stitch chunks together
+    # 4. Finalize file: direct replace (no chunk stitching overhead)
     try:
-        temp_final = f"{target_path}.tmp"
-        with open(temp_final, "wb") as outfile:
-            for p in part_files:
-                with open(p, "rb") as infile:
-                    while True:
-                        buf = infile.read(1024 * 1024)
-                        if not buf:
-                            break
-                        outfile.write(buf)
-        
-        _cleanup_parts(part_files)
         stitched = os.path.getsize(temp_final)
         if stitched != total_size:
-            os.remove(temp_final)
+            if os.path.exists(temp_final):
+                try:
+                    os.remove(temp_final)
+                except OSError:
+                    pass
             return False, f"Incomplete download ({stitched} of {total_size} bytes)"
-        # os.replace overwrites the old file in one step (the old copy stays until the new one is complete)
         os.replace(temp_final, target_path)
         return True, ""
     except Exception as e:
-        _cleanup_parts(part_files)
+        if os.path.exists(temp_final):
+            try:
+                os.remove(temp_final)
+            except OSError:
+                pass
         is_disk_full = (
             getattr(e, "errno", None) == 28
             or getattr(e, "winerror", None) == 112
@@ -307,7 +336,7 @@ def _do_download_multipart_file(
         )
         if is_disk_full:
             return False, f"Disk full: {e}"
-        return False, f"Error stitching chunks: {e}"
+        return False, f"Error completing download: {e}"
 
 
 def _fallback_single_download(

@@ -38,6 +38,8 @@ hidden_imports = [
     'PySide6.QtNetwork',
     'PySide6.QtOpenGL',
     'PySide6.QtSvg',
+    'PySide6.QtMultimedia',
+    'PySide6.QtMultimediaWidgets',
 
     # Cryptography (pycryptodome) for Mega.nz AES-CTR decryption
     'Crypto',
@@ -107,10 +109,24 @@ hidden_imports = [
     'qrcode',
 ]
 
+# Ensure QtMultimedia backend plugins and FFmpeg shared libraries are bundled
+import PySide6
+pyside_dir = os.path.dirname(PySide6.__file__)
+multimedia_plugins_dir = os.path.join(pyside_dir, 'plugins', 'multimedia')
+extra_binaries = []
+if os.path.isdir(multimedia_plugins_dir):
+    for f in os.listdir(multimedia_plugins_dir):
+        if f.lower().endswith(('.dll', '.so', '.dylib')):
+            extra_binaries.append((os.path.join(multimedia_plugins_dir, f), os.path.join('PySide6', 'plugins', 'multimedia')))
+
+for f in os.listdir(pyside_dir):
+    if any(f.lower().startswith(p) and ('.so' in f.lower() or f.lower().endswith('.dylib')) for p in ['libavcodec', 'libavformat', 'libavutil', 'libswresample', 'libswscale']):
+        extra_binaries.append((os.path.join(pyside_dir, f), 'PySide6'))
+
 a = Analysis(
     ['main.py'],
     pathex=[project_root],
-    binaries=[],
+    binaries=extra_binaries,
     datas=datas,
     hiddenimports=hidden_imports,
     hookspath=[],

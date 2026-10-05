@@ -8,6 +8,16 @@ os.environ["QT_QUICK_CONTROLS_STYLE"] = "Basic"
 if sys.platform.startswith("linux"):
     os.environ["QT_QPA_PLATFORMTHEME"] = "xdgdesktopportal"
 
+if sys.platform == "win32":
+    # Ensure Windows searches PySide6's directory for multimedia backend & FFmpeg DLLs
+    try:
+        import PySide6
+        _pyside_dir = os.path.dirname(PySide6.__file__)
+        if hasattr(os, "add_dll_directory") and os.path.isdir(_pyside_dir):
+            os.add_dll_directory(_pyside_dir)
+    except Exception:
+        pass
+
 from core.logger import logger
 
 # Open this session's log file first, so everything after this (including errors while the app
@@ -19,6 +29,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 from PySide6.QtQml import QQmlApplicationEngine  # noqa: E402
 from PySide6.QtCore import QUrl, QTimer, QtMsgType, qInstallMessageHandler  # noqa: E402
 from PySide6.QtGui import QIcon  # noqa: E402
+from PySide6 import QtMultimedia  # noqa: E402, F401
 
 from bridge.app_bridge import AppBridge  # noqa: E402
 
@@ -35,6 +46,10 @@ def _install_qt_message_handler():
     seen = {}
 
     def _handler(mode, context, message):
+        # Ignore benign internal Qt/FFmpeg cancellation notifications (e.g. when clearing source or stopping playback)
+        if "Immediate exit requested" in message:
+            return
+
         # The same warning can fire thousands of times (e.g. on every frame); keep the first 20
         count = seen.get(message, 0) + 1
         seen[message] = count
