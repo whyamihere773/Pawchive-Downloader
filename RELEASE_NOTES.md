@@ -1,15 +1,17 @@
-### ⚡ Performance & Responsiveness
+### ⚡ Interface Fluidity & Responsiveness
 
-* **UI stutter and freezes resolved**: Queuing multiple scrape jobs, opening the Archive tab after launch, and rebuilding the archive are now smooth and responsive.
-* **Faster multi-video downloads**: Parallel video downloads now stream directly to disk without resource-heavy chunk stitching, keeping the interface fluid while downloading.
+* **UI lag and freezing eliminated**: Fast downloads, console logging, and active queue transitions now run buttery-smooth without stuttering or locking up the window.
+* **Smooth download progress & counters**: Download speeds, time remaining, and queue category counts now update smoothly at clean, steady intervals.
+* **Responsive archive extraction & file tools**: Extracting multi-file archives and copying folders in the Gallery no longer freezes the user interface.
 
 ---
 
-### 🛠️ Fixes
+### 🛠️ Fixes & Reliability
 
-* **Failed task retry fixed**: Retrying failed downloads from specific job cards or the central retry modal now properly restarts and downloads the failed files.
-* **Video playback fixed**: Videos now play reliably in the Gallery preview and full-screen viewer instead of failing to open.
-* **Single post info file**: When "Subfolder per post" is turned off, all post descriptions and metadata are now collected into a single `post_info.txt` file instead of cluttering your download folder with separate text files for every post.
+* **Watchlist update badges fixed**: Artists no longer show ghost updates right after you have just updated or downloaded their posts.
+* **Full-resolution images on first download**: Initial downloads from creators now reliably fetch original full-resolution artwork from the start without saving low-res previews or requiring a re-download.
+* **Large zip and archive downloads fixed**: Multi-gigabyte archives and large files no longer stall or fail midway through downloading.
+* **Archive statistics crash fixed**: Viewing download archive stats or opening the Archive tab no longer causes sudden crashes.
 
 ---
 

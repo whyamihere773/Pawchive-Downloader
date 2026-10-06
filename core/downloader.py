@@ -2805,8 +2805,9 @@ class KemonoDownloader:
         }
 
         try:
-            # Two passes across the full-size mirrors; the small preview copy only if both failed
-            pass_lists = [full_urls, full_urls] + ([preview_urls] if preview_urls else [])
+            # Two passes across full-size mirrors; small preview copy ONLY if fallback_to_thumbnails is enabled
+            allow_thumb_fallback = getattr(options, "fallback_to_thumbnails", False)
+            pass_lists = [full_urls, full_urls] + ([preview_urls] if (preview_urls and allow_thumb_fallback) else [])
             for pass_idx, urls_to_try in enumerate(pass_lists):
                 if pass_idx == 1:
                     time.sleep(1.5) # Brief jittered pause before second pass if all mirrors were busy
@@ -2858,8 +2859,9 @@ class KemonoDownloader:
                         else:
                             req_headers.update(_CONTACT_HEADERS)
 
+                    stream_timeout = (25, 60)
                     try:
-                        resp = session.get(attempt_url, stream=True, timeout=30, headers=req_headers)
+                        resp = session.get(attempt_url, stream=True, timeout=stream_timeout, headers=req_headers)
                         if resp.status_code in (200, 206, 416):
                             task.url = attempt_url
                             break
@@ -2876,7 +2878,7 @@ class KemonoDownloader:
                             if "Range" in req_headers:
                                 no_range_headers = {k: v for k, v in req_headers.items() if k.lower() != "range"}
                                 try:
-                                    fresh_resp = session.get(attempt_url, stream=True, timeout=30, headers=no_range_headers)
+                                    fresh_resp = session.get(attempt_url, stream=True, timeout=stream_timeout, headers=no_range_headers)
                                     if fresh_resp.status_code in (200, 206):
                                         resp.close()
                                         resp = fresh_resp
@@ -2900,7 +2902,7 @@ class KemonoDownloader:
                                     "Sec-Fetch-User": "?1",
                                     "Upgrade-Insecure-Requests": "1",
                                 }
-                                clean_resp = requests.get(attempt_url, stream=True, timeout=30, headers=browser_headers)
+                                clean_resp = requests.get(attempt_url, stream=True, timeout=stream_timeout, headers=browser_headers)
                                 if clean_resp.status_code in (200, 206):
                                     resp.close()
                                     resp = clean_resp
@@ -2915,7 +2917,7 @@ class KemonoDownloader:
                                         time.sleep(delay)
                                         if self._cancel_event.is_set():
                                             break
-                                        retry_resp = requests.get(attempt_url, stream=True, timeout=30, headers=browser_headers)
+                                        retry_resp = requests.get(attempt_url, stream=True, timeout=stream_timeout, headers=browser_headers)
                                         if retry_resp.status_code in (200, 206):
                                             resp.close()
                                             resp = retry_resp
@@ -3157,7 +3159,7 @@ class KemonoDownloader:
                     progress_callback=_on_mp_progress,
                     cancel_event=self._cancel_event,
                     pause_event=self._pause_event,
-                    timeout=30,
+                    timeout=(25, 60),
                     session=session
                 )
 
@@ -3209,13 +3211,7 @@ class KemonoDownloader:
                     if self._cancel_event.is_set():
                         return False, "Cancelled"
 
-                    # Clean up any partial parts or tmp files from multipart attempt
-                    for p in _part_paths:
-                        if os.path.exists(p):
-                            try:
-                                os.remove(p)
-                            except OSError:
-                                pass
+                    # Clean up temporary file from multipart attempt
                     if os.path.exists(f"{task.target_path}.tmp"):
                         try:
                             os.remove(f"{task.target_path}.tmp")
@@ -3242,9 +3238,9 @@ class KemonoDownloader:
 
                     # Re-acquire single stream response stream since resp was closed for multipart
                     try:
-                        resp = session.get(task.url, stream=True, timeout=30, headers=req_headers)
+                        resp = session.get(task.url, stream=True, timeout=(25, 60), headers=req_headers)
                         if resp.status_code not in (200, 206):
-                            clean_resp = requests.get(task.url, stream=True, timeout=30, headers=browser_headers)
+                            clean_resp = requests.get(task.url, stream=True, timeout=(25, 60), headers=browser_headers)
                             if clean_resp.status_code in (200, 206):
                                 resp.close()
                                 resp = clean_resp
@@ -3268,7 +3264,7 @@ class KemonoDownloader:
                         return False, msg
 
             # ── Standard single stream download loop ──────────────────────────
-            chunk_size = 64 * 1024  # 64 KB
+            chunk_size = 131072 if (task.file_size > 10 * 1024 * 1024 or not task.file_size) else 65536
             last_speed_time = time.time()
             bytes_since_speed = 0
 

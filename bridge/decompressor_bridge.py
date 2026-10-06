@@ -611,10 +611,15 @@ class DecompressorBridge(QObject):
 
             # Thread-safe tracker for active jobs
             active_items: Dict[str, ArchiveItem] = {}
-            active_lock = threading.Lock()
+            last_progress_emit = [0.0]
 
             def _update_progress(item: ArchiveItem, pct: float):
                 item.progress = pct
+                now = time.time()
+                if pct < 100.0 and (now - last_progress_emit[0] < 0.1):
+                    return
+                last_progress_emit[0] = now
+
                 self.itemUpdated.emit(item.item_id, item.status, pct, item.error_message)
 
                 # Compute overall progress
@@ -993,8 +998,14 @@ class DecompressorBridge(QObject):
                     self.itemUpdated.emit(target_item.item_id, target_item.status, 0.0, "")
                     self.passwordPromptDismissed.emit(itemId)
 
+                    last_cb_emit = [0.0]
+
                     def _cb(pct: float):
                         target_item.progress = pct
+                        now = time.time()
+                        if pct < 100.0 and (now - last_cb_emit[0] < 0.1):
+                            return
+                        last_cb_emit[0] = now
                         self.itemUpdated.emit(target_item.item_id, target_item.status, pct, "")
 
                     ok, err = self.engine.extract_single_archive(
@@ -1077,8 +1088,14 @@ class DecompressorBridge(QObject):
             self.itemUpdated.emit(target_item.item_id, target_item.status, 0.0, "")
             self.passwordPromptDismissed.emit(itemId)
 
+            last_cb_emit = [0.0]
+
             def _cb(pct: float):
                 target_item.progress = pct
+                now = time.time()
+                if pct < 100.0 and (now - last_cb_emit[0] < 0.1):
+                    return
+                last_cb_emit[0] = now
                 self.itemUpdated.emit(target_item.item_id, target_item.status, pct, "")
 
             ok, err = self.engine.extract_single_archive(

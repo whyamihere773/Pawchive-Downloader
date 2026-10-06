@@ -446,8 +446,9 @@ class QueueModel(QAbstractListModel):
     cleared = Signal()
     _guiCall = Signal(object)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, enable_groups: bool = True):
         super().__init__(parent)
+        self._enable_groups = enable_groups
         self._guiCall.connect(self._run_gui_call, Qt.QueuedConnection)
         self._tasks: List[DownloadTask] = []
         self._filter_status: str = "all" # "all", "downloading", "completed", "failed", "pending"
@@ -456,7 +457,7 @@ class QueueModel(QAbstractListModel):
         self._view_mode: str = "grouped" # "grouped" or "flat"
         self._visible_tasks: List[DownloadTask] = []
         self._visible_task_row: Dict[int, int] = {}
-        self._groups_model = QueueGroupsModel(self)
+        self._groups_model = QueueGroupsModel(self) if enable_groups else None
         self._last_counts: Optional[tuple] = None
         self._pending_count: int = 0
         self._downloading_count: int = 0
@@ -465,6 +466,19 @@ class QueueModel(QAbstractListModel):
         self._failed_count: int = 0
         self._task_last_status: Dict[int, str] = {}
         self._task_last_emit: Dict[int, float] = {}
+        self._counts_timer = QTimer(self)
+        self._counts_timer.setSingleShot(True)
+        self._counts_timer.setInterval(60)
+        self._counts_timer.timeout.connect(self._flush_counts_changed)
+
+    def _flush_counts_changed(self):
+        curr_counts = (self._pending_count, self._downloading_count, self._completed_count, self._skipped_count, self._failed_count)
+        if self._last_counts != curr_counts:
+            prev_failed = self._last_counts[4] if (self._last_counts and len(self._last_counts) > 4) else None
+            self._last_counts = curr_counts
+            self.countsChanged.emit()
+            if prev_failed is None or prev_failed != curr_counts[4]:
+                self.failedCountChanged.emit()
 
     def _recalculate_counts(self):
         pending = 0
@@ -707,16 +721,16 @@ class QueueModel(QAbstractListModel):
             self.viewModeChanged.emit()
 
     @Property(QObject, constant=True)
-    def groupsModel(self) -> QAbstractListModel:
+    def groupsModel(self) -> Optional[QAbstractListModel]:
         return self._groups_model
 
     @Property(int, notify=groupsChanged)
     def groupsCount(self) -> int:
-        return self._groups_model.rowCount()
+        return self._groups_model.rowCount() if self._groups_model else 0
 
     @Property("QVariantList", notify=groupsChanged)
     def groups(self) -> List[Dict[str, Any]]:
-        return self._groups_model.to_dict_list()
+        return self._groups_model.to_dict_list() if self._groups_model else []
 
     @groups.setter
     def groups(self, val):
@@ -740,19 +754,22 @@ class QueueModel(QAbstractListModel):
         if self._off_gui_thread(lambda: self.setTasks(tasks)):
             return
         self.beginResetModel()
+        self._counts_timer.stop()
         self._tasks = list(tasks)
         self._task_last_status.clear()
         self._task_last_emit.clear()
         for t in self._tasks:
             self._task_last_status[id(t)] = getattr(t, "status", "")
         self._recalculate_counts()
+        self._last_counts = (self._pending_count, self._downloading_count, self._completed_count, self._skipped_count, self._failed_count)
         self._rebuild_visible()
         self.endResetModel()
         self.countChanged.emit()
         self.countsChanged.emit()
         self.failedCountChanged.emit()
-        self._groups_model.rebuild(self._tasks)
-        self.groupsChanged.emit()
+        if self._groups_model:
+            self._groups_model.rebuild(self._tasks)
+            self.groupsChanged.emit()
 
     def appendTasks(self, tasks: List[DownloadTask]) -> int:
         if not tasks:
@@ -782,17 +799,20 @@ class QueueModel(QAbstractListModel):
             return 0
 
         self.beginResetModel()
+        self._counts_timer.stop()
         self._tasks.extend(deduped)
         for t in deduped:
             self._task_last_status[id(t)] = getattr(t, "status", "")
         self._recalculate_counts()
+        self._last_counts = (self._pending_count, self._downloading_count, self._completed_count, self._skipped_count, self._failed_count)
         self._rebuild_visible()
         self.endResetModel()
         self.countChanged.emit()
         self.countsChanged.emit()
         self.failedCountChanged.emit()
-        self._groups_model.add_tasks_batch(deduped)
-        self.groupsChanged.emit()
+        if self._groups_model:
+            self._groups_model.add_tasks_batch(deduped)
+            self.groupsChanged.emit()
         return len(deduped)
 
     def addTasks(self, tasks: List[DownloadTask]):
@@ -806,8 +826,10 @@ class QueueModel(QAbstractListModel):
         if not batch_id:
             return
         self.beginResetModel()
+        self._counts_timer.stop()
         self._tasks = [t for t in self._tasks if (getattr(t, "batch_id", "") or f"{t.service}_{t.creator_name}_{t.post_id}".strip("_")) != batch_id or t.status == "downloading"]
         self._recalculate_counts()
+        self._last_counts = (self._pending_count, self._downloading_count, self._completed_count, self._skipped_count, self._failed_count)
         if self._selected_batch_id == batch_id:
             self._selected_batch_id = ""
             self.selectedBatchIdChanged.emit()
@@ -816,14 +838,16 @@ class QueueModel(QAbstractListModel):
         self.countChanged.emit()
         self.countsChanged.emit()
         self.failedCountChanged.emit()
-        self._groups_model.remove_batch(batch_id)
-        self.groupsChanged.emit()
+        if self._groups_model:
+            self._groups_model.remove_batch(batch_id)
+            self.groupsChanged.emit()
         self.batchRemoveRequested.emit(batch_id)
 
     @Slot()
     def cancel_all_pending(self):
         """Cancels all pending, downloading, and retrying tasks in a single fast batch operation."""
         self.beginResetModel()
+        self._counts_timer.stop()
         for t in self._tasks:
             if t.status in ("pending", "downloading", "retrying"):
                 t.status = "cancelled"
@@ -834,19 +858,22 @@ class QueueModel(QAbstractListModel):
                 t.eta_str = "--"
                 self._task_last_status[id(t)] = "cancelled"
         self._recalculate_counts()
+        self._last_counts = (self._pending_count, self._downloading_count, self._completed_count, self._skipped_count, self._failed_count)
         self._rebuild_visible()
         self.endResetModel()
         self.countChanged.emit()
         self.countsChanged.emit()
         self.failedCountChanged.emit()
-        self._groups_model.rebuild(self._tasks)
-        self.groupsChanged.emit()
+        if self._groups_model:
+            self._groups_model.rebuild(self._tasks)
+            self.groupsChanged.emit()
 
     @Slot(str)
     def cancelBatch(self, batch_id: str):
         if not batch_id:
             return
         self.beginResetModel()
+        self._counts_timer.stop()
         for t in self._tasks:
             bid = getattr(t, "batch_id", "") or f"{t.service}_{t.creator_name}_{t.post_id}".strip("_")
             if bid == batch_id and t.status in ("pending", "downloading", "retrying"):
@@ -858,13 +885,15 @@ class QueueModel(QAbstractListModel):
                 t.eta_str = "--"
                 self._task_last_status[id(t)] = "cancelled"
         self._recalculate_counts()
+        self._last_counts = (self._pending_count, self._downloading_count, self._completed_count, self._skipped_count, self._failed_count)
         self._rebuild_visible()
         self.endResetModel()
         self.countChanged.emit()
         self.countsChanged.emit()
         self.failedCountChanged.emit()
-        self._groups_model.rebuild(self._tasks)
-        self.groupsChanged.emit()
+        if self._groups_model:
+            self._groups_model.rebuild(self._tasks)
+            self.groupsChanged.emit()
         self.batchCancelRequested.emit(batch_id)
 
     @Slot(str)
@@ -872,6 +901,7 @@ class QueueModel(QAbstractListModel):
         if not batch_id:
             return
         self.beginResetModel()
+        self._counts_timer.stop()
         for t in self._tasks:
             bid = getattr(t, "batch_id", "") or f"{t.service}_{t.creator_name}_{t.post_id}".strip("_")
             if bid == batch_id and (t.status in ("failed", "cancelled") or t.status == "pending"):
@@ -880,13 +910,15 @@ class QueueModel(QAbstractListModel):
                 t.retry_count = getattr(t, "retry_count", 0) + 1
                 self._task_last_status[id(t)] = "pending"
         self._recalculate_counts()
+        self._last_counts = (self._pending_count, self._downloading_count, self._completed_count, self._skipped_count, self._failed_count)
         self._rebuild_visible()
         self.endResetModel()
         self.countChanged.emit()
         self.countsChanged.emit()
         self.failedCountChanged.emit()
-        self._groups_model.rebuild(self._tasks)
-        self.groupsChanged.emit()
+        if self._groups_model:
+            self._groups_model.rebuild(self._tasks)
+            self.groupsChanged.emit()
         self.batchRetryRequested.emit(batch_id)
 
     def updateTask(self, task: DownloadTask):
@@ -898,11 +930,16 @@ class QueueModel(QAbstractListModel):
             old_status = self._task_last_status.get(task_id)
             new_status = getattr(task, "status", "")
 
-            # Throttle dataChanged ONLY if the task is ALREADY visible and its status hasn't changed
+            # If this model does not track groups (e.g. active downloads panel) and the task
+            # is not visible and does not match the active filter, skip work immediately.
+            if not self._enable_groups and not is_visible and not matches:
+                return
+
+            # Throttle progress updates if the task's status hasn't changed
             now = time.time()
             last_emit = self._task_last_emit.get(task_id, 0.0)
             status_changed = (old_status != new_status)
-            if is_visible and not status_changed and (now - last_emit < 0.08):
+            if not status_changed and (now - last_emit < 0.08):
                 return
             self._task_last_emit[task_id] = now
 
@@ -962,13 +999,11 @@ class QueueModel(QAbstractListModel):
 
                 curr_counts = (self._pending_count, self._downloading_count, self._completed_count, self._skipped_count, self._failed_count)
                 if self._last_counts != curr_counts:
-                    prev_failed = self._last_counts[4] if (self._last_counts and len(self._last_counts) > 4) else None
-                    self._last_counts = curr_counts
-                    self.countsChanged.emit()
-                    if prev_failed is None or prev_failed != curr_counts[4]:
-                        self.failedCountChanged.emit()
+                    if not self._counts_timer.isActive():
+                        self._counts_timer.start()
 
-            self._groups_model.update_task(task)
+            if self._groups_model:
+                self._groups_model.update_task(task)
         except (ValueError, RuntimeError):
             pass
 
@@ -977,22 +1012,25 @@ class QueueModel(QAbstractListModel):
         if self._off_gui_thread(self.clear):
             return
         self.beginResetModel()
+        self._counts_timer.stop()
         self._tasks.clear()
         self._visible_tasks.clear()
         self._visible_task_row.clear()
         self._task_last_status.clear()
         self._task_last_emit.clear()
-        self._last_counts = None
+        self._last_counts = (0, 0, 0, 0, 0)
         self._pending_count = 0
         self._downloading_count = 0
         self._completed_count = 0
+        self._skipped_count = 0
         self._failed_count = 0
         self.endResetModel()
         self.countChanged.emit()
         self.countsChanged.emit()
         self.failedCountChanged.emit()
-        self._groups_model.clear()
-        self.groupsChanged.emit()
+        if self._groups_model:
+            self._groups_model.clear()
+            self.groupsChanged.emit()
         self.cleared.emit()
 
     @Slot()
@@ -1002,6 +1040,7 @@ class QueueModel(QAbstractListModel):
         selected_set = set(selected_file_ids) if selected_file_ids else None
 
         self.beginResetModel()
+        self._counts_timer.stop()
         if selected_set:
             self._tasks = [
                 t for t in self._tasks
@@ -1011,15 +1050,16 @@ class QueueModel(QAbstractListModel):
             self._tasks = [t for t in self._tasks if t.status not in ("failed", "cancelled")]
 
         self._recalculate_counts()
+        self._last_counts = (self._pending_count, self._downloading_count, self._completed_count, self._skipped_count, self._failed_count)
         self._rebuild_visible()
         self.endResetModel()
 
-        self._last_counts = None
         self.countChanged.emit()
         self.countsChanged.emit()
         self.failedCountChanged.emit()
-        self._groups_model.rebuild(self._tasks)
-        self.groupsChanged.emit()
+        if self._groups_model:
+            self._groups_model.rebuild(self._tasks)
+            self.groupsChanged.emit()
 
     @Slot()
     def retryFailed(self):
@@ -1032,6 +1072,7 @@ class QueueModel(QAbstractListModel):
         if not failed:
             return
         self.beginResetModel()
+        self._counts_timer.stop()
         for t in failed:
             t.retry_count = getattr(t, "retry_count", 0) + 1
             t.retry_capped = False
@@ -1040,13 +1081,15 @@ class QueueModel(QAbstractListModel):
             t.progress_pct = 0
             self._task_last_status[id(t)] = "pending"
         self._recalculate_counts()
+        self._last_counts = (self._pending_count, self._downloading_count, self._completed_count, self._skipped_count, self._failed_count)
         self._rebuild_visible()
         self.endResetModel()
         self.countChanged.emit()
         self.countsChanged.emit()
         self.failedCountChanged.emit()
-        self._groups_model.rebuild(self._tasks)
-        self.groupsChanged.emit()
+        if self._groups_model:
+            self._groups_model.rebuild(self._tasks)
+            self.groupsChanged.emit()
 
         self.retryRequested.emit()
 

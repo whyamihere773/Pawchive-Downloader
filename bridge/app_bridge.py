@@ -280,7 +280,7 @@ class AppBridge(QObject):
         # Models
         self._log_model = LogModel(self)
         self._queue_model = QueueModel(self)
-        self._active_queue_model = QueueModel(self)
+        self._active_queue_model = QueueModel(self, enable_groups=False)
         self._active_queue_model.filterStatus = "downloading"
         self._active_queue_model.minFileSize = 50 * 1024 * 1024  # 50 MB threshold
         self._known_model = KnownModel(self.known_manager, self)
@@ -1561,7 +1561,12 @@ class AppBridge(QObject):
             except Exception:
                 pass
 
+            last_prog_emit = [0.0]
             def _prog(cur, tot):
+                now = time.time()
+                if cur < tot and (now - last_prog_emit[0] < 0.1):
+                    return
+                last_prog_emit[0] = now
                 self.archiveCreatorVerificationProgress.emit(service, creatorId, cur, tot)
 
             res = self.archive_manager.verify_creator_integrity(
@@ -4722,30 +4727,57 @@ class AppBridge(QObject):
         completed = info.get("completed", 0)
         total     = info.get("total", 0)
         failed    = info.get("failed", 0)
-        self._overall_progress   = info.get("percent", info.get("progress", 0))
-        self._saved_bytes_text   = info.get("saved_str", "0 MB")
-        if self.downloader._pause_event.is_set():
-            self._status_text = "Progress: Paused"
-            self._current_speed = "0 KB/s"
-            self._eta_text = "--"
-        else:
-            self._current_speed = info.get("speed_str", "0 KB/s")
-            self._eta_text      = info.get("eta_str", "--")
-            self._status_text   = info.get("status_text", f"Downloading\u2026 {completed}/{total}")
-        self._files_count_text   = info.get("files_count_text") if info.get("files_count_text") else (f"{completed}/{total}" if total > 0 else "")
-        self._adaptive_state     = info.get("adaptive_state", "optimal")
-        self._adaptive_status_text = info.get("adaptive_status_text", "")
-        self._elapsed_time_text  = info.get("elapsed_str", "0s")
 
-        self.overallProgressChanged.emit()
-        self.currentSpeedChanged.emit()
-        self.etaTextChanged.emit()
-        self.savedBytesTextChanged.emit()
-        self.statusTextChanged.emit()
-        self.filesCountTextChanged.emit()
-        self.adaptiveStateChanged.emit()
-        self.adaptiveStatusTextChanged.emit()
-        self.elapsedTimeTextChanged.emit()
+        new_progress = info.get("percent", info.get("progress", 0))
+        if self._overall_progress != new_progress:
+            self._overall_progress = new_progress
+            self.overallProgressChanged.emit()
+
+        new_saved = info.get("saved_str", "0 MB")
+        if self._saved_bytes_text != new_saved:
+            self._saved_bytes_text = new_saved
+            self.savedBytesTextChanged.emit()
+
+        if self.downloader._pause_event.is_set():
+            new_status = "Progress: Paused"
+            new_speed = "0 KB/s"
+            new_eta = "--"
+        else:
+            new_speed = info.get("speed_str", "0 KB/s")
+            new_eta = info.get("eta_str", "--")
+            new_status = info.get("status_text", f"Downloading\u2026 {completed}/{total}")
+
+        if self._current_speed != new_speed:
+            self._current_speed = new_speed
+            self.currentSpeedChanged.emit()
+
+        if self._eta_text != new_eta:
+            self._eta_text = new_eta
+            self.etaTextChanged.emit()
+
+        if self._status_text != new_status:
+            self._status_text = new_status
+            self.statusTextChanged.emit()
+
+        new_files_count = info.get("files_count_text") if info.get("files_count_text") else (f"{completed}/{total}" if total > 0 else "")
+        if self._files_count_text != new_files_count:
+            self._files_count_text = new_files_count
+            self.filesCountTextChanged.emit()
+
+        new_adaptive_state = info.get("adaptive_state", "optimal")
+        if self._adaptive_state != new_adaptive_state:
+            self._adaptive_state = new_adaptive_state
+            self.adaptiveStateChanged.emit()
+
+        new_adaptive_status = info.get("adaptive_status_text", "")
+        if self._adaptive_status_text != new_adaptive_status:
+            self._adaptive_status_text = new_adaptive_status
+            self.adaptiveStatusTextChanged.emit()
+
+        new_elapsed = info.get("elapsed_str", "0s")
+        if self._elapsed_time_text != new_elapsed:
+            self._elapsed_time_text = new_elapsed
+            self.elapsedTimeTextChanged.emit()
 
     @Slot(object)
     def _handle_task_status(self, task: DownloadTask):
@@ -4779,13 +4811,14 @@ class AppBridge(QObject):
 
     @Slot(int)
     def _handle_throttled(self, new_count: int):
-        old_count = self._threads_count
-        self._threads_count = new_count
-        self.threadsCountChanged.emit()
-        if new_count < old_count:
-            logger.info(f"Download threads lowered to {new_count} to avoid rate limiting.", category="system")
-        elif new_count > old_count:
-            logger.debug(f"Download threads raised to {new_count}.", category="system")
+        if self._threads_count != new_count:
+            old_count = self._threads_count
+            self._threads_count = new_count
+            self.threadsCountChanged.emit()
+            if new_count < old_count:
+                logger.info(f"Download threads lowered to {new_count} to avoid rate limiting.", category="system")
+            elif new_count > old_count:
+                logger.debug(f"Download threads raised to {new_count}.", category="system")
 
     @Slot(bool)
     def _handle_pause_changed(self, paused: bool):
@@ -5339,14 +5372,20 @@ class AppBridge(QObject):
                     cutoffs = {}
                     for (svc, uid), c_tasks in grouped.items():
                         posts_state = {}
+                        posts_all_404 = {}
                         for _t in c_tasks:
                             pid = str(getattr(_t, "post_id", "") or "")
                             date = getattr(_t, "post_date", "") or ""
                             ok = getattr(_t, "status", "") in ("completed", "skipped")
+                            err = str(getattr(_t, "error_msg", "") or "")
+                            is_404 = "404" in err or "not exist" in err.lower()
                             prev = posts_state.get(pid)
                             posts_state[pid] = (date or (prev[0] if prev else ""), ok and (prev[1] if prev else True))
+                            if not ok:
+                                posts_all_404[pid] = posts_all_404.get(pid, True) and is_404
                         done_posts = [(d, p) for p, (d, ok) in posts_state.items() if ok]
-                        open_posts = [(d, p) for p, (d, ok) in posts_state.items() if not ok]
+                        # Don't let posts that permanently 404 block cutoff advancement forever
+                        open_posts = [(d, p) for p, (d, ok) in posts_state.items() if not ok and not posts_all_404.get(p, False)]
 
                         existing = self._watchlist_manager._find(uid, svc)
                         if not existing:
@@ -5355,14 +5394,34 @@ class AppBridge(QObject):
 
                         if existing:
                             done_posts += self._watchlist_pending_updates.pop((existing.service.lower(), existing.user_id.lower()), None) or []
+
+                        if done_posts:
+                            newest_done_date, newest_done_pid = max(done_posts, key=lambda dp: _post_order_key(dp[0], dp[1]))
+                            done_day_ids = sorted({p for d, p in done_posts if d == newest_done_date and p})
+                        else:
+                            newest_done_date, newest_done_pid, done_day_ids = "", "", []
+
                         c_latest_pid, c_latest_date, c_day_ids = watchlist_cutoff(done_posts, open_posts)
-                        cutoffs[(svc, uid)] = (c_latest_pid, c_latest_date)
+                        eff_pid = c_latest_pid or newest_done_pid
+                        eff_date = c_latest_date or newest_done_date
+                        eff_day_ids = c_day_ids or done_day_ids
+                        cutoffs[(svc, uid)] = (eff_pid, eff_date)
 
                         if existing:
-                            if c_latest_date or c_latest_pid:
+                            if eff_date or eff_pid:
                                 self._watchlist_manager.update_last_download(
                                     existing.user_id, existing.service,
-                                    c_latest_pid, c_latest_date, day_ids=c_day_ids
+                                    eff_pid, eff_date, day_ids=eff_day_ids
+                                )
+                            # Resolve completed posts from cached_new_posts so pending update badges update immediately
+                            done_pids = [p for d, p in done_posts if p]
+                            if done_pids:
+                                self._watchlist_manager.resolve_posts(
+                                    existing.user_id, existing.service,
+                                    post_ids=done_pids,
+                                    latest_post_id=eff_pid,
+                                    latest_post_date=eff_date,
+                                    day_ids=eff_day_ids
                                 )
                             # ONLY assign download_dir if it was previously empty (protect manual changes!)
                             if not existing.download_dir:
@@ -5400,6 +5459,7 @@ class AppBridge(QObject):
                         )
 
                     self._watchlist_pending_updates.clear()
+                    self._watchlist_model.update_new_counts()
                     self._watchlist_model.refresh()
                     self.watchlistChanged.emit()
             except Exception as e:
@@ -5457,6 +5517,48 @@ class AppBridge(QObject):
         self.watchlistCheckStarted.emit()
         threading.Thread(target=self._async_watchlist_check, daemon=True).start()
 
+    def _check_and_resolve_if_already_downloaded(self, entry, new_posts: list) -> list:
+        """If all files in new_posts already exist on disk or in the download archive,
+        auto-advance the cutoff to the latest post and return an empty list so no false
+        update badge is displayed."""
+        if not new_posts:
+            return []
+        try:
+            options = self._get_effective_watchlist_options(entry)
+            artist_folder = self.resolve_artist_download_dir(entry)
+            tasks = self.downloader.build_tasks_from_posts(
+                posts=new_posts,
+                creator_name=entry.creator_name,
+                service=entry.service,
+                domain=entry.domain,
+                base_dir=self._download_dir,
+                options=options,
+                batch_id=f"check_{entry.service}_{entry.user_id}",
+                artist_dir=artist_folder,
+                user_id=entry.user_id
+            )
+            if not tasks:
+                # All files across new_posts were already archived, on disk, or filtered
+                latest_p = new_posts[-1]
+                latest_pid = str(latest_p.get("id", ""))
+                latest_pdate = self._post_day(latest_p)
+                latest_day_ids = [str(p.get("id", "")) for p in new_posts if self._post_day(p) == latest_pdate]
+                self._watchlist_manager.resolve_posts(
+                    entry.user_id,
+                    entry.service,
+                    post_ids=None,
+                    latest_post_id=latest_pid,
+                    latest_post_date=latest_pdate,
+                    day_ids=latest_day_ids
+                )
+                entry.new_post_count = 0
+                entry.cached_new_posts = []
+                self._watchlist_manager.save()
+                return []
+        except Exception as e:
+            logger.debug(f"Watchlist check pre-flight verification error: {e}", category="watchlist")
+        return new_posts
+
     @Slot(str, str)
     def checkWatchlistArtist(self, userId: str, service: str):
         """Asynchronously check a single watchlist artist for new posts."""
@@ -5473,6 +5575,7 @@ class AppBridge(QObject):
         def _run():
             try:
                 new_posts = self._watchlist_manager.get_posts_since(entry, self.api_client)
+                new_posts = self._check_and_resolve_if_already_downloaded(entry, new_posts)
                 count = len(new_posts)
                 entry.new_post_count = count
             except Exception as e:
@@ -6240,6 +6343,7 @@ class AppBridge(QObject):
                 continue
             try:
                 new = self._watchlist_manager.get_posts_since(entry, self.api_client)
+                new = self._check_and_resolve_if_already_downloaded(entry, new)
                 entry.new_post_count = len(new)
                 total_new += len(new)
                 if new:
@@ -6256,7 +6360,6 @@ class AppBridge(QObject):
         """Main-thread handler: refresh model and emit finished signal."""
         total_new = result[0] if result else 0
         self._watchlist_model.update_new_counts()
-        self._watchlist_model.refresh()
         self.watchlistCheckFinished.emit(total_new)
         if total_new > 0:
             logger.success(
@@ -6272,7 +6375,6 @@ class AppBridge(QObject):
         entry = self._watchlist_manager._find(userId, service)
         name = entry.creator_name if entry else f"{userId} [{service}]"
         self._watchlist_model.update_new_counts()
-        self._watchlist_model.refresh()
         self.watchlistArtistChecking.emit(userId, service, False)
         self.watchlistArtistChecked.emit(userId, service, count)
         self.watchlistChanged.emit()

@@ -10,6 +10,7 @@ When disabled, the database is completely inactive and does not touch disk or pe
 import os
 import re
 import json
+import time
 import sqlite3
 import datetime
 import threading

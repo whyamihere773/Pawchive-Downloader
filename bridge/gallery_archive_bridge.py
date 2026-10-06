@@ -413,6 +413,7 @@ class GalleryArchiveBridge(QObject):
         sizes = [path_size(s) for s in sources]
         meter = ProgressMeter(sum(sizes))
         copied_total = [0]
+        last_copy_emit = [0.0]
         outputs, errors = [], []
 
         for i, src in enumerate(sources):
@@ -425,6 +426,10 @@ class GalleryArchiveBridge(QObject):
 
             def on_bytes(n, i=i, name=name, status=status):
                 copied_total[0] += n
+                now = time.time()
+                if now - last_copy_emit[0] < 0.1:
+                    return
+                last_copy_emit[0] = now
                 info = meter.sample(copied_total[0])
                 info.update({"name": name, "status": status, "index": i, "count": len(sources)})
                 self.jobProgress.emit(info)
@@ -483,6 +488,11 @@ class GalleryArchiveBridge(QObject):
                   index: int, count: int, name: str, status: str):
         """Report progress weighted by bytes, so the ETA isn't thrown off by one huge item."""
         pct = max(0.0, min(100.0, pct))
+        now = time.time()
+        last_t = getattr(self, "_last_job_progress_time", 0.0)
+        if pct < 100.0 and (now - last_t < 0.1):
+            return
+        self._last_job_progress_time = now
         info = meter.sample(done_before + item_size * pct / 100.0)
         if not meter.total:
             info["percent"] = ((index + pct / 100.0) / max(1, count)) * 100.0

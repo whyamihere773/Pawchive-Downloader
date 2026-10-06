@@ -3,25 +3,44 @@ Console Log Model
 Thread-safe Qt model streaming application and network logs into the QML console interface.
 """
 
-from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt, Signal, Slot, QObject
+import threading
+from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt, Signal, Slot, QObject, QTimer
 from typing import List
 from core.logger import LogEntry, LogLevel, logger
 
 
 class _ThreadSafeLogDispatcher(QObject):
     """
-    Bridges background-thread logger calls to the main Qt thread via signal emission.
-    Signal.emit() is thread-safe in Qt; the connected slot will be invoked on the
-    receiver's thread via an automatically queued connection.
+    Bridges background-thread logger calls to the main Qt thread via batched signal emission.
+    Enqueues incoming LogEntries into a thread-safe buffer and signals the main thread,
+    coalescing high-frequency log bursts to protect the GUI event loop.
     """
-    entryReceived = Signal(object)   # carries a LogEntry instance
+    entriesReady = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self._lock = threading.Lock()
+        self._queue: List[LogEntry] = []
+        self._signal_pending = False
 
     def push(self, entry: LogEntry):
-        """Called from any thread — safely queues the entry to the main thread."""
-        try:
-            self.entryReceived.emit(entry)
-        except (RuntimeError, ReferenceError):
-            pass
+        """Called from any thread — safely enqueues the entry and signals the main thread."""
+        with self._lock:
+            self._queue.append(entry)
+            if not self._signal_pending:
+                self._signal_pending = True
+                try:
+                    self.entriesReady.emit()
+                except (RuntimeError, ReferenceError):
+                    pass
+
+    def drain(self) -> List[LogEntry]:
+        """Called on main thread — pops all pending log entries atomically."""
+        with self._lock:
+            self._signal_pending = False
+            batch = self._queue
+            self._queue = []
+            return batch
 
 
 # Module-level singleton dispatcher — created once on the main thread
@@ -47,7 +66,13 @@ class LogModel(QAbstractListModel):
         self._status_only: bool = False
 
         # Register ourselves with the global dispatcher (main thread connection)
-        _dispatcher.entryReceived.connect(self._on_new_log, Qt.QueuedConnection)
+        _dispatcher.entriesReady.connect(self._on_entries_ready, Qt.QueuedConnection)
+
+        # Batch flush timer to throttle high-frequency log bursts to max ~16 Hz (60 ms)
+        self._flush_timer = QTimer(self)
+        self._flush_timer.setSingleShot(True)
+        self._flush_timer.setInterval(60)
+        self._flush_timer.timeout.connect(self._flush_pending_logs)
 
         # Register dispatcher.push as the logger listener (safe to call from any thread)
         logger.add_listener(_dispatcher.push)
@@ -125,24 +150,49 @@ class LogModel(QAbstractListModel):
     MAX_LOG_ENTRIES = 1500
     PRUNE_BATCH_SIZE = 200
 
-    # ── Slot runs on the main thread ──────────────────────────────────────────
-    @Slot(object)
-    def _on_new_log(self, entry: LogEntry):
-        self._all_entries.append(entry)
+    # ── Batched slots run on the main thread ──────────────────────────────────
+    @Slot()
+    def _on_entries_ready(self):
+        if not self._flush_timer.isActive():
+            self._flush_timer.start()
+
+    @Slot()
+    def _flush_pending_logs(self):
+        entries = _dispatcher.drain()
+        if not entries:
+            return
+
+        self._all_entries.extend(entries)
+
+        # 1. Drop oldest lines in a single remove operation if over limit
         if len(self._all_entries) > self.MAX_LOG_ENTRIES:
-            # Drop the oldest lines as removed rows (a full reset made the console jump back to the
-            # top and rebuild every visible row while scrolled)
-            pruned = {id(e) for e in self._all_entries[:self.PRUNE_BATCH_SIZE]}
-            del self._all_entries[:self.PRUNE_BATCH_SIZE]
+            excess = len(self._all_entries) - self.MAX_LOG_ENTRIES
+            prune_count = max(excess, self.PRUNE_BATCH_SIZE)
+            pruned_ids = {id(e) for e in self._all_entries[:prune_count]}
+            del self._all_entries[:prune_count]
+
             k = 0
-            while k < len(self._filtered_entries) and id(self._filtered_entries[k]) in pruned:
+            while k < len(self._filtered_entries) and id(self._filtered_entries[k]) in pruned_ids:
                 k += 1
-            if k:
+            if k > 0:
                 self.beginRemoveRows(QModelIndex(), 0, k - 1)
                 del self._filtered_entries[:k]
                 self.endRemoveRows()
-                self.countChanged.emit()
 
+        # 2. Filter incoming batch and insert in a single contiguous block
+        matching = [e for e in entries if self._matches_filter(e)]
+        if matching:
+            pos = len(self._filtered_entries)
+            self.beginInsertRows(QModelIndex(), pos, pos + len(matching) - 1)
+            self._filtered_entries.extend(matching)
+            self.endInsertRows()
+
+        self.countChanged.emit()
+
+    @Slot(object)
+    def _on_new_log(self, entry: LogEntry):
+        """Compatibility fallback for direct single-entry calls."""
+        self._all_entries.append(entry)
         if self._matches_filter(entry):
             pos = len(self._filtered_entries)
             self.beginInsertRows(QModelIndex(), pos, pos)

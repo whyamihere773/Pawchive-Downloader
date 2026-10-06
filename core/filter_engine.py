@@ -872,16 +872,16 @@ class FilterEngine:
                 # E.g. https://img.pawchive.pw/thumbnail/data/... -> https://file.pawchive.pw/data/...
                 # E.g. /thumbnail/data/... -> /data/...
                 full_url = m
-                if "/thumbnail/data/" in full_url:
-                    full_url = full_url.replace("/thumbnail/data/", "/data/")
-                    if "img.pawchive.pw" in full_url:
-                        full_url = full_url.replace("img.pawchive.pw", "file.pawchive.pw")
-                    elif re.search(r"img\.kemono\.[a-z]+", full_url):
-                        full_url = re.sub(r"img\.kemono\.[a-z]+", "kemono.cr", full_url)
-                    elif re.search(r"img\.coomer\.[a-z]+", full_url):
-                        full_url = re.sub(r"img\.coomer\.[a-z]+", "coomer.st", full_url)
-                    elif "img.cum.st" in full_url:
-                        full_url = full_url.replace("img.cum.st", "cum.st")
+                if "/thumbnail/" in full_url:
+                    full_url = full_url.replace("/thumbnail/data/", "/data/").replace("/thumbnail/", "/")
+                if "img.pawchive.pw" in full_url:
+                    full_url = full_url.replace("img.pawchive.pw", "file.pawchive.pw")
+                elif re.search(r'(?:img|[a-z0-9]+)\.kemono\.[a-z]+', full_url):
+                    full_url = re.sub(r'(?:img|[a-z0-9]+)\.kemono\.[a-z]+', 'file.pawchive.pw', full_url)
+                elif re.search(r'(?:img|[a-z0-9]+)\.coomer\.[a-z]+', full_url):
+                    full_url = re.sub(r'(?:img|[a-z0-9]+)\.coomer\.[a-z]+', 'cum.st', full_url)
+                elif "img.cum.st" in full_url:
+                    full_url = full_url.replace("img.cum.st", "cum.st")
 
                 # Deduplicate by key (/data/xx/yy/... or filename)
                 match_rel = re.search(r'/(?:data/)?([0-9a-f]{2}/[0-9a-f]{2}/[^\s?#]+)', full_url, re.IGNORECASE)

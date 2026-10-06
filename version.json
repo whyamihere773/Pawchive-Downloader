@@ -1,8 +1,8 @@
 {
-    "version": "1.2.4",
+    "version": "1.2.5",
     "commit": "",
     "short_commit": "",
-    "date": "2026-10-05",
+    "date": "2026-10-06",
     "channel": "release",
     "history": [
         {
@@ -129,6 +129,11 @@
             "version": "1.2.4",
             "date": "2026-10-05",
             "notes": "Performance & responsiveness overhaul: smooth UI during large queue batches, archive tab loading, and multi-video downloads (asynchronous disk streaming & database indexing). Fixed failed task retry mechanism, restored video playback in Gallery, and consolidated post metadata into a single post_info.txt when subfolder per post is off."
+        },
+        {
+            "version": "1.2.5",
+            "date": "2026-10-06",
+            "notes": "Full GUI responsiveness overhaul eliminating UI stutter and freezing during high-speed downloads, logging, and queue updates. Fixed Watchlist update badge persistence, resolved first-time creator downloads grabbing low-res images instead of full resolution, fixed large zip archive downloads stalling or failing, and resolved Archive statistics crash."
         }
     ]
 }

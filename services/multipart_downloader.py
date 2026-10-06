@@ -145,13 +145,21 @@ def _do_download_multipart_file(
 
     content_length_str = probe_resp.headers.get("Content-Length")
     accept_ranges = probe_resp.headers.get("Accept-Ranges", "").lower()
+    content_range = probe_resp.headers.get("Content-Range", "")
     is_partial_capable = (
         probe_resp.status_code == 206
         or "bytes" in accept_ranges
-        or probe_resp.headers.get("Content-Range") is not None
+        or bool(content_range)
     )
 
-    total_size = int(content_length_str) if content_length_str and content_length_str.isdigit() else 0
+    total_size = 0
+    if content_range and "/" in content_range:
+        total_part = content_range.split("/")[-1].strip()
+        if total_part.isdigit():
+            total_size = int(total_part)
+    if not total_size and content_length_str and content_length_str.isdigit():
+        total_size = int(content_length_str)
+
     try:
         probe_resp.close()
     except Exception:

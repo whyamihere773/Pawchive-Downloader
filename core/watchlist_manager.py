@@ -156,6 +156,7 @@ class WatchlistManager:
         if post_id:
             ids.add(post_id)
         cur_day = _day(e.last_post_date)
+        existing_ids = set(getattr(e, "cutoff_day_ids", []) or [])
         if day and (not cur_day or day > cur_day):
             e.last_post_date = day
             e.last_post_id = post_id
@@ -163,7 +164,7 @@ class WatchlistManager:
         elif day and day == cur_day:
             if post_id and (not e.last_post_id or post_id_is_newer(post_id, e.last_post_id)):
                 e.last_post_id = post_id
-            e.cutoff_day_ids = sorted(set(e.cutoff_day_ids) | ids)
+            e.cutoff_day_ids = sorted(existing_ids | ids)
         elif not day and post_id and not e.last_post_id:
             e.last_post_id = post_id
 
@@ -325,6 +326,10 @@ class WatchlistManager:
             else:
                 if latest_post_date or latest_post_id:
                     self._advance_cutoff(existing, latest_post_id, latest_post_date, day_ids)
+                existing.new_post_count = 0
+                existing.cached_new_posts = []
+
+            if existing.new_post_count <= 0:
                 existing.new_post_count = 0
                 existing.cached_new_posts = []
 
@@ -613,14 +618,20 @@ class WatchlistManager:
                             found_cutoff_id_on_page = True
                         elif post_id in known_day_ids:
                             pass   # already downloaded on that day
+                        elif post_id and cutoff_id and post_id.isdigit() and cutoff_id.isdigit():
+                            if int(post_id) > int(cutoff_id):
+                                new_posts.append(p)
+                            # else: already downloaded (older post on same day)
+                        elif post_id and getattr(entry, "cutoff_day_ids", None):
+                            # Non-numeric IDs: anything not in the downloaded list for that day is new
+                            new_posts.append(p)
+                        elif not cutoff_id and not known_day_ids:
+                            # When cutoff date is set but cutoff_id is empty, posts on cutoff date are already covered
+                            pass
                         elif not cutoff_id or post_id_is_newer(post_id, cutoff_id):
                             # Same date, posted after the last download — new
                             new_posts.append(p)
-                        elif not (post_id.isdigit() and cutoff_id.isdigit()) and getattr(entry, "cutoff_day_ids", None):
-                            # Non-numeric IDs: anything not in the downloaded list for that day is new
-                            new_posts.append(p)
-                        # Same date but older than the last download: already downloaded. (Counting
-                        # these as new made the Watchlist ask for the same posts again on every launch.)
+                        # Same date but older than the last download: already downloaded.
                     # pub < cutoff: skip this post (too old)
                 else:
                     # No cutoff at all — include everything
