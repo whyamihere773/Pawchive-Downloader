@@ -1093,6 +1093,7 @@
   "watchlist_add_url_label": "Ссылка на автора (Pawchive / cum.st):",
   "watchlist_browse_tip": "Изменить папку загрузки для этого автора",
   "watchlist_check_all_tip": "Проверить новые посты всех отслеживаемых авторов",
+  "watchlist_stop_check_tip": "Остановить проверку (следующая продолжит с этого места)",
   "watchlist_checking": "Проверка…",
   "watchlist_clear_filters": "Сбросить фильтры",
   "watchlist_download_all": "Скачать всё",

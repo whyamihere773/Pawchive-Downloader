@@ -1093,6 +1093,7 @@
   "watchlist_add_url_label": "아티스트 URL (Pawchive / cum.st):",
   "watchlist_browse_tip": "이 아티스트의 다운로드 폴더 변경",
   "watchlist_check_all_tip": "팔로우한 모든 아티스트의 새 게시물 확인",
+  "watchlist_stop_check_tip": "확인 중지 (다음 확인은 여기서부터 이어집니다)",
   "watchlist_checking": "확인 중…",
   "watchlist_clear_filters": "필터 지우기",
   "watchlist_download_all": "모두 다운로드",

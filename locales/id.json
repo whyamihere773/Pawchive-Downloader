@@ -1093,6 +1093,7 @@
   "watchlist_add_url_label": "URL Artis (Pawchive / cum.st):",
   "watchlist_browse_tip": "Ganti folder unduhan untuk artis ini",
   "watchlist_check_all_tip": "Periksa postingan baru dari semua artis yang diikuti",
+  "watchlist_stop_check_tip": "Hentikan pemeriksaan (pemeriksaan berikutnya dilanjutkan dari sini)",
   "watchlist_checking": "Memeriksa…",
   "watchlist_clear_filters": "Hapus Filter",
   "watchlist_download_all": "Unduh Semua",

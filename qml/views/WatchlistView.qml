@@ -28,6 +28,8 @@ Item {
 
     // ── Watchlist check & filter state ─────────────────────────────────────────
     property bool isChecking: false
+    property int  checkDone: 0      // progress of "Check All"
+    property int  checkTotal: 0
     property int  lastNewCount: -1  // -1 = never checked
     property var  checkingArtists: ({})
     property string searchText: ""
@@ -50,7 +52,8 @@ Item {
                 addErrorText.text = root.tr("watchlist_error_invalid_url", "Invalid URL or creator could not be resolved.")
             }
         }
-        function onWatchlistCheckStarted() { root.isChecking = true }
+        function onWatchlistCheckStarted() { root.isChecking = true; root.checkDone = 0; root.checkTotal = 0 }
+        function onWatchlistCheckProgress(done, total) { root.checkDone = done; root.checkTotal = total }
         function onWatchlistCheckFinished(n) {
             root.isChecking = false
             root.lastNewCount = n
@@ -411,7 +414,7 @@ Item {
                         Text {
                             anchors.verticalCenter: parent.verticalCenter
                             text: root.isChecking
-                                  ? root.tr("watchlist_checking", "Checking…")
+                                  ? root.tr("watchlist_checking", "Checking…") + (root.checkTotal > 0 ? "  " + root.checkDone + " / " + root.checkTotal : "")
                                   : (root.width < 820 ? root.tr("watchlist_check_artist", "Check") : root.tr("watchlist_check_all", "Check All"))
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 11
@@ -425,11 +428,12 @@ Item {
                         anchors.fill: parent
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
-                        enabled: !root.isChecking
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 300
-                        ToolTip.text: root.tr("watchlist_check_all_tip", "Check all followed artists for new posts")
-                        onClicked: if (bridge) bridge.checkWatchlist()
+                        ToolTip.text: root.isChecking
+                                      ? root.tr("watchlist_stop_check_tip", "Stop checking (the next check continues from here)")
+                                      : root.tr("watchlist_check_all_tip", "Check all followed artists for new posts")
+                        onClicked: if (bridge) bridge.checkWatchlist()   // while checking: stops it
                     }
                 }
             }

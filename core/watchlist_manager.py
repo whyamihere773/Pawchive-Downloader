@@ -8,13 +8,14 @@ background thread to keep the GUI responsive.
 import json
 import os
 import datetime
+import shutil
 import threading
 import time
 from dataclasses import dataclass, field, asdict
 from typing import List, Optional, Dict, Any
 
 from core.logger import logger
-from core.atomic_io import atomic_write_json
+from core.watchlist_store import WatchlistStore
 
 
 @dataclass
@@ -37,6 +38,31 @@ class WatchlistEntry:
     # Posts from the last-download date that are already downloaded. Sites with non-numeric post IDs
     # (Boosty, cum.st) can't tell which same-day post came first, so they're remembered by ID.
     cutoff_day_ids: List[str] = field(default_factory=list)
+    last_checked_at: float = 0.0   # when a check last finished for this creator (time.time())
+
+    def __setattr__(self, name, value):
+        object.__setattr__(self, name, value)
+        # The manager is told which creators changed, so a save writes only those
+        hook = self.__dict__.get("_changed")
+        if hook is not None and name[0] != "_":
+            hook(self, name)
+
+    def store_fields(self) -> Dict[str, Any]:
+        """What's saved for this creator, apart from its settings and the updates found."""
+        dirs = list(self.download_dirs or [])
+        if self.download_dir and self.download_dir not in dirs:
+            dirs.insert(0, self.download_dir)
+        d = {
+            "url": self.url, "service": self.service, "domain": self.domain, "user_id": self.user_id,
+            "creator_name": self.creator_name, "last_post_id": self.last_post_id,
+            "last_post_date": self.last_post_date, "added_at": self.added_at, "auto_check": self.auto_check,
+            "download_dir": self.download_dir or (dirs[0] if dirs else ""), "download_dirs": dirs,
+            "ignored_post_ids": list(self.ignored_post_ids or []),
+            "cutoff_day_ids": list(self.cutoff_day_ids or []),
+        }
+        if self.last_checked_at:
+            d["last_checked_at"] = self.last_checked_at
+        return d
 
     def to_dict(self) -> Dict[str, Any]:
         # Sync primary download_dir with the first valid entry in download_dirs
@@ -48,6 +74,8 @@ class WatchlistEntry:
         d = asdict(self)
         d.pop("new_post_count", None)   # don't persist transient field
         d.pop("cached_new_posts", None) # don't persist transient field
+        if not d.get("last_checked_at"):
+            d.pop("last_checked_at", None)
         return d
 
     @classmethod
@@ -79,6 +107,7 @@ class WatchlistEntry:
             ignored_post_ids=list(d.get("ignored_post_ids", [])) if isinstance(d.get("ignored_post_ids"), list) else [],
             cached_new_posts=[],
             cutoff_day_ids=[str(x) for x in d.get("cutoff_day_ids", [])] if isinstance(d.get("cutoff_day_ids"), list) else [],
+            last_checked_at=float(d.get("last_checked_at") or 0.0),
         )
 
 
@@ -98,6 +127,99 @@ def _day(date_str: str) -> str:
     return s.split("T")[0] if "T" in s else s[:10]
 
 
+def trim_post(p: Dict[str, Any]) -> Dict[str, Any]:
+    """The part of a found post that's kept across restarts: what the updates list shows (title,
+    date, file count) and what marking it done / ignored needs (id, dates). Downloads fetch the post
+    again."""
+    out = {k: p[k] for k in ("id", "title", "published", "added") if p.get(k) not in (None, "")}
+
+    def _f(f):
+        return {k: f[k] for k in ("name", "path", "storageKey") if f.get(k)}
+    f = p.get("file")
+    if isinstance(f, dict) and (f.get("path") or f.get("storageKey")):
+        out["file"] = _f(f)
+    atts = [_f(a) for a in (p.get("attachments") or []) if isinstance(a, dict) and (a.get("path") or a.get("storageKey"))]
+    if atts:
+        out["attachments"] = atts
+    return out
+
+
+def _keep_aside(path: str) -> Optional[str]:
+    """Renames an imported file to "<name>.migrated" (never deleted: it can still be opened or put
+    back by hand). An earlier .migrated file isn't overwritten."""
+    target = path + ".migrated"
+    n = 2
+    while os.path.exists(target):
+        target = f"{path}.migrated-{n}"
+        n += 1
+    try:
+        os.replace(path, target)
+        return target
+    except OSError as e:
+        logger.warning(f"Couldn't rename {os.path.basename(path)} after importing it: {e}", category="watchlist")
+        return None
+
+
+class _TrackedList(list):
+    """The creator list. The manager hears of every change to it (its lookup index and its saves
+    follow the list, also when code edits the list directly)."""
+    __slots__ = ("_on_change",)
+
+    def __init__(self, items=(), on_change=None):
+        super().__init__(items)
+        self._on_change = on_change
+
+    def _changed(self):
+        if self._on_change is not None:
+            self._on_change()
+
+    def append(self, x):
+        super().append(x)
+        self._changed()
+
+    def extend(self, xs):
+        super().extend(xs)
+        self._changed()
+
+    def insert(self, i, x):
+        super().insert(i, x)
+        self._changed()
+
+    def remove(self, x):
+        super().remove(x)
+        self._changed()
+
+    def pop(self, *a):
+        r = super().pop(*a)
+        self._changed()
+        return r
+
+    def clear(self):
+        super().clear()
+        self._changed()
+
+    def sort(self, *a, **kw):
+        super().sort(*a, **kw)
+        self._changed()
+
+    def reverse(self):
+        super().reverse()
+        self._changed()
+
+    def __setitem__(self, i, x):
+        super().__setitem__(i, x)
+        self._changed()
+
+    def __delitem__(self, i):
+        super().__delitem__(i)
+        self._changed()
+
+    def __iadd__(self, xs):
+        r = super().__iadd__(xs)
+        self._changed()
+        return r
+
+
 class WatchlistManager:
     """
     Manages persistent watchlist of followed artists.
@@ -109,44 +231,267 @@ class WatchlistManager:
 
     def __init__(self, config_dir: str):
         self.config_dir = config_dir
+        # The watchlist lives in watchlist.db (one row per creator; a save writes only the creators
+        # that changed). Older versions' watchlist.json is imported once and kept as .migrated.
         self.watchlist_file = os.path.join(config_dir, "watchlist.json")
-        self.entries: List[WatchlistEntry] = []
+        self.db_file = os.path.join(config_dir, "watchlist.db")
+        self.store = WatchlistStore(self.db_file)
+        self._index_stale = True
+        self._entries: _TrackedList = _TrackedList((), self._list_changed)
         # Checks run in background threads while the window edits entries
         self._lock = threading.RLock()
         # With background_saves on (the app), save() only marks the watchlist changed and a writer
-        # thread writes it: rewriting a big watchlist.json on the window thread stalled it on every
-        # click. A burst of changes is written once; flush() writes what's pending (on close).
+        # thread writes it, so the window never waits for the disk. A burst of changes is written
+        # once; flush() writes what's pending (on close).
         self.background_saves = False
         self._save_gen = 0
         self._saved_gen = 0
         self._save_wanted = threading.Event()
         self._write_lock = threading.Lock()
         self._writer: Optional[threading.Thread] = None
+        self._write_failures = 0
+        # Change tracking: creators get a row id; the ones changed since the last save are written
+        self._next_rid = 1
+        self._seq_min = 0
+        self._seq_max = 0
+        self._dirty: Dict[int, WatchlistEntry] = {}
+        self._deleted: set = set()
+        self._members: Dict[int, WatchlistEntry] = {}       # rid -> creator, as of the last look at the list
+        self._write_all = False
+        # (user id, service) -> creator: finding a creator was a walk through the whole list
+        self._index: Dict[tuple, WatchlistEntry] = {}
+        self._index_src: Optional[list] = None
+        self._index_len = -1
+        self._index_stale = True
+
+    @property
+    def entries(self) -> List[WatchlistEntry]:
+        return self._entries
+
+    @entries.setter
+    def entries(self, value) -> None:
+        self._entries = _TrackedList(value or (), self._list_changed)
+        self._index_stale = True
+
+    def _list_changed(self) -> None:
+        self._index_stale = True
+
+    # ── Change tracking ────────────────────────────────────────────────────────
+
+    def _entry_changed(self, e: WatchlistEntry, name: str) -> None:
+        with self._lock:
+            rid = e.__dict__.get("_rid")
+            if rid is not None:
+                self._dirty[rid] = e
+            if name in ("user_id", "service"):
+                self._index_stale = True
+
+    def _adopt(self, e: WatchlistEntry, at_head: bool = False, rid: Optional[int] = None,
+               seq: Optional[int] = None) -> None:
+        """Gives a creator its row id and position and starts tracking its changes."""
+        if e.__dict__.get("_rid") is None:
+            if rid is None:
+                rid = self._next_rid
+            self._next_rid = max(self._next_rid, rid + 1)
+            if seq is None:
+                if at_head:
+                    self._seq_min -= 1
+                    seq = self._seq_min
+                else:
+                    self._seq_max += 1
+                    seq = self._seq_max
+            self._seq_min = min(self._seq_min, seq)
+            self._seq_max = max(self._seq_max, seq)
+            object.__setattr__(e, "_rid", rid)
+            object.__setattr__(e, "_seq", seq)
+            self._dirty[rid] = e
+        object.__setattr__(e, "_changed", self._entry_changed)
+
+    def _sync_members_locked(self, force: bool = False) -> None:
+        """The list is what counts: creators put into or taken out of it directly (older code, tests)
+        are noticed here, given row ids, and saved or removed."""
+        ents = self._entries
+        if not force and not self._index_stale and ents is self._index_src:
+            return
+        index: Dict[tuple, WatchlistEntry] = {}
+        current: Dict[int, WatchlistEntry] = {}
+        for i, e in enumerate(ents):
+            if e.__dict__.get("_rid") is None or e.__dict__.get("_changed") is None:
+                self._adopt(e, at_head=(i == 0 and len(ents) > 1))
+            rid = e.__dict__["_rid"]
+            if rid in current and current[rid] is not e:
+                object.__setattr__(e, "_rid", None)          # a copy of another creator's object
+                self._adopt(e)
+                rid = e.__dict__["_rid"]
+            current[rid] = e
+            index.setdefault(((e.user_id or "").strip().lower(), (e.service or "").strip().lower()), e)
+        for rid in self._members.keys() - current.keys():
+            self._deleted.add(rid)
+            self._dirty.pop(rid, None)
+        self._members = current
+        self._index = index
+        self._index_src = ents
+        self._index_len = len(ents)
+        self._index_stale = False
 
     # ── Persistence ────────────────────────────────────────────────────────────
 
     def load(self):
         """Load entries from disk. Safe to call multiple times."""
-        if not os.path.exists(self.watchlist_file):
-            self.entries = []
-            return
+        with self._lock:
+            self._reset_tracking()
+            entries, source = self._read_storage()
+            self.entries = entries
+            self._sync_members_locked(force=True)
+            self._dirty.clear()
+            self._deleted.clear()
+            if source in ("json", "restored"):
+                self._write_all = True
+                self._save_gen += 1
+        if source == "json":
+            self._import_finished()
+        elif source == "restored":
+            self._write_pending(force=True)
+        elif source == "db+json":
+            self._merge_legacy_json()
+        if entries:
+            logger.info(f"Watchlist loaded: {len(entries)} artist(s) tracked.", category="watchlist")
+            self._backup_in_background()
 
+    def _reset_tracking(self) -> None:
+        self._dirty = {}
+        self._deleted = set()
+        self._members = {}
+        self._index_src = None
+        self._index_stale = True
+        self._write_all = False
+        self._next_rid, self._seq_min, self._seq_max = 1, 0, 0
+
+    def _entries_from_rows(self, rows) -> List[WatchlistEntry]:
+        entries = []
+        for rid, pos, d, new_posts in rows:
+            e = WatchlistEntry.from_dict(d)
+            e.cached_new_posts = list(new_posts or [])
+            e.new_post_count = len(e.cached_new_posts)
+            self._adopt(e, rid=rid, seq=pos)
+            entries.append(e)
+        return entries
+
+    def _read_storage(self):
+        """(entries, where they came from): the database; its backup if it's damaged; else an older
+        version's watchlist.json."""
+        damaged = False
+        if self.store.exists():
+            for attempt in ("db", "backup"):
+                try:
+                    entries = self._entries_from_rows(self.store.load())
+                    if attempt == "backup":
+                        logger.warning(f"Watchlist restored from its backup ({len(entries)} artist(s)).",
+                                       category="watchlist")
+                    has_json = os.path.exists(self.watchlist_file)
+                    if entries or not has_json:
+                        return entries, ("db+json" if has_json else "db")
+                    break                         # empty database next to a watchlist.json: import it
+                except Exception as e:
+                    damaged = True
+                    self._next_rid, self._seq_min, self._seq_max = 1, 0, 0
+                    kept = self.store.set_aside()
+                    logger.error(f"The watchlist database couldn't be read ({e}); it was kept as "
+                                 f"{os.path.basename(kept) if kept else os.path.basename(self.db_file)}.",
+                                 category="watchlist")
+                    bak = self.db_file + ".bak"
+                    if attempt == "db" and kept and os.path.exists(bak):
+                        try:
+                            shutil.copy2(bak, self.db_file)
+                            continue
+                        except OSError:
+                            pass
+                    break
+        legacy = self._read_legacy_json(self.watchlist_file)
+        if legacy is not None:
+            for i, e in enumerate(legacy):
+                self._adopt(e, seq=i)
+            return legacy, "json"
+        if damaged:
+            # Database damaged and no backup: the last imported watchlist.json is better than nothing
+            newest = None
+            for name in os.listdir(self.config_dir):
+                if name.startswith("watchlist.json.migrated"):
+                    path = os.path.join(self.config_dir, name)
+                    if newest is None or os.path.getmtime(path) > os.path.getmtime(newest):
+                        newest = path
+            legacy = self._read_legacy_json(newest) if newest else None
+            if legacy:
+                logger.warning(f"Watchlist restored from {os.path.basename(newest)} "
+                               f"(changes made after it was imported are missing).", category="watchlist")
+                for i, e in enumerate(legacy):
+                    self._adopt(e, seq=i)
+                return legacy, "restored"
+        return [], "empty"
+
+    @staticmethod
+    def _read_legacy_json(path: str) -> Optional[List[WatchlistEntry]]:
+        if not os.path.exists(path):
+            return None
         try:
-            with open(self.watchlist_file, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             raw_entries = data.get("entries", []) if isinstance(data, dict) else []
-            self.entries = [WatchlistEntry.from_dict(e) for e in raw_entries if isinstance(e, dict)]
-            logger.info(
-                f"Watchlist loaded: {len(self.entries)} artist(s) tracked.",
-                category="watchlist"
-            )
+            return [WatchlistEntry.from_dict(e) for e in raw_entries if isinstance(e, dict)]
         except Exception as e:
-            logger.warning(f"Could not load watchlist.json: {e}", category="watchlist")
-            self.entries = []
+            logger.warning(f"Could not load {os.path.basename(path)}: {e}", category="watchlist")
+            return None
 
-    def save(self):
-        """Persist current entries to disk (crash-safe: a cut-off write never empties the watchlist)."""
+    def _import_finished(self) -> None:
+        """Writes the imported watchlist.json to the database; only then is the file renamed."""
+        if self._write_pending(force=True):
+            kept = _keep_aside(self.watchlist_file)
+            logger.info(f"Watchlist moved to the new format ({len(self.entries)} artist(s)); the old file is "
+                        f"kept as {os.path.basename(kept) if kept else 'watchlist.json'}.", category="watchlist")
+
+    def _merge_legacy_json(self) -> None:
+        """A watchlist.json next to the database (an older version was used in between): artists
+        missing from the database are added and download progress is carried over; nothing is lost."""
+        legacy = self._read_legacy_json(self.watchlist_file)
+        if legacy is None:
+            return
+        added = 0
         with self._lock:
+            for je in legacy:
+                existing = self._find(je.user_id, je.service)
+                if existing is None:
+                    self.entries.append(je)
+                    added += 1
+                elif je.last_post_date or je.last_post_id:
+                    self._advance_cutoff(existing, je.last_post_id, je.last_post_date, je.cutoff_day_ids)
+            self._save_gen += 1
+        if self._write_pending(force=True):
+            kept = _keep_aside(self.watchlist_file)
+            logger.info(f"Merged a newer watchlist.json ({added} new artist(s)); the file is kept as "
+                        f"{os.path.basename(kept) if kept else 'watchlist.json'}.", category="watchlist")
+
+    def _backup_in_background(self) -> None:
+        """A daily copy of watchlist.db (watchlist.db.bak), used if the database is ever damaged."""
+        bak = self.db_file + ".bak"
+        try:
+            if os.path.exists(bak) and time.time() - os.path.getmtime(bak) < 24 * 3600:
+                return
+        except OSError:
+            pass
+        if not self.store.exists():
+            return
+        threading.Thread(target=self.store.backup, name="WatchlistBackup", daemon=True).start()
+
+    def save(self, *changed: WatchlistEntry, full: bool = False):
+        """Persist changes (crash-safe: SQLite commits are all-or-nothing). Creators changed in place
+        (a list edited rather than replaced) can be passed in; full=True writes every creator."""
+        with self._lock:
+            for e in changed:
+                rid = getattr(e, "__dict__", {}).get("_rid")
+                if rid is not None:
+                    self._dirty[rid] = e
+            if full:
+                self._write_all = True
             self._save_gen += 1
         if not self.background_saves:
             self._write_pending()
@@ -159,37 +504,69 @@ class WatchlistManager:
     def flush(self) -> None:
         """Writes changes that are still waiting for the background writer."""
         if self._saved_gen < self._save_gen:
-            self._write_pending()
+            self._write_pending(force=True)
 
     def _writer_loop(self) -> None:
         while True:
             self._save_wanted.wait()
             time.sleep(0.4)                 # changes made together are written together
             self._save_wanted.clear()
-            self._write_pending()
+            if not self._write_pending() and self._saved_gen < self._save_gen:
+                time.sleep(min(30.0, 2.0 * self._write_failures))   # disk full / locked: try again later
+                self._save_wanted.set()
 
-    def _write_pending(self) -> None:
+    def _row_for(self, rid: int, e: WatchlistEntry) -> tuple:
+        return (rid, e.__dict__.get("_seq", 0), e.store_fields(), dict(e.options or {}),
+                [trim_post(p) for p in (e.cached_new_posts or [])])
+
+    def _write_pending(self, force: bool = False) -> bool:
+        """Writes the creators changed since the last save. True when everything is saved."""
         with self._write_lock:
             gen = self._save_gen
-            if gen <= self._saved_gen:
-                return
+            if gen <= self._saved_gen and not force:
+                return True
+            with self._lock:
+                write_all = self._write_all
+                self._sync_members_locked(force=write_all)
+                self._write_all = False
+                if write_all:
+                    dirty = dict(self._members)
+                else:
+                    dirty = {rid: e for rid, e in self._dirty.items() if rid in self._members}
+                self._dirty.clear()
+                deleted = set(self._deleted)
+                self._deleted.clear()
+            if not dirty and not deleted and not write_all:
+                self._saved_gen = max(self._saved_gen, gen)
+                return True
             try:
-                with self._lock:
-                    entries = list(self.entries)        # quick: the slow part runs outside the lock
-                data = None
-                for _ in range(3):
-                    try:
-                        data = {"version": self.VERSION, "entries": [e.to_dict() for e in entries]}
-                        break
-                    except RuntimeError:
-                        continue                        # an entry changed meanwhile; read it again
-                if data is None:
-                    with self._lock:
-                        data = {"version": self.VERSION, "entries": [e.to_dict() for e in self.entries]}
-                atomic_write_json(self.watchlist_file, data, indent=2)
-                self._saved_gen = gen
+                rows = []
+                for rid, e in dirty.items():
+                    for _ in range(3):
+                        try:
+                            rows.append(self._row_for(rid, e))
+                            break
+                        except RuntimeError:
+                            continue                    # changed meanwhile; read it again
+                    else:
+                        with self._lock:
+                            rows.append(self._row_for(rid, e))
+                self.store.write(rows, deleted - dirty.keys(), replace_all=write_all)
+                self._saved_gen = max(self._saved_gen, gen)
+                if self._write_failures:
+                    logger.info("Watchlist saved again.", category="watchlist")
+                self._write_failures = 0
+                return True
             except Exception as e:
-                logger.error(f"Failed to save watchlist: {e}", category="watchlist")
+                with self._lock:                        # kept for the next try
+                    for rid, ent in dirty.items():
+                        self._dirty.setdefault(rid, ent)
+                    self._deleted |= deleted
+                    self._write_all = self._write_all or write_all
+                self._write_failures += 1
+                if self._write_failures in (1, 10, 100):
+                    logger.error(f"Failed to save watchlist: {e}", category="watchlist")
+                return False
 
     @staticmethod
     def _advance_cutoff(e: WatchlistEntry, post_id: str, post_date: str, day_ids: Optional[List[str]] = None):
@@ -217,12 +594,13 @@ class WatchlistManager:
 
     def _find(self, user_id: str, service: str) -> Optional[WatchlistEntry]:
         """Return existing entry or None."""
-        uid = user_id.strip().lower()
-        svc = service.strip().lower()
-        for e in self.entries:
-            if e.user_id.lower() == uid and e.service.lower() == svc:
-                return e
-        return None
+        with self._lock:
+            self._sync_members_locked()
+            return self._index.get(((user_id or "").strip().lower(), (service or "").strip().lower()))
+
+    def get_all(self) -> List[WatchlistEntry]:
+        with self._lock:
+            return list(self.entries)
 
     def add_entry(
         self,
@@ -281,7 +659,7 @@ class WatchlistManager:
                 existing.url = url
             if options:
                 existing.options = options
-            self.save()
+            self.save(existing)
             return False
         else:
             entry = WatchlistEntry(
@@ -301,7 +679,8 @@ class WatchlistManager:
                 cutoff_day_ids=[str(last_post_id)] if last_post_id else [],
             )
             self.entries.insert(0, entry)
-            self.save()
+            self._adopt(entry, at_head=True)
+            self.save(entry)
             logger.info(
                 f"Added to watchlist: {creator_name!r} [{service}] (last post: {last_post_date or 'unknown'})",
                 category="watchlist"
@@ -337,7 +716,7 @@ class WatchlistManager:
                                  and int(p.get("id")) <= int(existing.last_post_id)))
                 ]
                 existing.new_post_count = len(existing.cached_new_posts)
-                self.save()
+                self.save(existing)
 
     def resolve_posts(
         self,
@@ -378,7 +757,7 @@ class WatchlistManager:
                 existing.new_post_count = 0
                 existing.cached_new_posts = []
 
-            self.save()
+            self.save(existing)
             return True
 
     def set_auto_check(self, user_id: str, service: str, enabled: bool):
@@ -386,7 +765,7 @@ class WatchlistManager:
         existing = self._find(user_id, service)
         if existing:
             existing.auto_check = enabled
-            self.save()
+            self.save(existing)
 
     def set_download_dir(self, user_id: str, service: str, download_dir: str) -> bool:
         """Set or update the custom download directory for an entry."""
@@ -399,7 +778,7 @@ class WatchlistManager:
                     existing.download_dirs = []
                 if norm not in existing.download_dirs:
                     existing.download_dirs.insert(0, norm)
-            self.save()
+            self.save(existing)
             return True
         return False
 
@@ -414,7 +793,7 @@ class WatchlistManager:
                 existing.download_dirs.append(norm)
             if not existing.download_dir:
                 existing.download_dir = norm
-            self.save()
+            self.save(existing)
             return True
         return False
 
@@ -427,7 +806,7 @@ class WatchlistManager:
                 existing.download_dirs = [d for d in existing.download_dirs if os.path.normpath(d).lower() != norm]
             if existing.download_dir and os.path.normpath(existing.download_dir).lower() == norm:
                 existing.download_dir = existing.download_dirs[0] if existing.download_dirs else ""
-            self.save()
+            self.save(existing)
             return True
         return False
 
@@ -542,7 +921,7 @@ class WatchlistManager:
                 existing.ignored_post_ids.append(pid)
             existing.cached_new_posts = [p for p in existing.cached_new_posts if str(p.get("id")) != pid]
             existing.new_post_count = len(existing.cached_new_posts)
-            self.save()
+            self.save(existing)
             return True
         return False
 
@@ -552,7 +931,7 @@ class WatchlistManager:
         existing = self._find(user_id, service)
         if existing and pid in existing.ignored_post_ids:
             existing.ignored_post_ids.remove(pid)
-            self.save()
+            self.save(existing)
             return True
         return False
 
@@ -561,20 +940,22 @@ class WatchlistManager:
         existing = self._find(user_id, service)
         if existing and existing.ignored_post_ids:
             existing.ignored_post_ids = []
-            self.save()
+            self.save(existing)
             return True
         return False
 
 
     # ── New-Post Detection ─────────────────────────────────────────────────────
 
-    def get_posts_since(self, entry: WatchlistEntry, api_client) -> List[Dict[str, Any]]:
+    def get_posts_since(self, entry: WatchlistEntry, api_client, raise_on_error: bool = False) -> List[Dict[str, Any]]:
         """
         Fetch posts for an entry and return only those published strictly after entry.last_post_date.
         Paginates page-by-page until the cutoff date/id is reached or all posts are fetched,
         ensuring the exact number of new posts is discovered without artificial caps.
         Results are sorted oldest-first so callers can download in order.
         Runs synchronously — call from a background thread.
+        raise_on_error: a page that couldn't be fetched raises instead of ending the list early (the
+        creator's updates found earlier are then kept).
         """
         from core.parser import KemonoURLParser
 
@@ -623,11 +1004,16 @@ class WatchlistManager:
                     parsed, page_start=current_page, page_end=current_page, page_size=page_size
                 )
             except Exception as e:
+                if raise_on_error:
+                    raise
                 logger.warning(
                     f"Watchlist check failed on page {current_page} for {entry.creator_name!r}: {e}",
                     category="watchlist"
                 )
                 break
+            failed = getattr(api_client, "last_fetch_failed", None)
+            if raise_on_error and callable(failed) and failed() is True:
+                raise RuntimeError(f"page {current_page} of the post list couldn't be fetched")
 
             if not page_posts:
                 break

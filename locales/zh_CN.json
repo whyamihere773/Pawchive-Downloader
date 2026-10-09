@@ -1093,6 +1093,7 @@
   "watchlist_add_url_label": "艺术家链接（Pawchive / cum.st）：",
   "watchlist_browse_tip": "更改该艺术家的下载文件夹",
   "watchlist_check_all_tip": "检查所有已关注艺术家的新帖子",
+  "watchlist_stop_check_tip": "停止检查（下次检查将从这里继续）",
   "watchlist_checking": "正在检查…",
   "watchlist_clear_filters": "清除筛选",
   "watchlist_download_all": "全部下载",

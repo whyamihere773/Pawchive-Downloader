@@ -640,9 +640,18 @@ class QueueModel(QAbstractListModel):
         self._visible_task_row.update({id(v[r]): r for r in range(start, len(v))})
         self.countChanged.emit()
 
+    _STATUS_FILTERS = {"downloading": ("downloading", "retrying"), "completed": ("completed",),
+                       "skipped": ("skipped",), "failed": ("failed", "cancelled"), "pending": ("pending",)}
+
     def _rebuild_visible(self):
         self._pending_removals = set()
-        self._visible_tasks = [t for t in self._tasks if self._matches_filter(t)]
+        wanted = self._STATUS_FILTERS.get(self._filter_status)
+        if self._selected_batch_id or self._min_file_size > 0 or (wanted is None and self._filter_status != "all"):
+            self._visible_tasks = [t for t in self._tasks if self._matches_filter(t)]
+        elif wanted is None:
+            self._visible_tasks = list(self._tasks)          # everything: no check per task (big queues)
+        else:
+            self._visible_tasks = [t for t in self._tasks if t.status in wanted]
         self._visible_task_row = {id(t): i for i, t in enumerate(self._visible_tasks)}
 
     # ── Properties ────────────────────────────────────────────────────────────

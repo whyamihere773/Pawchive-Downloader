@@ -1093,6 +1093,7 @@
   "watchlist_add_url_label": "Sanatçı URL'si (Pawchive / cum.st):",
   "watchlist_browse_tip": "Bu sanatçının indirme klasörünü değiştir",
   "watchlist_check_all_tip": "Takip edilen tüm sanatçıların yeni gönderilerini denetle",
+  "watchlist_stop_check_tip": "Kontrolü durdur (sonraki kontrol buradan devam eder)",
   "watchlist_checking": "Denetleniyor…",
   "watchlist_clear_filters": "Filtreleri Temizle",
   "watchlist_download_all": "Tümünü İndir",

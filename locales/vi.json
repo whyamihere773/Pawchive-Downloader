@@ -1093,6 +1093,7 @@
   "watchlist_add_url_label": "URL nghệ sĩ (Pawchive / cum.st):",
   "watchlist_browse_tip": "Đổi thư mục tải xuống của nghệ sĩ này",
   "watchlist_check_all_tip": "Kiểm tra bài mới của mọi nghệ sĩ đang theo dõi",
+  "watchlist_stop_check_tip": "Dừng kiểm tra (lần kiểm tra sau sẽ tiếp tục từ đây)",
   "watchlist_checking": "Đang kiểm tra…",
   "watchlist_clear_filters": "Xóa bộ lọc",
   "watchlist_download_all": "Tải tất cả",

@@ -45,6 +45,8 @@ PROTECTED_FILES = {
     "settings.json", "watchlist.json", "known.txt", "cookies.txt", "link_vault.json",
     "link_vault.json.bak", "storage_pools.json", "schedules.json", "download_archive.db",
     "credentials_vault.enc", ".credential_key", "history.json", "session.json", "recovery_journal.json",
+    "watchlist.db", "watchlist.db-wal", "watchlist.db-shm", "watchlist.db.bak", "watchlist.json.migrated",
+    "recovery_journal.db", "recovery_journal.db-wal", "recovery_journal.db-shm", "recovery_journal.json.migrated",
     ".env", ".env.local", ".install_manifest.json", ".pawchive_update_state.json",
 }
 UPDATE_STATE_FILE = ".pawchive_update_state.json"   # commit installed from an archive over a git checkout

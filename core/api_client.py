@@ -4,6 +4,7 @@ Handles communication with Kemono, Pawchive, Coomer, and Cum.st REST endpoints
 with exponential backoff, rate limiting recovery, and diagnostic logging.
 """
 
+import json
 import os
 import sys
 import time
@@ -309,6 +310,67 @@ class KemonoApiClient:
 
         return None
 
+    @property
+    def _fetch_state(self) -> threading.local:
+        st = self.__dict__.get("_fetch_tls")
+        if st is None:
+            st = self.__dict__.setdefault("_fetch_tls", threading.local())
+        return st
+
+    def last_fetch_failed(self) -> bool:
+        """True when this thread's last fetch_user_posts stopped early because of an error (no
+        answer, still rate limited, HTTP 403 / 5xx, unreadable page) rather than at the end of the
+        list. Its result then can't be trusted to be complete."""
+        return bool(getattr(self._fetch_state, "failed", False))
+
+    # Sites that list every creator with the time of their last update in one request
+    _CREATOR_LISTINGS = ("pawchive.pw",)
+    _listing_cache: Dict[str, tuple] = {}
+    _listing_lock = threading.Lock()
+
+    def fetch_creator_updates(self, domain: str, max_age: float = 600.0) -> Optional[Dict[tuple, float]]:
+        """{(service, user id): time of the creator's last update} for every creator on the site, or
+        None when the site has no such list (or it couldn't be fetched). Used by the Watchlist check to
+        skip creators that haven't posted since their last check. Cached for a few minutes."""
+        domain = (domain or "").lower()
+        if domain not in self._CREATOR_LISTINGS or is_disabled(domain):
+            return None
+        with self._listing_lock:
+            hit = self._listing_cache.get(domain)
+            if hit and time.time() - hit[0] < max_age:
+                return hit[1]
+            resp = self._get_with_log(f"https://{domain}/api/v1/creators", timeout=60)
+            if resp is None or resp.status_code != 200:
+                return None
+            try:
+                text = resp.text
+            except Exception:
+                return None
+            updates: Dict[tuple, float] = {}
+            # Read one creator at a time: parsing the whole list (15 MB) in one call would hold up the
+            # window for a moment
+            dec = json.JSONDecoder()
+            sep = re.compile(r"[\s,]*")
+            i = sep.match(text, text.find("[") + 1).end() if "[" in text else len(text)
+            n = len(text)
+            try:
+                while i < n and text[i] != "]":
+                    c, i = dec.raw_decode(text, i)
+                    i = sep.match(text, i).end()
+                    if isinstance(c, dict) and c.get("id") is not None:
+                        try:
+                            updates[(str(c.get("service") or "").lower(), str(c["id"]))] = float(c.get("updated") or 0)
+                        except (TypeError, ValueError):
+                            pass
+            except ValueError as e:
+                logger.debug(f"Creator list of {domain} couldn't be read: {e}", category="api")
+                return None
+            if not updates:
+                return None
+            self._listing_cache[domain] = (time.time(), updates)
+            logger.debug(f"Creator list of {domain}: {len(updates)} creators.", category="api")
+            return updates
+
     def resolve_creator_name(self, parsed: URLParseResult) -> Optional[str]:
         """Convenience helper to resolve and return just the clean creator display name."""
         if not parsed or not parsed.is_valid:
@@ -523,6 +585,7 @@ class KemonoApiClient:
         Emits detailed per-page console logs including post counts, offsets, and timing.
         """
         all_posts: List[Dict[str, Any]] = []
+        self._fetch_state.failed = False        # set when the list stops early because of an error
         current_page = page_start
         offset = (page_start - 1) * page_size
         consecutive_errors = 0
@@ -571,6 +634,7 @@ class KemonoApiClient:
                     category="api"
                 )
                 if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                    self._fetch_state.failed = True
                     logger.error(
                         f"Stopping enumeration after {MAX_CONSECUTIVE_ERRORS} consecutive failures.",
                         category="api"
@@ -584,6 +648,7 @@ class KemonoApiClient:
             if resp.status_code == 429:
                 rate_limited += 1
                 if rate_limited > MAX_RATE_LIMITED:
+                    self._fetch_state.failed = True
                     logger.error(f"Page {current_page}: still rate limited after {MAX_RATE_LIMITED} waits; stopping here.", category="api")
                     break
                 wait_sec = _retry_after_seconds(resp.headers.get("Retry-After"), default=5.0 * rate_limited)
@@ -598,6 +663,7 @@ class KemonoApiClient:
             rate_limited = 0
 
             if resp.status_code == 403:
+                self._fetch_state.failed = True
                 logger.error(
                     "403 Forbidden — posts are paywalled or cookie is missing/expired. "
                     "Add your session cookie in Settings → Network.",
@@ -609,12 +675,14 @@ class KemonoApiClient:
                 if resp.status_code in (400, 404) and pages_fetched > 0:
                     logger.info(f"Page {current_page}: no more posts (HTTP {resp.status_code}).", category="api")
                 else:
+                    self._fetch_state.failed = True
                     logger.warning(f"Page {current_page}: unexpected HTTP {resp.status_code}, stopping.", category="api")
                 break
 
             try:
                 raw_data = resp.json()
             except Exception as e:
+                self._fetch_state.failed = True
                 logger.error(f"Page {current_page}: JSON parse error — {e}", category="api")
                 break
 

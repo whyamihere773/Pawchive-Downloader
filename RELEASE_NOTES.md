@@ -21,6 +21,9 @@
 * **Retry Failed count is always right**: The button no longer keeps showing a failed file after you cleared it.
 * **Retry Failed opens instantly**: With thousands of failed files the window used to freeze, sometimes for minutes; it now opens right away and fills in as you watch.
 * **No more re-downloading the same images**: Small original pictures and pictures you converted to WebP are no longer "upgraded" again on every run.
+* **Huge queues stay smooth**: Queues with hundreds of thousands of files load in a moment, and the window keeps up while files finish.
+* **Lighter crash protection**: Download progress is still saved every 30 seconds, but only what changed is written, so big queues no longer keep your disk busy. Your saved progress from the previous version is moved over automatically.
+* **Resuming doesn't freeze**: Resuming an interrupted download prepares the queue in the background.
 
 ---
 
@@ -28,7 +31,15 @@
 
 * **No more looping updates**: Posts whose files are gone from the site (missing, private or removed videos) no longer show up as new after every download.
 * **Only what's really new**: Update checks list only the posts that still have something to download.
-* **Smooth with big watchlists**: Changes to the Watchlist are saved in the background, and long update lists open 50 posts at a time.
+* **Built for big watchlists**: The Watchlist is now kept in a small database where only changes are saved, so it stays fast with tens of thousands of artists. Your watchlist is moved over automatically the first time you start this version, and the old file is kept as a backup.
+* **Updates are remembered**: New posts found by a check are still listed after you restart the app.
+* **Much faster Check All**: Different sites are checked at the same time, the most active artists go first, and results appear one by one while the check runs.
+* **Pawchive shortcut**: Pawchive artists who haven't posted since their last check are skipped, so checking a big watchlist takes minutes instead of hours. Everyone still gets a full check at least once a week.
+* **Stop and continue**: The Check All button shows how far the check is, and clicking it again stops the check; the next check picks up where it stopped.
+* **Auto-check is respected**: The check at start-up now only includes artists with auto-check turned on.
+* **Connection problems don't hide updates**: If an artist can't be checked, the updates found earlier stay listed and the artist is tried again next time.
+* **Daily backup**: A copy of your watchlist is kept and used automatically if the file ever gets damaged.
+* **Long update lists**: Changes are saved in the background, and long update lists open 50 posts at a time.
 
 ---
 

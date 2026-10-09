@@ -201,6 +201,7 @@ class AppBridge(QObject):
     watchlistChanged          = Signal()
     watchlistCheckStarted     = Signal()
     watchlistCheckFinished    = Signal(int)  # total new posts found
+    watchlistCheckProgress    = Signal(int, int)  # (artists checked, artists in this check)
     watchlistArtistChecking   = Signal(str, str, bool) # (userId, service, isChecking)
     watchlistArtistChecked    = Signal(str, str, int)  # (userId, service, newPostCount)
     watchlistApplyGlobalSettingsChanged = Signal()
@@ -251,6 +252,9 @@ class AppBridge(QObject):
     _setTasksSignal    = Signal(list)    # safely sends new task list to GUI thread
     _appendTasksSignal = Signal(list)    # safely appends new tasks to GUI thread queue
     _watchlistResultSignal = Signal(list)  # carries per-entry new-post lists
+    _watchlist_check_lock = threading.Lock()
+    _watchlist_resolve_lock = threading.Lock()
+    _watchlist_checker = None
     _watchlistArtistResultSignal = Signal(str, str, int)  # (userId, service, newCount)
     _scheduledCreatorSyncSignal = Signal(str)  # scheduler thread -> GUI thread
     # Slow folder scans run in the background; QML gets the answer here: (request id, result)
@@ -523,9 +527,11 @@ class AppBridge(QObject):
         self._scheduled_sweep_retry = False
         self.isDownloadingChanged.connect(self._update_sleep_prevention)
 
-        # Auto-check watchlist entries on startup (background, non-blocking)
+        # Auto-check watchlist entries on startup (background, non-blocking): the artists with
+        # auto-check on (it used to check every artist)
         if any(e.auto_check for e in self._watchlist_manager.entries):
-            threading.Thread(target=self._async_watchlist_check, daemon=True).start()
+            threading.Thread(target=lambda: self._async_watchlist_check(automatic=True),
+                             name="WatchlistAutoCheck", daemon=True).start()
 
         # Hook queue model retry & batch signals
         self._queue_model.retryRequested.connect(self.retryFailed)
@@ -3856,6 +3862,9 @@ class AppBridge(QObject):
         if was_downloading:
             logger.info("Application closing: stopping downloads and saving the session...", category="system")
             self.downloader.cancel()
+        checker = self._watchlist_checker
+        if checker is not None:
+            checker.cancel()        # continues where it stopped at the next check
 
         def _persist():
             try:
@@ -5252,6 +5261,24 @@ class AppBridge(QObject):
             pass
         return [os.path.normpath(os.path.abspath(r)) for r in roots if r]
 
+    def _inside_allowed_root(self, norm: str) -> bool:
+        """True when the (normalized, absolute) path is inside one of the download folders. The
+        folders are collected once and kept for 30 s, and the path's parent folders are looked up:
+        comparing every file of an imported queue with every Watchlist folder took ages for big
+        watchlists."""
+        cache = getattr(self, "_allowed_roots_cache", None)
+        if cache is None or time.monotonic() - cache[0] > 30:
+            cache = (time.monotonic(), {os.path.normcase(r) for r in self._allowed_download_roots()})
+            self._allowed_roots_cache = cache
+        roots = cache[1]
+        p = os.path.normcase(norm)
+        parent = os.path.dirname(p)
+        while parent and parent != p:
+            if parent in roots:
+                return True
+            p, parent = parent, os.path.dirname(parent)
+        return False
+
     def _safe_import_path(self, target_path: str, old_root: str = ""):
         """Where an imported queue file may be saved: (path, pointed_somewhere_unexpected).
 
@@ -5272,7 +5299,7 @@ class AppBridge(QObject):
                 return False
 
         norm = os.path.normpath(os.path.abspath(target_path)) if os.path.isabs(target_path) else ""
-        if norm and any(_inside(norm, r) and norm != r for r in self._allowed_download_roots()):
+        if norm and self._inside_allowed_root(norm):
             return norm, False
         # Rebuild the path from its last folders, cleaned, inside the download folder
         rel = ""
@@ -5658,9 +5685,14 @@ class AppBridge(QObject):
 
     @Slot()
     def checkWatchlist(self):
-        """Asynchronously check all watchlist entries for new posts."""
-        self.watchlistCheckStarted.emit()
-        threading.Thread(target=self._async_watchlist_check, daemon=True).start()
+        """Asynchronously check all watchlist entries for new posts. While a check runs, this stops
+        it (the next check continues where it stopped)."""
+        running = getattr(self, "_watchlist_checker", None)
+        if running is not None:
+            running.cancel()
+            logger.info("Watchlist check stopped; the next check continues from here.", category="watchlist")
+            return
+        threading.Thread(target=self._async_watchlist_check, name="WatchlistCheck", daemon=True).start()
 
     def _check_and_resolve_if_already_downloaded(self, entry, new_posts: list) -> list:
         """If all files in new_posts already exist on disk or in the download archive,
@@ -5729,11 +5761,11 @@ class AppBridge(QObject):
 
         def _run():
             try:
-                new_posts = self._watchlist_manager.get_posts_since(entry, self.api_client)
-                new_posts = self._check_and_resolve_if_already_downloaded(entry, new_posts)
-                count = len(new_posts)
-                entry.new_post_count = count
+                count = self._check_watchlist_entry(entry)
+                entry.last_checked_at = time.time()
+                self._watchlist_manager.save(entry)
             except Exception as e:
+                # (the updates found earlier stay listed)
                 logger.warning(f"Watchlist check error for {entry.creator_name!r}: {e}", category="watchlist")
                 count = 0
             self._watchlistArtistResultSignal.emit(userId, service, count)
@@ -5774,7 +5806,7 @@ class AppBridge(QObject):
                     entry.download_dirs.append(loc)
                     synced = True
             if synced:
-                self._watchlist_manager.save()
+                self._watchlist_manager.save(entry)
 
             if existing_locs:
                 # Pick the existing artist location that sits on the disk with the MOST free space
@@ -5787,7 +5819,7 @@ class AppBridge(QObject):
                 target = os.path.join(best_root, expected_folder)
                 if target not in entry.download_dirs:
                     entry.download_dirs.append(target)
-                    self._watchlist_manager.save()
+                    self._watchlist_manager.save(entry)
                 return target
 
         # Standard single-drive fallback
@@ -5949,7 +5981,7 @@ class AppBridge(QObject):
         if hasattr(entry, "download_dirs") and isinstance(entry.download_dirs, list):
             if artist_folder not in entry.download_dirs:
                 entry.download_dirs.insert(0, artist_folder)
-        self._watchlist_manager.save()
+        self._watchlist_manager.save(entry)
         self._watchlist_model.refresh()
         self.watchlistChanged.emit()
 
@@ -6470,44 +6502,81 @@ class AppBridge(QObject):
 
     # ── Async Watchlist Check ─────────────────────────────────────────────────
 
-    def _async_watchlist_check(self):
+    def _check_watchlist_entry(self, entry) -> int:
+        """Checks one artist for new posts (raises when its post list couldn't be fetched, so the
+        updates found earlier are kept and it's tried again next time)."""
+        new = self._watchlist_manager.get_posts_since(entry, self.api_client, raise_on_error=True)
+        # Looking for the files on disk / in the archive uses the downloader: one artist at a time
+        with self._watchlist_resolve_lock:
+            new = self._check_and_resolve_if_already_downloaded(entry, new)
+        entry.new_post_count = len(new)
+        if new:
+            logger.info(f"Watchlist: {entry.creator_name!r} has {len(new)} new post(s).", category="watchlist")
+        return len(new)
+
+    def _async_watchlist_check(self, automatic: bool = False, wait_if_running: bool = False):
         """
-        Background thread: check all watchlist entries for new posts.
-        Updates new_post_count on each entry, then emits _watchlistResultSignal
-        so the GUI can refresh safely.
+        Background thread: check the watchlist for new posts (all artists; automatic checks only those
+        with auto-check on). Sites are checked in parallel, results show up as they come in, and a
+        check that was stopped continues where it left off (see WatchlistChecker). Ends with
+        _watchlistResultSignal so the GUI can refresh safely.
         """
         from core.providers import is_disabled, disabled_message
-        total_new = 0
-        skipped_off = [e for e in list(self._watchlist_manager.entries) if is_disabled(e.domain) or is_disabled(e.url)]
-        if skipped_off:
-            logger.warning(
-                f"Watchlist: {len(skipped_off)} artist(s) on a switched-off site were not checked. "
-                + disabled_message(skipped_off[0].url or skipped_off[0].domain), category="watchlist")
-            if not getattr(self, "_warned_disabled_watchlist", False):
-                self._warned_disabled_watchlist = True      # once per run
-                kemono_n = self.kemonoWatchlistCount()
-                msg = (f"Kemono and Coomer are turned off for now because they mostly aren't working, so "
-                       f"{len(skipped_off)} Watchlist artist(s) on those sites weren't checked.")
-                if kemono_n:
-                    msg += " Pawchive has the same creators as Kemono: you can move your Kemono artists there."
-                if len(skipped_off) > kemono_n:
-                    msg += " For Coomer artists, look them up on cum.st and add them again."
-                self.providerDisabled.emit(msg, "", "watchlist")
-        for entry in list(self._watchlist_manager.entries):
-            if entry in skipped_off:
-                continue
-            try:
-                new = self._watchlist_manager.get_posts_since(entry, self.api_client)
-                new = self._check_and_resolve_if_already_downloaded(entry, new)
-                entry.new_post_count = len(new)
-                total_new += len(new)
-                if new:
-                    logger.info(
-                        f"Watchlist: {entry.creator_name!r} has {len(new)} new post(s).",
-                        category="watchlist"
-                    )
-            except Exception as e:
-                logger.warning(f"Watchlist check error for {entry.creator_name!r}: {e}", category="watchlist")
+        from core.watchlist_checker import WatchlistChecker
+        with self._watchlist_check_lock:
+            running = getattr(self, "_watchlist_checker", None)
+            if running is None:
+                done = threading.Event()
+                last_progress = [0.0]
+
+                def _progress(n_done, n_total):
+                    now = time.monotonic()
+                    if n_done >= n_total or now - last_progress[0] > 0.25:
+                        last_progress[0] = now
+                        self.watchlistCheckProgress.emit(n_done, n_total)
+
+                checker = WatchlistChecker(
+                    self._watchlist_manager, self._check_watchlist_entry,
+                    on_result=lambda e, n: self._watchlist_model.entry_changed(e),
+                    on_progress=_progress,
+                    listing=self.api_client.fetch_creator_updates)
+                checker.done_event = done
+                self._watchlist_checker = checker
+        if running is not None:
+            if wait_if_running:
+                running.done_event.wait()
+            return
+        try:
+            self.watchlistCheckStarted.emit()
+            entries = self._watchlist_manager.get_all()
+            skipped_off = [e for e in entries if is_disabled(e.domain) or is_disabled(e.url)]
+            if skipped_off:
+                logger.warning(
+                    f"Watchlist: {len(skipped_off)} artist(s) on a switched-off site were not checked. "
+                    + disabled_message(skipped_off[0].url or skipped_off[0].domain), category="watchlist")
+                if not getattr(self, "_warned_disabled_watchlist", False):
+                    self._warned_disabled_watchlist = True      # once per run
+                    kemono_n = self.kemonoWatchlistCount()
+                    msg = (f"Kemono and Coomer are turned off for now because they mostly aren't working, so "
+                           f"{len(skipped_off)} Watchlist artist(s) on those sites weren't checked.")
+                    if kemono_n:
+                        msg += " Pawchive has the same creators as Kemono: you can move your Kemono artists there."
+                    if len(skipped_off) > kemono_n:
+                        msg += " For Coomer artists, look them up on cum.st and add them again."
+                    self.providerDisabled.emit(msg, "", "watchlist")
+            off = {id(e) for e in skipped_off}
+            to_check = [e for e in entries if id(e) not in off and (e.auto_check or not automatic)]
+            total_new = checker.run(to_check)
+            if checker.failed:
+                logger.warning(f"Watchlist: {checker.failed} artist(s) couldn't be checked; they're tried "
+                               f"again next time.", category="watchlist")
+        except Exception as e:
+            logger.error(f"Watchlist check failed: {e}", category="watchlist")
+            total_new = checker.total_new
+        finally:
+            with self._watchlist_check_lock:
+                self._watchlist_checker = None
+            done.set()
         self._watchlistResultSignal.emit([total_new])
 
     @Slot(list)
@@ -6970,7 +7039,7 @@ class AppBridge(QObject):
         from core.task_scheduler import task_scheduler
         from core.providers import is_disabled
         logger.info("Scheduler: Watchlist Sync — checking all watchlist artists for new posts...", category="scheduler")
-        self._async_watchlist_check()          # runs right here, in the scheduler's thread
+        self._async_watchlist_check(wait_if_running=True)    # runs right here, in the scheduler's thread
         updated = [e for e in list(self._watchlist_manager.entries)
                    if (getattr(e, "new_post_count", 0) or 0) > 0 and not is_disabled(e.domain)]
         if not updated:

@@ -1093,6 +1093,7 @@
   "watchlist_add_url_label": "URL do artista (Pawchive / cum.st):",
   "watchlist_browse_tip": "Mudar a pasta de download deste artista",
   "watchlist_check_all_tip": "Verificar novos posts de todos os artistas seguidos",
+  "watchlist_stop_check_tip": "Parar a verificação (a próxima continua daqui)",
   "watchlist_checking": "Verificando…",
   "watchlist_clear_filters": "Limpar filtros",
   "watchlist_download_all": "Baixar tudo",
