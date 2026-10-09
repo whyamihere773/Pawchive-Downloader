@@ -1137,5 +1137,13 @@
   "webp_q_small": "Kecil",
   "webp_q_smallest": "Terkecil",
   "webp_quality_label": "Kualitas WebP:",
-  "webp_quality_tip": "Seberapa kuat gambar dikompresi. Tanpa kehilangan mempertahankan setiap piksel; Seimbang hampir tidak terlihat dan jauh lebih kecil; Kecil dan Terkecil paling menghemat ruang. Gambar dibiarkan apa adanya jika WebP tidak lebih kecil."
+  "webp_quality_tip": "Seberapa kuat gambar dikompresi. Tanpa kehilangan mempertahankan setiap piksel; Seimbang hampir tidak terlihat dan jauh lebih kecil; Kecil dan Terkecil paling menghemat ruang. Gambar dibiarkan apa adanya jika WebP tidak lebih kecil.",
+  "archive_loading_posts": "Memuat postingan…",
+  "toast_exporting": "Mengekspor arsip…",
+  "toast_archive_error": "Arsip tidak dapat diubah: %1",
+  "toast_archive_damaged": "Database arsip rusak. Sedang diperbaiki; coba lagi sebentar lagi.",
+  "toast_archive_repaired": "Database arsip rusak dan telah diperbaiki (%1 catatan dipertahankan). Sekarang kamu bisa mencoba lagi.",
+  "toast_archive_repair_failed": "Database arsip rusak dan tidak dapat diperbaiki: %1",
+  "archive_show_more_posts": "Tampilkan %1 postingan lagi (sisa %2)",
+  "archive_show_more_files": "Tampilkan %1 file lagi (sisa %2)"
 }

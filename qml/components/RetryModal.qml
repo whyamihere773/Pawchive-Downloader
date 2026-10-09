@@ -208,64 +208,80 @@ Rectangle {
                 wrapMode: Text.Wrap
             }
 
-            // Quick Selection Toolbar
-            RowLayout {
+            // Quick Selection Toolbar: one line when it fits; with long translations (Russian…) the
+            // "Skip 404s" switch and the counter move to a second line instead of running off the edge
+            GridLayout {
+                id: retryToolbar
                 Layout.fillWidth: true
-                spacing: 8
+                columnSpacing: 8
+                rowSpacing: 6
+                columns: (selectButtonsRow.implicitWidth + retryOptionsRow.implicitWidth + 24 <= width) ? 2 : 1
 
-                StyledButton {
-                    text: modalRoot.tr("btn_select_all", "Select All")
-                    iconText: "☑"
-                    variant: "outline"
-                    implicitHeight: 26
-                    onClicked: failedItemsModel.selectAll(true)
-                }
+                RowLayout {
+                    id: selectButtonsRow
+                    spacing: 8
 
-                StyledButton {
-                    text: modalRoot.tr("btn_deselect_all", "Deselect All")
-                    iconText: "☐"
-                    variant: "ghost"
-                    implicitHeight: 26
-                    onClicked: failedItemsModel.selectAll(false)
-                }
+                    StyledButton {
+                        text: modalRoot.tr("btn_select_all", "Select All")
+                        iconText: "☑"
+                        variant: "outline"
+                        implicitHeight: 26
+                        onClicked: failedItemsModel.selectAll(true)
+                    }
 
-                StyledButton {
-                    text: modalRoot.tr("btn_clear", "Clear") + (failedItemsModel.countSelected() > 0 ? (" (" + failedItemsModel.countSelected() + ")") : "")
-                    iconText: "🗑"
-                    variant: "ghost"
-                    implicitHeight: 26
-                    enabled: failedItemsModel.countSelected() > 0
-                    tooltip: modalRoot.tr("tip_clear_selected_failed", "Remove selected failed files from the queue")
-                    onClicked: {
-                        var selected = failedItemsModel.getSelectedIds()
-                        if (modalRoot.bridge && selected.length > 0) {
-                            modalRoot.bridge.clearFailedTasks(selected)
-                        }
-                        failedItemsModel.populate()
-                        if (failedItemsModel.count === 0) {
-                            modalRoot.isOpen = false
+                    StyledButton {
+                        text: modalRoot.tr("btn_deselect_all", "Deselect All")
+                        iconText: "☐"
+                        variant: "ghost"
+                        implicitHeight: 26
+                        onClicked: failedItemsModel.selectAll(false)
+                    }
+
+                    StyledButton {
+                        text: modalRoot.tr("btn_clear", "Clear") + (failedItemsModel.countSelected() > 0 ? (" (" + failedItemsModel.countSelected() + ")") : "")
+                        iconText: "🗑"
+                        variant: "ghost"
+                        implicitHeight: 26
+                        enabled: failedItemsModel.countSelected() > 0
+                        tooltip: modalRoot.tr("tip_clear_selected_failed", "Remove selected failed files from the queue")
+                        onClicked: {
+                            var selected = failedItemsModel.getSelectedIds()
+                            if (modalRoot.bridge && selected.length > 0) {
+                                modalRoot.bridge.clearFailedTasks(selected)
+                            }
+                            failedItemsModel.populate()
+                            if (failedItemsModel.count === 0) {
+                                modalRoot.isOpen = false
+                            }
                         }
                     }
+
                 }
 
-                Item { Layout.fillWidth: true }
+                RowLayout {
+                    id: retryOptionsRow
+                    Layout.fillWidth: true
+                    spacing: 8
 
-                StyledSwitch {
-                    label: modalRoot.tr("opt_skip_retry_404", "Skip 404s")
-                    tooltip: modalRoot.tr("opt_skip_retry_404_tip", "Exclude HTTP 404 (Not Found) errors from retries and hide them from this window")
-                    checked: modalRoot.bridge ? modalRoot.bridge.skipRetry404 : false
-                    onToggled: function(val) {
-                        if (modalRoot.bridge) {
-                            modalRoot.bridge.skipRetry404 = val
+                    Item { Layout.fillWidth: true }
+
+                    StyledSwitch {
+                        label: modalRoot.tr("opt_skip_retry_404", "Skip 404s")
+                        tooltip: modalRoot.tr("opt_skip_retry_404_tip", "Exclude HTTP 404 (Not Found) errors from retries and hide them from this window")
+                        checked: modalRoot.bridge ? modalRoot.bridge.skipRetry404 : false
+                        onToggled: function(val) {
+                            if (modalRoot.bridge) {
+                                modalRoot.bridge.skipRetry404 = val
+                            }
                         }
                     }
-                }
 
-                Text {
-                    text: failedItemsModel.countSelected() + " / " + failedItemsModel.count + " " + modalRoot.tr("label_selected_of", "selected")
-                    font.family: "Segoe UI, sans-serif"
-                    font.pixelSize: 11
-                    color: "#38BDF8"
+                    Text {
+                        text: failedItemsModel.countSelected() + " / " + failedItemsModel.count + " " + modalRoot.tr("label_selected_of", "selected")
+                        font.family: "Segoe UI, sans-serif"
+                        font.pixelSize: 11
+                        color: "#38BDF8"
+                    }
                 }
             }
 

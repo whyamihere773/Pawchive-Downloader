@@ -60,17 +60,46 @@ def is_not_a_video_error(msg: str) -> bool:
     return any(k in m for k in _NOT_A_VIDEO_ERRORS)
 
 
+# Errors that trying again won't fix: the file is gone from the server, or the video is private /
+# removed. (403 isn't here: on these sites it's often a temporary block.)
+_PERMANENT_ERRORS = (
+    "404", "410", "not found", "not exist", "no longer available", "has been removed", "been deleted",
+    "private video", "video unavailable", "this video is unavailable", "video is private",
+    "account associated with this video has been terminated", "members-only", "join this channel",
+)
+
+
+def is_permanent_failure(task) -> bool:
+    """A failed file that will fail the same way every time (missing on the server, a private or
+    removed video, or out of retries). The Watchlist counts these posts as done, so it stops
+    offering the same posts again after every download (#28)."""
+    if getattr(task, "retry_capped", False):
+        return True
+    if getattr(task, "http_status", 0) in (404, 410):
+        return True
+    m = str(getattr(task, "error_msg", "") or "").lower()
+    return any(k in m for k in _PERMANENT_ERRORS) or is_not_a_video_error(m)
+
+
 def is_preview_url(url: str) -> bool:
     """Thumbnail-server URLs: a small preview copy, never the full-size original."""
     return "/thumbnail/" in (url or "")
 
 
-def needs_full_size_upgrade(existing_size: int, server_size: int, target_path: str, options) -> bool:
-    """An existing file is a small / preview copy that should be replaced by the full-size one."""
+def needs_full_size_upgrade(existing_size: int, server_size: int, target_path: str, options,
+                            existing_path: str = "") -> bool:
+    """An existing file is a small / preview copy that should be replaced by the full-size one.
+
+    When the server tells the file's size, that decides: a copy as big as the original is never
+    downloaded again. Small originals (an image under 150 KB) used to count as previews and were
+    "upgraded" on every run (#28). A .webp the app made with "Compress to WebP" is the user's own
+    smaller copy, not a preview, so it isn't replaced either (it was re-downloaded every run)."""
     if options is None or getattr(options, "download_thumbnails_only", False):
         return False
-    if server_size and server_size > 0 and existing_size < server_size * 0.75:
-        return True
+    if existing_path and existing_path.lower().endswith(".webp") and not (target_path or "").lower().endswith(".webp"):
+        return False
+    if server_size and server_size > 0:
+        return existing_size < server_size * 0.75
     if getattr(options, "redownload_small_files", False):
         min_lim, _ = FilterEngine.get_effective_size_limits(options)
         threshold = min_lim if min_lim else (150 * 1024)
@@ -1454,7 +1483,7 @@ class KemonoDownloader:
                     if self.archive_manager.is_archived(service=service, post_id=post_id, file_id=file_id, file_hash=expected_sha):
                         on_disk = next((cp for cp in (target_path, webp_path, raw_path, raw_webp, prefixed_raw, prefixed_webp)
                                         if os.path.exists(cp) and os.path.getsize(cp) > 0), None)
-                        if not (on_disk and needs_full_size_upgrade(os.path.getsize(on_disk), int(file_bytes or 0), target_path, options)):
+                        if not (on_disk and needs_full_size_upgrade(os.path.getsize(on_disk), int(file_bytes or 0), target_path, options, on_disk)):
                             logger.info(f"📦 Skipping archived file: '{os.path.basename(target_path)}' (present in download archive)", category="file")
                             continue
 
@@ -1468,19 +1497,9 @@ class KemonoDownloader:
 
                     if existing_disk_path:
                         existing_sz = os.path.getsize(existing_disk_path)
-                        should_upgrade = False
-
-                        if not options.download_thumbnails_only:
-                            # 1. If server file size is known and existing disk file is significantly smaller (< 75% of server file)
-                            if file_bytes and file_bytes > 0 and existing_sz < (file_bytes * 0.75):
-                                should_upgrade = True
-                            # 2. If user requested re-downloading small / thumbnail files
-                            elif getattr(options, "redownload_small_files", False):
-                                min_lim, _ = FilterEngine.get_effective_size_limits(options)
-                                threshold = min_lim if min_lim else (150 * 1024)
-                                _, _ext = os.path.splitext(target_path.lower())
-                                if existing_sz < threshold and (_ext in MediaTypes.IMAGE_EXTS or _ext == ".webp"):
-                                    should_upgrade = True
+                        # A small / preview copy is replaced by the full-size file
+                        should_upgrade = needs_full_size_upgrade(existing_sz, int(file_bytes or 0), target_path,
+                                                                 options, existing_disk_path)
 
                         if not should_upgrade:
                             logger.info(f"⏳ Skipping existing file: '{os.path.basename(target_path)}' (already present on disk)", category="file")
@@ -2396,14 +2415,10 @@ class KemonoDownloader:
             if self.on_download_finished:
                 self.on_download_finished(False, "Download cancelled by user.")
         else:
-            # Keep a recovery journal only when something can still be done: files that never got
-            # their turn, or failures a retry may fix. Missing (404) / locked (403) files and files
-            # out of retries used to bring the recovery prompt back on every launch.
-            def _retryable(t):
-                err = str(getattr(t, "error_msg", "") or "")
-                return not getattr(t, "retry_capped", False) and "404" not in err and "403" not in err
-            unfinished = [t for t in self.tasks if t.status in ("pending", "downloading", "retrying")
-                          or (t.status in ("failed", "cancelled") and _retryable(t))]
+            # Keep a recovery journal only for files that never got their turn. Failed files are kept
+            # for Retry Failed instead: in the journal they brought the recovery prompt back on every
+            # launch, and resuming (which only downloads pending files) couldn't do anything (#28).
+            unfinished = [t for t in self.tasks if t.status in ("pending", "downloading", "retrying")]
             if not unfinished:
                 rec = getattr(self.session_manager, "recovery_manager", None)
                 if rec:
@@ -2498,7 +2513,7 @@ class KemonoDownloader:
         if self.archive_manager and self.archive_manager.is_enabled:
             _webp = os.path.splitext(task.target_path)[0] + ".webp"
             _on_disk = next((p for p in (task.target_path, _webp) if os.path.exists(p) and os.path.getsize(p) > 0), None)
-            _upgrade = bool(_on_disk) and needs_full_size_upgrade(os.path.getsize(_on_disk), task.file_size, task.target_path, options)
+            _upgrade = bool(_on_disk) and needs_full_size_upgrade(os.path.getsize(_on_disk), task.file_size, task.target_path, options, _on_disk)
             if not _upgrade and self.archive_manager.is_archived(service=task.service, post_id=task.post_id, file_id=task.file_id, file_hash=task.expected_sha256):
                 task.status = "completed"
                 task.progress_pct = 100
@@ -2534,16 +2549,8 @@ class KemonoDownloader:
                 return True, f"Skipped: {f_reason}"
 
             # Check if this existing file is a low-res thumbnail that needs upgrade to full resolution
-            should_upgrade = False
-            if not options.download_thumbnails_only:
-                if task.file_size > 0 and existing_disk_sz < (task.file_size * 0.75):
-                    should_upgrade = True
-                elif getattr(options, "redownload_small_files", False):
-                    min_lim, _ = FilterEngine.get_effective_size_limits(options)
-                    threshold = min_lim if min_lim else (150 * 1024)
-                    _, _ext = os.path.splitext(task.target_path.lower())
-                    if existing_disk_sz < threshold and (_ext in MediaTypes.IMAGE_EXTS or _ext == ".webp"):
-                        should_upgrade = True
+            should_upgrade = needs_full_size_upgrade(existing_disk_sz, task.file_size, task.target_path,
+                                                     options, found_existing_path)
 
             if not should_upgrade:
                 task.status = "completed"

@@ -1137,5 +1137,13 @@
   "webp_q_small": "小",
   "webp_q_smallest": "最小",
   "webp_quality_label": "WebP 质量:",
-  "webp_quality_tip": "图片的压缩强度。无损保留每个像素；均衡几乎看不出差别且小得多；小和最小最节省空间。如果 WebP 不会更小，图片保持原样。"
+  "webp_quality_tip": "图片的压缩强度。无损保留每个像素；均衡几乎看不出差别且小得多；小和最小最节省空间。如果 WebP 不会更小，图片保持原样。",
+  "archive_loading_posts": "正在加载帖子…",
+  "toast_exporting": "正在导出存档…",
+  "toast_archive_error": "无法修改存档: %1",
+  "toast_archive_damaged": "存档数据库已损坏，正在修复，请稍后再试。",
+  "toast_archive_repaired": "存档数据库已损坏并已修复（保留 %1 条记录）。现在可以重试了。",
+  "toast_archive_repair_failed": "存档数据库已损坏，无法修复: %1",
+  "archive_show_more_posts": "再显示 %1 个帖子（剩余 %2 个）",
+  "archive_show_more_files": "再显示 %1 个文件（剩余 %2 个）"
 }

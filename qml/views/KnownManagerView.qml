@@ -195,7 +195,7 @@ Rectangle {
                             text: root.tr("btn_add_to_filter", "+ Add to Filter")
                             variant: "outline"
                             implicitHeight: 26
-                            implicitWidth: 100
+                            implicitWidth: Math.max(100, contentItem.implicitWidth + 20)
                             onClicked: {
                                 if (root.bridge) root.bridge.applyCharacterToFilter(model.name)
                             }
@@ -205,7 +205,7 @@ Rectangle {
                             text: root.tr("btn_delete", "Delete")
                             variant: "ghost"
                             implicitHeight: 26
-                            implicitWidth: 60
+                            implicitWidth: Math.max(60, contentItem.implicitWidth + 20)
                             onClicked: {
                                 if (root.bridge) root.bridge.removeKnownCharacter(index)
                             }

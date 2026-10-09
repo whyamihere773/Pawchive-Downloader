@@ -192,7 +192,7 @@ Rectangle {
 
                 StyledButton {
                     text: "✕"
-                    implicitWidth: 32
+                    implicitWidth: Math.max(32, contentItem.implicitWidth + 20)
                     implicitHeight: 32
                     variant: "ghost"
                     onClicked: {
@@ -431,7 +431,7 @@ Rectangle {
 
                             StyledButton {
                                 text: tr("tg_btn_logout", "Disconnect")
-                                implicitWidth: 100
+                                implicitWidth: Math.max(100, contentItem.implicitWidth + 20)
                                 implicitHeight: 32
                                 variant: "danger"
                                 onClicked: {
@@ -617,7 +617,7 @@ Rectangle {
 
                                 StyledButton {
                                     text: tr("tg_btn_send_code", "Send Code")
-                                    implicitWidth: 110
+                                    implicitWidth: Math.max(110, contentItem.implicitWidth + 20)
                                     implicitHeight: 34
                                     variant: "primary"
                                     onClicked: {
@@ -652,7 +652,7 @@ Rectangle {
 
                                     StyledButton {
                                         text: tr("tg_btn_verify", "Verify & Log In")
-                                        implicitWidth: 120
+                                        implicitWidth: Math.max(120, contentItem.implicitWidth + 20)
                                         implicitHeight: 34
                                         variant: "success"
                                         onClicked: {
@@ -689,7 +689,7 @@ Rectangle {
 
                                 StyledButton {
                                     text: tr("tg_btn_connect_bot", "Connect Bot")
-                                    implicitWidth: 120
+                                    implicitWidth: Math.max(120, contentItem.implicitWidth + 20)
                                     implicitHeight: 34
                                     variant: "primary"
                                     onClicked: {
@@ -756,7 +756,7 @@ Rectangle {
 
                                         StyledButton {
                                             text: tr("tg_btn_submit_2fa", "Unlock")
-                                            implicitWidth: 90
+                                            implicitWidth: Math.max(90, contentItem.implicitWidth + 20)
                                             implicitHeight: 34
                                             variant: "primary"
                                             onClicked: {
@@ -793,7 +793,7 @@ Rectangle {
                 StyledButton {
                     visible: telegramBridge && telegramBridge.isLoggedIn
                     text: tr("btn_close", "Close")
-                    implicitWidth: 90
+                    implicitWidth: Math.max(90, contentItem.implicitWidth + 20)
                     implicitHeight: 34
                     variant: "ghost"
                     onClicked: {

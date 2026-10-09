@@ -1137,5 +1137,13 @@
   "webp_q_small": "작게",
   "webp_q_smallest": "가장 작게",
   "webp_quality_label": "WebP 품질:",
-  "webp_quality_tip": "이미지를 얼마나 강하게 압축할지 정합니다. 무손실은 모든 픽셀을 유지하고, 균형은 거의 티가 나지 않으면서 훨씬 작으며, 작게와 가장 작게는 공간을 가장 많이 절약합니다. WebP가 더 작아지지 않으면 이미지는 그대로 유지됩니다."
+  "webp_quality_tip": "이미지를 얼마나 강하게 압축할지 정합니다. 무손실은 모든 픽셀을 유지하고, 균형은 거의 티가 나지 않으면서 훨씬 작으며, 작게와 가장 작게는 공간을 가장 많이 절약합니다. WebP가 더 작아지지 않으면 이미지는 그대로 유지됩니다.",
+  "archive_loading_posts": "게시물 불러오는 중…",
+  "toast_exporting": "아카이브 내보내는 중…",
+  "toast_archive_error": "아카이브를 변경할 수 없습니다: %1",
+  "toast_archive_damaged": "아카이브 데이터베이스가 손상되었습니다. 지금 복구 중이니 잠시 후 다시 시도하세요.",
+  "toast_archive_repaired": "손상된 아카이브 데이터베이스를 복구했습니다(%1개 기록 유지). 이제 다시 시도할 수 있습니다.",
+  "toast_archive_repair_failed": "아카이브 데이터베이스가 손상되어 복구할 수 없습니다: %1",
+  "archive_show_more_posts": "게시물 %1개 더 보기 (%2개 남음)",
+  "archive_show_more_files": "파일 %1개 더 보기 (%2개 남음)"
 }

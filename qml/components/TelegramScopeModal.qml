@@ -223,7 +223,7 @@ Rectangle {
 
                 StyledButton {
                     text: "✕"
-                    implicitWidth: 32
+                    implicitWidth: Math.max(32, contentItem.implicitWidth + 20)
                     implicitHeight: 32
                     variant: "ghost"
                     onClicked: scopeModalRoot.isOpen = false
@@ -409,7 +409,7 @@ Rectangle {
 
                 StyledButton {
                     text: tr("btn_cancel", "Cancel")
-                    implicitWidth: 90
+                    implicitWidth: Math.max(90, contentItem.implicitWidth + 20)
                     implicitHeight: 36
                     variant: "outline"
                     onClicked: scopeModalRoot.isOpen = false
@@ -419,7 +419,7 @@ Rectangle {
 
                 StyledButton {
                     text: "🖼️ " + tr("tg_btn_select_posts", "Select Posts…")
-                    implicitWidth: 145
+                    implicitWidth: Math.max(145, contentItem.implicitWidth + 20)
                     implicitHeight: 36
                     variant: scopeModalRoot.defaultAction === "select" ? "primary" : "outline"
                     enabled: !scopeModalRoot.isLoading && (chkVideos.checked || chkPhotos.checked || chkDocuments.checked || chkAudio.checked)
@@ -447,7 +447,7 @@ Rectangle {
 
                 StyledButton {
                     text: "⬇️ " + tr("tg_btn_start_queue", "Start Download")
-                    implicitWidth: 155
+                    implicitWidth: Math.max(155, contentItem.implicitWidth + 20)
                     implicitHeight: 36
                     variant: scopeModalRoot.defaultAction === "download" ? "primary" : "default"
                     enabled: !scopeModalRoot.isLoading && (chkVideos.checked || chkPhotos.checked || chkDocuments.checked || chkAudio.checked)

@@ -13,6 +13,21 @@ SmoothFlickable {
     property real tabEntranceOffsetY: 0
     property real tabEntranceOpacity: 1.0
 
+    // Buttons that cycle through labels are as wide as their longest one, so long translations
+    // (Russian, German…) fit and the button doesn't change size when clicked. Same font as StyledButton.
+    FontMetrics {
+        id: buttonFontMetrics
+        font.family: "Segoe UI, Inter, sans-serif"
+        font.pixelSize: 12
+        font.weight: Font.Medium
+    }
+    function widestLabel(labels) {
+        var w = 0
+        for (var i = 0; i < labels.length; i++)
+            w = Math.max(w, buttonFontMetrics.advanceWidth(labels[i]))
+        return Math.ceil(w)
+    }
+
     onCurrentSubTabChanged: {
         tabEntranceOffsetY = 14.0
         tabEntranceOpacity = 0.45
@@ -198,7 +213,7 @@ SmoothFlickable {
                     text: root.tr("btn_open", "Open")
                     iconText: "↗"
                     variant: "ghost"
-                    implicitWidth: 70
+                    implicitWidth: Math.max(70, contentItem.implicitWidth + 20)
                     tooltip: root.tr("btn_open_tip", "Open current downloads directory in Windows File Explorer")
                     onClicked: {
                         if (root.bridge) root.bridge.openDownloadFolder()
@@ -209,7 +224,7 @@ SmoothFlickable {
                     text: root.tr("btn_gallery", "Gallery")
                     iconText: "🖼"
                     variant: "ghost"
-                    implicitWidth: 86
+                    implicitWidth: Math.max(86, contentItem.implicitWidth + 20)
                     tooltip: root.tr("btn_gallery_tip", "Browse the current (or last) download's folder in the Gallery tab")
                     onClicked: {
                         if (root.bridge) root.bridge.showDownloadsInGallery()
@@ -1316,7 +1331,10 @@ SmoothFlickable {
                                 color: "#94A3B8"
                             }
                             StyledButton {
-                                implicitWidth: 100
+                                implicitWidth: Math.max(100, root.widestLabel([
+                                    root.tr("scope_filter_title", "Filter: Title"),
+                                    root.tr("scope_filter_content", "Filter: Content"),
+                                    root.tr("scope_filter_both", "Filter: Both")]) + 24)
                                 text: {
                                     if (!root.bridge) return root.tr("scope_filter_title", "Filter: Title")
                                     var s = root.bridge.characterScope
@@ -1374,7 +1392,9 @@ SmoothFlickable {
                                 }
 
                                 StyledButton {
-                                    implicitWidth: 100
+                                    implicitWidth: Math.max(100, root.widestLabel([
+                                        root.tr("scope_skip_posts", "Scope: Posts"),
+                                        root.tr("scope_skip_files", "Scope: Files")]) + 24)
                                     text: {
                                         if (!root.bridge) return root.tr("scope_skip_posts", "Scope: Posts")
                                         return (root.bridge.skipScope === "files")
@@ -2599,7 +2619,8 @@ SmoothFlickable {
                     Rectangle {
                         id: saveMetaToggle
                         property bool active: root.bridge ? root.bridge.savePostMetadata : true
-                        implicitWidth: Math.min(230, parent.width)
+                        // as wide as its text (long translations used to spill out of the card)
+                        implicitWidth: Math.min(parent.width, Math.max(230, metaTexts.implicitWidth + 66))
                         implicitHeight: 36
                         radius: 10
                         color: active ? "#1E1B35" : "#141922"
@@ -2647,9 +2668,12 @@ SmoothFlickable {
                             }
 
                             ColumnLayout {
+                                id: metaTexts
                                 spacing: 1
                                 Layout.fillWidth: true
                                 Text {
+                                    Layout.fillWidth: true
+                                    elide: Text.ElideRight
                                     text: root.tr("toggle_save_post_info", "Save post_info.txt")
                                     color: saveMetaToggle.active ? "#E2E8F0" : "#64748B"
                                     font.pixelSize: 12
@@ -2658,6 +2682,8 @@ SmoothFlickable {
                                     Behavior on color { ColorAnimation { duration: 180 } }
                                 }
                                 Text {
+                                    Layout.fillWidth: true
+                                    elide: Text.ElideRight
                                     text: root.tr("toggle_save_post_info_sub", "caption, tags & comments")
                                     color: saveMetaToggle.active ? "#7C3AED" : "#374151"
                                     font.pixelSize: 9
@@ -2689,7 +2715,8 @@ SmoothFlickable {
                     Rectangle {
                         id: openFolderToggle
                         property bool active: root.bridge ? root.bridge.openFolderOnComplete : false
-                        implicitWidth: Math.min(210, parent.width)
+                        // as wide as its text (long translations used to spill out of the card)
+                        implicitWidth: Math.min(parent.width, Math.max(210, folderTexts.implicitWidth + 66))
                         implicitHeight: 36
                         radius: 10
                         color: active ? "#0D1F1A" : "#141922"
@@ -2736,9 +2763,12 @@ SmoothFlickable {
                             }
 
                             ColumnLayout {
+                                id: folderTexts
                                 spacing: 1
                                 Layout.fillWidth: true
                                 Text {
+                                    Layout.fillWidth: true
+                                    elide: Text.ElideRight
                                     text: root.tr("toggle_open_folder", "Open folder when done")
                                     color: openFolderToggle.active ? "#E2E8F0" : "#64748B"
                                     font.pixelSize: 12
@@ -2747,6 +2777,8 @@ SmoothFlickable {
                                     Behavior on color { ColorAnimation { duration: 180 } }
                                 }
                                 Text {
+                                    Layout.fillWidth: true
+                                    elide: Text.ElideRight
                                     text: root.tr("toggle_open_folder_sub", "auto-opens on completion")
                                     color: openFolderToggle.active ? "#10B981" : "#374151"
                                     font.pixelSize: 9
@@ -2778,7 +2810,8 @@ SmoothFlickable {
                     Rectangle {
                         id: desktopReportToggle
                         property bool active: root.bridge ? root.bridge.saveDesktopReport : false
-                        implicitWidth: Math.min(210, parent.width)
+                        // as wide as its text (long translations used to spill out of the card)
+                        implicitWidth: Math.min(parent.width, Math.max(210, reportTexts.implicitWidth + 66))
                         implicitHeight: 36
                         radius: 10
                         color: active ? "#0C202F" : "#141922"
@@ -2825,9 +2858,12 @@ SmoothFlickable {
                             }
 
                             ColumnLayout {
+                                id: reportTexts
                                 spacing: 1
                                 Layout.fillWidth: true
                                 Text {
+                                    Layout.fillWidth: true
+                                    elide: Text.ElideRight
                                     text: root.tr("toggle_desktop_report", "Desktop report")
                                     color: desktopReportToggle.active ? "#E2E8F0" : "#64748B"
                                     font.pixelSize: 12
@@ -2836,6 +2872,8 @@ SmoothFlickable {
                                     Behavior on color { ColorAnimation { duration: 180 } }
                                 }
                                 Text {
+                                    Layout.fillWidth: true
+                                    elide: Text.ElideRight
                                     text: root.tr("toggle_desktop_report_sub", "summary log on desktop")
                                     color: desktopReportToggle.active ? "#38BDF8" : "#374151"
                                     font.pixelSize: 9

@@ -1137,5 +1137,13 @@
   "webp_q_small": "Klein",
   "webp_q_smallest": "Am kleinsten",
   "webp_quality_label": "WebP-Qualität:",
-  "webp_quality_tip": "Wie stark Bilder komprimiert werden. Verlustfrei behält jedes Pixel; Ausgewogen ist kaum sichtbar und viel kleiner; Klein und Am kleinsten sparen den meisten Platz. Ein Bild bleibt unverändert, wenn das WebP nicht kleiner wäre."
+  "webp_quality_tip": "Wie stark Bilder komprimiert werden. Verlustfrei behält jedes Pixel; Ausgewogen ist kaum sichtbar und viel kleiner; Klein und Am kleinsten sparen den meisten Platz. Ein Bild bleibt unverändert, wenn das WebP nicht kleiner wäre.",
+  "archive_loading_posts": "Beiträge werden geladen…",
+  "toast_exporting": "Archiv wird exportiert…",
+  "toast_archive_error": "Das Archiv konnte nicht geändert werden: %1",
+  "toast_archive_damaged": "Die Archiv-Datenbank ist beschädigt. Sie wird gerade repariert; versuche es gleich noch einmal.",
+  "toast_archive_repaired": "Die Archiv-Datenbank war beschädigt und wurde repariert (%1 Einträge behalten). Du kannst es jetzt erneut versuchen.",
+  "toast_archive_repair_failed": "Die Archiv-Datenbank ist beschädigt und konnte nicht repariert werden: %1",
+  "archive_show_more_posts": "%1 weitere Beiträge anzeigen (%2 übrig)",
+  "archive_show_more_files": "%1 weitere Dateien anzeigen (%2 übrig)"
 }

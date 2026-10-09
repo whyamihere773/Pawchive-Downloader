@@ -14,7 +14,7 @@ import time
 import sqlite3
 import datetime
 import threading
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any, Tuple, Callable
 from core.logger import logger
 
 
@@ -42,6 +42,17 @@ class ArchiveManager:
         self._conn: Optional[sqlite3.Connection] = None
         self._stats_cache: Optional[Dict[str, Any]] = None
         self._stats_cache_time: float = 0.0
+        # The Archive tab reads through its own connection: in WAL mode it can read while downloads
+        # write, so a big archive no longer holds up downloads (and the window) on every refresh
+        self._rconn: Optional[sqlite3.Connection] = None
+        self._rlock = threading.Lock()
+        self._last_count = 0
+        # Which raw (service, creator_id, creator_name) rows make up each creator shown in the tab
+        self._creator_members: Dict[Tuple[str, str], List[Tuple[str, str, str]]] = {}
+        self.last_error = ""
+        self._repair_lock = threading.Lock()
+        self._auto_repair_tried = False        # repaired by itself at most once per session
+        self.on_repair_finished: Optional[Callable[[Dict[str, Any]], None]] = None
 
         if self._enabled:
             self._init_db()
@@ -83,142 +94,153 @@ class ArchiveManager:
             )
             self._conn.execute("PRAGMA journal_mode=WAL;")
             self._conn.execute("PRAGMA synchronous=NORMAL;")
-            self._conn.execute("""
-                CREATE TABLE IF NOT EXISTS downloaded_files (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    service TEXT NOT NULL,
-                    creator_id TEXT,
-                    creator_name TEXT,
-                    post_id TEXT NOT NULL,
-                    post_title TEXT,
-                    file_id TEXT NOT NULL,
-                    file_hash TEXT,
-                    filename TEXT,
-                    file_size INTEGER DEFAULT 0,
-                    file_ext TEXT,
-                    downloaded_at TEXT NOT NULL
-                );
-            """)
-
-            # Migration check: ensure new columns exist for existing databases
-            cursor = self._conn.cursor()
-            cursor.execute("PRAGMA table_info(downloaded_files);")
-            existing_cols = {row[1] for row in cursor.fetchall()}
-            cols_to_add = [
-                ("creator_name", "TEXT"),
-                ("post_title", "TEXT"),
-                ("file_size", "INTEGER DEFAULT 0"),
-                ("file_ext", "TEXT"),
-                ("file_path", "TEXT"),
-                ("is_missing", "INTEGER DEFAULT -1"),
-                ("last_verified_at", "TEXT"),
-            ]
-            for col_name, col_type in cols_to_add:
-                if col_name not in existing_cols:
-                    try:
-                        self._conn.execute(f"ALTER TABLE downloaded_files ADD COLUMN {col_name} {col_type};")
-                    except Exception as me:
-                        logger.debug(f"Migration column {col_name} already present or failed: {me}", category="archive")
-
-            self._conn.execute("""
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_archive_unique
-                ON downloaded_files(service, post_id, file_id);
-            """)
-            self._conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_archive_hash
-                ON downloaded_files(file_hash);
-            """)
-            self._conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_archive_creator
-                ON downloaded_files(service, creator_id);
-            """)
-            self._conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_archive_post
-                ON downloaded_files(service, post_id);
-            """)
-            self._conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_archive_ext
-                ON downloaded_files(file_ext);
-            """)
-            self._conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_archive_missing
-                ON downloaded_files(is_missing);
-            """)
-            self._conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_archive_downloaded_at
-                ON downloaded_files(downloaded_at);
-            """)
-
-            # Data repair and migration for legacy, imported, or partially-populated databases
-            try:
-                cursor.execute("PRAGMA user_version;")
-                v_row = cursor.fetchone()
-                schema_ver = int(v_row[0] or 0) if v_row else 0
-                if schema_ver < 2:
-                    # 1. Backfill file_ext from filename if missing or empty
-                    cursor.execute(
-                        "SELECT id, filename FROM downloaded_files "
-                        "WHERE (file_ext IS NULL OR file_ext = '') "
-                        "  AND filename IS NOT NULL AND filename != '';"
-                    )
-                    rows_to_fix = cursor.fetchall()
-                    if rows_to_fix:
-                        ext_updates = []
-                        for r_id, r_fn in rows_to_fix:
-                            _, ext = os.path.splitext(r_fn)
-                            ext_updates.append((ext.lower(), r_id))
-                        cursor.executemany("UPDATE downloaded_files SET file_ext = ? WHERE id = ?;", ext_updates)
-
-                    # 2. Repair empty/NULL service
-                    self._conn.execute("""
-                        UPDATE downloaded_files
-                        SET service = 'unknown'
-                        WHERE service IS NULL OR TRIM(service) = '';
-                    """)
-
-                    # 3. Synchronize / repair creator_name and creator_id
-                    self._conn.execute("""
-                        UPDATE downloaded_files
-                        SET creator_name = creator_id
-                        WHERE (creator_name IS NULL OR TRIM(creator_name) = '')
-                          AND creator_id IS NOT NULL AND TRIM(creator_id) != '';
-                    """)
-                    self._conn.execute("""
-                        UPDATE downloaded_files
-                        SET creator_id = creator_name
-                        WHERE (creator_id IS NULL OR TRIM(creator_id) = '')
-                          AND creator_name IS NOT NULL AND TRIM(creator_name) != '';
-                    """)
-                    self._conn.execute("""
-                        UPDATE downloaded_files
-                        SET creator_id = 'unknown', creator_name = 'Unknown Creator'
-                        WHERE (creator_id IS NULL OR TRIM(creator_id) = '')
-                          AND (creator_name IS NULL OR TRIM(creator_name) = '');
-                    """)
-
-                    # 4. Repair empty/NULL post_id and post_title
-                    self._conn.execute("""
-                        UPDATE downloaded_files
-                        SET post_id = COALESCE(NULLIF(TRIM(file_id), ''), CAST(id AS TEXT), 'unknown')
-                        WHERE post_id IS NULL OR TRIM(post_id) = '';
-                    """)
-                    self._conn.execute("""
-                        UPDATE downloaded_files
-                        SET post_title = 'Archived Files'
-                        WHERE (post_title IS NULL OR TRIM(post_title) = '')
-                          AND (post_id = 'unknown' OR post_id = '0');
-                    """)
-                    self._conn.execute("PRAGMA user_version = 2;")
-            except Exception as e_repair:
-                logger.debug(f"Archive repair migration notice: {e_repair}", category="archive")
-
-            self._conn.commit()
+            self._create_schema(self._conn)
         except Exception as e:
             logger.error(f"Failed to initialize download archive database: {e}", category="archive")
             self._conn = None
 
+    def _create_schema(self, conn: sqlite3.Connection) -> None:
+        """Tables, columns added by later versions, indexes and the one-time data repair."""
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS downloaded_files (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                service TEXT NOT NULL,
+                creator_id TEXT,
+                creator_name TEXT,
+                post_id TEXT NOT NULL,
+                post_title TEXT,
+                file_id TEXT NOT NULL,
+                file_hash TEXT,
+                filename TEXT,
+                file_size INTEGER DEFAULT 0,
+                file_ext TEXT,
+                downloaded_at TEXT NOT NULL
+            );
+        """)
+
+        # Migration check: ensure new columns exist for existing databases
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(downloaded_files);")
+        existing_cols = {row[1] for row in cursor.fetchall()}
+        cols_to_add = [
+            ("creator_name", "TEXT"),
+            ("post_title", "TEXT"),
+            ("file_size", "INTEGER DEFAULT 0"),
+            ("file_ext", "TEXT"),
+            ("file_path", "TEXT"),
+            ("is_missing", "INTEGER DEFAULT -1"),
+            ("last_verified_at", "TEXT"),
+        ]
+        for col_name, col_type in cols_to_add:
+            if col_name not in existing_cols:
+                try:
+                    conn.execute(f"ALTER TABLE downloaded_files ADD COLUMN {col_name} {col_type};")
+                except Exception as me:
+                    logger.debug(f"Migration column {col_name} already present or failed: {me}", category="archive")
+
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_archive_unique
+            ON downloaded_files(service, post_id, file_id);
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_archive_hash
+            ON downloaded_files(file_hash);
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_archive_creator
+            ON downloaded_files(service, creator_id);
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_archive_post
+            ON downloaded_files(service, post_id);
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_archive_ext
+            ON downloaded_files(file_ext);
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_archive_missing
+            ON downloaded_files(is_missing);
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_archive_downloaded_at
+            ON downloaded_files(downloaded_at);
+        """)
+
+        # Data repair and migration for legacy, imported, or partially-populated databases
+        try:
+            cursor.execute("PRAGMA user_version;")
+            v_row = cursor.fetchone()
+            schema_ver = int(v_row[0] or 0) if v_row else 0
+            if schema_ver < 2:
+                # 1. Backfill file_ext from filename if missing or empty
+                cursor.execute(
+                    "SELECT id, filename FROM downloaded_files "
+                    "WHERE (file_ext IS NULL OR file_ext = '') "
+                    "  AND filename IS NOT NULL AND filename != '';"
+                )
+                rows_to_fix = cursor.fetchall()
+                if rows_to_fix:
+                    ext_updates = []
+                    for r_id, r_fn in rows_to_fix:
+                        _, ext = os.path.splitext(r_fn)
+                        ext_updates.append((ext.lower(), r_id))
+                    cursor.executemany("UPDATE downloaded_files SET file_ext = ? WHERE id = ?;", ext_updates)
+
+                # 2. Repair empty/NULL service
+                conn.execute("""
+                    UPDATE downloaded_files
+                    SET service = 'unknown'
+                    WHERE service IS NULL OR TRIM(service) = '';
+                """)
+
+                # 3. Synchronize / repair creator_name and creator_id
+                conn.execute("""
+                    UPDATE downloaded_files
+                    SET creator_name = creator_id
+                    WHERE (creator_name IS NULL OR TRIM(creator_name) = '')
+                      AND creator_id IS NOT NULL AND TRIM(creator_id) != '';
+                """)
+                conn.execute("""
+                    UPDATE downloaded_files
+                    SET creator_id = creator_name
+                    WHERE (creator_id IS NULL OR TRIM(creator_id) = '')
+                      AND creator_name IS NOT NULL AND TRIM(creator_name) != '';
+                """)
+                conn.execute("""
+                    UPDATE downloaded_files
+                    SET creator_id = 'unknown', creator_name = 'Unknown Creator'
+                    WHERE (creator_id IS NULL OR TRIM(creator_id) = '')
+                      AND (creator_name IS NULL OR TRIM(creator_name) = '');
+                """)
+
+                # 4. Repair empty/NULL post_id and post_title
+                conn.execute("""
+                    UPDATE downloaded_files
+                    SET post_id = COALESCE(NULLIF(TRIM(file_id), ''), CAST(id AS TEXT), 'unknown')
+                    WHERE post_id IS NULL OR TRIM(post_id) = '';
+                """)
+                conn.execute("""
+                    UPDATE downloaded_files
+                    SET post_title = 'Archived Files'
+                    WHERE (post_title IS NULL OR TRIM(post_title) = '')
+                      AND (post_id = 'unknown' OR post_id = '0');
+                """)
+                conn.execute("PRAGMA user_version = 2;")
+        except Exception as e_repair:
+            logger.debug(f"Archive repair migration notice: {e_repair}", category="archive")
+
+        conn.commit()
+
     def _close_unlocked(self) -> None:
         """Close database connection (must be called with self._lock held)."""
+        with self._rlock:
+            if self._rconn is not None:
+                try:
+                    self._rconn.close()
+                except Exception:
+                    pass
+                self._rconn = None
         if self._conn is not None:
             try:
                 self._conn.close()
@@ -230,6 +252,367 @@ class ArchiveManager:
         """Safely close database connection."""
         with self._lock:
             self._close_unlocked()
+
+    def checkpoint(self) -> None:
+        """Fold the write-ahead log into the database file (when the app closes: if it is then
+        stopped hard, nothing is left only in download_archive.db-wal)."""
+        with self._lock:
+            if self._conn is not None:
+                try:
+                    self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                except Exception as e:
+                    logger.debug(f"Archive checkpoint skipped: {e}", category="archive")
+
+    # ── Reading for the Archive tab ────────────────────────────────────────────
+
+    def _ensure_db(self) -> bool:
+        """The database exists and its schema is up to date (reads use a second connection)."""
+        if self._conn is not None:
+            return True             # already open: reading never waits for a download's write
+        if not os.path.exists(self.db_path) and not self._enabled:
+            return False
+        with self._lock:
+            if self._conn is None:
+                self._init_db_unlocked()
+            return self._conn is not None
+
+    def _reader(self) -> Optional[sqlite3.Connection]:
+        """The read connection (call with self._rlock held)."""
+        if self._rconn is None:
+            if not os.path.exists(self.db_path):
+                return None
+            conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
+            conn.execute("PRAGMA query_only=1;")
+            self._rconn = conn
+        return self._rconn
+
+    @staticmethod
+    def _where(query: str = "", service: str = "all", file_type: str = "all") -> Tuple[str, List[Any]]:
+        conditions: List[str] = []
+        params: List[Any] = []
+        clean_svc = (service or "").strip().lower()
+        if clean_svc and clean_svc != "all":
+            conditions.append("service = ?")
+            params.append(clean_svc)
+        clean_q = (query or "").strip()
+        if clean_q:
+            q_like = f"%{clean_q}%"
+            conditions.append(
+                "(filename LIKE ? OR post_title LIKE ? OR creator_name LIKE ? "
+                "OR creator_id LIKE ? OR post_id LIKE ? OR file_hash LIKE ?)"
+            )
+            params.extend([q_like] * 6)
+        clean_ft = (file_type or "").strip().lower()
+        if clean_ft == "removed":
+            conditions.append("is_missing = 1")
+        elif clean_ft and clean_ft != "all" and clean_ft in FILE_TYPE_CATEGORIES:
+            extensions = FILE_TYPE_CATEGORIES[clean_ft]
+            conditions.append(f"LOWER(file_ext) IN ({','.join(['?'] * len(extensions))})")
+            params.extend(list(extensions))
+        return (f"WHERE {' AND '.join(conditions)}" if conditions else ""), params
+
+    @staticmethod
+    def _creator_key(service, creator_id, creator_name) -> Tuple[str, str]:
+        """How records are grouped into creators in the tab (same rule as get_hierarchical_records)."""
+        svc = str(service or "unknown").strip().lower() or "unknown"
+        cname = str(creator_name or "").strip()
+        cid = str(creator_id or "").strip()
+        display = cname if cname else (cid if cid else "Unknown Creator")
+        return svc, display.lower()
+
+    def get_creator_summaries(self, query: str = "", service: str = "all", file_type: str = "all",
+                              sort_by: str = "creator_az") -> List[Dict[str, Any]]:
+        """One entry per creator (file / post counts, dates), without their posts and files: those
+        are read with get_creator_posts when a creator is opened. Sending every file of a big archive
+        to the window on each refresh froze it (#28)."""
+        if not self._ensure_db():
+            return []
+        where, params = self._where(query, service, file_type)
+        # Grouped by post: far fewer rows than files, and the creator's post count comes out of it
+        sql = f"""
+            SELECT service, creator_id, creator_name, post_id, post_title, COUNT(*),
+                   SUM(CASE WHEN is_missing = 1 THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN is_missing = 0 THEN 1 ELSE 0 END),
+                   MAX(downloaded_at), MIN(downloaded_at), MAX(id)
+            FROM downloaded_files {where}
+            GROUP BY service, creator_id, creator_name, post_id, post_title;
+        """
+        try:
+            with self._rlock:
+                conn = self._reader()
+                if conn is None:
+                    return []
+                rows = conn.execute(sql, params).fetchall()
+        except Exception as e:
+            logger.error(f"Failed to read the archive's creators: {e}", category="archive")
+            self._note_error(e)
+            return []
+
+        creators: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        members: Dict[Tuple[str, str], set] = {}
+        for (r_svc, r_cid, r_cname, r_pid, r_ptitle, n, n_missing, n_verified, newest, oldest, max_id) in rows:
+            key = self._creator_key(r_svc, r_cid, r_cname)
+            c = creators.get(key)
+            if c is None:
+                c = creators[key] = {
+                    "service": key[0],
+                    "total_files": 0, "missing_count": 0, "verified_count": 0, "unverified_count": 0,
+                    "post_keys": set(),
+                    "posts": [],
+                    "_rank": None,
+                }
+                members[key] = set()
+            # Name and id as written on the newest record (as in the full tree)
+            rank = (str(newest or ""), int(max_id or 0))
+            if c["_rank"] is None or rank > c["_rank"]:
+                c["_rank"] = rank
+                clean_cname = str(r_cname or "").strip()
+                clean_cid = str(r_cid or "").strip()
+                c["creator_name"] = clean_cname or clean_cid or "Unknown Creator"
+                c["creator_id"] = clean_cid or clean_cname or "unknown"
+            members[key].add((r_svc, r_cid, r_cname))
+            n, n_missing, n_verified = int(n or 0), int(n_missing or 0), int(n_verified or 0)
+            c["total_files"] += n
+            c["missing_count"] += n_missing
+            c["verified_count"] += n_verified
+            c["unverified_count"] += n - n_missing - n_verified
+            if newest and (not c.get("newest_downloaded_at") or newest > c["newest_downloaded_at"]):
+                c["newest_downloaded_at"] = newest
+            if oldest and (not c.get("oldest_downloaded_at") or oldest < c["oldest_downloaded_at"]):
+                c["oldest_downloaded_at"] = oldest
+            clean_pid = str(r_pid or "").strip()
+            clean_ptitle = str(r_ptitle or "").strip()
+            c["post_keys"].add(clean_pid or clean_ptitle or f"general_{key[0]}")
+
+        result = []
+        for key, c in creators.items():
+            c["post_count"] = len(c.pop("post_keys"))
+            c.pop("_rank", None)
+            c["key"] = f"{key[0]}|{key[1]}"
+            result.append(c)
+        self._creator_members = {k: sorted(v, key=lambda t: tuple(str(x or "") for x in t))
+                                 for k, v in members.items()}
+        self._sort_creators(result, sort_by)
+        return result
+
+    @staticmethod
+    def _sort_creators(result: List[Dict[str, Any]], sort_by: str) -> None:
+        clean_sort = (sort_by or "creator_az").lower()
+        if clean_sort == "creator_za":
+            result.sort(key=lambda x: str(x.get("creator_name") or "").lower(), reverse=True)
+        elif clean_sort == "files_desc":
+            result.sort(key=lambda x: int(x.get("total_files") or 0), reverse=True)
+        elif clean_sort == "newest":
+            result.sort(key=lambda x: str(x.get("newest_downloaded_at") or ""), reverse=True)
+        elif clean_sort == "oldest":
+            result.sort(key=lambda x: str(x.get("oldest_downloaded_at") or ""))
+        else:
+            result.sort(key=lambda x: str(x.get("creator_name") or "").lower())
+
+    def get_creator_posts(self, creator_key: str, query: str = "", service: str = "all",
+                          file_type: str = "all") -> List[Dict[str, Any]]:
+        """The posts (with their files) of one creator from get_creator_summaries ("service|name")."""
+        if not self._ensure_db():
+            return []
+        svc, _, name = str(creator_key or "").partition("|")
+        key = (svc, name)
+        where, params = self._where(query, service, file_type)
+        member = self._creator_members.get(key) or []
+        ids = sorted({str(cid) for (_s, cid, _n) in member if cid not in (None, "")})
+        svcs = sorted({str(sv) for (sv, _c, _n) in member if sv is not None})
+        if member and ids and svcs and all(cid not in (None, "") for (_s, cid, _n) in member):
+            # Indexed: only this creator's rows are read
+            extra = (f"service IN ({','.join(['?'] * len(svcs))}) "
+                     f"AND creator_id IN ({','.join(['?'] * len(ids))})")
+            where = f"{where} AND {extra}" if where else f"WHERE {extra}"
+            params = list(params) + svcs + ids
+        sql = f"""
+            SELECT id, service, creator_id, creator_name, post_id, post_title,
+                   file_id, file_hash, filename, file_size, file_ext, downloaded_at,
+                   file_path, is_missing, last_verified_at
+            FROM downloaded_files {where}
+            ORDER BY downloaded_at DESC, id DESC;
+        """
+        try:
+            with self._rlock:
+                conn = self._reader()
+                if conn is None:
+                    return []
+                rows = [r for r in conn.execute(sql, params) if self._creator_key(r[1], r[2], r[3]) == key]
+        except Exception as e:
+            logger.error(f"Failed to read the archive's posts for {name}: {e}", category="archive")
+            self._note_error(e)
+            return []
+        tree = self._build_hierarchy(rows, "creator_az")
+        return tree[0]["posts"] if tree else []
+
+    # ── Damaged database ───────────────────────────────────────────────────────
+
+    @staticmethod
+    def _is_damage(e: Exception) -> bool:
+        msg = str(e).lower()
+        return isinstance(e, sqlite3.DatabaseError) and (
+            "malformed" in msg or "corrupt" in msg or "not a database" in msg)
+
+    def _note_error(self, e: Exception) -> None:
+        """Remembers the error for the window; a damaged database is repaired in the background."""
+        self.last_error = str(e)
+        if self._is_damage(e) and not self._auto_repair_tried and not self._repair_lock.locked():
+            self._auto_repair_tried = True
+            threading.Thread(target=self.repair, name="ArchiveRepair", daemon=True).start()
+
+    def repair(self) -> Dict[str, Any]:
+        """Repairs a damaged ("database disk image is malformed") archive.
+
+        A copy of the damaged file is kept first. Damage in the indexes is fixed by REINDEX, which
+        rebuilds them from the records; if the records themselves are damaged, every record that can
+        still be read is copied into a new database file that replaces the old one."""
+        result: Dict[str, Any] = {"ok": False, "method": "", "kept": 0, "lost": 0, "backup": "", "error": ""}
+        if not self._repair_lock.acquire(blocking=False):
+            result["error"] = "A repair is already running."
+            return result
+        try:
+            with self._lock:
+                if self._conn is None:
+                    self._init_db_unlocked()
+                if self._conn is None:
+                    result["error"] = "The archive database can't be opened."
+                    return self._finish_repair(result)
+                logger.warning("📦 The download archive database is damaged; repairing it…", category="archive")
+                try:
+                    self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                except Exception:
+                    pass
+                backup = f"{self.db_path}.damaged-{time.strftime('%Y%m%d-%H%M%S')}.bak"
+                try:
+                    import shutil
+                    shutil.copy2(self.db_path, backup)
+                    if os.path.exists(self.db_path + "-wal"):
+                        shutil.copy2(self.db_path + "-wal", backup + "-wal")
+                    result["backup"] = backup
+                except OSError as be:
+                    result["error"] = f"Couldn't make a backup copy first: {be}"
+                    return self._finish_repair(result)
+
+                # 1. Damaged indexes: rebuilt from the records
+                try:
+                    self._conn.execute("REINDEX;")
+                    self._conn.commit()
+                    if self._quick_check(self._conn):
+                        count = self._conn.execute("SELECT COUNT(*) FROM downloaded_files;").fetchone()[0]
+                        result.update(ok=True, method="reindex", kept=int(count or 0))
+                        return self._finish_repair(result)
+                except Exception as re_err:
+                    logger.info(f"REINDEX didn't repair the archive ({re_err}); copying the readable records…",
+                                category="archive")
+
+                # 2. Damaged records: everything still readable goes into a new file
+                kept, lost = self._salvage_unlocked()
+                result.update(ok=kept >= 0, method="salvage", kept=max(kept, 0), lost=lost)
+                if kept < 0:
+                    result["error"] = "The readable records couldn't be copied (the damaged file was left as it was)."
+                return self._finish_repair(result)
+        except Exception as e:
+            result["error"] = str(e)
+            return self._finish_repair(result)
+        finally:
+            self._repair_lock.release()
+
+    @staticmethod
+    def _quick_check(conn: sqlite3.Connection) -> bool:
+        try:
+            row = conn.execute("PRAGMA quick_check;").fetchone()
+            return bool(row) and str(row[0]).lower() == "ok"
+        except Exception:
+            return False
+
+    def _salvage_unlocked(self) -> Tuple[int, int]:
+        """Copies every readable record into a new database that then replaces the damaged one.
+        Returns (records kept, records lost); kept is -1 when it failed (the old file is left)."""
+        tmp = self.db_path + ".repairing"
+        for f in (tmp, tmp + "-wal", tmp + "-shm"):
+            if os.path.exists(f):
+                os.remove(f)
+        new = sqlite3.connect(tmp)
+        try:
+            self._create_schema(new)
+            old_cols = [r[1] for r in self._conn.execute("PRAGMA table_info(downloaded_files);")]
+            new_cols = {r[1] for r in new.execute("PRAGMA table_info(downloaded_files);")}
+            cols = [c for c in old_cols if c in new_cols]
+            col_sql = ", ".join(cols)
+            insert = f"INSERT OR IGNORE INTO downloaded_files ({col_sql}) VALUES ({','.join(['?'] * len(cols))});"
+            try:
+                max_id = int(self._conn.execute("SELECT MAX(id) FROM downloaded_files;").fetchone()[0] or 0)
+            except Exception:
+                try:
+                    row = self._conn.execute("SELECT seq FROM sqlite_sequence WHERE name='downloaded_files';").fetchone()
+                    max_id = int(row[0] or 0) if row else 10_000_000
+                except Exception:
+                    max_id = 10_000_000
+
+            def copy_range(lo: int, hi: int, step: int) -> Tuple[int, int]:
+                """Copies ids lo..hi-1; a range that can't be read is split down to single records."""
+                k = n_lost = 0
+                for a in range(lo, hi, step):
+                    b = min(a + step, hi)
+                    try:
+                        rows = self._conn.execute(
+                            f"SELECT {col_sql} FROM downloaded_files WHERE id >= ? AND id < ?;", (a, b)).fetchall()
+                        new.executemany(insert, rows)
+                        k += len(rows)
+                    except sqlite3.DatabaseError:
+                        if step == 1:
+                            n_lost += 1
+                        else:
+                            dk, dl = copy_range(a, b, max(1, step // 20))
+                            k += dk
+                            n_lost += dl
+                return k, n_lost
+
+            kept, lost = copy_range(0, max_id + 1, 5000)
+            if kept == 0 and lost > 0:
+                # Nothing at all could be read: an empty archive mustn't replace it
+                raise sqlite3.DatabaseError("none of its records can be read")
+            new.execute("PRAGMA user_version = 2;")
+            new.commit()
+            if not self._quick_check(new):
+                raise sqlite3.DatabaseError("the repaired copy didn't pass its check")
+        except Exception as e:
+            logger.error(f"Couldn't repair the archive database: {e}", category="archive")
+            new.close()
+            for f in (tmp, tmp + "-wal", tmp + "-shm"):
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
+            return -1, 0
+        new.close()
+        self._close_unlocked()
+        for f in (self.db_path + "-wal", self.db_path + "-shm"):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+        os.replace(tmp, self.db_path)
+        self._init_db_unlocked()
+        return kept, lost
+
+    def _finish_repair(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        self._stats_cache = None
+        if result.get("ok"):
+            self.last_error = ""
+            lost = f", {result['lost']} unreadable record(s) dropped" if result.get("lost") else ""
+            logger.success(f"📦 Archive database repaired ({result['method']}): {result['kept']} records kept{lost}. "
+                           f"A copy of the damaged file was kept: {result.get('backup')}", category="archive")
+        else:
+            logger.error(f"📦 Archive database repair failed: {result.get('error') or 'see the messages above'}",
+                         category="archive")
+        if self.on_repair_finished:
+            try:
+                self.on_repair_finished(dict(result))
+            except Exception:
+                pass
+        return result
 
     def is_archived(
         self,
@@ -274,6 +657,7 @@ class ArchiveManager:
                 return False
             except Exception as e:
                 logger.warning(f"Archive lookup failed (failing open): {e}", category="archive")
+                self._note_error(e)
                 return False
 
     def record_file(
@@ -356,6 +740,7 @@ class ArchiveManager:
                 return True
             except Exception as e:
                 logger.warning(f"Failed to record file in download archive: {e}", category="archive")
+                self._note_error(e)
                 return False
 
     def record_link(
@@ -395,26 +780,29 @@ class ArchiveManager:
         )
 
     def get_total_count(self) -> int:
-        """Return total count of archived file records. Returns 0 if disabled or empty."""
+        """Return total count of archived file records. Returns 0 if disabled or empty.
+
+        Read by the window: when the read connection is busy (a big Archive tab refresh), the last
+        known count is returned instead of freezing the window until it's done."""
         if not self._enabled and not os.path.exists(self.db_path):
             return 0
-
-        with self._lock:
-            if self._conn is None:
-                if not os.path.exists(self.db_path):
-                    return 0
-                self._init_db_unlocked()
-            if self._conn is None:
+        if not self._ensure_db():
+            return 0
+        if not self._rlock.acquire(timeout=0.05):
+            return self._last_count
+        try:
+            conn = self._reader()
+            if conn is None:
                 return 0
-
-            try:
-                cursor = self._conn.cursor()
-                cursor.execute("SELECT COUNT(*) FROM downloaded_files;")
-                row = cursor.fetchone()
-                return int(row[0]) if row else 0
-            except Exception as e:
-                logger.debug(f"Failed to query archive record count: {e}", category="archive")
-                return 0
+            row = conn.execute("SELECT COUNT(*) FROM downloaded_files;").fetchone()
+            self._last_count = int(row[0]) if row else 0
+            return self._last_count
+        except Exception as e:
+            logger.debug(f"Failed to query archive record count: {e}", category="archive")
+            self._note_error(e)
+            return self._last_count
+        finally:
+            self._rlock.release()
 
     def get_hierarchical_records(
         self,
@@ -426,209 +814,159 @@ class ArchiveManager:
         """
         Returns records organized hierarchically:
         Creator Group ➔ Post Sub-Group ➔ File Items.
+        Every file of the archive: the Archive tab uses get_creator_summaries / get_creator_posts.
         """
-        if not os.path.exists(self.db_path):
+        if not self._ensure_db():
+            return []
+        where_clause, params = self._where(query, service, file_type)
+        sql = f"""
+            SELECT id, service, creator_id, creator_name, post_id, post_title,
+                   file_id, file_hash, filename, file_size, file_ext, downloaded_at,
+                   file_path, is_missing, last_verified_at
+            FROM downloaded_files
+            {where_clause}
+            ORDER BY downloaded_at DESC, id DESC;
+        """
+        try:
+            with self._rlock:
+                conn = self._reader()
+                if conn is None:
+                    return []
+                rows = conn.execute(sql, params).fetchall()
+            return self._build_hierarchy(rows, sort_by)
+        except Exception as e:
+            logger.error(f"Failed to query hierarchical archive records: {e}", category="archive")
+            self._note_error(e)
             return []
 
-        with self._lock:
-            if self._conn is None:
-                self._init_db_unlocked()
-            if self._conn is None:
-                return []
+    def _build_hierarchy(self, rows: List[tuple], sort_by: str = "creator_az") -> List[Dict[str, Any]]:
+        """Creator ➔ post ➔ file tree from rows of get_hierarchical_records' query."""
+        # Grouping data structure:
+        # creators_map: key -> { creator_name, creator_id, service, posts: { post_id -> post_dict } }
+        creators_map: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
-            try:
-                conditions = []
-                params = []
+        for row in rows:
+            (r_id, r_svc, r_cid, r_cname, r_pid, r_ptitle,
+             r_fid, r_fhash, r_fname, r_fsize, r_fext, r_down_at,
+             r_fpath, r_is_missing, r_last_ver) = row
 
-                # Filter by service
-                clean_svc = (service or "").strip().lower()
-                if clean_svc and clean_svc != "all":
-                    conditions.append("service = ?")
-                    params.append(clean_svc)
+            clean_svc = str(r_svc or "unknown").strip().lower() or "unknown"
+            clean_cname = str(r_cname or "").strip()
+            clean_cid = str(r_cid or "").strip()
+            display_creator = clean_cname if clean_cname else (clean_cid if clean_cid else "Unknown Creator")
+            creator_key = (clean_svc, display_creator.lower())
 
-                # Filter by search query
-                clean_q = (query or "").strip()
-                if clean_q:
-                    q_like = f"%{clean_q}%"
-                    conditions.append(
-                        "(filename LIKE ? OR post_title LIKE ? OR creator_name LIKE ? "
-                        "OR creator_id LIKE ? OR post_id LIKE ? OR file_hash LIKE ?)"
-                    )
-                    params.extend([q_like, q_like, q_like, q_like, q_like, q_like])
+            if creator_key not in creators_map:
+                creators_map[creator_key] = {
+                    "creator_name": display_creator,
+                    "creator_id": clean_cid or clean_cname or "unknown",
+                    "service": clean_svc,
+                    "total_files": 0,
+                    "missing_count": 0,
+                    "verified_count": 0,
+                    "unverified_count": 0,
+                    "posts_map": {}
+                }
 
-                # Filter by file type category
-                clean_ft = (file_type or "").strip().lower()
-                if clean_ft == "removed":
-                    conditions.append("is_missing = 1")
-                elif clean_ft and clean_ft != "all" and clean_ft in FILE_TYPE_CATEGORIES:
-                    extensions = FILE_TYPE_CATEGORIES[clean_ft]
-                    placeholders = ",".join(["?"] * len(extensions))
-                    conditions.append(f"LOWER(file_ext) IN ({placeholders})")
-                    params.extend(list(extensions))
+            c_entry = creators_map[creator_key]
+            c_entry["total_files"] += 1
+            if r_down_at:
+                if "newest_downloaded_at" not in c_entry or r_down_at > c_entry["newest_downloaded_at"]:
+                    c_entry["newest_downloaded_at"] = r_down_at
+                if "oldest_downloaded_at" not in c_entry or r_down_at < c_entry["oldest_downloaded_at"]:
+                    c_entry["oldest_downloaded_at"] = r_down_at
+            r_missing_int = int(r_is_missing if r_is_missing is not None else -1)
+            if r_missing_int == 1:
+                c_entry["missing_count"] += 1
+            elif r_missing_int == 0:
+                c_entry["verified_count"] += 1
+            else:
+                c_entry["unverified_count"] += 1
 
-                where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+            # Post level
+            clean_pid = str(r_pid or "").strip()
+            clean_ptitle = str(r_ptitle or "").strip()
+            display_post_title = clean_ptitle if clean_ptitle else (f"Post #{clean_pid}" if clean_pid else "General / Archived Files")
+            p_key = clean_pid if clean_pid else (clean_ptitle if clean_ptitle else f"general_{clean_svc}")
 
-                sql = f"""
-                    SELECT id, service, creator_id, creator_name, post_id, post_title,
-                           file_id, file_hash, filename, file_size, file_ext, downloaded_at,
-                           file_path, is_missing, last_verified_at
-                    FROM downloaded_files
-                    {where_clause}
-                    ORDER BY downloaded_at DESC;
-                """
+            if p_key not in c_entry["posts_map"]:
+                c_entry["posts_map"][p_key] = {
+                    "post_id": clean_pid or p_key,
+                    "post_title": display_post_title,
+                    "service": clean_svc,
+                    "creator_name": display_creator,
+                    "creator_id": clean_cid or clean_cname or "unknown",
+                    "missing_count": 0,
+                    "files": []
+                }
 
-                cursor = self._conn.cursor()
-                cursor.execute(sql, params)
-                rows = cursor.fetchall()
+            if r_missing_int == 1:
+                c_entry["posts_map"][p_key]["missing_count"] += 1
 
-                # Grouping data structure:
-                # creators_map: key -> { creator_name, creator_id, service, posts: { post_id -> post_dict } }
-                creators_map: Dict[Tuple[str, str], Dict[str, Any]] = {}
+            # Format file size string
+            fsize_int = int(r_fsize or 0)
+            if fsize_int >= 1024 * 1024 * 1024:
+                size_str = f"{fsize_int / (1024 * 1024 * 1024):.1f} GB"
+            elif fsize_int >= 1024 * 1024:
+                size_str = f"{fsize_int / (1024 * 1024):.1f} MB"
+            elif fsize_int >= 1024:
+                size_str = f"{fsize_int / 1024:.1f} KB"
+            elif fsize_int > 0:
+                size_str = f"{fsize_int} B"
+            else:
+                size_str = ""
 
-                for row in rows:
-                    (r_id, r_svc, r_cid, r_cname, r_pid, r_ptitle,
-                     r_fid, r_fhash, r_fname, r_fsize, r_fext, r_down_at,
-                     r_fpath, r_is_missing, r_last_ver) = row
+            # Format downloaded_at string (fast-path string slicing for ISO timestamps)
+            date_display = str(r_down_at or "")
+            if len(date_display) >= 16 and (date_display[10] in ("T", " ")):
+                date_display = f"{date_display[:10]} {date_display[11:16]}"
+            elif date_display:
+                try:
+                    dt = datetime.datetime.fromisoformat(date_display)
+                    date_display = dt.strftime("%Y-%m-%d %H:%M")
+                except Exception:
+                    pass
 
-                    clean_svc = str(r_svc or "unknown").strip().lower() or "unknown"
-                    clean_cname = str(r_cname or "").strip()
-                    clean_cid = str(r_cid or "").strip()
-                    display_creator = clean_cname if clean_cname else (clean_cid if clean_cid else "Unknown Creator")
-                    creator_key = (clean_svc, display_creator.lower())
+            # Determine clean extension
+            clean_fname = str(r_fname or "").strip()
+            clean_fid = str(r_fid or "").strip()
+            ext_display = (str(r_fext or "")).replace(".", "").upper()
+            if not ext_display and clean_fname:
+                _, ext = os.path.splitext(clean_fname)
+                ext_display = ext.replace(".", "").upper()
 
-                    if creator_key not in creators_map:
-                        creators_map[creator_key] = {
-                            "creator_name": display_creator,
-                            "creator_id": clean_cid or clean_cname or "unknown",
-                            "service": clean_svc,
-                            "total_files": 0,
-                            "missing_count": 0,
-                            "verified_count": 0,
-                            "unverified_count": 0,
-                            "posts_map": {}
-                        }
+            c_entry["posts_map"][p_key]["files"].append({
+                "id": r_id,
+                "filename": clean_fname or f"file_{clean_fid or r_id}",
+                "file_id": clean_fid or str(r_id),
+                "file_hash": str(r_fhash or ""),
+                "file_size": fsize_int,
+                "file_size_str": size_str,
+                "file_ext": ext_display,
+                "downloaded_at": str(r_down_at or ""),
+                "downloaded_at_str": date_display,
+                "post_id": clean_pid or p_key,
+                "service": clean_svc,
+                "creator_id": clean_cid or clean_cname or "unknown",
+                "file_path": str(r_fpath or ""),
+                "is_missing": r_missing_int,
+                "last_verified_at": str(r_last_ver or "")
+            })
 
-                    c_entry = creators_map[creator_key]
-                    c_entry["total_files"] += 1
-                    if r_down_at:
-                        if "newest_downloaded_at" not in c_entry or r_down_at > c_entry["newest_downloaded_at"]:
-                            c_entry["newest_downloaded_at"] = r_down_at
-                        if "oldest_downloaded_at" not in c_entry or r_down_at < c_entry["oldest_downloaded_at"]:
-                            c_entry["oldest_downloaded_at"] = r_down_at
-                    r_missing_int = int(r_is_missing if r_is_missing is not None else -1)
-                    if r_missing_int == 1:
-                        c_entry["missing_count"] += 1
-                    elif r_missing_int == 0:
-                        c_entry["verified_count"] += 1
-                    else:
-                        c_entry["unverified_count"] += 1
+        # Assemble sorted list
+        result: List[Dict[str, Any]] = []
+        for c_entry in creators_map.values():
+            # Convert posts_map to list
+            posts_list = list(c_entry["posts_map"].values())
+            for p in posts_list:
+                p["file_count"] = len(p["files"])
+            c_entry["posts"] = posts_list
+            c_entry["post_count"] = len(posts_list)
+            del c_entry["posts_map"]
+            result.append(c_entry)
 
-                    # Post level
-                    clean_pid = str(r_pid or "").strip()
-                    clean_ptitle = str(r_ptitle or "").strip()
-                    display_post_title = clean_ptitle if clean_ptitle else (f"Post #{clean_pid}" if clean_pid else "General / Archived Files")
-                    p_key = clean_pid if clean_pid else (clean_ptitle if clean_ptitle else f"general_{clean_svc}")
-
-                    if p_key not in c_entry["posts_map"]:
-                        c_entry["posts_map"][p_key] = {
-                            "post_id": clean_pid or p_key,
-                            "post_title": display_post_title,
-                            "service": clean_svc,
-                            "creator_name": display_creator,
-                            "creator_id": clean_cid or clean_cname or "unknown",
-                            "missing_count": 0,
-                            "files": []
-                        }
-
-                    if r_missing_int == 1:
-                        c_entry["posts_map"][p_key]["missing_count"] += 1
-
-                    # Format file size string
-                    fsize_int = int(r_fsize or 0)
-                    if fsize_int >= 1024 * 1024 * 1024:
-                        size_str = f"{fsize_int / (1024 * 1024 * 1024):.1f} GB"
-                    elif fsize_int >= 1024 * 1024:
-                        size_str = f"{fsize_int / (1024 * 1024):.1f} MB"
-                    elif fsize_int >= 1024:
-                        size_str = f"{fsize_int / 1024:.1f} KB"
-                    elif fsize_int > 0:
-                        size_str = f"{fsize_int} B"
-                    else:
-                        size_str = ""
-
-                    # Format downloaded_at string (fast-path string slicing for ISO timestamps)
-                    date_display = str(r_down_at or "")
-                    if len(date_display) >= 16 and (date_display[10] in ("T", " ")):
-                        date_display = f"{date_display[:10]} {date_display[11:16]}"
-                    elif date_display:
-                        try:
-                            dt = datetime.datetime.fromisoformat(date_display)
-                            date_display = dt.strftime("%Y-%m-%d %H:%M")
-                        except Exception:
-                            pass
-
-                    # Determine clean extension
-                    clean_fname = str(r_fname or "").strip()
-                    clean_fid = str(r_fid or "").strip()
-                    ext_display = (str(r_fext or "")).replace(".", "").upper()
-                    if not ext_display and clean_fname:
-                        _, ext = os.path.splitext(clean_fname)
-                        ext_display = ext.replace(".", "").upper()
-
-                    c_entry["posts_map"][p_key]["files"].append({
-                        "id": r_id,
-                        "filename": clean_fname or f"file_{clean_fid or r_id}",
-                        "file_id": clean_fid or str(r_id),
-                        "file_hash": str(r_fhash or ""),
-                        "file_size": fsize_int,
-                        "file_size_str": size_str,
-                        "file_ext": ext_display,
-                        "downloaded_at": str(r_down_at or ""),
-                        "downloaded_at_str": date_display,
-                        "post_id": clean_pid or p_key,
-                        "service": clean_svc,
-                        "creator_id": clean_cid or clean_cname or "unknown",
-                        "file_path": str(r_fpath or ""),
-                        "is_missing": r_missing_int,
-                        "last_verified_at": str(r_last_ver or "")
-                    })
-
-                # Assemble sorted list
-                result: List[Dict[str, Any]] = []
-                for c_entry in creators_map.values():
-                    # Convert posts_map to list
-                    posts_list = list(c_entry["posts_map"].values())
-                    for p in posts_list:
-                        p["file_count"] = len(p["files"])
-                    c_entry["posts"] = posts_list
-                    c_entry["post_count"] = len(posts_list)
-                    del c_entry["posts_map"]
-                    result.append(c_entry)
-
-                # Sorting creators
-                clean_sort = (sort_by or "creator_az").lower()
-                if clean_sort == "creator_az":
-                    result.sort(key=lambda x: str(x.get("creator_name") or "").lower())
-                elif clean_sort == "creator_za":
-                    result.sort(key=lambda x: str(x.get("creator_name") or "").lower(), reverse=True)
-                elif clean_sort == "files_desc":
-                    result.sort(key=lambda x: int(x.get("total_files") or 0), reverse=True)
-                elif clean_sort == "newest":
-                    result.sort(
-                        key=lambda x: str(x.get("newest_downloaded_at") or ""),
-                        reverse=True
-                    )
-                elif clean_sort == "oldest":
-                    result.sort(
-                        key=lambda x: str(x.get("oldest_downloaded_at") or "")
-                    )
-                else:
-                    result.sort(key=lambda x: str(x.get("creator_name") or "").lower())
-
-                return result
-            except Exception as e:
-                logger.error(f"Failed to query hierarchical archive records: {e}", category="archive")
-                return []
+        self._sort_creators(result, sort_by)
+        return result
 
     def get_statistics(self) -> Dict[str, Any]:
         """Return comprehensive telemetry regarding the archive database."""
@@ -670,17 +1008,16 @@ class ArchiveManager:
             except Exception:
                 pass
 
-        if not os.path.exists(self.db_path):
+        if not os.path.exists(self.db_path) or not self._ensure_db():
             return stats
 
-        with self._lock:
-            if self._conn is None:
-                self._init_db_unlocked()
-            if self._conn is None:
+        with self._rlock:
+            conn = self._reader()
+            if conn is None:
                 return stats
 
             try:
-                cursor = self._conn.cursor()
+                cursor = conn.cursor()
 
                 # Total files
                 cursor.execute("SELECT COUNT(*) FROM downloaded_files;")
@@ -742,6 +1079,7 @@ class ArchiveManager:
                 return stats
             except Exception as e:
                 logger.error(f"Failed to calculate archive statistics: {e}", category="archive")
+                self._note_error(e)
                 return stats
 
     def delete_record(self, record_id: int) -> bool:
@@ -761,6 +1099,7 @@ class ArchiveManager:
                 return True
             except Exception as e:
                 logger.error(f"Failed to delete archive record {record_id}: {e}", category="archive")
+                self._note_error(e)
                 return False
 
     def delete_by_post(self, service: str, post_id: str) -> int:
@@ -785,7 +1124,8 @@ class ArchiveManager:
                 return affected
             except Exception as e:
                 logger.error(f"Failed to delete archive records for post {post_id}: {e}", category="archive")
-                return 0
+                self._note_error(e)
+                return -1
 
     def delete_by_creator(self, creator_id: str, service: str = "") -> int:
         """Delete all file records belonging to a specific creator."""
@@ -817,7 +1157,8 @@ class ArchiveManager:
                 return affected
             except Exception as e:
                 logger.error(f"Failed to delete archive records for creator {creator_id}: {e}", category="archive")
-                return 0
+                self._note_error(e)
+                return -1
 
     def clear_archive(self) -> bool:
         """Wipe all records from the archive database and vacuum."""
@@ -838,73 +1179,68 @@ class ArchiveManager:
                 return True
             except Exception as e:
                 logger.error(f"Failed to clear download archive database: {e}", category="archive")
+                self._note_error(e)
                 return False
 
     def export_archive(self, filepath: str, export_format: str = "txt") -> int:
         """
-        Export all records to a file.
+        Export all records to a file. Returns the number exported, or -1 when it failed (the reason
+        is in last_error).
         Formats:
         - "txt": plain text list, one "service post_id_file_id" per line (this app's own format)
         - "json": complete metadata JSON structure
+
+        Records are written while they're read (a big archive was first loaded whole into memory),
+        through the read connection, so downloads keep going meanwhile.
         """
-        if not os.path.exists(self.db_path):
+        if not os.path.exists(self.db_path) or not self._ensure_db():
             return 0
-
-        with self._lock:
-            if self._conn is None:
-                self._init_db_unlocked()
-            if self._conn is None:
-                return 0
-
-            try:
-                cursor = self._conn.cursor()
-                cursor.execute("""
-                    SELECT service, creator_id, creator_name, post_id, post_title,
-                           file_id, file_hash, filename, file_size, file_ext, downloaded_at
+        keys = ("service", "creator_id", "creator_name", "post_id", "post_title",
+                "file_id", "file_hash", "filename", "file_size", "file_ext", "downloaded_at")
+        tmp = f"{filepath}.part"
+        count = 0
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
+            with self._rlock:
+                conn = self._reader()
+                if conn is None:
+                    return 0
+                cursor = conn.execute(f"""
+                    SELECT {", ".join(keys)}
                     FROM downloaded_files
                     ORDER BY service, post_id;
                 """)
-                rows = cursor.fetchall()
-                if not rows:
-                    return 0
-
-                count = len(rows)
-                os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
-
-                if export_format.lower() == "json":
-                    export_data = []
-                    for r in rows:
-                        export_data.append({
-                            "service": r[0],
-                            "creator_id": r[1],
-                            "creator_name": r[2],
-                            "post_id": r[3],
-                            "post_title": r[4],
-                            "file_id": r[5],
-                            "file_hash": r[6],
-                            "filename": r[7],
-                            "file_size": r[8],
-                            "file_ext": r[9],
-                            "downloaded_at": r[10]
-                        })
-                    with open(filepath, "w", encoding="utf-8") as f:
-                        json.dump(export_data, f, indent=2, ensure_ascii=False)
-                else:
-                    # gallery-dl standard format: "<service> <post_id>_<file_id>" or "<service> <file_id>"
-                    lines = []
-                    for r in rows:
-                        svc = r[0]
-                        pid = r[3]
-                        fid = r[5]
-                        lines.append(f"{svc} {pid}_{fid}\n")
-                    with open(filepath, "w", encoding="utf-8") as f:
-                        f.writelines(lines)
-
-                logger.info(f"📤 Exported {count} archive records to '{filepath}'", category="archive")
-                return count
-            except Exception as e:
-                logger.error(f"Failed to export archive: {e}", category="archive")
+                with open(tmp, "w", encoding="utf-8") as f:
+                    as_json = export_format.lower() == "json"
+                    if as_json:
+                        f.write("[")
+                    while True:
+                        rows = cursor.fetchmany(2000)
+                        if not rows:
+                            break
+                        for r in rows:
+                            if as_json:
+                                f.write(("\n  " if count == 0 else ",\n  ") + json.dumps(dict(zip(keys, r)), ensure_ascii=False))
+                            else:
+                                # gallery-dl style: "<service> <post_id>_<file_id>"
+                                f.write(f"{r[0]} {r[3]}_{r[5]}\n")
+                            count += 1
+                    if as_json:
+                        f.write("\n]\n" if count else "]\n")
+            if count == 0:
+                os.remove(tmp)
                 return 0
+            os.replace(tmp, filepath)
+            logger.info(f"📤 Exported {count} archive records to '{filepath}'", category="archive")
+            return count
+        except Exception as e:
+            logger.error(f"Failed to export archive: {e}", category="archive")
+            self._note_error(e)
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            return -1
 
     def import_archive(self, filepath: str) -> int:
         """
@@ -973,6 +1309,21 @@ class ArchiveManager:
                 if not records_to_insert:
                     return 0
 
+                # Filled in the way the one-time repair of old databases does (it no longer runs on
+                # every start): extension from the file name, creator id / name from each other
+                fixed = []
+                for (svc, cid, cname, pid, ptitle, fid, fhash, fname, fsize, fext, at) in records_to_insert:
+                    if not fext and fname:
+                        fext = os.path.splitext(fname)[1].lower()
+                    if not cname and cid:
+                        cname = cid
+                    elif not cid and cname:
+                        cid = cname
+                    elif not cid and not cname:
+                        cid, cname = "unknown", "Unknown Creator"
+                    fixed.append((svc, cid, cname, pid, ptitle, fid, fhash, fname, fsize, fext, at))
+                records_to_insert = fixed
+
                 cursor = self._conn.cursor()
                 cursor.executemany(
                     """
@@ -989,6 +1340,7 @@ class ArchiveManager:
                 return imported_count
             except Exception as e:
                 logger.error(f"Failed to import archive from '{filepath}': {e}", category="archive")
+                self._note_error(e)
                 return 0
 
     def verify_creator_integrity(
@@ -1037,6 +1389,7 @@ class ArchiveManager:
                 rows = cursor.fetchall()
             except Exception as e:
                 logger.error(f"Failed to verify archive integrity for {creator_id}: {e}", category="archive")
+                self._note_error(e)
                 return result
 
         total = len(rows)
@@ -1147,6 +1500,7 @@ class ArchiveManager:
 
         except Exception as e:
             logger.error(f"Failed to verify archive integrity for {creator_id}: {e}", category="archive")
+            self._note_error(e)
             return result
 
     def remove_missing_for_creator(self, service: str, creator_id: str) -> int:
@@ -1170,7 +1524,8 @@ class ArchiveManager:
                 return deleted
             except Exception as e:
                 logger.error(f"Failed to remove missing records for creator {creator_id}: {e}", category="archive")
-                return 0
+                self._note_error(e)
+                return -1
 
     def get_creator_character_profile(
         self,
@@ -1302,6 +1657,7 @@ class ArchiveManager:
 
             except Exception as e:
                 logger.error(f"Failed to generate creator character profile: {e}", category="archive")
+                self._note_error(e)
                 return result
 
 

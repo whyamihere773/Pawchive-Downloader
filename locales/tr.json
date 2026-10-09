@@ -1137,5 +1137,13 @@
   "webp_q_small": "Küçük",
   "webp_q_smallest": "En küçük",
   "webp_quality_label": "WebP kalitesi:",
-  "webp_quality_tip": "Resimlerin ne kadar sıkıştırılacağı. Kayıpsız her pikseli korur; Dengeli neredeyse fark edilmez ve çok daha küçüktür; Küçük ve En küçük en çok yer kazandırır. WebP daha küçük olmayacaksa resim olduğu gibi bırakılır."
+  "webp_quality_tip": "Resimlerin ne kadar sıkıştırılacağı. Kayıpsız her pikseli korur; Dengeli neredeyse fark edilmez ve çok daha küçüktür; Küçük ve En küçük en çok yer kazandırır. WebP daha küçük olmayacaksa resim olduğu gibi bırakılır.",
+  "archive_loading_posts": "Gönderiler yükleniyor…",
+  "toast_exporting": "Arşiv dışa aktarılıyor…",
+  "toast_archive_error": "Arşiv değiştirilemedi: %1",
+  "toast_archive_damaged": "Arşiv veritabanı hasarlı. Şu anda onarılıyor; birazdan tekrar dene.",
+  "toast_archive_repaired": "Arşiv veritabanı hasarlıydı ve onarıldı (%1 kayıt korundu). Şimdi tekrar deneyebilirsin.",
+  "toast_archive_repair_failed": "Arşiv veritabanı hasarlı ve onarılamadı: %1",
+  "archive_show_more_posts": "%1 gönderi daha göster (%2 kaldı)",
+  "archive_show_more_files": "%1 dosya daha göster (%2 kaldı)"
 }

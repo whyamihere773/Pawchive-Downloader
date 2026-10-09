@@ -1269,7 +1269,7 @@ SmoothFlickable {
                                         StyledButton {
                                             text: tr("btn_cancel", "Cancel")
                                             Layout.preferredHeight: 28
-                                            Layout.preferredWidth: 70
+                                            Layout.preferredWidth: Math.max(70, contentItem.implicitWidth + 20)
                                             variant: "outline"
                                             onClicked: loginDrawer.visible = false
                                         }
@@ -1278,7 +1278,7 @@ SmoothFlickable {
                                             text: tr("btn_do_login", "Log In")
                                             iconText: "🔓"
                                             Layout.preferredHeight: 28
-                                            Layout.preferredWidth: 95
+                                            Layout.preferredWidth: Math.max(95, contentItem.implicitWidth + 20)
                                             variant: "primary"
                                             onClicked: {
                                                 if (root.bridge) {
@@ -1338,7 +1338,7 @@ SmoothFlickable {
                                             text: tr("btn_paste", "Paste")
                                             iconText: "📋"
                                             Layout.preferredHeight: 28
-                                            Layout.preferredWidth: 80
+                                            Layout.preferredWidth: Math.max(80, contentItem.implicitWidth + 20)
                                             variant: "outline"
                                             onClicked: editField.paste()
                                         }
@@ -1348,7 +1348,7 @@ SmoothFlickable {
                                         StyledButton {
                                             text: tr("btn_cancel", "Cancel")
                                             Layout.preferredHeight: 28
-                                            Layout.preferredWidth: 70
+                                            Layout.preferredWidth: Math.max(70, contentItem.implicitWidth + 20)
                                             variant: "outline"
                                             onClicked: cardEditor.visible = false
                                         }
@@ -1357,7 +1357,7 @@ SmoothFlickable {
                                             text: tr("btn_save_encrypt", "Save & Encrypt")
                                             iconText: "🔒"
                                             Layout.preferredHeight: 28
-                                            Layout.preferredWidth: 125
+                                            Layout.preferredWidth: Math.max(125, contentItem.implicitWidth + 20)
                                             variant: "primary"
                                             onClicked: {
                                                 if (root.bridge) {
@@ -1485,7 +1485,7 @@ SmoothFlickable {
 
                     StyledButton {
                         text: (telegramBridge && telegramBridge.isLoggedIn) ? tr("tg_btn_manage", "Manage / Switch") : tr("tg_btn_connect", "Connect Telegram")
-                        implicitWidth: 140
+                        implicitWidth: Math.max(140, contentItem.implicitWidth + 20)
                         implicitHeight: 32
                         variant: (telegramBridge && telegramBridge.isLoggedIn) ? "outline" : "primary"
                         onClicked: {
@@ -1536,7 +1536,7 @@ SmoothFlickable {
 
                     StyledButton {
                         text: tr("tg_btn_reset_login", "Reset Login")
-                        implicitWidth: 110
+                        implicitWidth: Math.max(110, contentItem.implicitWidth + 20)
                         implicitHeight: 30
                         variant: "danger"
                         onClicked: {
@@ -1605,7 +1605,7 @@ SmoothFlickable {
                         text: tr("tg_btn_reset_warnings", "Reset Warning Prompts")
                         variant: "outline"
                         Layout.preferredHeight: 28
-                        Layout.preferredWidth: 160
+                        Layout.preferredWidth: Math.max(160, contentItem.implicitWidth + 20)
                         onClicked: {
                             if (bridge) bridge.resetTelegramWarnings()
                         }
@@ -1692,7 +1692,7 @@ SmoothFlickable {
 
                             StyledButton {
                                 text: tr("btn_save", "Save Keys")
-                                implicitWidth: 85
+                                implicitWidth: Math.max(85, contentItem.implicitWidth + 20)
                                 implicitHeight: 30
                                 variant: "outline"
                                 onClicked: {
@@ -2789,7 +2789,7 @@ SmoothFlickable {
                                                 text: root.tr("btn_reset_template", "Reset")
                                                 tooltip: root.tr("tip_reset_template", "Reset filename template to: {title} - {orig_name}")
                                                 variant: "ghost"
-                                                implicitWidth: 65
+                                                implicitWidth: Math.max(65, contentItem.implicitWidth + 20)
                                                 implicitHeight: 32
                                                 onClicked: {
                                                     if (root.bridge) {

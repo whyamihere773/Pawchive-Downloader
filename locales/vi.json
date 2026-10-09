@@ -1137,5 +1137,13 @@
   "webp_q_small": "Nhỏ",
   "webp_q_smallest": "Nhỏ nhất",
   "webp_quality_label": "Chất lượng WebP:",
-  "webp_quality_tip": "Mức nén ảnh. Không mất dữ liệu giữ nguyên mọi điểm ảnh; Cân bằng gần như không thấy khác biệt mà nhỏ hơn nhiều; Nhỏ và Nhỏ nhất tiết kiệm dung lượng nhất. Ảnh được giữ nguyên nếu bản WebP không nhỏ hơn."
+  "webp_quality_tip": "Mức nén ảnh. Không mất dữ liệu giữ nguyên mọi điểm ảnh; Cân bằng gần như không thấy khác biệt mà nhỏ hơn nhiều; Nhỏ và Nhỏ nhất tiết kiệm dung lượng nhất. Ảnh được giữ nguyên nếu bản WebP không nhỏ hơn.",
+  "archive_loading_posts": "Đang tải bài đăng…",
+  "toast_exporting": "Đang xuất kho lưu trữ…",
+  "toast_archive_error": "Không thể thay đổi kho lưu trữ: %1",
+  "toast_archive_damaged": "Cơ sở dữ liệu lưu trữ bị hỏng. Đang được sửa; hãy thử lại sau giây lát.",
+  "toast_archive_repaired": "Cơ sở dữ liệu lưu trữ bị hỏng và đã được sửa (giữ lại %1 bản ghi). Bạn có thể thử lại ngay.",
+  "toast_archive_repair_failed": "Cơ sở dữ liệu lưu trữ bị hỏng và không thể sửa: %1",
+  "archive_show_more_posts": "Hiện thêm %1 bài đăng (còn %2)",
+  "archive_show_more_files": "Hiện thêm %1 tệp (còn %2)"
 }

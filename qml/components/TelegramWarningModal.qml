@@ -503,7 +503,7 @@ Rectangle {
                             text: tr("btn_cancel", "Cancel")
                             variant: "outline"
                             Layout.preferredHeight: 34
-                            Layout.preferredWidth: 90
+                            Layout.preferredWidth: Math.max(90, contentItem.implicitWidth + 20)
                             onClicked: warningModalRoot.close()
                         }
 
@@ -513,7 +513,7 @@ Rectangle {
                             text: tr("tg_btn_next_liability", "Next: Liability Terms →")
                             variant: "primary"
                             Layout.preferredHeight: 34
-                            Layout.preferredWidth: 175
+                            Layout.preferredWidth: Math.max(175, contentItem.implicitWidth + 20)
                             onClicked: {
                                 if (chkDontShowSafety.checked && bridge) {
                                     bridge.telegramSafetyAcknowledged = true
@@ -655,7 +655,7 @@ Rectangle {
                             text: tr("btn_back", "← Back")
                             variant: "outline"
                             Layout.preferredHeight: 34
-                            Layout.preferredWidth: 80
+                            Layout.preferredWidth: Math.max(80, contentItem.implicitWidth + 20)
                             visible: !(bridge && bridge.telegramSafetyAcknowledged)
                             onClicked: warningModalRoot.currentStep = 1
                         }
@@ -664,7 +664,7 @@ Rectangle {
                             text: tr("btn_decline", "Decline / Cancel")
                             variant: "ghost"
                             Layout.preferredHeight: 34
-                            Layout.preferredWidth: 120
+                            Layout.preferredWidth: Math.max(120, contentItem.implicitWidth + 20)
                             onClicked: warningModalRoot.close()
                         }
 
@@ -674,7 +674,7 @@ Rectangle {
                             text: tr("tg_btn_accept", "Accept & Proceed →")
                             variant: "danger"
                             Layout.preferredHeight: 34
-                            Layout.preferredWidth: 155
+                            Layout.preferredWidth: Math.max(155, contentItem.implicitWidth + 20)
                             onClicked: {
                                 if (chkDontShowLiability.checked && bridge) {
                                     bridge.telegramLiabilityAcknowledged = true

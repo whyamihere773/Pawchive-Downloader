@@ -1137,5 +1137,13 @@
   "webp_q_small": "Small",
   "webp_q_smallest": "Smallest",
   "webp_quality_label": "WebP quality:",
-  "webp_quality_tip": "How strongly pictures are compressed. Lossless keeps every pixel; Balanced is barely visible and much smaller; Small and Smallest save the most space. A picture is kept as it was if the WebP wouldn't be smaller."
+  "webp_quality_tip": "How strongly pictures are compressed. Lossless keeps every pixel; Balanced is barely visible and much smaller; Small and Smallest save the most space. A picture is kept as it was if the WebP wouldn't be smaller.",
+  "archive_loading_posts": "Loading posts…",
+  "toast_exporting": "Exporting the archive…",
+  "toast_archive_error": "The archive couldn't be changed: %1",
+  "toast_archive_damaged": "The archive database is damaged. It's being repaired now; try again in a moment.",
+  "toast_archive_repaired": "The archive database was damaged and has been repaired (%1 records kept). You can try again now.",
+  "toast_archive_repair_failed": "The archive database is damaged and couldn't be repaired: %1",
+  "archive_show_more_posts": "Show %1 more posts (%2 left)",
+  "archive_show_more_files": "Show %1 more files (%2 left)"
 }

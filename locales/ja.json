@@ -1137,5 +1137,13 @@
   "webp_q_small": "小",
   "webp_q_smallest": "最小",
   "webp_quality_label": "WebP 品質:",
-  "webp_quality_tip": "画像をどれだけ圧縮するか。ロスレスはすべてのピクセルを保持し、バランスはほとんど目立たずにずっと小さくなり、小と最小は最も容量を節約します。WebP の方が小さくならない場合、画像はそのまま残ります。"
+  "webp_quality_tip": "画像をどれだけ圧縮するか。ロスレスはすべてのピクセルを保持し、バランスはほとんど目立たずにずっと小さくなり、小と最小は最も容量を節約します。WebP の方が小さくならない場合、画像はそのまま残ります。",
+  "archive_loading_posts": "投稿を読み込み中…",
+  "toast_exporting": "アーカイブをエクスポート中…",
+  "toast_archive_error": "アーカイブを変更できませんでした: %1",
+  "toast_archive_damaged": "アーカイブのデータベースが破損しています。現在修復中です。しばらくしてからもう一度お試しください。",
+  "toast_archive_repaired": "破損していたアーカイブのデータベースを修復しました（%1 件を保持）。もう一度お試しください。",
+  "toast_archive_repair_failed": "アーカイブのデータベースが破損しており、修復できませんでした: %1",
+  "archive_show_more_posts": "さらに %1 件の投稿を表示（残り %2 件）",
+  "archive_show_more_files": "さらに %1 件のファイルを表示（残り %2 件）"
 }

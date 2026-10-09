@@ -50,6 +50,51 @@ Rectangle {
     property int _reloadSeq: 0
     property string _reloadRequest: ""
     property bool _reloadAgain: false
+    property bool _expandOnResult: false     // a search opens every creator it found
+
+    // Posts (with their files) of the creators that are open. Only the creators come with a refresh;
+    // a creator's posts are read when it's opened, one creator at a time (sending every file of a big
+    // archive to the window on each refresh froze it, #28).
+    property var loadedPosts: ({})           // creator key -> posts
+    property var _postsQueue: []
+    property string _postsRequest: ""
+    property string _postsRequestKey: ""
+    property int _postsSeq: 0
+    property string _postsFilter: ""
+    property string _exportRequest: ""
+    readonly property int pageSize: 50       // posts shown at a time when a creator is opened (files: 100)
+
+    function postsFor(creator) {
+        var k = creator ? creator.key : ""
+        return (k && root.loadedPosts[k]) ? root.loadedPosts[k] : []
+    }
+    function postsLoaded(creator) {
+        return !!(creator && creator.key && root.loadedPosts[creator.key])
+    }
+    function requestPosts(creator) {
+        if (!creator || !creator.key || !root.bridge) return
+        if (root._postsQueue.indexOf(creator.key) >= 0 || root._postsRequestKey === creator.key) return
+        root._postsQueue.push(creator.key)
+        root._pumpPosts()
+    }
+    function _pumpPosts() {
+        if (root._postsRequest !== "" || root._postsQueue.length === 0 || !root.bridge) return
+        var key = root._postsQueue.shift()
+        root._postsSeq += 1
+        root._postsRequest = "archive-posts-" + root._postsSeq
+        root._postsRequestKey = key
+        root.bridge.getArchiveCreatorPostsAsync(root._postsRequest, key, root.searchFilter, root.serviceFilter, root.fileTypeFilter)
+    }
+    function _filterSignature() {
+        return root.searchFilter + "\u0001" + root.serviceFilter + "\u0001" + root.fileTypeFilter
+    }
+    // Why an archive change failed, in words for the user
+    function archiveErrorText() {
+        var e = root.bridge ? root.bridge.archiveLastError() : ""
+        if (/malformed|corrupt|not a database/i.test(e))
+            return root.tr("toast_archive_damaged", "The archive database is damaged. It's being repaired now; try again in a moment.")
+        return root.tr("toast_archive_error", "The archive couldn't be changed: %1").replace("%1", e || "?")
+    }
 
     Timer {
         id: reloadDebounceTimer
@@ -97,16 +142,66 @@ Rectangle {
     Connections {
         target: root.bridge
         function onAsyncResultReady(requestId, result) {
+            if (requestId === root._postsRequest) {
+                var m = Object.assign({}, root.loadedPosts)
+                m[root._postsRequestKey] = result || []
+                root.loadedPosts = m
+                root._postsRequest = ""
+                root._postsRequestKey = ""
+                root._pumpPosts()
+                return
+            }
+            if (requestId === root._exportRequest) {
+                root._exportRequest = ""
+                var n = (typeof result === "number") ? result : -1
+                if (n < 0)
+                    root.showToast(root.archiveErrorText())
+                else
+                    root.showToast(root.tr("toast_exported_count", "Exported %1 records to archive file.").replace("%1", n))
+                return
+            }
             if (requestId !== root._reloadRequest) return
             root._reloadRequest = ""
             if (result) {
-                root.hierarchyData = result.hierarchy
+                var creators = result.hierarchy || []
+                if (root._expandOnResult) {
+                    root._expandOnResult = false
+                    var all = {}
+                    for (var i = 0; i < creators.length; i++) all[creators[i].creator_name] = true
+                    root.expandedCreators = all
+                }
+                // Open creators keep their posts on screen while they're read again; with other
+                // filters (search, site, type) the old ones don't apply
+                var sig = root._filterSignature()
+                var keep = {}
+                var open = []
+                for (var j = 0; j < creators.length; j++) {
+                    var c = creators[j]
+                    if (root.expandedCreators && root.expandedCreators[c.creator_name]) {
+                        if (sig === root._postsFilter && root.loadedPosts[c.key]) keep[c.key] = root.loadedPosts[c.key]
+                        open.push(c)
+                    }
+                }
+                root._postsFilter = sig
+                root._postsQueue = []
+                root.loadedPosts = keep
+                var keepY = creatorsListView.contentY
+                root.hierarchyData = creators
+                if (keepY > 0)
+                    creatorsListView.contentY = Math.min(keepY, Math.max(0, creatorsListView.contentHeight - creatorsListView.height))
                 root.statistics = result.statistics
+                for (var o = 0; o < open.length; o++) root.requestPosts(open[o])
             }
             if (root._reloadAgain) {
                 root._reloadAgain = false
                 root.reload()
             }
+        }
+        function onArchiveRepairFinished(result) {
+            if (result && result.ok)
+                root.showToast(root.tr("toast_archive_repaired", "The archive database was damaged and has been repaired (%1 records kept). You can try again now.").replace("%1", result.kept))
+            else
+                root.showToast(root.tr("toast_archive_repair_failed", "The archive database is damaged and couldn't be repaired: %1").replace("%1", (result && result.error) ? result.error : "?"))
         }
         function onArchiveUpdated() {
             root.scheduleReload()
@@ -914,16 +1009,10 @@ Rectangle {
                                 interval: 250
                                 onTriggered: {
                                     root.searchFilter = searchInput.text
-                                    root.reload()
-                                    if (root.searchFilter.trim().length > 0) {
-                                        var newMap = {}
-                                        for (var i = 0; i < root.hierarchyData.length; i++) {
-                                            newMap[root.hierarchyData[i].creator_name] = true
-                                        }
-                                        root.expandedCreators = newMap
-                                    } else {
+                                    root._expandOnResult = root.searchFilter.trim().length > 0
+                                    if (!root._expandOnResult)
                                         root.expandedCreators = {}
-                                    }
+                                    root.reload()
                                 }
                             }
 
@@ -1548,31 +1637,33 @@ Rectangle {
                 }
             }
 
-            // SmoothFlickable with fluid continuous scrolling (eliminates scrollbar indicator skipping on dynamic creator tree heights)
-            SmoothFlickable {
+            // Only the creator cards on screen are built: building one for every creator froze the
+            // window for seconds on big archives (#28)
+            SmoothListView {
                 id: creatorsListView
+                objectName: "archiveCreatorsList"
                 anchors.fill: parent
                 visible: root.hierarchyData.length > 0
-                contentWidth: width
-                contentHeight: creatorsCol.implicitHeight
+                spacing: 8
+                cacheBuffer: 800
+                currentIndex: -1
+                highlightFollowsCurrentItem: false
+                model: root.hierarchyData
 
-                ColumnLayout {
-                    id: creatorsCol
-                    width: creatorsListView.width
-                    spacing: 8
-
-                    Repeater {
-                        model: root.hierarchyData
-
-                        Rectangle {
+                        delegate: Rectangle {
                             id: creatorCard
-                            Layout.fillWidth: true
-                            Layout.minimumWidth: 0
+                            width: creatorsListView.width
                             radius: 8
                             clip: true
 
                     property var creatorModel: modelData
                     property bool isCollapsed: !(root.expandedCreators && root.expandedCreators[creatorModel.creator_name])
+                    property int postsShown: root.pageSize
+                    onIsCollapsedChanged: {
+                        if (!isCollapsed) root.requestPosts(creatorModel)
+                        else postsShown = root.pageSize
+                    }
+                    Component.onCompleted: if (!isCollapsed && !root.postsLoaded(creatorModel)) root.requestPosts(creatorModel)
 
                     property int creatorMissingCount: (creatorModel && typeof creatorModel.missing_count === "number") ? creatorModel.missing_count : 0
                     property int creatorTotalCount: creatorModel.total_files || 0
@@ -2065,8 +2156,18 @@ Rectangle {
                                 anchors.leftMargin: 18
                                 spacing: 6
 
+                                Text {
+                                    visible: !creatorCard.isCollapsed && !root.postsLoaded(creatorCard.creatorModel)
+                                    text: root.tr("archive_loading_posts", "Loading posts…")
+                                    font.family: "Segoe UI, sans-serif"
+                                    font.pixelSize: 11
+                                    color: "#64748B"
+                                    Layout.topMargin: 2
+                                    Layout.bottomMargin: 2
+                                }
+
                                 Repeater {
-                                    model: creatorCard.isCollapsed ? null : creatorModel.posts
+                                    model: creatorCard.isCollapsed ? null : root.postsFor(creatorModel).slice(0, creatorCard.postsShown)
 
                                     delegate: Rectangle {
                                         id: postCard
@@ -2074,6 +2175,7 @@ Rectangle {
                                         property var postModel: modelData
                                         property string postKey: creatorModel.creator_name + "_" + postModel.post_id
                                         property bool isPostCollapsed: root.searchFilter.length === 0 && !(root.expandedPosts && root.expandedPosts[postKey])
+                                        property int filesShown: root.pageSize * 2
 
                                         property int missingCount: (postModel && typeof postModel.missing_count === "number") ? postModel.missing_count : 0
                                         property int totalFiles: (postModel && postModel.files) ? postModel.files.length : (postModel.file_count || 0)
@@ -2274,7 +2376,7 @@ Rectangle {
                                                 Layout.leftMargin: 14
 
                                                 Repeater {
-                                                    model: (creatorCard.isCollapsed || postCard.isPostCollapsed) ? null : postModel.files
+                                                    model: (creatorCard.isCollapsed || postCard.isPostCollapsed) ? null : postModel.files.slice(0, postCard.filesShown)
 
                                                     delegate: Rectangle {
                                                         Layout.fillWidth: true
@@ -2530,6 +2632,8 @@ Rectangle {
                                                                             var ok = root.bridge.deleteArchiveRecord(fileData.id)
                                                                             if (ok) {
                                                                                 root.showToast(root.tr("toast_file_removed", "File removed from archive."))
+                                                                            } else if (root.bridge.archiveLastError()) {
+                                                                                root.showToast(root.archiveErrorText())
                                                                             }
                                                                         }
                                                                     }
@@ -2538,16 +2642,48 @@ Rectangle {
                                                         }
                                                     }
                                                 }
+                                                // Long lists open a page at a time: building hundreds of cards at once froze the window (#28)
+                                                Text {
+                                                    visible: postCard.totalFiles > postCard.filesShown
+                                                    text: root.tr("archive_show_more_files", "Show %1 more files (%2 left)").replace("%1", Math.min(root.pageSize * 2, postCard.totalFiles - postCard.filesShown)).replace("%2", postCard.totalFiles - postCard.filesShown)
+                                                    font.family: "Segoe UI, sans-serif"
+                                                    font.pixelSize: 11
+                                                    color: moreMouse_archive_show_more_files.containsMouse ? "#5EEAD4" : "#2DD4BF"
+                                                    Layout.topMargin: 2
+                                                    Layout.bottomMargin: 4
+                                                    MouseArea {
+                                                        id: moreMouse_archive_show_more_files
+                                                        anchors.fill: parent
+                                                        hoverEnabled: true
+                                                        cursorShape: Qt.PointingHandCursor
+                                                        onClicked: postCard.filesShown += root.pageSize * 2
+                                                    }
+                                                }
                                             }
                                         }
+                                    }
+                                }
+                                // Long lists open a page at a time: building hundreds of cards at once froze the window (#28)
+                                Text {
+                                    visible: root.postsFor(creatorCard.creatorModel).length > creatorCard.postsShown
+                                    text: root.tr("archive_show_more_posts", "Show %1 more posts (%2 left)").replace("%1", Math.min(root.pageSize, root.postsFor(creatorCard.creatorModel).length - creatorCard.postsShown)).replace("%2", root.postsFor(creatorCard.creatorModel).length - creatorCard.postsShown)
+                                    font.family: "Segoe UI, sans-serif"
+                                    font.pixelSize: 11
+                                    color: moreMouse_archive_show_more_posts.containsMouse ? "#5EEAD4" : "#2DD4BF"
+                                    Layout.topMargin: 2
+                                    Layout.bottomMargin: 4
+                                    MouseArea {
+                                        id: moreMouse_archive_show_more_posts
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: creatorCard.postsShown += root.pageSize
                                     }
                                 }
                             }
                         }
                     }
                 } // end creatorCard Rectangle
-            } // end Repeater
-        } // end creatorsCol
     } // end creatorsListView
 } // end content container Item
 } // end main ColumnLayout
@@ -2622,8 +2758,9 @@ Rectangle {
             if (root.bridge && selectedFile) {
                 var path = selectedFile.toString()
                 var fmt = path.toLowerCase().endsWith(".json") ? "json" : "txt"
-                var exported = root.bridge.exportArchiveFile(path, fmt)
-                root.showToast(root.tr("toast_exported_count", "Exported %1 records to archive file.").replace("%1", exported))
+                root._exportRequest = "archive-export-" + Date.now()
+                root.bridge.exportArchiveFileAsync(root._exportRequest, path, fmt)
+                root.showToast(root.tr("toast_exporting", "Exporting the archive…"))
             }
         }
     }
@@ -2796,7 +2933,10 @@ Rectangle {
                             deleteCreatorConfirmModal.isOpen = false
                             if (root.bridge && root.deleteTargetCreator) {
                                 var delCnt = root.bridge.deleteArchiveCreator(root.deleteTargetCreator.creator_id, root.deleteTargetCreator.service)
-                                root.showToast(root.tr("toast_creator_removed", "Removed %1 files for creator.").replace("%1", delCnt))
+                                if (delCnt < 0)
+                                    root.showToast(root.archiveErrorText())
+                                else
+                                    root.showToast(root.tr("toast_creator_removed", "Removed %1 files for creator.").replace("%1", delCnt))
                             }
                         }
                     }
@@ -2901,9 +3041,12 @@ Rectangle {
                                 var newMap = Object.assign({}, root.verificationState)
                                 delete newMap[key]
                                 root.verificationState = newMap
-                                root.showToast(
-                                    root.tr("toast_missing_removed", "Removed %1 missing record(s).").replace("%1", delCnt)
-                                )
+                                if (delCnt < 0)
+                                    root.showToast(root.archiveErrorText())
+                                else
+                                    root.showToast(
+                                        root.tr("toast_missing_removed", "Removed %1 missing record(s).").replace("%1", delCnt)
+                                    )
                             }
                         }
                     }
@@ -2991,7 +3134,10 @@ Rectangle {
                             deletePostConfirmModal.isOpen = false
                             if (root.bridge && root.deleteTargetPost) {
                                 var delCnt = root.bridge.deleteArchivePost(root.deleteTargetPost.service, root.deleteTargetPost.post_id)
-                                root.showToast(root.tr("toast_post_removed", "Removed %1 files for post.").replace("%1", delCnt))
+                                if (delCnt < 0)
+                                    root.showToast(root.archiveErrorText())
+                                else
+                                    root.showToast(root.tr("toast_post_removed", "Removed %1 files for post.").replace("%1", delCnt))
                             }
                         }
                     }

@@ -1137,5 +1137,13 @@
   "webp_q_small": "小",
   "webp_q_smallest": "最小",
   "webp_quality_label": "WebP 品質:",
-  "webp_quality_tip": "圖片的壓縮強度。無損保留每個像素；均衡幾乎看不出差異且小得多；小與最小最節省空間。若 WebP 不會更小，圖片保持原樣。"
+  "webp_quality_tip": "圖片的壓縮強度。無損保留每個像素；均衡幾乎看不出差異且小得多；小與最小最節省空間。若 WebP 不會更小，圖片保持原樣。",
+  "archive_loading_posts": "正在載入貼文…",
+  "toast_exporting": "正在匯出封存…",
+  "toast_archive_error": "無法變更封存: %1",
+  "toast_archive_damaged": "封存資料庫已損毀，正在修復，請稍後再試。",
+  "toast_archive_repaired": "封存資料庫已損毀並已修復（保留 %1 筆記錄）。現在可以重試了。",
+  "toast_archive_repair_failed": "封存資料庫已損毀，無法修復: %1",
+  "archive_show_more_posts": "再顯示 %1 篇貼文（剩餘 %2 篇）",
+  "archive_show_more_files": "再顯示 %1 個檔案（剩餘 %2 個）"
 }

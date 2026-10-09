@@ -1137,5 +1137,13 @@
   "webp_q_small": "Pequena",
   "webp_q_smallest": "Mínima",
   "webp_quality_label": "Qualidade WebP:",
-  "webp_quality_tip": "Quanto as imagens são comprimidas. Sem perdas mantém cada pixel; Equilibrada quase não se nota e fica bem menor; Pequena e Mínima economizam mais espaço. A imagem fica como estava se o WebP não for menor."
+  "webp_quality_tip": "Quanto as imagens são comprimidas. Sem perdas mantém cada pixel; Equilibrada quase não se nota e fica bem menor; Pequena e Mínima economizam mais espaço. A imagem fica como estava se o WebP não for menor.",
+  "archive_loading_posts": "Carregando publicações…",
+  "toast_exporting": "Exportando o arquivo…",
+  "toast_archive_error": "Não foi possível alterar o arquivo: %1",
+  "toast_archive_damaged": "O banco de dados do arquivo está danificado. Ele está sendo reparado agora; tente de novo em instantes.",
+  "toast_archive_repaired": "O banco de dados do arquivo estava danificado e foi reparado (%1 registros mantidos). Você já pode tentar de novo.",
+  "toast_archive_repair_failed": "O banco de dados do arquivo está danificado e não pôde ser reparado: %1",
+  "archive_show_more_posts": "Mostrar mais %1 publicações (restam %2)",
+  "archive_show_more_files": "Mostrar mais %1 arquivos (restam %2)"
 }

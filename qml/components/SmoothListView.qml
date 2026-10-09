@@ -16,9 +16,9 @@ ListView {
     }
 
     // Dynamic deceleration: snappy (6000) on short views, more fluid (4000) on large lists
-    flickDeceleration: Math.max(4000, 6000 - Math.min(2000, (contentRatio - 1.0) * 100))
+    flickDeceleration: Math.max(5000, 6000 - Math.min(1000, (contentRatio - 1.0) * 50))
     // Dynamic velocity cap: 2500 on short views, scaling up to 7500 on massive lists
-    maximumFlickVelocity: Math.min(7500, 2500 + Math.min(5000, (contentRatio - 1.0) * 150))
+    maximumFlickVelocity: Math.min(5000, 2500 + Math.min(2500, (contentRatio - 1.0) * 100))
 
     property real targetContentY: contentY
     readonly property bool isScrolling: moving || flicking
@@ -65,16 +65,16 @@ ListView {
 
             // Detect rapid wheel spinning and build momentum faster on larger lists
             if (dt < 180) {
-                var accelStep = 0.25 + Math.min(0.5, (listRoot.contentRatio - 1.0) * 0.05)
-                var maxMomentum = Math.min(4.5, 1.8 + Math.min(2.7, (listRoot.contentRatio - 1.0) * 0.15))
+                var accelStep = 0.2 + Math.min(0.2, (listRoot.contentRatio - 1.0) * 0.02)
+                var maxMomentum = Math.min(2.2, 1.5 + Math.min(0.7, (listRoot.contentRatio - 1.0) * 0.05))
                 listRoot._wheelMomentum = Math.min(maxMomentum, listRoot._wheelMomentum + accelStep)
             } else {
                 listRoot._wheelMomentum = 1.0
             }
 
             // Dynamic base notch scale: 1.0x on short views (~120px), scaling up to 2.8x on huge lists
-            var sizeScale = Math.min(2.8, 1.0 + Math.log2(Math.max(1.0, listRoot.contentRatio / 1.8)) * 0.4)
-            var baseSpeed = 1200 * sizeScale * listRoot._wheelMomentum
+            var sizeScale = Math.min(1.35, 1.0 + Math.log2(Math.max(1.0, listRoot.contentRatio / 1.8)) * 0.12)
+            var baseSpeed = 1100 * sizeScale * listRoot._wheelMomentum
 
             var notchV = (delta / 120.0) * baseSpeed
             var curV = listRoot.flicking ? listRoot.verticalVelocity : 0

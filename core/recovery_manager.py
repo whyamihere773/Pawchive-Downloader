@@ -402,7 +402,10 @@ class RecoveryManager:
         tasks = data.get("tasks", [])
         if not tasks:
             return False
-        has_pending = any(t.get("status") in ("pending", "downloading", "failed") for t in tasks)
+        # Only files that never got their turn make a session "unfinished". Failed files are kept
+        # for Retry Failed; counting them here brought the prompt back on every start, and Resume
+        # (which only downloads pending files) couldn't do anything about them (#28).
+        has_pending = any(t.get("status") in ("pending", "downloading", "retrying") for t in tasks)
         return has_pending
 
     def get_recovery_summary(self) -> Optional[Dict[str, Any]]:

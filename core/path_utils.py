@@ -61,6 +61,10 @@ def _rescue_from_internal() -> None:
         for dirpath, _dirs, files in os.walk(src_root):
             dst_dir = os.path.normpath(os.path.join(root, sub, os.path.relpath(dirpath, src_root)))
             for name in files:
+                # SQLite's side files belong to the database next to them: one copied next to a
+                # different database (the user's own) would be read as part of it and damage it
+                if name.lower().endswith(("-wal", "-shm", "-journal")):
+                    continue
                 dst = os.path.join(dst_dir, name)
                 if os.path.exists(dst):
                     continue

@@ -54,7 +54,7 @@ from core.parser import KemonoURLParser, URLParseResult
 from core.filter_engine import FilterEngine, FilterOptions, FilenameStyles
 from core.file_order import normalize_file_order, order_files
 from core.api_client import KemonoApiClient
-from core.downloader import KemonoDownloader, DownloadTask
+from core.downloader import KemonoDownloader, DownloadTask, is_permanent_failure
 from core.session_manager import SessionManager
 from core.known_manager import KnownManager
 from bridge.log_model import LogModel
@@ -186,6 +186,8 @@ class AppBridge(QObject):
     archiveCreatorVerificationStarted  = Signal(str, str)
     archiveCreatorVerificationProgress = Signal(str, str, int, int)
     archiveCreatorVerificationFinished = Signal(str, str, 'QVariant')
+    # A damaged archive database was repaired (or couldn't be): {ok, method, kept, lost, backup, error}
+    archiveRepairFinished = Signal('QVariant')
     archiveRebuildProgress             = Signal('QVariant')
     archiveRebuildFinished            = Signal('QVariant')
     archiveRebuildStatusChanged        = Signal()
@@ -269,6 +271,7 @@ class AppBridge(QObject):
             config_dir=self.session_manager.config_dir,
             enabled=self._enable_download_archive
         )
+        self.archive_manager.on_repair_finished = self._on_archive_repaired
         self.downloader = KemonoDownloader(
             known_manager=self.known_manager,
             session_manager=self.session_manager,
@@ -1483,15 +1486,43 @@ class AppBridge(QObject):
     @Slot(str, str, str, str, str)
     def getArchiveDataAsync(self, request_id: str, query: str = "", service: str = "all",
                             fileType: str = "all", sortBy: str = "creator_az"):
-        """The Archive view's data, read in the background (a big archive froze the window on every
-        refresh, every 1.5 s while downloading)."""
+        """The Archive view's creators and statistics, read in the background. Only one entry per
+        creator: a creator's posts and files are read when it's opened (getArchiveCreatorPostsAsync).
+        Sending every file of a big archive to the window on each refresh froze it (#28)."""
         def _load():
             return {
-                "hierarchy": self.archive_manager.get_hierarchical_records(
+                "hierarchy": self.archive_manager.get_creator_summaries(
                     query=query, service=service, file_type=fileType, sort_by=sortBy),
                 "statistics": self.archive_manager.get_statistics(),
             }
         self._run_async(request_id, _load)
+
+    @Slot(str, str, str, str, str)
+    def getArchiveCreatorPostsAsync(self, request_id: str, creatorKey: str, query: str = "",
+                                    service: str = "all", fileType: str = "all"):
+        """The posts and files of one creator in the Archive view (its "key" from getArchiveDataAsync)."""
+        self._run_async(request_id, self.archive_manager.get_creator_posts, creatorKey, query, service, fileType)
+
+    @Slot(str, str, str)
+    def exportArchiveFileAsync(self, request_id: str, filepath: str, exportFormat: str = "txt"):
+        """Exports the archive in the background: the result is the number of records, -1 if it failed."""
+        clean_path = filepath.replace("file:///", "").replace("file://", "")
+        self._run_async(request_id, self.archive_manager.export_archive, clean_path, exportFormat)
+
+    @Slot(result=str)
+    def archiveLastError(self) -> str:
+        """Why the last archive change failed (shown to the user)."""
+        return self.archive_manager.last_error or ""
+
+    def _on_archive_repaired(self, result: dict):
+        """From the repair's thread: the window refreshes and says what happened."""
+        try:
+            self.archiveRepairFinished.emit(result)
+            if result.get("ok"):
+                self.archiveRecordCountChanged.emit()
+                self.archiveUpdated.emit()
+        except RuntimeError:
+            pass      # the app is closing
 
     @Slot(int, result=bool)
     def deleteArchiveRecord(self, recordId: int) -> bool:
@@ -3748,6 +3779,10 @@ class AppBridge(QObject):
             except Exception:
                 pass
             try:
+                self.archive_manager.checkpoint()
+            except Exception:
+                pass
+            try:
                 if tasks:
                     self.recovery_manager.save_checkpoint(tasks=tasks, batches=batches, settings=settings,
                                                           status="paused" if was_downloading else "interrupted")
@@ -3880,20 +3915,11 @@ class AppBridge(QObject):
     @Slot()
     @Slot("QVariantList")
     def clearFailedTasks(self, selected_ids: Optional[list] = None):
-        """Removes failed and cancelled tasks from both queue models, downloader, and disk."""
-        if self._queue_model:
-            self._queue_model.clearFailedTasks(selected_ids)
-        if self._active_queue_model:
-            self._active_queue_model.clearFailedTasks(selected_ids)
-        if self.downloader:
-            if selected_ids:
-                s_set = set(selected_ids)
-                self.downloader.tasks = [
-                    t for t in self.downloader.tasks
-                    if not (t.status in ("failed", "cancelled") and (t.file_id in s_set or t.url in s_set or t.filename in s_set))
-                ]
-            else:
-                self.downloader.tasks = [t for t in self.downloader.tasks if t.status not in ("failed", "cancelled")]
+        """Removes failed and cancelled tasks from both queue models, downloader, and disk.
+
+        The failed files saved on disk are updated first (and not in the background): the Retry
+        Failed button counts them when the queue has none, so updating the queue first made it
+        recount while the old file was still there and keep showing "Retry Failed (1)" (#28)."""
         if self.recovery_manager:
             if selected_ids:
                 spilled = self.recovery_manager.load_retries()
@@ -3906,11 +3932,24 @@ class AppBridge(QObject):
                                 or (item.get("filename") if isinstance(item, dict) else getattr(item, "filename", "")) in s_set)
                     ]
                     if remaining:
-                        self.recovery_manager.dump_retries(remaining)
+                        self.recovery_manager.dump_retries(remaining, async_write=False)
                     else:
                         self.recovery_manager.clear_retries()
             else:
                 self.recovery_manager.clear_retries()
+        if self.downloader:
+            if selected_ids:
+                s_set = set(selected_ids)
+                self.downloader.tasks = [
+                    t for t in self.downloader.tasks
+                    if not (t.status in ("failed", "cancelled") and (t.file_id in s_set or t.url in s_set or t.filename in s_set))
+                ]
+            else:
+                self.downloader.tasks = [t for t in self.downloader.tasks if t.status not in ("failed", "cancelled")]
+        if self._queue_model:
+            self._queue_model.clearFailedTasks(selected_ids)
+        if self._active_queue_model:
+            self._active_queue_model.clearFailedTasks(selected_ids)
         logger.info("Cleared failed tasks from queue.", category="queue")
 
     @Slot()
@@ -5372,20 +5411,18 @@ class AppBridge(QObject):
                     cutoffs = {}
                     for (svc, uid), c_tasks in grouped.items():
                         posts_state = {}
-                        posts_all_404 = {}
                         for _t in c_tasks:
                             pid = str(getattr(_t, "post_id", "") or "")
                             date = getattr(_t, "post_date", "") or ""
-                            ok = getattr(_t, "status", "") in ("completed", "skipped")
-                            err = str(getattr(_t, "error_msg", "") or "")
-                            is_404 = "404" in err or "not exist" in err.lower()
+                            # A file that can never be downloaded (gone from the server, a private or
+                            # removed video, out of retries) doesn't keep its post "new": such posts
+                            # were offered again after every download, failing the same way (#28)
+                            ok = (getattr(_t, "status", "") in ("completed", "skipped")
+                                  or (getattr(_t, "status", "") == "failed" and is_permanent_failure(_t)))
                             prev = posts_state.get(pid)
                             posts_state[pid] = (date or (prev[0] if prev else ""), ok and (prev[1] if prev else True))
-                            if not ok:
-                                posts_all_404[pid] = posts_all_404.get(pid, True) and is_404
                         done_posts = [(d, p) for p, (d, ok) in posts_state.items() if ok]
-                        # Don't let posts that permanently 404 block cutoff advancement forever
-                        open_posts = [(d, p) for p, (d, ok) in posts_state.items() if not ok and not posts_all_404.get(p, False)]
+                        open_posts = [(d, p) for p, (d, ok) in posts_state.items() if not ok]
 
                         existing = self._watchlist_manager._find(uid, svc)
                         if not existing:
@@ -5555,6 +5592,16 @@ class AppBridge(QObject):
                 entry.cached_new_posts = []
                 self._watchlist_manager.save()
                 return []
+            # Only the posts that still have something to download are new (one missing file used
+            # to keep every post of the check listed)
+            with_work = {str(getattr(t, "post_id", "") or "") for t in tasks}
+            remaining = [p for p in new_posts if str(p.get("id", "")) in with_work]
+            if remaining and len(remaining) < len(new_posts):
+                done_ids = [str(p.get("id", "")) for p in new_posts if str(p.get("id", "")) not in with_work]
+                self._watchlist_manager.resolve_posts(entry.user_id, entry.service, post_ids=done_ids)
+                entry.cached_new_posts = remaining
+                entry.new_post_count = len(remaining)
+                return remaining
         except Exception as e:
             logger.debug(f"Watchlist check pre-flight verification error: {e}", category="watchlist")
         return new_posts
