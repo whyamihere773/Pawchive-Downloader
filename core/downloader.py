@@ -355,9 +355,10 @@ class DownloadTask:
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "DownloadTask":
+        from core.path_translation import localize_path      # (saved on the other system: D:\ ↔ /mnt/d)
         t = cls(
             url=d.get("url", ""),
-            target_path=d.get("target_path", ""),
+            target_path=localize_path(d.get("target_path", "")),
             post_title=d.get("post_title", ""),
             creator_name=d.get("creator_name", ""),
             service=d.get("service", ""),
@@ -804,6 +805,7 @@ class KemonoDownloader:
         build_post_infos: Dict[Tuple[str, str], str] = {}
         build_text_posts: List[Tuple[str, str, str]] = []
 
+        creator_folder_name = None          # (looked up once per scan)
         for post_idx, post in enumerate(posts_to_process, 1):
             if _build_cancelled():
                 self.last_build_cancelled = True
@@ -874,7 +876,10 @@ class KemonoDownloader:
                 continue
 
             # Determine parent directory for this post
-            creator_folder = f"{creator_clean} [{service}]"
+            if creator_folder_name is None:
+                from core.folder_naming import pick_creator_folder
+                creator_folder_name = os.path.basename(pick_creator_folder(base_dir or "", creator_clean, service))
+            creator_folder = creator_folder_name
             if artist_dir:
                 norm_art = os.path.normpath(artist_dir)
                 norm_base = os.path.normpath(base_dir) if base_dir else ""

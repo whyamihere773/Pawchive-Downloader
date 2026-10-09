@@ -17,6 +17,7 @@ import threading
 from typing import Optional, List, Dict, Any, Tuple, Callable
 from core.logger import logger
 from core import archive_index
+from core.path_translation import localize_path
 
 
 FILE_TYPE_CATEGORIES = {
@@ -1790,6 +1791,7 @@ class ArchiveManager:
             missing_count = 0
             for idx, row in enumerate(rows):
                 r_id, r_post_id, r_fname, r_fpath, r_fsize = row
+                r_fpath = localize_path(r_fpath) if r_fpath else r_fpath     # (recorded on the other system)
                 found_path = ""
                 if r_fpath and os.path.exists(r_fpath) and os.path.getsize(r_fpath) > 0:
                     found_path = r_fpath
@@ -1843,6 +1845,43 @@ class ArchiveManager:
             logger.error(f"Failed to verify archive integrity for {creator_id}: {e}", category="archive")
             self._note_error(e)
             return result
+
+    def relocate_files(self, old_dirs: List[str], moves: Dict[str, str]) -> int:
+        """After files were moved (Watchlist → "Change download folder"): the records of files that
+        were in old_dirs point to where the files are now. moves maps old path → new path."""
+        if not moves or not self._ensure_db():
+            return 0
+
+        def norm(p: str) -> str:
+            return os.path.normcase(os.path.normpath(p))
+        new_of = {norm(o): n for o, n in moves.items()}
+
+        def like(prefix: str) -> str:
+            return prefix.replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%"
+        updates: Dict[int, str] = {}
+        with self._lock:
+            if self._conn is None:
+                return 0
+            try:
+                for d in old_dirs:
+                    base = os.path.normpath(d)
+                    for prefix in {base, base.replace("\\", "/")}:
+                        for rid, fp in self._conn.execute(
+                                "SELECT id, file_path FROM downloaded_files WHERE file_path LIKE ? ESCAPE '!';",
+                                (like(prefix),)):
+                            new = new_of.get(norm(fp or ""))
+                            if new:
+                                updates[rid] = new
+                if updates:
+                    self._conn.executemany("UPDATE downloaded_files SET file_path = ? WHERE id = ?;",
+                                           [(p, rid) for rid, p in updates.items()])
+                    self._conn.commit()
+            except Exception as e:
+                logger.error(f"Couldn't update the archive's file paths: {e}", category="archive")
+                self._note_error(e)
+                return 0
+        self._stats_cache = None
+        return len(updates)
 
     def remove_missing_for_creator(self, service: str, creator_id: str) -> int:
         """Delete all archive records marked as missing (is_missing = 1) for a creator."""

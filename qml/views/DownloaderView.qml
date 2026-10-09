@@ -1856,6 +1856,13 @@ SmoothFlickable {
                     }
 
                     StyledCheckBox {
+                        text: root.tr("opt_site_in_folder_name", "Site in Folder Name")
+                        tooltip: root.tr("opt_site_in_folder_name_tip", "Name creator folders \"Artist [onlyfans]\". Turn off for just \"Artist\". Folders made either way are still found.")
+                        checked: root.bridge ? root.bridge.siteInFolderName : true
+                        onCheckedChanged: if (root.bridge) root.bridge.siteInFolderName = checked
+                    }
+
+                    StyledCheckBox {
                         text: root.tr("opt_date_prefix", "Date Prefix")
                         tooltip: root.tr("opt_date_prefix_tip", "Prefix subfolder names with the post publication date [YYYY-MM-DD]")
                         checked: root.bridge ? root.bridge.datePrefix : true

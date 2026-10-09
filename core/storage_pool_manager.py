@@ -73,8 +73,9 @@ class StoragePoolManager:
     def _apply_dict(self, data: Dict[str, Any]):
         self.enabled = bool(data.get("enabled", False))
         self.safety_margin_gb = float(data.get("safety_margin_gb", 10.0))
-        self.primary_dir = str(data.get("primary_dir", ""))
-        self.overflow_dirs = [str(d) for d in data.get("overflow_dirs", []) if str(d).strip()]
+        from core.path_translation import localize_path      # (saved on the other system: D:\ ↔ /mnt/d)
+        self.primary_dir = localize_path(str(data.get("primary_dir", "")))
+        self.overflow_dirs = [localize_path(str(d)) for d in data.get("overflow_dirs", []) if str(d).strip()]
 
     def save(self):
         """Persists storage pool settings atomically."""

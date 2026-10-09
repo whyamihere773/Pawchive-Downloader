@@ -34,6 +34,8 @@ Numbers below are for an archive with 2 million files from 20,000 creators.
 * **No more endless "Unfinished Download" prompt**: The prompt only appears when files really never got their turn. Files that failed stay in Retry Failed instead of bringing the prompt back at every start.
 * **Retry Failed count is always right**: The button no longer keeps showing a failed file after you cleared it.
 * **Retry Failed opens instantly**: With 5,000 failed files the window used to freeze for over 2 minutes; it now opens in under 0.1 seconds and fills in as you watch.
+* **Retrying doesn't freeze**: Retrying 20,000 failed files used to freeze the window for about 4 seconds, sometimes several times in a row; it now starts instantly.
+* **Only the files you picked are retried**: Retrying or clearing selected failed files no longer also picks up other posts' files that happen to share a name (like "001.jpg").
 * **No more re-downloading the same images**: Small original pictures and pictures you converted to WebP are no longer "upgraded" again on every run.
 * **Huge queues stay smooth**: A queue of 500,000 files loads in 0.2 seconds instead of 3.5 seconds, and no longer freezes the app for good.
 * **Lighter crash protection**: Download progress is still saved every 30 seconds, but only what changed is written: a fraction of a second instead of rewriting up to 700 MB for a million queued files.
@@ -55,6 +57,9 @@ Numbers below are for an archive with 2 million files from 20,000 creators.
 * **Connection problems don't hide updates**: If an artist can't be checked, the updates found earlier stay listed and the artist is tried again next time.
 * **Daily backup**: A copy of your watchlist is kept and used automatically if the file ever gets damaged.
 * **Long update lists**: Long update lists open 50 posts at a time.
+* **Change an artist's download folder**: The 📂 button now really changes the folder. If the artist already has files, you can move them to the new folder (the download archive follows them) or use the new folder only for new downloads.
+* **Your folder choice sticks**: A folder you chose for an artist is no longer moved back into the main download folder on the next download, and multi-drive storage doesn't override it. "Add Drive/Folder" adds a location again instead of replacing the folder.
+* **No more doubled locations**: An artist's folder no longer shows up twice ("Multi-Drive Spanned (2 locations)") just because it was saved with different slashes.
 
 ---
 
@@ -69,6 +74,21 @@ Numbers below are for an archive with 2 million files from 20,000 creators.
 * **No hiccup after start-up**: A freeze of up to 0.3 seconds a few seconds after opening the app is gone.
 * **Fewer random micro-freezes**: With very large queues, watchlists or archives, the app no longer pauses for 0.1–0.2 seconds every now and then to tidy up memory.
 * **Freezes report themselves**: If the window ever stops responding, the log now says for how long and what it was busy with, which makes bug reports much easier to fix.
+
+---
+
+### ⚙️ New Settings & Options
+
+* **Site in Folder Name** *(on by default)*: Turn off "Site in Folder Name" in Downloader → Folder Organization & Naming to name creator folders "Artist" instead of "Artist [onlyfans]". Existing folders are still found under either name, so nothing gets split.
+* **Windows and Linux share your data**: Folders saved on Windows ("D:\Art") work on Linux and WSL ("/mnt/d/Art") and the other way round, for a drive shared between both systems.
+
+---
+
+### 🛠️ Fixes
+
+* **Gallery copy, compress and extract work again**: Since v1.2.5 every file failed with "name 'time' is not defined".
+* **Gfycat links recognised as gone**: Gfycat shut down in 2023, so its links now count as permanently failed instead of being retried and offered again by the Watchlist.
+* **RedGifs "410" explained**: When RedGifs reports a video as deleted, the error now says so plainly, and the post stays retryable instead of being marked done, since some of these still play in a browser.
 
 ---
 

@@ -242,6 +242,7 @@ class SessionManager:
                     saved = json.load(f)
                 if isinstance(saved, dict):
                     default_settings.update(saved)
+                    self._localize_settings(default_settings)
             except Exception as e:
                 logger.warning(f"Failed to load settings.json: {e}", category="session")
                 # Keep the unreadable file for inspection instead of overwriting it on the next save
@@ -252,6 +253,24 @@ class SessionManager:
                     pass
 
         return default_settings
+
+    @staticmethod
+    def _localize_settings(settings: Dict[str, Any]) -> None:
+        """Folders saved on the other system (Windows "D:\\…" ↔ Linux / WSL "/mnt/d/…") in this
+        system's form (see core/path_translation.py)."""
+        from core import path_translation
+        pattern = settings.get("windows_drive_mount")
+        if isinstance(pattern, str) and "{drive}" in pattern:
+            path_translation.mount_pattern = pattern
+        loc = path_translation.localize_path
+        if isinstance(settings.get("download_dir"), str):
+            settings["download_dir"] = loc(settings["download_dir"])
+        for key in ("storage_pool_drives", "gallery_bookmarks"):
+            items = settings.get(key)
+            if isinstance(items, list):
+                settings[key] = [loc(i) if isinstance(i, str)
+                                 else ({**i, "path": loc(i["path"])} if isinstance(i, dict) and isinstance(i.get("path"), str) else i)
+                                 for i in items]
 
     def save_settings(self, settings_data: Dict[str, Any], silent: bool = False):
         """Writes settings.json crash-safely (a crash mid-write used to reset all settings).

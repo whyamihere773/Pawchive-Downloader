@@ -74,6 +74,13 @@ Item {
                 resultToast.show(count)
             }
         }
+        function onWatchlistFolderChangeRequested(uid, svc, name, oldDirs, newDir, count, sizeText) {
+            folderChangeModal.open(uid, svc, name, oldDirs, newDir, count, sizeText)
+        }
+        function onWatchlistFolderChanged(uid, svc, message) {
+            resultToast.showCustom(message !== "" ? "⚠️ " + message
+                                                  : "✅ " + root.tr("folder_change_done", "Download folder changed"))
+        }
         function onWatchlistChanged() {
             if (bridge && bridge.watchlistModel) {
                 bridge.watchlistModel.refresh()
@@ -1426,7 +1433,7 @@ Item {
                                         ToolTip.delay: 250
                                         ToolTip.text: root.tr("watchlist_add_location_tip", "Link another storage drive or folder for this artist")
                                         onClicked: {
-                                            if (bridge) bridge.browseWatchlistDownloadDir(entryCard.artistUserId, entryCard.artistService)
+                                            if (bridge) bridge.browseAndAddArtistDownloadDir(entryCard.artistUserId, entryCard.artistService)
                                         }
                                     }
                                 }
@@ -2556,5 +2563,11 @@ Item {
                 color: "#34D399"
             }
         }
+    }
+
+    FolderChangeModal {
+        id: folderChangeModal
+        objectName: "folderChangeModal"
+        bridge: root.bridge
     }
 }

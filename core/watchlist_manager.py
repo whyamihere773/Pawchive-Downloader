@@ -39,6 +39,7 @@ class WatchlistEntry:
     # (Boosty, cum.st) can't tell which same-day post came first, so they're remembered by ID.
     cutoff_day_ids: List[str] = field(default_factory=list)
     last_checked_at: float = 0.0   # when a check last finished for this creator (time.time())
+    custom_folder: bool = False    # download_dir was chosen by the user: used as it is, never moved
 
     def __setattr__(self, name, value):
         object.__setattr__(self, name, value)
@@ -62,6 +63,8 @@ class WatchlistEntry:
         }
         if self.last_checked_at:
             d["last_checked_at"] = self.last_checked_at
+        if self.custom_folder:
+            d["custom_folder"] = True
         return d
 
     def to_dict(self) -> Dict[str, Any]:
@@ -76,14 +79,20 @@ class WatchlistEntry:
         d.pop("cached_new_posts", None) # don't persist transient field
         if not d.get("last_checked_at"):
             d.pop("last_checked_at", None)
+        if not d.get("custom_folder"):
+            d.pop("custom_folder", None)
         return d
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "WatchlistEntry":
-        single_dir = str(d.get("download_dir", "") or "").strip()
+        from core.path_translation import localize_path      # (saved on the other system: D:\ ↔ /mnt/d)
+        single_dir = localize_path(str(d.get("download_dir", "") or "").strip())
+        if single_dir:
+            single_dir = os.path.normpath(single_dir)     # ("D:/x" and "D:\x" showed as two locations)
         raw_dirs = d.get("download_dirs", [])
         if not isinstance(raw_dirs, list):
             raw_dirs = [raw_dirs] if raw_dirs else []
+        raw_dirs = [localize_path(str(p)) for p in raw_dirs]
         norm_dirs = [os.path.normpath(str(p)) for p in raw_dirs if str(p).strip()]
         if single_dir:
             norm_single = os.path.normpath(single_dir)
@@ -108,6 +117,7 @@ class WatchlistEntry:
             cached_new_posts=[],
             cutoff_day_ids=[str(x) for x in d.get("cutoff_day_ids", [])] if isinstance(d.get("cutoff_day_ids"), list) else [],
             last_checked_at=float(d.get("last_checked_at") or 0.0),
+            custom_folder=bool(d.get("custom_folder", False)),
         )
 
 
@@ -638,12 +648,12 @@ class WatchlistManager:
                 if existing.download_dir and old_was_numeric:
                     clean_target = os.path.normpath(existing.download_dir)
                     base = os.path.basename(clean_target)
-                    expected_numeric = f"{user_id} [{service}]"
-                    if base.lower() == expected_numeric.lower() or base == user_id:
+                    from core.folder_naming import is_creator_folder, creator_folder
+                    if is_creator_folder(base, user_id, service):
                         parent_dir = os.path.dirname(clean_target)
                         from core.filter_engine import FilterEngine
                         clean_c = FilterEngine.clean_filesystem_text(creator_name, max_len=80, fallback="creator")
-                        new_dir = os.path.join(parent_dir, f"{clean_c} [{service}]")
+                        new_dir = os.path.join(parent_dir, creator_folder(clean_c, service))
                         if os.path.exists(existing.download_dir) and not os.path.exists(new_dir):
                             try:
                                 os.rename(existing.download_dir, new_dir)

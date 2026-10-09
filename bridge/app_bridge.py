@@ -65,6 +65,8 @@ from bridge.queue_model import QueueModel
 from bridge.known_model import KnownModel
 from bridge.watchlist_model import WatchlistModel
 from bridge.archive_creators_model import ArchiveCreatorsModel, RecordListModel
+from core import folder_naming
+from core.folder_naming import pick_creator_folder, is_creator_folder
 from bridge.decompressor_bridge import DecompressorBridge
 from core.watchlist_manager import WatchlistManager
 from services.batch_loader import BatchLoader
@@ -125,6 +127,7 @@ class AppBridge(QObject):
     favoriteModeChanged = Signal()
     subfolderPerPostChanged = Signal()
     datePrefixChanged = Signal()
+    siteInFolderNameChanged = Signal()
     fileIndexPrefixChanged = Signal()
     separateFoldersByKnownChanged = Signal()
     downloadRevisionsChanged = Signal()
@@ -206,6 +209,10 @@ class AppBridge(QObject):
     watchlistArtistChecking   = Signal(str, str, bool) # (userId, service, isChecking)
     watchlistArtistChecked    = Signal(str, str, int)  # (userId, service, newPostCount)
     watchlistApplyGlobalSettingsChanged = Signal()
+    # "Change download folder": (userId, service, creator, old folder, new folder, files, size text) when
+    # the artist already has files to move or keep; then (userId, service, message) when it's done
+    watchlistFolderChangeRequested = Signal(str, str, str, str, str, int, str)
+    watchlistFolderChanged = Signal(str, str, str)
 
     # Link Vault signals
     linkVaultChanged          = Signal()
@@ -338,6 +345,7 @@ class AppBridge(QObject):
         self._favorite_mode = False
         self._subfolder_per_post = saved_settings.get("subfolder_per_post", True)
         self._date_prefix = saved_settings.get("date_prefix", True)
+        folder_naming.include_service = bool(saved_settings.get("site_in_folder_name", True))
         self._file_index_prefix = bool(saved_settings.get("file_index_prefix", False))
         self._separate_folders_by_known = saved_settings.get("separate_by_known", False)
         self._download_revisions = saved_settings.get("download_revisions", False)
@@ -1077,6 +1085,18 @@ class AppBridge(QObject):
         if self._date_prefix != val:
             self._date_prefix = val
             self.datePrefixChanged.emit()
+            self.saveSettings()
+
+    @Property(bool, notify=siteInFolderNameChanged)
+    def siteInFolderName(self) -> bool:
+        """Creator folders named "Artist [onlyfans]" (True) or "Artist" (False)."""
+        return folder_naming.include_service
+
+    @siteInFolderName.setter
+    def siteInFolderName(self, val: bool):
+        if folder_naming.include_service != bool(val):
+            folder_naming.include_service = bool(val)
+            self.siteInFolderNameChanged.emit()
             self.saveSettings()
 
     @Property(bool, notify=fileIndexPrefixChanged)
@@ -3517,8 +3537,10 @@ class AppBridge(QObject):
                         norm_base = os.path.normpath(self._download_dir) if self._download_dir else ""
                         # If old folder does not exist on disk, or if user changed self._download_dir:
                         # re-anchor to active self._download_dir so user changes are 100% respected!
-                        if not os.path.exists(norm_existing) or (norm_base and not norm_existing.startswith(norm_base)):
-                            new_artist_dir = os.path.join(norm_base, f"{clean_c} [{parsed.service}]") if norm_base else norm_existing
+                        if getattr(existing_entry, "custom_folder", False):
+                            artist_dir = norm_existing           # chosen by the user: used as it is
+                        elif not os.path.exists(norm_existing) or (norm_base and not norm_existing.startswith(norm_base)):
+                            new_artist_dir = pick_creator_folder(norm_base, clean_c, parsed.service) if norm_base else norm_existing
                             existing_entry.download_dir = new_artist_dir
                             self._watchlist_manager.save()
                             artist_dir = new_artist_dir
@@ -3605,7 +3627,7 @@ class AppBridge(QObject):
                     else:
                         from core.filter_engine import FilterEngine
                         clean_c = FilterEngine.clean_filesystem_text(creator_name or parsed.user_id, max_len=80, fallback="creator")
-                        target_download_dir = os.path.join(self._download_dir, f"{clean_c} [{parsed.service}]")
+                        target_download_dir = pick_creator_folder(self._download_dir, clean_c, parsed.service)
 
                     self._watchlist_manager.add_entry(
                         url=canonical_url,
@@ -4378,7 +4400,7 @@ class AppBridge(QObject):
                 creator_clean = FilterEngine.clean_filesystem_text(creator, max_len=80, fallback="") if creator else ""
                 if creator_clean:
                     if service:
-                        folder_parts.append(f"{creator_clean} [{service}]")
+                        folder_parts.append(os.path.basename(pick_creator_folder(os.path.join(*folder_parts), creator_clean, service)))
                     else:
                         folder_parts.append(creator_clean)
 
@@ -4843,6 +4865,7 @@ class AppBridge(QObject):
             "skip_scope": self._skip_scope,
             "subfolder_per_post": self._subfolder_per_post,
             "date_prefix": self._date_prefix,
+            "site_in_folder_name": folder_naming.include_service,
             "file_index_prefix": self._file_index_prefix,
             "separate_by_known": self._separate_folders_by_known,
             "download_revisions": self._download_revisions,
@@ -5356,6 +5379,8 @@ class AppBridge(QObject):
             except ValueError:
                 return False
 
+        from core.path_translation import localize_path
+        target_path, old_root = localize_path(target_path), localize_path(old_root)   # (from the other system)
         norm = os.path.normpath(os.path.abspath(target_path)) if os.path.isabs(target_path) else ""
         if norm and self._inside_allowed_root(norm):
             return norm, False
@@ -5843,6 +5868,9 @@ class AppBridge(QObject):
         from core.filter_engine import FilterEngine
         from core.storage_pool_manager import storage_pool_manager
 
+        if getattr(entry, "custom_folder", False) and entry.download_dir:
+            return entry.download_dir          # a folder the user chose, used as it is
+
         clean_c = FilterEngine.clean_filesystem_text(entry.creator_name or entry.user_id, max_len=80, fallback="creator")
         expected_folder = f"{clean_c} [{entry.service}]"
 
@@ -5874,7 +5902,7 @@ class AppBridge(QObject):
                 # No artist folder exists yet -> pick among primary and all overflow roots by most free disk
                 roots = ([storage_pool_manager.primary_dir] if storage_pool_manager.primary_dir else [self._download_dir]) + list(storage_pool_manager.overflow_dirs)
                 best_root, _ = storage_pool_manager.get_most_free_drive(roots)
-                target = os.path.join(best_root, expected_folder)
+                target = pick_creator_folder(best_root, clean_c, entry.service)
                 if target not in entry.download_dirs:
                     entry.download_dirs.append(target)
                     self._watchlist_manager.save(entry)
@@ -5889,7 +5917,7 @@ class AppBridge(QObject):
                 return self.resolve_artist_download_dir_for_folder(target, entry.creator_name or entry.user_id, entry.service)
 
         base_dir = self._download_dir or os.path.join(os.path.expanduser("~"), "Downloads", "KemonoDownloads")
-        return os.path.join(base_dir, expected_folder)
+        return pick_creator_folder(base_dir, clean_c, entry.service)
 
     def resolve_artist_download_dir_for_folder(self, folder: str, creator_name: str, service: str) -> str:
         r"""
@@ -5900,18 +5928,11 @@ class AppBridge(QObject):
         """
         from core.filter_engine import FilterEngine
         clean_c = FilterEngine.clean_filesystem_text(creator_name, max_len=80, fallback="creator")
-        expected_folder = f"{clean_c} [{service}]"
         folder = os.path.normpath(folder)
         base = os.path.basename(folder)
-        if base.lower() == expected_folder.lower() or base.lower() == clean_c.lower() or (service and base.lower().startswith(f"{clean_c.lower()} [")):
+        if is_creator_folder(base, clean_c, service) or (service and base.lower().startswith(f"{clean_c.lower()} [")):
             return folder
-        cand1 = os.path.join(folder, expected_folder)
-        if os.path.exists(cand1):
-            return cand1
-        cand2 = os.path.join(folder, clean_c)
-        if os.path.exists(cand2):
-            return cand2
-        return os.path.join(folder, expected_folder)
+        return pick_creator_folder(folder, clean_c, service)
 
     def extract_artist_folder_from_path(self, sample_path: str, creator_name: str, service: str, fallback_dir: str = "") -> str:
         """
@@ -5920,22 +5941,21 @@ class AppBridge(QObject):
         """
         from core.filter_engine import FilterEngine
         clean_c = FilterEngine.clean_filesystem_text(creator_name, max_len=80, fallback="creator")
-        expected = f"{clean_c} [{service}]".lower()
         clean_lower = clean_c.lower()
 
         try:
             curr = os.path.dirname(os.path.abspath(sample_path))
             while curr and curr != os.path.dirname(curr):
-                base = os.path.basename(curr).lower()
-                if base == expected or base == clean_lower or (service and base.startswith(f"{clean_lower} [")):
+                base = os.path.basename(curr)
+                if is_creator_folder(base, clean_c, service) or (service and base.lower().startswith(f"{clean_lower} [")):
                     return curr
                 curr = os.path.dirname(curr)
         except Exception:
             pass
 
         if fallback_dir:
-            return os.path.join(fallback_dir, f"{clean_c} [{service}]")
-        return os.path.dirname(sample_path) if sample_path else os.path.join(self._download_dir, f"{clean_c} [{service}]")
+            return pick_creator_folder(fallback_dir, clean_c, service)
+        return os.path.dirname(sample_path) if sample_path else pick_creator_folder(self._download_dir, clean_c, service)
 
     @Slot(str, str)
     def _get_effective_watchlist_options(self, entry) -> FilterOptions:
@@ -6177,7 +6197,7 @@ class AppBridge(QObject):
         else:
             from core.filter_engine import FilterEngine
             clean_c = FilterEngine.clean_filesystem_text(creator_name, max_len=80, fallback="creator")
-            target_dir = os.path.join(self._download_dir, f"{clean_c} [{parsed.service}]")
+            target_dir = pick_creator_folder(self._download_dir, clean_c, parsed.service)
 
         # Fetch page 1 to set latest post id and date as cutoff
         latest_pid = ""
@@ -6383,13 +6403,122 @@ class AppBridge(QObject):
             f"Select Download Folder for {entry.creator_name if entry else userId}",
             initial_dir
         )
-        if folder:
-            norm_folder = os.path.normpath(folder)
-            if entry:
-                resolved = self.resolve_artist_download_dir_for_folder(norm_folder, entry.creator_name, entry.service)
-            else:
-                resolved = norm_folder
-            self.setWatchlistDownloadDir(userId, service, resolved)
+        if not folder or not entry:
+            return
+        norm_folder = os.path.normpath(folder)
+        if os.path.isdir(norm_folder) and not os.listdir(norm_folder):
+            resolved = norm_folder             # an empty folder made for this artist: used as it is
+        else:
+            resolved = self.resolve_artist_download_dir_for_folder(norm_folder, entry.creator_name, entry.service)
+        self._request_folder_change(entry, resolved)
+
+    def _folders_to_move(self, entry, new_dir: str) -> List[str]:
+        """The artist's current folders whose files could follow them to new_dir: never the main
+        download folder or a storage drive's root, nor a folder that contains new_dir or sits in it."""
+        from core.storage_pool_manager import storage_pool_manager
+        key = lambda p: os.path.normcase(os.path.normpath(p))  # noqa: E731
+        new_k = key(new_dir)
+        roots = {key(r) for r in [self._download_dir, storage_pool_manager.primary_dir,
+                                  *storage_pool_manager.overflow_dirs] if r}
+        out, seen = [], set()
+        for d in [entry.download_dir, *(entry.download_dirs or [])]:
+            if not d or not os.path.isdir(d):
+                continue
+            k = key(d)
+            if k in seen or k == new_k or k in roots or new_k.startswith(k + os.sep) or k.startswith(new_k + os.sep):
+                continue
+            seen.add(k)
+            out.append(os.path.normpath(d))
+        return out
+
+    def _request_folder_change(self, entry, new_dir: str):
+        """Counts the files in the artist's current folder(s) (in the background: it can be a lot), then
+        asks whether to move them (watchlistFolderChangeRequested), or changes the folder at once when
+        there's nothing to move."""
+        from core.folder_mover import count_files
+        uid, svc = entry.user_id, entry.service
+        olds = self._folders_to_move(entry, new_dir)
+
+        def _count():
+            n = size = 0
+            for d in olds:
+                a, b = count_files(d)
+                n, size = n + a, size + b
+
+            def _ask():
+                if n == 0:
+                    self.applyWatchlistFolderChange(uid, svc, new_dir, False)
+                else:
+                    from core.filter_engine import FilterEngine
+                    self.watchlistFolderChangeRequested.emit(uid, svc, entry.creator_name, "\n".join(olds), new_dir, n,
+                                                             FilterEngine.format_size_str(size))
+            self._callOnGui.emit(_ask)
+        threading.Thread(target=_count, name="FolderCount", daemon=True).start()
+
+    @Slot(str, str, str, bool)
+    def applyWatchlistFolderChange(self, userId: str, service: str, new_dir: str, move_files: bool):
+        """Makes new_dir the artist's download folder. move_files: their files move there too (in the
+        background) and the archive's records follow them; otherwise the old folders are kept as
+        extra locations, so files already downloaded are still recognised."""
+        entry = self._watchlist_manager._find(userId, service)
+        if not entry or not new_dir:
+            return
+        new_dir = os.path.normpath(new_dir)
+        olds = self._folders_to_move(entry, new_dir)
+
+        def _set(keep_old: bool):
+            entry.download_dir = new_dir
+            entry.download_dirs = [new_dir] + ([d for d in olds if os.path.isdir(d)] if keep_old else [])
+            entry.custom_folder = True
+            self._watchlist_manager.save(entry)
+            self._watchlist_model.refresh()
+            self.watchlistChanged.emit()
+
+        if not move_files or not olds:
+            try:
+                os.makedirs(new_dir, exist_ok=True)
+            except OSError as e:
+                self.watchlistFolderChanged.emit(userId, service, f"The folder couldn't be created: {e}")
+                return
+            _set(keep_old=True)
+            logger.info(f"Watchlist: new downloads for {entry.creator_name!r} go to '{new_dir}'.", category="watchlist")
+            self.watchlistFolderChanged.emit(userId, service, "")
+            return
+
+        self._status_text = f"Moving {entry.creator_name}'s files…"
+        self.statusTextChanged.emit()
+
+        def _move():
+            from core.folder_mover import move_folder_contents
+            moves = {}
+            moved = dup = renamed = 0
+            errors = []
+            for d in olds:
+                r = move_folder_contents(d, new_dir, on_file=lambda o, n: moves.__setitem__(o, n))
+                moved, dup, renamed = moved + r.moved, dup + r.duplicates, renamed + r.renamed
+                errors += r.errors
+            relocated = self.archive_manager.relocate_files(olds, moves) if self._enable_download_archive else 0
+
+            def _done():
+                _set(keep_old=bool(errors))
+                for d in olds:
+                    self._invalidate_folder_stats(os.path.join(d, "x"))
+                self._invalidate_folder_stats(os.path.join(new_dir, "x"))
+                msg = f"Moved {moved} file(s) of {entry.creator_name} to '{new_dir}'"
+                if dup:
+                    msg += f", {dup} already there"
+                if renamed:
+                    msg += f", {renamed} renamed to keep both"
+                if relocated:
+                    msg += f"; {relocated} archive record(s) updated"
+                (logger.warning if errors else logger.success)(
+                    msg + (f". {len(errors)} couldn't be moved: {errors[0]}" if errors else "."), category="watchlist")
+                self._status_text = "Progress: Idle"
+                self.statusTextChanged.emit()
+                self.watchlistFolderChanged.emit(userId, service, "" if not errors else
+                                                 f"{len(errors)} file(s) couldn't be moved (see the log)")
+            self._callOnGui.emit(_done)
+        threading.Thread(target=_move, name="FolderMove", daemon=True).start()
 
     @Slot(str, str, result="QVariantList")
     def getArtistDownloadDirs(self, userId: str, service: str) -> list:
