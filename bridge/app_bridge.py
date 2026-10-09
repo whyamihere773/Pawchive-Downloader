@@ -3717,12 +3717,29 @@ class AppBridge(QObject):
         Verifies already downloaded files on disk, updates the queue model,
         and seamlessly resumes downloading the remaining files.
         """
-        checkpoint = self.recovery_manager.load_checkpoint()
+        # Reading the journal, rebuilding the files and checking which are already on disk run in the
+        # background (seconds for big queues); the queue is filled and started on the window thread
+        if getattr(self, "_resuming", False):
+            return
+        self._resuming = True
+        self._status_text = "Reading the interrupted download…"
+        self.statusTextChanged.emit()
+
+        def _read():
+            try:
+                checkpoint = self.recovery_manager.load_checkpoint()
+                loaded = self._load_recovery_tasks(checkpoint) if checkpoint else []
+            except Exception:
+                logger.exception("Couldn't read the interrupted download", category="session")
+                checkpoint, loaded = None, []
+            self._callOnGui.emit(lambda: self._finish_resume(checkpoint, loaded))
+        threading.Thread(target=_read, name="ResumeRead", daemon=True).start()
+
+    def _finish_resume(self, checkpoint, loaded_tasks):
+        self._resuming = False
         if not checkpoint:
             logger.warning("No recovery checkpoint found to resume.", category="session")
             return
-
-        loaded_tasks = self._load_recovery_tasks(checkpoint)
         if not loaded_tasks:
             logger.warning("Recovery checkpoint contains no tasks.", category="session")
             return

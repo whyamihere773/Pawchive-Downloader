@@ -13,6 +13,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Any, List, Optional, Tuple, Callable
 from core.logger import logger
+from core.queue_journal import QueueJournal, safe_journal_call
 
 
 from core.path_utils import get_config_dir
@@ -23,9 +24,15 @@ class RecoveryManager:
         self.config_dir = get_config_dir(config_dir)
 
         os.makedirs(self.config_dir, exist_ok=True)
-        self.journal_file = os.path.join(self.config_dir, "recovery_journal.json")
+        # The queue's crash journal is an SQLite database: saves only write what changed (the JSON
+        # journal below rewrote the whole queue every 30 s; it's imported once if found)
+        self.journal_file = os.path.join(self.config_dir, "recovery_journal.db")
+        self.journal = QueueJournal(self.journal_file)
+        self.legacy_journal_file = os.path.join(self.config_dir, "recovery_journal.json")
         self.tmp_file = os.path.join(self.config_dir, "recovery_journal.json.tmp")
         self.bak_file = os.path.join(self.config_dir, "recovery_journal.json.bak")
+        self._legacy_checked = False
+        self._carried_changes: List[Any] = []
         self.retry_spillover_file = os.path.join(self.config_dir, "retry_spillover.json")
         self._write_lock = threading.Lock()
         self._async_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="recovery_writer")
@@ -97,6 +104,32 @@ class RecoveryManager:
                 return f"{num_bytes:.2f} {unit}"
             num_bytes /= 1024.0
         return f"{num_bytes:.2f} PB"
+
+    @staticmethod
+    def artist_name(t: Any) -> str:
+        """The creator a task is shown under in the recovery summary (album sites like Bunkr are named
+        after the album / folder instead of the site)."""
+        def g(name):
+            return getattr(t, name, "") if not isinstance(t, dict) else t.get(name, "")
+        c_name = g("creator_name") or "Unknown Artist"
+        p_title = g("post_title") or ""
+        target_p = g("target_path") or ""
+        if c_name.lower() in ("bunkr", "erome", "nhentai", "unknown artist", "bunkr album", "erome album"):
+            if p_title and p_title.lower() not in ("bunkr", "erome", "nhentai", "untitled", "bunkr album", "erome album"):
+                return p_title
+            if target_p:
+                parent_folder = os.path.basename(os.path.dirname(target_p))
+                for prefix in ("Bunkr - ", "Erome - ", "nHentai - "):
+                    if parent_folder.startswith(prefix):
+                        extracted = parent_folder[len(prefix):].strip()
+                        if extracted:
+                            return extracted
+                        break
+        return c_name
+
+    def _platform_of(self, t: Any) -> str:
+        g = (lambda n: t.get(n, "")) if isinstance(t, dict) else (lambda n: getattr(t, n, ""))
+        return self._detect_platform(g("service") or "", url=g("url") or "")
 
     def build_summary(self, tasks: List[Any], batches: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
         """
@@ -214,26 +247,34 @@ class RecoveryManager:
         batches: Optional[List[Dict[str, Any]]] = None,
         settings: Optional[Dict[str, Any]] = None,
         status: str = "interrupted",
-        async_write: bool = False
+        async_write: bool = False,
+        changed: Optional[List[Any]] = None
     ) -> bool:
         """
-        Atomically writes the recovery journal using compact JSON + fsync + backup rotation + atomic replace.
-        Can run asynchronously in the background so it never pauses network streaming or freezes GUI.
+        Saves the queue to the crash journal: only tasks that changed since the last save are written.
+        `changed` (tasks whose status changed) lets a save skip comparing every task. Can run in the
+        background so it never pauses downloads or the window.
         """
         if not tasks:
             return False
 
         if async_write:
-            # On slow drives a write can take longer than the 30 s between checkpoints: don't pile them up
+            # On slow drives a write can take longer than the 30 s between checkpoints: don't pile them up.
+            # The changes of a skipped save go with the next one (they've been taken from the counter).
             if self._async_checkpoint_busy.is_set():
+                if changed:
+                    self._carried_changes.extend(changed)
                 return True
             self._async_checkpoint_busy.set()
+            if changed is not None and self._carried_changes:
+                changed = list(changed) + self._carried_changes
+                self._carried_changes = []
 
             generation = self._generation
 
-            def _job(t, b, s, st):
+            def _job(t, b, s, st, ch):
                 try:
-                    self._save_checkpoint_sync(t, b, s, st, generation=generation)
+                    self._save_checkpoint_sync(t, b, s, st, generation=generation, changed=ch)
                 finally:
                     self._async_checkpoint_busy.clear()
 
@@ -242,10 +283,11 @@ class RecoveryManager:
                 list(tasks),
                 list(batches) if batches else None,
                 dict(settings) if settings else None,
-                status
+                status,
+                list(changed) if changed is not None else None,
             )
             return True
-        return self._save_checkpoint_sync(tasks, batches, settings, status)
+        return self._save_checkpoint_sync(tasks, batches, settings, status, changed=changed)
 
     def _save_checkpoint_sync(
         self,
@@ -253,7 +295,8 @@ class RecoveryManager:
         batches: Optional[List[Dict[str, Any]]] = None,
         settings: Optional[Dict[str, Any]] = None,
         status: str = "interrupted",
-        generation: Optional[int] = None
+        generation: Optional[int] = None,
+        changed: Optional[List[Any]] = None
     ) -> bool:
         with self._write_lock:
             # A background write queued before the journal was discarded (download finished or
@@ -261,56 +304,13 @@ class RecoveryManager:
             if generation is not None and generation != self._generation:
                 return False
             try:
-                summary = self.build_summary(tasks, batches)
-                raw_tasks = [
-                    t.to_dict() if hasattr(t, "to_dict") else t
-                    for t in tasks
-                ]
-
-                payload = {
-                    "version": 1,
-                    "status": status,
-                    "saved_at": datetime.datetime.now().isoformat(),
-                    "summary": summary,
-                    "settings": settings or {},
-                    "batches": batches or [],
-                    "tasks": raw_tasks
-                }
-
-                # Step 1: Write to temporary file using compact JSON (reduces disk IO and RAM by ~70%)
-                with open(self.tmp_file, "w", encoding="utf-8") as f:
-                    json.dump(payload, f, separators=(',', ':'), ensure_ascii=False)
-                    f.flush()
-                    # Step 2: Force physical OS / NTFS disk write barrier
-                    try:
-                        os.fsync(f.fileno())
-                    except Exception:
-                        pass
-
-                # Step 3: Rotate current valid journal to .bak if it exists
-                if os.path.exists(self.journal_file):
-                    try:
-                        if os.path.exists(self.bak_file):
-                            try:
-                                os.remove(self.bak_file)
-                            except OSError:
-                                pass
-                        shutil.copyfile(self.journal_file, self.bak_file)
-                    except Exception as bak_err:
-                        logger.debug(f"Could not update journal .bak: {bak_err}", category="session")
-
-                # Step 4: Atomic file replace (NTFS MFT pointer swap)
-                os.replace(self.tmp_file, self.journal_file)
-                logger.debug("Download recovery checkpoint saved atomically.", category="session")
+                self._import_legacy_journal()
+                written = self.journal.sync(tasks, batches, settings, status, changed=changed,
+                                            artist_of=self.artist_name, platform_of=self._platform_of)
+                logger.debug(f"Download recovery checkpoint saved ({written} changed file(s)).", category="session")
                 return True
-
             except Exception as e:
                 logger.error(f"Failed to save recovery checkpoint: {e}", category="session")
-                if os.path.exists(self.tmp_file):
-                    try:
-                        os.remove(self.tmp_file)
-                    except Exception:
-                        pass
                 return False
 
     def dump_retries(self, failed_tasks: List[Any], async_write: bool = True) -> bool:
@@ -384,6 +384,10 @@ class RecoveryManager:
         with self._cache_lock:
             if key == self._retry_cache_key:
                 return self._retry_counts
+        if key is None:                      # no saved failed files: nothing to read
+            self._set_retry_cache([])
+            with self._cache_lock:
+                return self._retry_counts
         if wait:
             self.load_retries()
             with self._cache_lock:
@@ -425,79 +429,85 @@ class RecoveryManager:
 
     def load_checkpoint(self) -> Optional[Dict[str, Any]]:
         """
-        Loads the saved recovery journal. If the primary file is missing, empty, or corrupt,
-        it automatically and silently falls back to the .bak backup file.
+        Loads the saved queue: {status, saved_at, settings, batches, tasks, summary} or None.
+        A journal that can't be read is reported and treated as empty.
         """
-        if os.path.exists(self.tmp_file):
-            try:
-                os.remove(self.tmp_file)
-            except Exception:
-                pass
-
-        # Candidate 1: Primary recovery journal
-        if os.path.exists(self.journal_file):
-            try:
-                with open(self.journal_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    if data and isinstance(data, dict) and data.get("tasks"):
-                        return data
-            except Exception as primary_err:
-                logger.warning(
-                    f"Primary recovery journal could not be decoded ({primary_err}). Attempting fallback to .bak...",
-                    category="session"
-                )
-
-        # Candidate 2: Automatic fallback to .bak
-        if os.path.exists(self.bak_file):
-            try:
-                with open(self.bak_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    if data and isinstance(data, dict) and data.get("tasks"):
-                        logger.info("Recovery journal successfully restored from .bak backup file.", category="session")
-                        return data
-            except Exception as bak_err:
-                logger.warning(f"Recovery .bak file also unusable: {bak_err}", category="session")
-
-        return None
-
-    def has_unfinished_session(self) -> bool:
-        """Checks whether a valid unfinished recovery session exists."""
-        data = self.load_checkpoint()
-        if not data:
-            return False
-        if data.get("status") == "completed":
-            return False
-        tasks = data.get("tasks", [])
-        if not tasks:
-            return False
-        # Only files that never got their turn make a session "unfinished". Failed files are kept
-        # for Retry Failed; counting them here brought the prompt back on every start, and Resume
-        # (which only downloads pending files) couldn't do anything about them (#28).
-        has_pending = any(t.get("status") in ("pending", "downloading", "retrying") for t in tasks)
-        return has_pending
-
-    def get_recovery_summary(self) -> Optional[Dict[str, Any]]:
-        """Returns the high-level summary dict for displaying in the recovery modal."""
-        data = self.load_checkpoint()
+        self._import_legacy_journal()
+        data = safe_journal_call(self.journal.load)
         if not data:
             return None
-        tasks = data.get("tasks", [])
-        if tasks:
-            return self.build_summary(tasks, data.get("batches"))
-        return data.get("summary")
+        data["summary"] = safe_journal_call(lambda: self.journal.summary(self._format_size)) or self.build_summary(data["tasks"])
+        return data
+
+    def _read_legacy_json(self) -> Optional[Dict[str, Any]]:
+        """The JSON journal of older versions (its .bak if the main file is damaged)."""
+        for path in (self.legacy_journal_file, self.bak_file):
+            if os.path.exists(path):
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if data and isinstance(data, dict) and data.get("tasks"):
+                        return data
+                except Exception as e:
+                    logger.warning(f"Old recovery journal {os.path.basename(path)} couldn't be read ({e}).", category="session")
+        return None
+
+    def _import_legacy_journal(self) -> None:
+        """Moves an older version's JSON journal into the database, once."""
+        if self._legacy_checked:
+            return
+        self._legacy_checked = True
+        if not (os.path.exists(self.legacy_journal_file) or os.path.exists(self.bak_file)):
+            return
+        data = self._read_legacy_json()
+        try:
+            if data and not safe_journal_call(self.journal.has_rows, False):
+                self.journal.sync(data.get("tasks") or [], data.get("batches"), data.get("settings"),
+                                  data.get("status") or "interrupted",
+                                  artist_of=self.artist_name, platform_of=self._platform_of)
+                logger.info(f"Recovery journal moved to the new format ({len(data.get('tasks') or [])} file(s)).",
+                            category="session")
+        finally:
+            # The old files are kept, renamed ("….migrated"), never deleted: nothing can be lost if the
+            # move needs fixing later. Renamed, they aren't imported again.
+            for fpath in (self.legacy_journal_file, self.bak_file):
+                if os.path.exists(fpath):
+                    try:
+                        os.replace(fpath, fpath + ".migrated")
+                    except OSError:
+                        pass
+
+    def has_unfinished_session(self) -> bool:
+        """Checks whether a valid unfinished recovery session exists. Only files that never got their
+        turn count: failed files are kept for Retry Failed (counting them brought the prompt back on
+        every start, and Resume couldn't do anything about them, #28). Asked of the database without
+        loading the queue."""
+        self._import_legacy_journal()
+        return bool(safe_journal_call(self.journal.has_unfinished, False))
+
+    def get_recovery_summary(self) -> Optional[Dict[str, Any]]:
+        """Returns the high-level summary dict for displaying in the recovery modal (counted by the
+        database, without loading the queue)."""
+        self._import_legacy_journal()
+        return safe_journal_call(lambda: self.journal.summary(self._format_size))
 
     def discard_recovery(self) -> bool:
-        """Purges all recovery journal files (.json, .bak, .tmp)."""
+        """Empties the crash journal (and removes an old version's JSON journal files)."""
         purged = False
         with self._write_lock:
             self._generation += 1      # background writes queued before this are dropped
-            for fpath in [self.journal_file, self.bak_file, self.tmp_file]:
-                if os.path.exists(fpath):
-                    try:
-                        os.remove(fpath)
-                        purged = True
-                    except Exception as e:
-                        logger.warning(f"Could not remove recovery file {fpath}: {e}", category="session")
+            try:
+                purged = bool(safe_journal_call(self.journal.has_rows, False))
+                safe_journal_call(self.journal.clear)
+            except Exception as e:
+                logger.warning(f"Could not empty the recovery journal: {e}", category="session")
+            # (an older version's JSON journal is imported on first use and kept as "….migrated")
+            if os.path.exists(self.tmp_file):
+                try:
+                    os.remove(self.tmp_file)
+                except OSError:
+                    pass
         if purged:
             logger.info("Recovery journal files discarded.", category="session")
         return purged
+

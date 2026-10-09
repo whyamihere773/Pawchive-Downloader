@@ -102,7 +102,9 @@ def _setup_memory_management(app, win, app_bridge, memory_collector):
     def _on_visibility(visibility):
         if visibility == QWindow.Visibility.Minimized and _time.monotonic() - last["t"] > 300:
             last["t"] = _time.monotonic()
-            memory_collector.collect_in_background(reason="window minimized")
+            # On the window thread: a Qt object freed by the collector must be destroyed on it
+            # (from another thread that crashes the app); minimized, the short pause isn't seen
+            QTimer.singleShot(0, lambda: memory_collector.collect(reason="window minimized"))
 
     win.visibilityChanged.connect(_on_visibility)
 

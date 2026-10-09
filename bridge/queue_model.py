@@ -49,6 +49,16 @@ class QueueGroupsModel(QAbstractListModel):
         self._flush_timer.setSingleShot(True)
         self._flush_timer.setInterval(120)
         self._flush_timer.timeout.connect(self._flush_dirty_groups)
+        # Big queues: the groups are worked out on a background thread (seconds for hundreds of
+        # thousands of files) and swapped in; changes arriving meanwhile are replayed afterwards
+        self._rebuild_gen = 0
+        self._rebuilding = False
+        self._queued_adds: List[DownloadTask] = []
+        self._queued_updates: Dict[int, DownloadTask] = {}
+        self._rebuilt.connect(self._apply_rebuild, Qt.QueuedConnection)
+
+    _rebuilt = Signal(int, object)
+    BACKGROUND_REBUILD_AT = 20000
 
     def rowCount(self, parent=QModelIndex()):
         return len(self._groups)
@@ -193,52 +203,97 @@ class QueueGroupsModel(QAbstractListModel):
             g["activeFileProgressPct"] = 0
             g["activeFileSpeed"] = ""
 
-    def rebuild(self, all_tasks: List[DownloadTask]):
-        self.beginResetModel()
-        self._groups = []
-        self._row_by_id = {}
-        self._tasks_by_id = {}
-        self._task_ids_by_group = {}
-        self._task_last_group_status.clear()
-        self._last_progress_time.clear()
-        self._last_emitted_stats.clear()
-
+    def _compute_groups(self, all_tasks: List[DownloadTask]) -> Dict[str, Any]:
+        """The groups of a task list (no model changes: safe on a background thread)."""
+        groups: List[Dict[str, Any]] = []
+        row_by_id: Dict[str, int] = {}
+        tasks_by_id: Dict[str, List[DownloadTask]] = {}
+        ids_by_group: Dict[str, set] = {}
+        last_status: Dict[int, str] = {}
         for t in all_tasks:
             bid = getattr(t, "batch_id", "") or f"{t.service}_{t.creator_name}_{t.post_id}".strip("_")
             if not bid:
                 bid = "batch_default"
-            if bid not in self._tasks_by_id:
-                self._tasks_by_id[bid] = []
-                self._task_ids_by_group[bid] = set()
+            lst = tasks_by_id.get(bid)
+            if lst is None:
+                lst = tasks_by_id[bid] = []
+                ids_by_group[bid] = set()
                 post_title = t.post_title or "Media Collection"
                 if bid.startswith("artist_") or bid.startswith("creator_"):
                     post_title = "All Works / Posts"
-                g = {
+                row_by_id[bid] = len(groups)
+                groups.append({
                     "batchId": bid,
                     "creatorName": t.creator_name or "Unknown Creator",
                     "postTitle": post_title,
                     "service": t.service or "kemono",
                     "postId": t.post_id or "",
-                }
-                self._row_by_id[bid] = len(self._groups)
-                self._groups.append(g)
-            self._tasks_by_id[bid].append(t)
-            self._task_ids_by_group[bid].add(id(t))
-            self._task_last_group_status[id(t)] = getattr(t, "status", "")
-
-        for g in self._groups:
+                })
+            lst.append(t)
+            ids_by_group[bid].add(id(t))
+            last_status[id(t)] = t.status
+        emitted: Dict[str, tuple] = {}
+        for g in groups:
             bid = g["batchId"]
-            self._calc_group_stats(g, self._tasks_by_id[bid])
-            self._last_emitted_stats[bid] = (
-                g["totalFiles"], g["completedFiles"], g["failedFiles"],
-                g["downloadingFiles"], g["pendingFiles"], g["status"]
-            )
+            self._calc_group_stats(g, tasks_by_id[bid])
+            emitted[bid] = (g["totalFiles"], g["completedFiles"], g["failedFiles"],
+                            g["downloadingFiles"], g["pendingFiles"], g["status"])
+        return {"groups": groups, "row_by_id": row_by_id, "tasks_by_id": tasks_by_id,
+                "ids_by_group": ids_by_group, "last_status": last_status, "emitted": emitted}
 
+    def rebuild(self, all_tasks: List[DownloadTask], background: bool = False):
+        self._rebuild_gen += 1
+        gen = self._rebuild_gen
+        self._queued_adds = []
+        self._queued_updates = {}
+        tasks = list(all_tasks)
+        if background and len(tasks) >= self.BACKGROUND_REBUILD_AT:
+            self._rebuilding = True
+
+            def _job():
+                try:
+                    built = self._compute_groups(tasks)
+                except Exception as e:
+                    logger.debug(f"Couldn't group the queue: {e}", category="queue")
+                    built = self._compute_groups([])
+                try:
+                    self._rebuilt.emit(gen, built)
+                except RuntimeError:
+                    pass
+            threading.Thread(target=_job, name="QueueGroups", daemon=True).start()
+            return
+        self._rebuilding = False
+        self._apply_rebuild(gen, self._compute_groups(tasks))
+
+    @Slot(int, object)
+    def _apply_rebuild(self, gen: int, built: Dict[str, Any]):
+        if gen != self._rebuild_gen:
+            return                    # a newer rebuild started meanwhile
+        self.beginResetModel()
+        self._groups = built["groups"]
+        self._row_by_id = built["row_by_id"]
+        self._tasks_by_id = built["tasks_by_id"]
+        self._task_ids_by_group = built["ids_by_group"]
+        self._task_last_group_status = built["last_status"]
+        self._last_progress_time.clear()
+        self._last_emitted_stats = built["emitted"]
+        self._dirty_groups = set()
         self.endResetModel()
+        if self._rebuilding:
+            self._rebuilding = False
+            adds, updates = self._queued_adds, self._queued_updates
+            self._queued_adds, self._queued_updates = [], {}
+            if adds:
+                self.add_tasks_batch(adds)
+            for t in updates.values():
+                self.update_task(t)
 
     def add_tasks_batch(self, new_tasks: List[DownloadTask]):
         """Fast incremental batch insertion of newly queued tasks without wiping all existing groups."""
         if not new_tasks:
+            return
+        if self._rebuilding:
+            self._queued_adds.extend(new_tasks)
             return
         if not self._groups:
             self.rebuild(new_tasks)
@@ -298,6 +353,9 @@ class QueueGroupsModel(QAbstractListModel):
             self._flush_timer.start()
 
     def update_task(self, task: DownloadTask):
+        if self._rebuilding:
+            self._queued_updates[id(task)] = task
+            return
         bid = getattr(task, "batch_id", "") or f"{task.service}_{task.creator_name}_{task.post_id}".strip("_")
         if not bid:
             bid = "batch_default"
@@ -447,6 +505,7 @@ class QueueModel(QAbstractListModel):
     batchRemoveRequested = Signal(str)
     cleared = Signal()
     _guiCall = Signal(object)
+    IMMEDIATE_REMOVAL_ROWS = 2000   # above this, rows leaving the filter are removed in batches
 
     def __init__(self, parent=None, enable_groups: bool = True):
         super().__init__(parent)
@@ -469,6 +528,17 @@ class QueueModel(QAbstractListModel):
         self._task_last_status: Dict[int, str] = {}
         self._task_last_emit: Dict[int, float] = {}
         self._failed_404: dict = {}      # id(task) of failed tasks whose error is a 404
+        # (url, path) and file ids already in the queue, kept between appends (rebuilding them from
+        # the whole queue on every append made adding to a big queue slow)
+        self._signatures: set = set()
+        self._signatures_dirty = False
+        # Rows that left the current filter, removed together a few times a second (removing one
+        # renumbered every row below it: with a big filtered list, every status change stalled)
+        self._pending_removals: set = set()
+        self._removal_timer = QTimer(self)
+        self._removal_timer.setSingleShot(True)
+        self._removal_timer.setInterval(250)
+        self._removal_timer.timeout.connect(self._flush_removals)
         self._counts_timer = QTimer(self)
         self._counts_timer.setSingleShot(True)
         self._counts_timer.setInterval(60)
@@ -544,7 +614,34 @@ class QueueModel(QAbstractListModel):
             return task.status == "pending"
         return True
 
+    def _flush_removals(self):
+        """Removes the rows that left the filter: each run of neighbouring rows in one step, then
+        the row numbers are rebuilt once."""
+        gone = self._pending_removals
+        self._pending_removals = set()
+        rows = sorted((self._visible_task_row[tid] for tid in gone if tid in self._visible_task_row), reverse=True)
+        if not rows:
+            return
+        i = 0
+        while i < len(rows):
+            hi = rows[i]
+            lo = hi
+            while i + 1 < len(rows) and rows[i + 1] == lo - 1:
+                i += 1
+                lo = rows[i]
+            self.beginRemoveRows(QModelIndex(), lo, hi)
+            del self._visible_tasks[lo:hi + 1]
+            self.endRemoveRows()
+            i += 1
+        for tid in gone:
+            self._visible_task_row.pop(tid, None)
+        start = rows[-1]
+        v = self._visible_tasks
+        self._visible_task_row.update({id(v[r]): r for r in range(start, len(v))})
+        self.countChanged.emit()
+
     def _rebuild_visible(self):
+        self._pending_removals = set()
         self._visible_tasks = [t for t in self._tasks if self._matches_filter(t)]
         self._visible_task_row = {id(t): i for i, t in enumerate(self._visible_tasks)}
 
@@ -757,21 +854,32 @@ class QueueModel(QAbstractListModel):
             return
         self.beginResetModel()
         self._counts_timer.stop()
-        self._tasks = list(tasks)
-        self._task_last_status.clear()
+        self._removal_timer.stop()
+        self._pending_removals = set()
+        self._tasks = tasks
         self._task_last_emit.clear()
-        for t in self._tasks:
-            self._task_last_status[id(t)] = getattr(t, "status", "")
+        self._task_last_status = {id(t): t.status for t in tasks}
         self._recalculate_counts()
         self._last_counts = (self._pending_count, self._downloading_count, self._completed_count, self._skipped_count, self._failed_count)
         self._rebuild_visible()
+        self._signatures_dirty = True
         self.endResetModel()
         self.countChanged.emit()
         self.countsChanged.emit()
         self.failedCountChanged.emit()
         if self._groups_model:
-            self._groups_model.rebuild(self._tasks)
+            self._groups_model.rebuild(self._tasks, background=True)
             self.groupsChanged.emit()
+
+    def _ensure_signatures(self):
+        if self._signatures_dirty:
+            sigs = set()
+            for t in self._tasks:
+                sigs.add((t.url, t.target_path))
+                if t.file_id:
+                    sigs.add(t.file_id)
+            self._signatures = sigs
+            self._signatures_dirty = False
 
     def appendTasks(self, tasks: List[DownloadTask]) -> int:
         if not tasks:
@@ -779,11 +887,8 @@ class QueueModel(QAbstractListModel):
         tasks = list(tasks)
         if self._off_gui_thread(lambda: self.appendTasks(tasks)):
             return len(tasks)
-        existing_signatures = set()
-        for t in self._tasks:
-            existing_signatures.add((t.url, t.target_path))
-            if t.file_id:
-                existing_signatures.add(t.file_id)
+        self._ensure_signatures()
+        existing_signatures = self._signatures
 
         deduped = []
         for t in tasks:
@@ -800,15 +905,32 @@ class QueueModel(QAbstractListModel):
         if not deduped:
             return 0
 
-        self.beginResetModel()
-        self._counts_timer.stop()
+        # Counted and shown incrementally: only the new tasks are looked at
         self._tasks.extend(deduped)
         for t in deduped:
-            self._task_last_status[id(t)] = getattr(t, "status", "")
-        self._recalculate_counts()
+            st = t.status
+            self._task_last_status[id(t)] = st
+            if st in ("downloading", "retrying"):
+                self._downloading_count += 1
+            elif st == "completed":
+                self._completed_count += 1
+            elif st == "skipped":
+                self._skipped_count += 1
+            elif st in ("failed", "cancelled"):
+                self._failed_count += 1
+                if self._is_404(t):
+                    self._failed_404[id(t)] = True
+            elif st == "pending":
+                self._pending_count += 1
         self._last_counts = (self._pending_count, self._downloading_count, self._completed_count, self._skipped_count, self._failed_count)
-        self._rebuild_visible()
-        self.endResetModel()
+        shown = [t for t in deduped if self._matches_filter(t)]
+        if shown:
+            first = len(self._visible_tasks)
+            self.beginInsertRows(QModelIndex(), first, first + len(shown) - 1)
+            for k, t in enumerate(shown):
+                self._visible_task_row[id(t)] = first + k
+            self._visible_tasks.extend(shown)
+            self.endInsertRows()
         self.countChanged.emit()
         self.countsChanged.emit()
         self.failedCountChanged.emit()
@@ -830,6 +952,7 @@ class QueueModel(QAbstractListModel):
         self.beginResetModel()
         self._counts_timer.stop()
         self._tasks = [t for t in self._tasks if (getattr(t, "batch_id", "") or f"{t.service}_{t.creator_name}_{t.post_id}".strip("_")) != batch_id or t.status == "downloading"]
+        self._signatures_dirty = True
         self._recalculate_counts()
         self._last_counts = (self._pending_count, self._downloading_count, self._completed_count, self._skipped_count, self._failed_count)
         if self._selected_batch_id == batch_id:
@@ -947,6 +1070,7 @@ class QueueModel(QAbstractListModel):
 
             if is_visible:
                 if matches:
+                    self._pending_removals.discard(task_id)     # back in the filter before it was removed
                     idx = self.index(row, 0)
                     self.dataChanged.emit(idx, idx, [
                         self.ProgressRole,
@@ -957,7 +1081,8 @@ class QueueModel(QAbstractListModel):
                         self.StatusRole,
                         self.ErrorMsgRole
                     ])
-                else:
+                elif len(self._visible_tasks) <= self.IMMEDIATE_REMOVAL_ROWS:
+                    # Short lists: the row goes at once (renumbering a few rows costs nothing)
                     self.beginRemoveRows(QModelIndex(), row, row)
                     self._visible_tasks.pop(row)
                     del self._visible_task_row[task_id]
@@ -965,8 +1090,14 @@ class QueueModel(QAbstractListModel):
                         self._visible_task_row[id(self._visible_tasks[r])] = r
                     self.endRemoveRows()
                     self.countChanged.emit()
+                else:
+                    self._pending_removals.add(task_id)
+                    if not self._removal_timer.isActive():
+                        self._removal_timer.start()
             else:
-                if matches:
+                if matches and task_id in self._pending_removals:
+                    self._pending_removals.discard(task_id)      # back in the filter before it left
+                elif matches:
                     row = len(self._visible_tasks)
                     self.beginInsertRows(QModelIndex(), row, row)
                     self._visible_tasks.append(task)
@@ -1055,6 +1186,7 @@ class QueueModel(QAbstractListModel):
         else:
             self._tasks = [t for t in self._tasks if t.status not in ("failed", "cancelled")]
 
+        self._signatures_dirty = True
         self._recalculate_counts()
         self._last_counts = (self._pending_count, self._downloading_count, self._completed_count, self._skipped_count, self._failed_count)
         self._rebuild_visible()

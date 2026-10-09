@@ -192,7 +192,58 @@ from core.audio_tagger import AudioTagger
 from services.telegram_service import TelegramService
 
 
+class StatusCounter:
+    """How many tasks are in each status, kept up to date as statuses change (DownloadTask.status).
+    Counting a big queue by looping over it a few times a second used a lot of CPU and, holding
+    Python's lock, made the window stutter. reset() starts a new generation: tasks that left the
+    list keep their old generation and no longer change the counts."""
+
+    def __init__(self):
+        self.counts: Dict[str, int] = defaultdict(int)
+        self.gen = 0
+        self._lock = threading.Lock()
+        self._changed: Dict[int, Any] = {}      # tasks whose status changed since the last checkpoint
+
+    def move(self, old: Optional[str], new: str, task: Any = None) -> None:
+        with self._lock:
+            if old is not None:
+                self.counts[old] -= 1
+            self.counts[new] += 1
+            if task is not None:
+                self._changed[id(task)] = task
+
+    def take_changed(self) -> List[Any]:
+        with self._lock:
+            changed, self._changed = list(self._changed.values()), {}
+            return changed
+
+    def reset(self, tasks) -> None:
+        with self._lock:
+            self.gen += 1
+            counts: Dict[str, int] = defaultdict(int)
+            for t in tasks:
+                d = t.__dict__
+                d["_counter"] = self
+                d["_counter_gen"] = self.gen
+                counts[d.get("_status", "pending")] += 1
+            self.counts = counts
+
+
 class DownloadTask:
+    @property
+    def status(self) -> str:
+        return self._status
+
+    @status.setter
+    def status(self, value: str) -> None:
+        d = self.__dict__
+        old = d.get("_status")
+        d["_status"] = value
+        if old != value:
+            c = d.get("_counter")
+            if c is not None and d.get("_counter_gen") == c.gen:
+                c.move(old, value, self)
+
     def __init__(
         self,
         url: str,
@@ -341,6 +392,8 @@ class KemonoDownloader:
         self._thread_local = threading.local()
         self._clean_cookie: str = ""
         self._post_info_pending: Dict[str, str] = {}   # post_info.txt path -> text, written after the first file
+        self._status_counter = StatusCounter()
+        self._counter_sig = None
         self._dispatch_cursor = 0          # queue position where pending files started on the last scan
         self._last_full_scan = 0.0
         self._task_stats: Dict[str, float] = {}
@@ -470,7 +523,7 @@ class KemonoDownloader:
     def pause(self):
         self._pause_event.set()
         logger.info("Download paused.", category="downloader")
-        self._save_recovery_checkpoint()
+        self._save_recovery_checkpoint(async_write=True)      # called from the window
         if self.on_pause_changed:
             try:
                 self.on_pause_changed(True)
@@ -513,6 +566,15 @@ class KemonoDownloader:
         self.adaptive_status_text = ""
         logger.info("Downloader state fully reset.", category="downloader")
 
+    def status_counts(self) -> Dict[str, int]:
+        """Tasks per status. Recounted only when the task list itself changed (replaced or grew)."""
+        tasks = self.tasks
+        sig = (id(tasks), len(tasks))
+        if sig != self._counter_sig:
+            self._status_counter.reset(tasks)
+            self._counter_sig = sig
+        return self._status_counter.counts
+
     def _save_recovery_checkpoint(self, options: Optional[FilterOptions] = None, async_write: bool = False):
         """Persists current download tasks to the crash-proof recovery journal."""
         try:
@@ -524,7 +586,11 @@ class KemonoDownloader:
             eff_opts = options or self.current_options
             opts_dict = vars(eff_opts) if eff_opts else {}
             status = "paused" if self.is_paused else ("cancelled" if self._cancel_event.is_set() else "in_progress")
-            rec.save_checkpoint(tasks=self.tasks, settings=opts_dict, status=status, async_write=async_write)
+            # Only tasks whose status changed since the last checkpoint need saving
+            self.status_counts()
+            changed = self._status_counter.take_changed()
+            rec.save_checkpoint(tasks=self.tasks, settings=opts_dict, status=status, async_write=async_write,
+                                changed=changed)
         except Exception as e:
             logger.debug(f"Could not persist recovery checkpoint: {e}", category="session")
 
@@ -1686,7 +1752,8 @@ class KemonoDownloader:
             except Exception:
                 pass
         self._is_running = True
-        self._save_recovery_checkpoint(options)
+        # In the background: the first save of a big queue takes seconds, and this runs on the window thread
+        self._save_recovery_checkpoint(options, async_write=True)
 
         self._download_thread = threading.Thread(
             target=self._run_download_loop,
@@ -2209,12 +2276,13 @@ class KemonoDownloader:
                         if self.on_task_status_changed:
                             self.on_task_status_changed(task)
 
-                # Emit progress (counted a few times a second: counting a 100,000-file queue every
-                # 50 ms took a quarter of a CPU core and made the window stutter)
+                # Emit progress a few times a second, from counts kept as statuses change (counting
+                # a huge queue by looping over it used a lot of CPU and made the window stutter)
                 if now - last_count_time >= 0.3:
                     last_count_time = now
-                    completed_count = sum(1 for t in self.tasks if t.status in ("completed", "skipped"))
-                    failed_count = sum(1 for t in self.tasks if t.status == "failed")
+                    counts = self.status_counts()
+                    completed_count = counts["completed"] + counts["skipped"]
+                    failed_count = counts["failed"]
                     self._emit_progress(completed_count, failed_count, len(self.tasks))
 
                 # 4. If in cooldown or paused or cancelled, wait
