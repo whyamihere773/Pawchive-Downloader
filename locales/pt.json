@@ -1145,5 +1145,6 @@
   "toast_archive_repaired": "O banco de dados do arquivo estava danificado e foi reparado (%1 registros mantidos). Você já pode tentar de novo.",
   "toast_archive_repair_failed": "O banco de dados do arquivo está danificado e não pôde ser reparado: %1",
   "archive_show_more_posts": "Mostrar mais %1 publicações (restam %2)",
-  "archive_show_more_files": "Mostrar mais %1 arquivos (restam %2)"
+  "archive_show_more_files": "Mostrar mais %1 arquivos (restam %2)",
+  "toast_importing": "Importando para o arquivo…"
 }

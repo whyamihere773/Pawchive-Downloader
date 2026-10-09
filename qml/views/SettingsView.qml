@@ -2384,7 +2384,7 @@ SmoothFlickable {
                                             implicitHeight: 28
                                             onClicked: {
                                                 if (root.bridge) {
-                                                    root.bridge.clearDownloadArchive()
+                                                    root.bridge.clearDownloadArchiveAsync("settings-clear-archive")
                                                 }
                                             }
                                         }

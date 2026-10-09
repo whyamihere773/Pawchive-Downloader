@@ -97,6 +97,12 @@ Item {
     // Check for new posts: who the open folder belongs to (galleryUpdates.creatorForFolder)
     readonly property var updates: (typeof galleryUpdates !== "undefined") ? galleryUpdates : null
     property var creatorInfo: ({ found: false, maybe: false })
+    Connections {
+        target: root.updates
+        function onCreatorFolderReady(folder, info) {
+            if (folder === root.currentPath) root.creatorInfo = info
+        }
+    }
     property bool sortAscending: true
     readonly property int listingCap: 20000
 
@@ -837,7 +843,10 @@ Item {
         root.refreshBookmarks()
         // Live refresh: watch the open folder (nothing to watch for Favourites)
         if (root.tools) root.tools.watchFolder(targetPath === root.favoritesPath ? "" : targetPath)
-        root.creatorInfo = (root.updates && targetPath !== root.favoritesPath) ? root.updates.creatorForFolder(targetPath) : ({ found: false, maybe: false })
+        // Who the folder belongs to is worked out in the background (creatorFolderReady)
+        root.creatorInfo = ({ found: false, maybe: false })
+        if (root.updates && targetPath !== root.favoritesPath)
+            root.updates.creatorForFolderAsync(targetPath)
 
         // On-demand lazy directory list
         explorerGridView.currentIndex = -1
@@ -1403,6 +1412,10 @@ Item {
             showToast("Nothing to undo", false)
             return
         }
+        if (root.tools.undoLastAsync) {
+            root.tools.undoLastAsync()          // the answer comes with undoFinished
+            return
+        }
         var res = root.tools.undoLast()
         showToast(res.message, !res.success)
         refreshPreservingScroll()
@@ -1460,14 +1473,39 @@ Item {
         root.requestSafeAction("Move", function() {
             var dest = root.bridge.browseFolderDialog("Move " + items.length + (items.length === 1 ? " item" : " items") + " to…", root.workingFolder(items))
             if (!dest) return
-            var res = root.tools ? root.tools.moveItems(_pathsOf(items), dest) : root.bridge.moveItems(_pathsOf(items), dest)
-            if (res.failed > 0) {
-                showToast("Moved " + res.moved + ", " + res.failed + " failed: " + (res.errors.length ? res.errors[0] : ""), true, res.moved > 0)
-            } else {
-                showToast("Moved " + res.moved + (res.moved === 1 ? " item" : " items") + " to " + dest, false, true)
-            }
-            refreshPreservingScroll()
+            root.startMove(_pathsOf(items), dest, " to ")
         })
+    }
+
+    // Moves run in the background (across drives a move is a copy) and report back with moveFinished
+    property string _moveDest: ""
+    property string _movePrep: " to "
+    function startMove(paths, dest, prep) {
+        if (root.tools && root.tools.moveItemsAsync) {
+            root._moveDest = dest
+            root._movePrep = prep
+            showToast("Moving " + paths.length + (paths.length === 1 ? " item" : " items") + "…", false)
+            root.tools.moveItemsAsync(paths, dest, "gallery")
+        } else {
+            root.showMoveResult(root.bridge.moveItems(paths, dest), dest, prep)
+        }
+    }
+    function showMoveResult(res, dest, prep) {
+        if (res.failed > 0)
+            showToast("Moved " + res.moved + ", " + res.failed + " failed: " + (res.errors.length ? res.errors[0] : ""), true, res.moved > 0)
+        else
+            showToast("Moved " + res.moved + (res.moved === 1 ? " item" : " items") + prep + dest, false, true)
+        refreshPreservingScroll()
+    }
+    Connections {
+        target: root.tools
+        function onMoveFinished(tag, res) {
+            if (tag === "gallery") root.showMoveResult(res, root._moveDest, root._movePrep)
+        }
+        function onUndoFinished(res) {
+            showToast(res.message, !res.success)
+            refreshPreservingScroll()
+        }
     }
 
     function copyItemsToFolder(items) {
@@ -1551,10 +1589,7 @@ Item {
             drop.accept(Qt.CopyAction)  // the only action offered; the gallery itself moves the files
             Qt.callLater(function() {
                 root.requestSafeAction("Move", function() {
-                    var res = root.tools ? root.tools.moveItems(paths, destDir) : root.bridge.moveItems(paths, destDir)
-                    if (res.failed > 0) showToast("Moved " + res.moved + ", " + res.failed + " failed: " + (res.errors.length ? res.errors[0] : ""), true, res.moved > 0)
-                    else showToast("Moved " + res.moved + (res.moved === 1 ? " item" : " items") + " into " + destDir, false, true)
-                    refreshPreservingScroll()
+                    root.startMove(paths, destDir, " into ")
                 })
             })
             return

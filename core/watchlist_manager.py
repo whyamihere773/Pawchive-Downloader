@@ -9,6 +9,7 @@ import json
 import os
 import datetime
 import threading
+import time
 from dataclasses import dataclass, field, asdict
 from typing import List, Optional, Dict, Any
 
@@ -112,6 +113,15 @@ class WatchlistManager:
         self.entries: List[WatchlistEntry] = []
         # Checks run in background threads while the window edits entries
         self._lock = threading.RLock()
+        # With background_saves on (the app), save() only marks the watchlist changed and a writer
+        # thread writes it: rewriting a big watchlist.json on the window thread stalled it on every
+        # click. A burst of changes is written once; flush() writes what's pending (on close).
+        self.background_saves = False
+        self._save_gen = 0
+        self._saved_gen = 0
+        self._save_wanted = threading.Event()
+        self._write_lock = threading.Lock()
+        self._writer: Optional[threading.Thread] = None
 
     # ── Persistence ────────────────────────────────────────────────────────────
 
@@ -136,15 +146,50 @@ class WatchlistManager:
 
     def save(self):
         """Persist current entries to disk (crash-safe: a cut-off write never empties the watchlist)."""
-        try:
-            with self._lock:
-                data = {
-                    "version": self.VERSION,
-                    "entries": [e.to_dict() for e in self.entries]
-                }
+        with self._lock:
+            self._save_gen += 1
+        if not self.background_saves:
+            self._write_pending()
+            return
+        if self._writer is None or not self._writer.is_alive():
+            self._writer = threading.Thread(target=self._writer_loop, name="WatchlistWriter", daemon=True)
+            self._writer.start()
+        self._save_wanted.set()
+
+    def flush(self) -> None:
+        """Writes changes that are still waiting for the background writer."""
+        if self._saved_gen < self._save_gen:
+            self._write_pending()
+
+    def _writer_loop(self) -> None:
+        while True:
+            self._save_wanted.wait()
+            time.sleep(0.4)                 # changes made together are written together
+            self._save_wanted.clear()
+            self._write_pending()
+
+    def _write_pending(self) -> None:
+        with self._write_lock:
+            gen = self._save_gen
+            if gen <= self._saved_gen:
+                return
+            try:
+                with self._lock:
+                    entries = list(self.entries)        # quick: the slow part runs outside the lock
+                data = None
+                for _ in range(3):
+                    try:
+                        data = {"version": self.VERSION, "entries": [e.to_dict() for e in entries]}
+                        break
+                    except RuntimeError:
+                        continue                        # an entry changed meanwhile; read it again
+                if data is None:
+                    with self._lock:
+                        data = {"version": self.VERSION, "entries": [e.to_dict() for e in self.entries]}
                 atomic_write_json(self.watchlist_file, data, indent=2)
-        except Exception as e:
-            logger.error(f"Failed to save watchlist: {e}", category="watchlist")
+                self._saved_gen = gen
+            except Exception as e:
+                logger.error(f"Failed to save watchlist: {e}", category="watchlist")
 
     @staticmethod
     def _advance_cutoff(e: WatchlistEntry, post_id: str, post_date: str, day_ids: Optional[List[str]] = None):

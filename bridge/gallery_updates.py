@@ -97,6 +97,7 @@ def _has_files(post: dict) -> bool:
 
 class GalleryUpdates(QObject):
     checkProgress = Signal(int, "QVariantMap")   # token, {page, scanned}
+    creatorFolderReady = Signal(str, "QVariantMap")  # folder, creatorForFolder() answer
     checkFinished = Signal(int, "QVariantMap")   # token, result (see _finish)
     downloadQueued = Signal(int, "QVariantMap")  # token, {ok, files, posts, folder, message}
 
@@ -269,6 +270,19 @@ class GalleryUpdates(QObject):
         except OSError:
             pass
         return False
+
+    @Slot(str)
+    def creatorForFolderAsync(self, folder: str) -> None:
+        """creatorForFolder in the background, answered with creatorFolderReady(folder, info). It runs on
+        every folder the Gallery opens and reads files, the watchlist and the archive: on the window
+        thread it stalled each folder change, for seconds with big watchlists / archives."""
+        def _job():
+            info = self.creatorForFolder(folder)
+            try:
+                self.creatorFolderReady.emit(folder, info)
+            except RuntimeError:
+                pass        # the app is closing
+        threading.Thread(target=_job, name="GalleryCreator", daemon=True).start()
 
     @Slot(str, result="QVariantMap")
     def creatorForFolder(self, folder: str) -> dict:

@@ -1145,5 +1145,6 @@
   "toast_archive_repaired": "The archive database was damaged and has been repaired (%1 records kept). You can try again now.",
   "toast_archive_repair_failed": "The archive database is damaged and couldn't be repaired: %1",
   "archive_show_more_posts": "Show %1 more posts (%2 left)",
-  "archive_show_more_files": "Show %1 more files (%2 left)"
+  "archive_show_more_files": "Show %1 more files (%2 left)",
+  "toast_importing": "Importing into the archive…"
 }

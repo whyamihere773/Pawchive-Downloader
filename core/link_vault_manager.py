@@ -109,6 +109,7 @@ class LinkVaultManager:
 
     def _save_unlocked(self):
         """Internal atomic write."""
+        self.revision = getattr(self, "revision", 0) + 1      # every change is saved: readers cache by it
         tmp_path = f"{self.vault_file}.tmp"
         try:
             with open(tmp_path, "w", encoding="utf-8") as f:
@@ -297,6 +298,15 @@ class LinkVaultManager:
 
         with self._lock:
             tree = []
+            # Posts by creator and links by post, found once: scanning every post for each creator and
+            # every link for each post took seconds (minutes on big vaults) on the window thread
+            posts_by_creator: Dict[str, List[Dict[str, Any]]] = {}
+            for p in self.data["posts"].values():
+                posts_by_creator.setdefault(p.get("creator_key", ""), []).append(p)
+            links_by_post: Dict[tuple, List[Dict[str, Any]]] = {}
+            for lnk in self.data["links"]:
+                links_by_post.setdefault((lnk.get("creator_key", ""), lnk.get("post_id", "")), []).append(lnk)
+
             # Sort creators by most recently updated
             sorted_creators = sorted(
                 self.data["creators"].values(),
@@ -310,7 +320,7 @@ class LinkVaultManager:
                 c_service = c.get("service", "")
 
                 # Gather posts for this creator
-                c_posts = [p for p in self.data["posts"].values() if p.get("creator_key") == ckey]
+                c_posts = list(posts_by_creator.get(ckey, []))
                 # Sort posts by publication date descending
                 c_posts.sort(key=lambda x: x.get("published", ""), reverse=True)
 
@@ -324,10 +334,7 @@ class LinkVaultManager:
                     p_passwords = post.get("passwords", [])
 
                     # Find child links for this post
-                    child_links = [
-                        lnk for lnk in self.data["links"]
-                        if lnk.get("post_id") == pid and lnk.get("creator_key") == ckey
-                    ]
+                    child_links = list(links_by_post.get((ckey, pid), []))
 
                     # Filter by platform
                     if platform_filter and platform_filter != "all":

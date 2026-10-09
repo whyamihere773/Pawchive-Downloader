@@ -1145,5 +1145,6 @@
   "toast_archive_repaired": "Database arsip rusak dan telah diperbaiki (%1 catatan dipertahankan). Sekarang kamu bisa mencoba lagi.",
   "toast_archive_repair_failed": "Database arsip rusak dan tidak dapat diperbaiki: %1",
   "archive_show_more_posts": "Tampilkan %1 postingan lagi (sisa %2)",
-  "archive_show_more_files": "Tampilkan %1 file lagi (sisa %2)"
+  "archive_show_more_files": "Tampilkan %1 file lagi (sisa %2)",
+  "toast_importing": "Mengimpor ke arsip…"
 }

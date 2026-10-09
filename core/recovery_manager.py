@@ -11,7 +11,7 @@ import shutil
 import datetime
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple, Callable
 from core.logger import logger
 
 
@@ -31,6 +31,14 @@ class RecoveryManager:
         self._async_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="recovery_writer")
         self._async_checkpoint_busy = threading.Event()   # a background checkpoint write is queued / running
         self._generation = 0   # bumped by discard_recovery(); stale background writes are skipped
+        # The failed files saved for Retry Failed, kept in memory: the button counts them all the time,
+        # and reading the whole file on the window thread each time stalled it (#28 / scaling plan)
+        self._cache_lock = threading.Lock()
+        self._retry_cache_key: Any = "unread"       # (mtime, size) of the file the cache matches
+        self._retry_cache: List[Dict[str, Any]] = []
+        self._retry_counts: Tuple[int, int] = (0, 0)  # (all, without 404s)
+        self._retry_loading = threading.Event()
+        self.on_retries_loaded: Optional[Callable[[], None]] = None
 
     @staticmethod
     def _detect_platform(service: str, domain: str = "", url: str = "") -> str:
@@ -319,6 +327,7 @@ class RecoveryManager:
                         json.dump(raw_tasks, f, separators=(',', ':'), ensure_ascii=False)
                         f.flush()
                     os.replace(tmp, self.retry_spillover_file)
+                    self._set_retry_cache(raw_tasks)
                     logger.debug(f"Spilled {len(raw_tasks)} failed retry tasks to disk.", category="session")
                     return True
                 except Exception as ex:
@@ -330,18 +339,75 @@ class RecoveryManager:
             return True
         return _do_dump(failed_tasks)
 
+    def _retry_file_key(self):
+        try:
+            st = os.stat(self.retry_spillover_file)
+            return (st.st_mtime_ns, st.st_size)
+        except OSError:
+            return None
+
+    def _set_retry_cache(self, data: List[Dict[str, Any]]) -> None:
+        def is_404(item) -> bool:
+            msg = item.get("error_msg") if isinstance(item, dict) else getattr(item, "error_msg", "")
+            return "404" in str(msg or "").lower()
+        counts = (len(data), sum(1 for item in data if not is_404(item)))
+        with self._cache_lock:
+            self._retry_cache_key = self._retry_file_key()
+            self._retry_cache = list(data)
+            self._retry_counts = counts
+
     def load_retries(self) -> List[Dict[str, Any]]:
-        """Loads spilled retry tasks from disk."""
+        """Loads spilled retry tasks from disk (from memory when the file hasn't changed)."""
+        key = self._retry_file_key()
+        with self._cache_lock:
+            if key == self._retry_cache_key:
+                return list(self._retry_cache)
         with self._write_lock:
             if not os.path.exists(self.retry_spillover_file):
+                self._set_retry_cache([])
                 return []
             try:
                 with open(self.retry_spillover_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    return data if isinstance(data, list) else []
+                data = data if isinstance(data, list) else []
+                self._set_retry_cache(data)
+                return list(data)
             except Exception as ex:
                 logger.debug(f"Could not load retry spillover file: {ex}", category="session")
                 return []
+
+    def retry_counts(self, wait: bool = True) -> Optional[Tuple[int, int]]:
+        """(failed files saved for Retry Failed, of which not 404). With wait=False (the window thread)
+        it never reads the file: when the saved list changed it returns None, reads it in the
+        background and calls on_retries_loaded when done."""
+        key = self._retry_file_key()
+        with self._cache_lock:
+            if key == self._retry_cache_key:
+                return self._retry_counts
+        if wait:
+            self.load_retries()
+            with self._cache_lock:
+                return self._retry_counts
+        if not self._retry_loading.is_set():
+            self._retry_loading.set()
+
+            def _job():
+                try:
+                    self.load_retries()
+                finally:
+                    self._retry_loading.clear()
+                    if self.on_retries_loaded:
+                        try:
+                            self.on_retries_loaded()
+                        except Exception:
+                            pass
+            threading.Thread(target=_job, name="RetryListLoad", daemon=True).start()
+        return None
+
+    def retry_counts_cached(self) -> Tuple[int, int]:
+        """The last known counts, whatever the file holds now."""
+        with self._cache_lock:
+            return self._retry_counts
 
     def clear_retries(self) -> bool:
         """Removes the retry spillover file when user manually clears retries or upon app exit."""
@@ -349,10 +415,12 @@ class RecoveryManager:
             if os.path.exists(self.retry_spillover_file):
                 try:
                     os.remove(self.retry_spillover_file)
+                    self._set_retry_cache([])
                     logger.debug("Retry spillover file removed.", category="session")
                     return True
                 except Exception as ex:
                     logger.debug(f"Could not remove retry spillover file: {ex}", category="session")
+            self._set_retry_cache([])
             return False
 
     def load_checkpoint(self) -> Optional[Dict[str, Any]]:

@@ -1145,5 +1145,6 @@
   "toast_archive_repaired": "封存資料庫已損毀並已修復（保留 %1 筆記錄）。現在可以重試了。",
   "toast_archive_repair_failed": "封存資料庫已損毀，無法修復: %1",
   "archive_show_more_posts": "再顯示 %1 篇貼文（剩餘 %2 篇）",
-  "archive_show_more_files": "再顯示 %1 個檔案（剩餘 %2 個）"
+  "archive_show_more_files": "再顯示 %1 個檔案（剩餘 %2 個）",
+  "toast_importing": "正在匯入封存…"
 }

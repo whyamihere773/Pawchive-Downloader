@@ -96,9 +96,6 @@ def _setup_memory_management(app, win, app_bridge, memory_collector):
     memory_collector.register_reporter("AI models", _ai_report)
     memory_collector.register_reporter("download queue", lambda: f"{len(getattr(app_bridge.downloader, 'tasks', []) or [])} file(s)")
 
-    # Startup objects (character database, settings, modules) are left out of future cleanups
-    QTimer.singleShot(8000, memory_collector.freeze_startup_objects)
-
     # A full cleanup while the window is minimized, where a short pause can't be noticed
     last = {"t": 0.0}
 
@@ -191,6 +188,12 @@ def main():
     logger.info("Initializing Kemono & Pawchive Desktop Suite...", category="system")
     logger.info(f"Loading QML interface from: {qml_file}", category="system")
 
+    # Startup objects (character database, settings, modules) are left out of future cleanups. Done
+    # before the window appears: that first full cleanup takes a few hundred ms, and 8 s after start
+    # (where it used to run) it froze the window
+    from core.memory_collector import memory_collector
+    memory_collector.freeze_startup_objects()
+
     engine.load(QUrl.fromLocalFile(qml_file))
 
     if not engine.rootObjects():
@@ -203,6 +206,11 @@ def main():
     from core.memory_collector import memory_collector
     _setup_memory_management(app, win, app_bridge, memory_collector)
     memory_collector.start()
+
+    # A window that stops responding writes what it was doing to the log
+    from core.hang_detector import hang_detector
+    hang_detector.start(app)
+    app.aboutToQuit.connect(hang_detector.stop)
 
     def update_screen_hz(target_screen=None):
         scr = target_screen or win.screen() or app.primaryScreen()

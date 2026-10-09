@@ -722,6 +722,7 @@ Item {
                     readonly property int currentNewPostCount: currentModel ? (currentModel.newPostCount || 0) : 0
                     readonly property int currentIgnoredCount: currentModel ? (currentModel.ignoredCount || 0) : 0
                     readonly property var currentCachedPosts: (currentModel && currentModel.cachedNewPosts) ? currentModel.cachedNewPosts : []
+                    property int drawerShown: 50
 
                     readonly property string artistKey: artistUserId + "_" + artistService
                     readonly property bool isArtistChecking: !!(root.checkingArtists[artistKey])
@@ -2078,7 +2079,7 @@ Item {
 
                                     // Post items repeater (Uses safely guarded entryCard.currentCachedPosts)
                                     Repeater {
-                                        model: reviewDrawerContainer.shouldShow ? entryCard.currentCachedPosts : null
+                                        model: reviewDrawerContainer.shouldShow ? entryCard.currentCachedPosts.slice(0, entryCard.drawerShown) : null
 
                                         Rectangle {
                                             width: reviewCol.width
@@ -2190,6 +2191,21 @@ Item {
                                                     }
                                                 }
                                             }
+                                        }
+                                    }
+                                    // Long update lists open a page at a time (hundreds of rows at once stalled the window)
+                                    Text {
+                                        visible: reviewDrawerContainer.shouldShow && entryCard.currentCachedPosts.length > entryCard.drawerShown
+                                        text: root.tr("archive_show_more_posts", "Show %1 more posts (%2 left)").replace("%1", Math.min(50, entryCard.currentCachedPosts.length - entryCard.drawerShown)).replace("%2", entryCard.currentCachedPosts.length - entryCard.drawerShown)
+                                        font.family: "Segoe UI, sans-serif"
+                                        font.pixelSize: 11
+                                        color: drawerMoreMouse.containsMouse ? "#5EEAD4" : "#2DD4BF"
+                                        MouseArea {
+                                            id: drawerMoreMouse
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: entryCard.drawerShown += 50
                                         }
                                     }
                                 }

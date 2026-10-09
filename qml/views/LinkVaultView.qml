@@ -100,13 +100,37 @@ Item {
         expandedPostTexts = copy
     }
 
-    // Parsed tree data from bridge
-    readonly property var vaultData: {
-        if (!bridge || !bridge.linkVaultTreeJson) return []
-        try {
-            return JSON.parse(bridge.linkVaultTreeJson)
-        } catch (e) {
-            return []
+    // Parsed tree data from bridge. Read again only while the tab is visible, at most every 150 ms:
+    // the vault changes with every harvested link while downloading, and each read rebuilt it all
+    property var vaultData: []
+    property bool _vaultStale: true
+    property string _vaultRequest: ""
+    function refreshVault() {
+        _vaultStale = false
+        if (!bridge) { vaultData = []; return }
+        // Built in the background; parsed when it arrives (onAsyncResultReady)
+        _vaultRequest = "vault-tree-" + Date.now()
+        bridge.linkVaultTreeJsonAsync(_vaultRequest)
+    }
+    Timer {
+        id: vaultRefreshTimer
+        interval: 150
+        onTriggered: linkVaultRoot.refreshVault()
+    }
+    Connections {
+        target: linkVaultRoot.bridge
+        function onLinkVaultChanged() {
+            if (linkVaultRoot.visible) vaultRefreshTimer.restart()
+            else linkVaultRoot._vaultStale = true
+        }
+        function onAsyncResultReady(requestId, result) {
+            if (requestId !== linkVaultRoot._vaultRequest) return
+            linkVaultRoot._vaultRequest = ""
+            try {
+                linkVaultRoot.vaultData = result ? JSON.parse(result) : []
+            } catch (e) {
+                linkVaultRoot.vaultData = []
+            }
         }
     }
 
@@ -129,8 +153,12 @@ Item {
         }
     }
 
-    Component.onCompleted: triggerEntrance()
-    onVisibleChanged: if (visible) triggerEntrance()
+    Component.onCompleted: { refreshVault(); triggerEntrance() }
+    onVisibleChanged: {
+        if (!visible) return
+        if (_vaultStale) refreshVault()
+        triggerEntrance()
+    }
 
     // ── Newtonian Momentum Scrolling State ─────────────────────────────────────
     readonly property bool isScrolling: creatorFlickable.isScrolling
@@ -829,24 +857,21 @@ Item {
             }
 
             // High-Performance Momentum Scrollable List of Creators (SettingsView scroll tech)
-            SmoothFlickable {
+            // Only the creator cards on screen are built (one card per creator froze big vaults)
+            SmoothListView {
                 id: creatorFlickable
                 anchors.fill: parent
                 visible: linkVaultRoot.vaultData.length > 0
-                contentWidth: width
-                contentHeight: creatorListCol.implicitHeight + 24
-
-                ColumnLayout {
-                    id: creatorListCol
-                    width: creatorFlickable.width - (creatorFlickable.verticalScrollBar && creatorFlickable.verticalScrollBar.visible ? 10 : 0)
-                    spacing: 10
-
-                    Repeater {
-                        model: linkVaultRoot.vaultData
+                spacing: 10
+                cacheBuffer: 800
+                currentIndex: -1
+                highlightFollowsCurrentItem: false
+                bottomMargin: 24
+                model: linkVaultRoot.vaultData
 
                         delegate: Rectangle {
                             id: creatorCard
-                            Layout.fillWidth: true
+                            width: creatorFlickable.width - (creatorFlickable.verticalScrollBar && creatorFlickable.verticalScrollBar.visible ? 10 : 0)
                             implicitHeight: creatorCol.implicitHeight + 20
                     radius: 8
                     color: creatorHover.hovered ? "#181D2A" : "#141720"
@@ -1412,8 +1437,6 @@ Item {
                     }
                 }
             }
-        }
-    }
         }
     }
 

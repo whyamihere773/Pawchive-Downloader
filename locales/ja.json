@@ -1145,5 +1145,6 @@
   "toast_archive_repaired": "破損していたアーカイブのデータベースを修復しました（%1 件を保持）。もう一度お試しください。",
   "toast_archive_repair_failed": "アーカイブのデータベースが破損しており、修復できませんでした: %1",
   "archive_show_more_posts": "さらに %1 件の投稿を表示（残り %2 件）",
-  "archive_show_more_files": "さらに %1 件のファイルを表示（残り %2 件）"
+  "archive_show_more_files": "さらに %1 件のファイルを表示（残り %2 件）",
+  "toast_importing": "アーカイブに取り込み中…"
 }

@@ -18,7 +18,7 @@ import threading
 import time
 from typing import Dict, List, Optional
 
-from PySide6.QtCore import QFileSystemWatcher, QMimeData, QObject, Property, QUrl, Signal, Slot
+from PySide6.QtCore import Qt, QFileSystemWatcher, QMimeData, QObject, Property, QUrl, Signal, Slot
 
 from core.logger import logger
 
@@ -135,11 +135,19 @@ class GalleryToolsBridge(QObject):
     animationReady = Signal(str, 'QVariantMap') # path, {frames, durations} (frames 0 = not animated)
     storageProgress = Signal(int, 'QVariantMap')  # token, {files, bytes, folder}
     storageReady = Signal(int, 'QVariantMap')     # token, breakdown (see _run_storage)
+    # Moves and undo run in the background (across drives a move is a copy: minutes on the window
+    # thread); the result comes back with these
+    moveFinished = Signal(str, 'QVariantMap')     # tag, {moved, failed, errors, pairs}
+    undoFinished = Signal('QVariantMap')          # {success, message}
+    _moveDone = Signal(str, 'QVariantMap')
+    _undoDone = Signal('QVariantMap')
 
     def __init__(self, app_bridge=None, watchlist_manager=None, parent=None, marks_file: str = ""):
         super().__init__(parent)
         self._app = app_bridge
         self._watchlist = watchlist_manager
+        self._moveDone.connect(self._on_move_done, Qt.QueuedConnection)
+        self._undoDone.connect(self._on_undo_done, Qt.QueuedConnection)
         self._search_token = 0
         self._undo: List[dict] = []
         self._lock = threading.Lock()
@@ -611,13 +619,34 @@ class GalleryToolsBridge(QObject):
     @Slot('QVariantList', str, result='QVariantMap')
     def moveItems(self, paths: list, destDir: str) -> dict:
         res = self._app.moveItems(paths, destDir)
+        self._after_move(res)
+        return res
+
+    def _after_move(self, res: dict) -> None:
         pairs = res.get("pairs") or []
         self._remap_pairs(pairs)
         if pairs:
             n = len(pairs)
             self._push_undo({"type": "move", "pairs": pairs,
                              "label": f"Undo move of {n} item{'s' if n != 1 else ''}"})
-        return res
+
+    @Slot('QVariantList', str, str)
+    def moveItemsAsync(self, paths: list, destDir: str, tag: str = "") -> None:
+        """moveItems in the background; moveFinished(tag, result) follows."""
+        paths = list(paths or [])
+
+        def _job():
+            try:
+                res = self._app.moveItems(paths, destDir)
+            except Exception as e:
+                res = {"moved": 0, "failed": len(paths), "errors": [str(e)], "pairs": []}
+            self._moveDone.emit(tag, res)
+        threading.Thread(target=_job, name="GalleryMove", daemon=True).start()
+
+    @Slot(str, 'QVariantMap')
+    def _on_move_done(self, tag: str, res: dict) -> None:
+        self._after_move(res)          # marks and undo are kept on the window thread
+        self.moveFinished.emit(tag, res)
 
     @Slot(str, str, result='QVariantMap')
     def renameItem(self, path: str, newName: str) -> dict:
@@ -654,12 +683,42 @@ class GalleryToolsBridge(QObject):
             self._push_undo({"type": "copy", "paths": list(created_paths),
                              "label": f"Undo copy of {n} item{'s' if n != 1 else ''}"})
 
+    @Slot()
+    def undoLastAsync(self) -> None:
+        """undoLast in the background (moving files back can be a long copy); undoFinished follows."""
+        if not self._undo:
+            self.undoFinished.emit({"success": False, "message": "Nothing to undo."})
+            return
+        op = self._undo.pop()
+        self.undoChanged.emit()
+
+        def _job():
+            try:
+                res = self._undo_op(op, remap=False)
+            except Exception as e:
+                res = {"success": False, "message": str(e)}
+            self._undoDone.emit(res)
+        threading.Thread(target=_job, name="GalleryUndo", daemon=True).start()
+
+    @Slot('QVariantMap')
+    def _on_undo_done(self, res: dict) -> None:
+        self._remap_pairs(res.pop("_remap", []) or [])
+        self.undoFinished.emit(res)
+
     @Slot(result='QVariantMap')
     def undoLast(self) -> dict:
         if not self._undo:
             return {"success": False, "message": "Nothing to undo."}
         op = self._undo.pop()
         self.undoChanged.emit()
+        res = self._undo_op(op, remap=True)
+        res.pop("_remap", None)
+        return res
+
+    def _undo_op(self, op: dict, remap: bool) -> dict:
+        """Undoes one operation. With remap=False (a background thread) the marks to move along are
+        returned in "_remap" for the window thread."""
+        remapped: List[list] = []
         errors: List[str] = []
         done = 0
 
@@ -676,7 +735,10 @@ class GalleryToolsBridge(QObject):
                 try:
                     os.makedirs(os.path.dirname(src), exist_ok=True)
                     shutil.move(dst, src)
-                    self._remap_pairs([[dst, src]])
+                    if remap:
+                        self._remap_pairs([[dst, src]])
+                    else:
+                        remapped.append([dst, src])
                     done += 1
                 except Exception as e:
                     errors.append(f"{os.path.basename(dst)}: {e}")
@@ -699,6 +761,6 @@ class GalleryToolsBridge(QObject):
             for e in errors[:5]:
                 logger.warning(f"Undo: {e}", category="gallery")
             msg = f"Partly undone ({done} done): {errors[0]}" if done else f"Couldn't undo: {errors[0]}"
-            return {"success": done > 0, "message": msg}
+            return {"success": done > 0, "message": msg, "_remap": remapped}
         logger.info(f"{op['label'].replace('Undo', 'Undid', 1)}.", category="gallery")
-        return {"success": True, "message": op["label"].replace("Undo", "Undid", 1)}
+        return {"success": True, "message": op["label"].replace("Undo", "Undid", 1), "_remap": remapped}

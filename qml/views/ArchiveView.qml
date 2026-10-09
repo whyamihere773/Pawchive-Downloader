@@ -56,13 +56,29 @@ Rectangle {
     // a creator's posts are read when it's opened, one creator at a time (sending every file of a big
     // archive to the window on each refresh froze it, #28).
     property var loadedPosts: ({})           // creator key -> posts
+    // One creator's posts arrived. The map is changed in place and only that creator's card takes
+    // its posts: replacing the whole map rebuilt the posts of every open card on each arrival.
+    signal postsArrived(string key)
+    property var _stalePosts: ({})           // shown posts that are read again when their card is built
     property var _postsQueue: []
     property string _postsRequest: ""
     property string _postsRequestKey: ""
     property int _postsSeq: 0
     property string _postsFilter: ""
     property string _exportRequest: ""
+    // Archive changes run in the background (seconds on big archives); their answers are matched here
+    property var _jobCallbacks: ({})
+    property int _jobSeq: 0
+    function archiveJob(start, onDone) {
+        root._jobSeq += 1
+        var id = "archive-job-" + root._jobSeq
+        root._jobCallbacks[id] = onDone
+        start(id)
+    }
     readonly property int pageSize: 50       // posts shown at a time when a creator is opened (files: 100)
+    // While searching, every creator found is open with its posts and files showing: smaller first pages
+    readonly property int postsPage: searchFilter.length > 0 ? 5 : pageSize
+    readonly property int filesPage: searchFilter.length > 0 ? 5 : pageSize * 2
 
     function postsFor(creator) {
         var k = creator ? creator.key : ""
@@ -142,12 +158,20 @@ Rectangle {
     Connections {
         target: root.bridge
         function onAsyncResultReady(requestId, result) {
+            var done = root._jobCallbacks[requestId]
+            if (done) {
+                delete root._jobCallbacks[requestId]
+                done(result)
+                return
+            }
             if (requestId === root._postsRequest) {
-                var m = Object.assign({}, root.loadedPosts)
-                m[root._postsRequestKey] = result || []
-                root.loadedPosts = m
+                var arrivedKey = root._postsRequestKey
+                root.loadedPosts[arrivedKey] = result || []
+                if (root._stalePosts[arrivedKey])
+                    delete root._stalePosts[arrivedKey]
                 root._postsRequest = ""
                 root._postsRequestKey = ""
+                root.postsArrived(arrivedKey)
                 root._pumpPosts()
                 return
             }
@@ -172,25 +196,28 @@ Rectangle {
                 }
                 // Open creators keep their posts on screen while they're read again; with other
                 // filters (search, site, type) the old ones don't apply
+                // Only cards that exist (on screen) read their posts: a search opens every creator
+                // it found, and reading all of them right away kept the window busy
                 var sig = root._filterSignature()
                 var keep = {}
-                var open = []
+                var stale = {}
                 for (var j = 0; j < creators.length; j++) {
                     var c = creators[j]
-                    if (root.expandedCreators && root.expandedCreators[c.creator_name]) {
-                        if (sig === root._postsFilter && root.loadedPosts[c.key]) keep[c.key] = root.loadedPosts[c.key]
-                        open.push(c)
+                    if (root.expandedCreators && root.expandedCreators[c.creator_name]
+                            && sig === root._postsFilter && root.loadedPosts[c.key]) {
+                        keep[c.key] = root.loadedPosts[c.key]
+                        stale[c.key] = true
                     }
                 }
                 root._postsFilter = sig
                 root._postsQueue = []
+                root._stalePosts = stale
                 root.loadedPosts = keep
                 var keepY = creatorsListView.contentY
                 root.hierarchyData = creators
                 if (keepY > 0)
                     creatorsListView.contentY = Math.min(keepY, Math.max(0, creatorsListView.contentHeight - creatorsListView.height))
                 root.statistics = result.statistics
-                for (var o = 0; o < open.length; o++) root.requestPosts(open[o])
             }
             if (root._reloadAgain) {
                 root._reloadAgain = false
@@ -1658,12 +1685,22 @@ Rectangle {
 
                     property var creatorModel: modelData
                     property bool isCollapsed: !(root.expandedCreators && root.expandedCreators[creatorModel.creator_name])
-                    property int postsShown: root.pageSize
+                    property int postsShown: root.postsPage
+                    property var myPosts: root.loadedPosts[creatorModel.key] || []
+                    property bool postsReady: !!root.loadedPosts[creatorModel.key]
+                    Connections {
+                        target: root
+                        function onPostsArrived(key) {
+                            if (key !== creatorCard.creatorModel.key) return
+                            creatorCard.myPosts = root.loadedPosts[key] || []
+                            creatorCard.postsReady = true
+                        }
+                    }
                     onIsCollapsedChanged: {
                         if (!isCollapsed) root.requestPosts(creatorModel)
-                        else postsShown = root.pageSize
+                        else postsShown = root.postsPage
                     }
-                    Component.onCompleted: if (!isCollapsed && !root.postsLoaded(creatorModel)) root.requestPosts(creatorModel)
+                    Component.onCompleted: if (!isCollapsed && (!postsReady || root._stalePosts[creatorModel.key])) root.requestPosts(creatorModel)
 
                     property int creatorMissingCount: (creatorModel && typeof creatorModel.missing_count === "number") ? creatorModel.missing_count : 0
                     property int creatorTotalCount: creatorModel.total_files || 0
@@ -2157,7 +2194,7 @@ Rectangle {
                                 spacing: 6
 
                                 Text {
-                                    visible: !creatorCard.isCollapsed && !root.postsLoaded(creatorCard.creatorModel)
+                                    visible: !creatorCard.isCollapsed && !creatorCard.postsReady
                                     text: root.tr("archive_loading_posts", "Loading posts…")
                                     font.family: "Segoe UI, sans-serif"
                                     font.pixelSize: 11
@@ -2167,7 +2204,7 @@ Rectangle {
                                 }
 
                                 Repeater {
-                                    model: creatorCard.isCollapsed ? null : root.postsFor(creatorModel).slice(0, creatorCard.postsShown)
+                                    model: creatorCard.isCollapsed ? null : creatorCard.myPosts.slice(0, creatorCard.postsShown)
 
                                     delegate: Rectangle {
                                         id: postCard
@@ -2175,7 +2212,7 @@ Rectangle {
                                         property var postModel: modelData
                                         property string postKey: creatorModel.creator_name + "_" + postModel.post_id
                                         property bool isPostCollapsed: root.searchFilter.length === 0 && !(root.expandedPosts && root.expandedPosts[postKey])
-                                        property int filesShown: root.pageSize * 2
+                                        property int filesShown: root.filesPage
 
                                         property int missingCount: (postModel && typeof postModel.missing_count === "number") ? postModel.missing_count : 0
                                         property int totalFiles: (postModel && postModel.files) ? postModel.files.length : (postModel.file_count || 0)
@@ -2629,12 +2666,11 @@ Rectangle {
                                                                     ToolTip.text: root.tr("tip_delete_file_archive", "Remove this file from archive (allows re-downloading)")
                                                                     onClicked: {
                                                                         if (root.bridge) {
-                                                                            var ok = root.bridge.deleteArchiveRecord(fileData.id)
-                                                                            if (ok) {
-                                                                                root.showToast(root.tr("toast_file_removed", "File removed from archive."))
-                                                                            } else if (root.bridge.archiveLastError()) {
-                                                                                root.showToast(root.archiveErrorText())
-                                                                            }
+                                                                            var recId = fileData.id
+                                                                            root.archiveJob(function(id) { root.bridge.deleteArchiveRecordAsync(id, recId) }, function(ok) {
+                                                                                if (ok) root.showToast(root.tr("toast_file_removed", "File removed from archive."))
+                                                                                else if (root.bridge.archiveLastError()) root.showToast(root.archiveErrorText())
+                                                                            })
                                                                         }
                                                                     }
                                                                 }
@@ -2665,8 +2701,8 @@ Rectangle {
                                 }
                                 // Long lists open a page at a time: building hundreds of cards at once froze the window (#28)
                                 Text {
-                                    visible: root.postsFor(creatorCard.creatorModel).length > creatorCard.postsShown
-                                    text: root.tr("archive_show_more_posts", "Show %1 more posts (%2 left)").replace("%1", Math.min(root.pageSize, root.postsFor(creatorCard.creatorModel).length - creatorCard.postsShown)).replace("%2", root.postsFor(creatorCard.creatorModel).length - creatorCard.postsShown)
+                                    visible: creatorCard.myPosts.length > creatorCard.postsShown
+                                    text: root.tr("archive_show_more_posts", "Show %1 more posts (%2 left)").replace("%1", Math.min(root.pageSize, creatorCard.myPosts.length - creatorCard.postsShown)).replace("%2", creatorCard.myPosts.length - creatorCard.postsShown)
                                     font.family: "Segoe UI, sans-serif"
                                     font.pixelSize: 11
                                     color: moreMouse_archive_show_more_posts.containsMouse ? "#5EEAD4" : "#2DD4BF"
@@ -2741,8 +2777,11 @@ Rectangle {
         onAccepted: {
             if (root.bridge && selectedFile) {
                 var path = selectedFile.toString()
-                var imported = root.bridge.importArchiveFile(path)
-                root.showToast(root.tr("toast_imported_count", "Imported %1 records into archive.").replace("%1", imported))
+                root.showToast(root.tr("toast_importing", "Importing into the archive…"))
+                root.archiveJob(function(id) { root.bridge.importArchiveFileAsync(id, path) }, function(imported) {
+                    if (imported < 0) root.showToast(root.archiveErrorText())
+                    else root.showToast(root.tr("toast_imported_count", "Imported %1 records into archive.").replace("%1", imported || 0))
+                })
             }
         }
     }
@@ -2844,8 +2883,9 @@ Rectangle {
                         onClicked: {
                             clearConfirmModal.isOpen = false
                             if (root.bridge) {
-                                root.bridge.clearDownloadArchive()
-                                root.showToast(root.tr("toast_archive_cleared", "Download archive cleared."))
+                                root.archiveJob(function(id) { root.bridge.clearDownloadArchiveAsync(id) }, function(ok) {
+                                    root.showToast(ok ? root.tr("toast_archive_cleared", "Download archive cleared.") : root.archiveErrorText())
+                                })
                             }
                         }
                     }
@@ -2932,11 +2972,11 @@ Rectangle {
                         onClicked: {
                             deleteCreatorConfirmModal.isOpen = false
                             if (root.bridge && root.deleteTargetCreator) {
-                                var delCnt = root.bridge.deleteArchiveCreator(root.deleteTargetCreator.creator_id, root.deleteTargetCreator.service)
-                                if (delCnt < 0)
-                                    root.showToast(root.archiveErrorText())
-                                else
-                                    root.showToast(root.tr("toast_creator_removed", "Removed %1 files for creator.").replace("%1", delCnt))
+                                var dc = root.deleteTargetCreator
+                                root.archiveJob(function(id) { root.bridge.deleteArchiveCreatorAsync(id, dc.creator_id, dc.service) }, function(delCnt) {
+                                    if (delCnt < 0) root.showToast(root.archiveErrorText())
+                                    else root.showToast(root.tr("toast_creator_removed", "Removed %1 files for creator.").replace("%1", delCnt))
+                                })
                             }
                         }
                     }
@@ -3029,24 +3069,15 @@ Rectangle {
                         onClicked: {
                             removeMissingConfirmModal.isOpen = false
                             if (root.bridge && root.removeMissingTargetCreator) {
-                                var delCnt = root.bridge.removeMissingArchiveRecordsForCreator(
-                                    root.removeMissingTargetCreator.service,
-                                    root.removeMissingTargetCreator.creator_id
-                                )
-                                // Clear the verify state so the banner reflects fresh state
-                                var key = root._verifyKey(
-                                    root.removeMissingTargetCreator.service,
-                                    root.removeMissingTargetCreator.creator_id
-                                )
-                                var newMap = Object.assign({}, root.verificationState)
-                                delete newMap[key]
-                                root.verificationState = newMap
-                                if (delCnt < 0)
-                                    root.showToast(root.archiveErrorText())
-                                else
-                                    root.showToast(
-                                        root.tr("toast_missing_removed", "Removed %1 missing record(s).").replace("%1", delCnt)
-                                    )
+                                var rm = root.removeMissingTargetCreator
+                                root.archiveJob(function(id) { root.bridge.removeMissingArchiveRecordsForCreatorAsync(id, rm.service, rm.creator_id) }, function(delCnt) {
+                                    // Clear the verify state so the banner reflects fresh state
+                                    var newMap = Object.assign({}, root.verificationState)
+                                    delete newMap[root._verifyKey(rm.service, rm.creator_id)]
+                                    root.verificationState = newMap
+                                    if (delCnt < 0) root.showToast(root.archiveErrorText())
+                                    else root.showToast(root.tr("toast_missing_removed", "Removed %1 missing record(s).").replace("%1", delCnt))
+                                })
                             }
                         }
                     }
@@ -3133,11 +3164,11 @@ Rectangle {
                         onClicked: {
                             deletePostConfirmModal.isOpen = false
                             if (root.bridge && root.deleteTargetPost) {
-                                var delCnt = root.bridge.deleteArchivePost(root.deleteTargetPost.service, root.deleteTargetPost.post_id)
-                                if (delCnt < 0)
-                                    root.showToast(root.archiveErrorText())
-                                else
-                                    root.showToast(root.tr("toast_post_removed", "Removed %1 files for post.").replace("%1", delCnt))
+                                var dp = root.deleteTargetPost
+                                root.archiveJob(function(id) { root.bridge.deleteArchivePostAsync(id, dp.service, dp.post_id) }, function(delCnt) {
+                                    if (delCnt < 0) root.showToast(root.archiveErrorText())
+                                    else root.showToast(root.tr("toast_post_removed", "Removed %1 files for post.").replace("%1", delCnt))
+                                })
                             }
                         }
                     }

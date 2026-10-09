@@ -37,16 +37,26 @@ Rectangle {
     ListModel {
         id: failedItemsModel
 
+        // How many are ticked, kept up to date as items are ticked: the buttons used to count all
+        // items on every change, and filling the list made that quadratic (minutes with big lists)
+        property int selectedCount: 0
+
         function populate() {
             clear()
+            selectedCount = 0
+            failedPageTimer.stop()
             if (!modalRoot.bridge || !modalRoot.bridge.queueModel) return
-            var list = modalRoot.bridge.queueModel.getFailedTasksList()
+            // Built in the background and added a page at a time: big lists froze the window
+            modalRoot._failedRequest = "failed-" + Date.now()
+            modalRoot._failedNext = 0
+            modalRoot.bridge.queueModel.prepareFailedTasksAsync(modalRoot._failedRequest)
+        }
+
+        function appendPage(list) {
+            var rows = []
             for (var i = 0; i < list.length; i++) {
                 var item = list[i]
-                if (modalRoot.bridge && modalRoot.bridge.skipRetry404 && item.errorMsg && item.errorMsg.indexOf("404") !== -1) {
-                    continue
-                }
-                failedItemsModel.append({
+                rows.push({
                     fileId: item.fileId || "",
                     filename: item.filename || "",
                     postTitle: item.postTitle || "",
@@ -62,6 +72,14 @@ Rectangle {
                     isSelected: true // defaults to true so items can be retried immediately
                 })
             }
+            append(rows)            // one change per page
+            selectedCount += rows.length
+        }
+
+        function setSelected(i, val) {
+            if (get(i).isSelected === val) return
+            setProperty(i, "isSelected", val)
+            selectedCount += val ? 1 : -1
         }
 
         function getSelectedIds() {
@@ -76,17 +94,40 @@ Rectangle {
         }
 
         function countSelected() {
-            var c = 0
-            for (var i = 0; i < count; i++) {
-                if (get(i).isSelected) c++
-            }
-            return c
+            return selectedCount
         }
 
         function selectAll(val) {
             for (var i = 0; i < count; i++) {
                 setProperty(i, "isSelected", val)
             }
+            selectedCount = val ? count : 0
+        }
+    }
+
+    property string _failedRequest: ""
+    property int _failedNext: 0
+    property int _failedTotal: 0
+
+    Timer {
+        id: failedPageTimer
+        interval: 1
+        repeat: true
+        onTriggered: {
+            if (!modalRoot.bridge || !modalRoot.bridge.queueModel) { stop(); return }
+            var page = modalRoot.bridge.queueModel.getFailedTasksPage(modalRoot._failedNext, 500)
+            failedItemsModel.appendPage(page)
+            modalRoot._failedNext += page.length
+            if (page.length < 500 || modalRoot._failedNext >= modalRoot._failedTotal) stop()
+        }
+    }
+
+    Connections {
+        target: modalRoot.bridge ? modalRoot.bridge.queueModel : null
+        function onFailedListReady(requestId, total) {
+            if (requestId !== modalRoot._failedRequest) return
+            modalRoot._failedTotal = total
+            if (total > 0) failedPageTimer.start()
         }
     }
 
@@ -110,17 +151,16 @@ Rectangle {
         }
     }
 
+    Timer {
+        id: repopulateTimer
+        interval: 400
+        onTriggered: if (modalRoot.isOpen) failedItemsModel.populate()
+    }
+
     Connections {
         target: (modalRoot.bridge && modalRoot.bridge.queueModel) ? modalRoot.bridge.queueModel : null
         function onFailedCountChanged() {
-            if (modalRoot.isOpen) {
-                failedItemsModel.populate()
-            }
-        }
-        function onCountsChanged() {
-            if (modalRoot.isOpen) {
-                failedItemsModel.populate()
-            }
+            if (modalRoot.isOpen) repopulateTimer.restart()
         }
     }
 
@@ -238,21 +278,22 @@ Rectangle {
                     }
 
                     StyledButton {
-                        text: modalRoot.tr("btn_clear", "Clear") + (failedItemsModel.countSelected() > 0 ? (" (" + failedItemsModel.countSelected() + ")") : "")
+                        text: modalRoot.tr("btn_clear", "Clear") + (failedItemsModel.selectedCount > 0 ? (" (" + failedItemsModel.selectedCount + ")") : "")
                         iconText: "🗑"
                         variant: "ghost"
                         implicitHeight: 26
-                        enabled: failedItemsModel.countSelected() > 0
+                        enabled: failedItemsModel.selectedCount > 0
                         tooltip: modalRoot.tr("tip_clear_selected_failed", "Remove selected failed files from the queue")
                         onClicked: {
                             var selected = failedItemsModel.getSelectedIds()
+                            var clearsAll = selected.length >= failedItemsModel.count
                             if (modalRoot.bridge && selected.length > 0) {
                                 modalRoot.bridge.clearFailedTasks(selected)
                             }
-                            failedItemsModel.populate()
-                            if (failedItemsModel.count === 0) {
+                            if (clearsAll)
                                 modalRoot.isOpen = false
-                            }
+                            else
+                                failedItemsModel.populate()
                         }
                     }
 
@@ -277,7 +318,7 @@ Rectangle {
                     }
 
                     Text {
-                        text: failedItemsModel.countSelected() + " / " + failedItemsModel.count + " " + modalRoot.tr("label_selected_of", "selected")
+                        text: failedItemsModel.selectedCount + " / " + failedItemsModel.count + " " + modalRoot.tr("label_selected_of", "selected")
                         font.family: "Segoe UI, sans-serif"
                         font.pixelSize: 11
                         color: "#38BDF8"
@@ -316,7 +357,7 @@ Rectangle {
                             anchors.fill: parent
                             preventStealing: false
                             onClicked: {
-                                failedItemsModel.setProperty(index, "isSelected", !model.isSelected)
+                                failedItemsModel.setSelected(index, !model.isSelected)
                             }
                         }
 
@@ -560,7 +601,7 @@ Rectangle {
 
                 // Clear Failed Tasks Button
                 StyledButton {
-                    text: failedItemsModel.countSelected() > 0 ? (modalRoot.tr("btn_clear_selected", "Clear Selected") + " (" + failedItemsModel.countSelected() + ")") : modalRoot.tr("btn_clear_all_failed", "Clear All Failed")
+                    text: failedItemsModel.selectedCount > 0 ? (modalRoot.tr("btn_clear_selected", "Clear Selected") + " (" + failedItemsModel.selectedCount + ")") : modalRoot.tr("btn_clear_all_failed", "Clear All Failed")
                     iconText: "🗑"
                     variant: "ghost"
                     implicitHeight: 32
@@ -568,6 +609,7 @@ Rectangle {
                     enabled: failedItemsModel.count > 0
                     onClicked: {
                         var selected = failedItemsModel.getSelectedIds()
+                        var clearsAll = selected.length === 0 || selected.length >= failedItemsModel.count
                         if (modalRoot.bridge) {
                             if (selected.length > 0) {
                                 modalRoot.bridge.clearFailedTasks(selected)
@@ -575,10 +617,10 @@ Rectangle {
                                 modalRoot.bridge.clearFailedTasks()
                             }
                         }
-                        failedItemsModel.populate()
-                        if (failedItemsModel.count === 0) {
+                        if (clearsAll)
                             modalRoot.isOpen = false
-                        }
+                        else
+                            failedItemsModel.populate()
                     }
                 }
 
@@ -593,11 +635,11 @@ Rectangle {
 
                 StyledButton {
                     id: retrySubmitBtn
-                    text: modalRoot.tr("btn_retry", "Retry") + " (" + failedItemsModel.countSelected() + ")"
+                    text: modalRoot.tr("btn_retry", "Retry") + " (" + failedItemsModel.selectedCount + ")"
                     iconText: "🔁"
                     variant: "danger"
                     implicitHeight: 32
-                    enabled: failedItemsModel.countSelected() > 0
+                    enabled: failedItemsModel.selectedCount > 0
                     onClicked: {
                         var ids = failedItemsModel.getSelectedIds()
                         if (modalRoot.bridge && ids.length > 0) {

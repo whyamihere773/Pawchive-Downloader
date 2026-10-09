@@ -1145,5 +1145,6 @@
   "toast_archive_repaired": "Cơ sở dữ liệu lưu trữ bị hỏng và đã được sửa (giữ lại %1 bản ghi). Bạn có thể thử lại ngay.",
   "toast_archive_repair_failed": "Cơ sở dữ liệu lưu trữ bị hỏng và không thể sửa: %1",
   "archive_show_more_posts": "Hiện thêm %1 bài đăng (còn %2)",
-  "archive_show_more_files": "Hiện thêm %1 tệp (còn %2)"
+  "archive_show_more_files": "Hiện thêm %1 tệp (còn %2)",
+  "toast_importing": "Đang nhập vào kho lưu trữ…"
 }

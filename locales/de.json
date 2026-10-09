@@ -1145,5 +1145,6 @@
   "toast_archive_repaired": "Die Archiv-Datenbank war beschädigt und wurde repariert (%1 Einträge behalten). Du kannst es jetzt erneut versuchen.",
   "toast_archive_repair_failed": "Die Archiv-Datenbank ist beschädigt und konnte nicht repariert werden: %1",
   "archive_show_more_posts": "%1 weitere Beiträge anzeigen (%2 übrig)",
-  "archive_show_more_files": "%1 weitere Dateien anzeigen (%2 übrig)"
+  "archive_show_more_files": "%1 weitere Dateien anzeigen (%2 übrig)",
+  "toast_importing": "Wird ins Archiv importiert…"
 }

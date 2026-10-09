@@ -1145,5 +1145,6 @@
   "toast_archive_repaired": "La base de datos del archivo estaba dañada y se ha reparado (%1 registros conservados). Ya puedes volver a intentarlo.",
   "toast_archive_repair_failed": "La base de datos del archivo está dañada y no se pudo reparar: %1",
   "archive_show_more_posts": "Mostrar %1 publicaciones más (quedan %2)",
-  "archive_show_more_files": "Mostrar %1 archivos más (quedan %2)"
+  "archive_show_more_files": "Mostrar %1 archivos más (quedan %2)",
+  "toast_importing": "Importando al archivo…"
 }

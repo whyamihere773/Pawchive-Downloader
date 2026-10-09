@@ -1145,5 +1145,6 @@
   "toast_archive_repaired": "손상된 아카이브 데이터베이스를 복구했습니다(%1개 기록 유지). 이제 다시 시도할 수 있습니다.",
   "toast_archive_repair_failed": "아카이브 데이터베이스가 손상되어 복구할 수 없습니다: %1",
   "archive_show_more_posts": "게시물 %1개 더 보기 (%2개 남음)",
-  "archive_show_more_files": "파일 %1개 더 보기 (%2개 남음)"
+  "archive_show_more_files": "파일 %1개 더 보기 (%2개 남음)",
+  "toast_importing": "아카이브로 가져오는 중…"
 }

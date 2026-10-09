@@ -1145,5 +1145,6 @@
   "toast_archive_repaired": "存档数据库已损坏并已修复（保留 %1 条记录）。现在可以重试了。",
   "toast_archive_repair_failed": "存档数据库已损坏，无法修复: %1",
   "archive_show_more_posts": "再显示 %1 个帖子（剩余 %2 个）",
-  "archive_show_more_files": "再显示 %1 个文件（剩余 %2 个）"
+  "archive_show_more_files": "再显示 %1 个文件（剩余 %2 个）",
+  "toast_importing": "正在导入存档…"
 }

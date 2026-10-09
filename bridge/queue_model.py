@@ -3,6 +3,7 @@ Download Queue Qt Model
 Exposes an observable QAbstractListModel for active, pending, completed, and failed tasks.
 """
 
+import threading
 import time
 from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt, Signal, Slot, Property, QObject, QTimer, QThread
 from typing import List, Dict, Any, Optional
@@ -434,6 +435,7 @@ class QueueModel(QAbstractListModel):
     minFileSizeChanged = Signal()
     countsChanged = Signal()
     failedCountChanged = Signal()
+    failedListReady = Signal(str, int)
     groupsChanged = Signal()
     selectedBatchIdChanged = Signal()
     viewModeChanged = Signal()
@@ -466,6 +468,7 @@ class QueueModel(QAbstractListModel):
         self._failed_count: int = 0
         self._task_last_status: Dict[int, str] = {}
         self._task_last_emit: Dict[int, float] = {}
+        self._failed_404: dict = {}      # id(task) of failed tasks whose error is a 404
         self._counts_timer = QTimer(self)
         self._counts_timer.setSingleShot(True)
         self._counts_timer.setInterval(60)
@@ -486,6 +489,7 @@ class QueueModel(QAbstractListModel):
         completed = 0
         skipped = 0
         failed = 0
+        failed_404 = {}
         for t in self._tasks:
             st = getattr(t, "status", "")
             if st in ("downloading", "retrying"):
@@ -496,6 +500,8 @@ class QueueModel(QAbstractListModel):
                 skipped += 1
             elif st in ("failed", "cancelled"):
                 failed += 1
+                if self._is_404(t):
+                    failed_404[id(t)] = True
             elif st == "pending":
                 pending += 1
         self._pending_count = pending
@@ -503,6 +509,11 @@ class QueueModel(QAbstractListModel):
         self._completed_count = completed
         self._skipped_count = skipped
         self._failed_count = failed
+        self._failed_404 = failed_404
+
+    @staticmethod
+    def _is_404(t) -> bool:
+        return "404" in str(getattr(t, "error_msg", "") or "").lower() or getattr(t, "http_status", 0) == 404
 
     @staticmethod
     def _format_size(b: int) -> str:
@@ -587,29 +598,20 @@ class QueueModel(QAbstractListModel):
         p = self.parent()
         skip_404 = bool(getattr(p, "skipRetry404", False)) if p else False
 
-        if skip_404:
-            count = sum(1 for t in self._tasks if t.status in ("failed", "cancelled") and not ("404" in str(getattr(t, "error_msg", "") or "").lower() or getattr(t, "http_status", 0) == 404))
-            if count > 0:
-                return count
+        # Counted as tasks change, and the saved failed files come from memory: this is read every
+        # time the button redraws, so it must never loop over the queue or read the file (it stalled
+        # the window with big queues / failed lists)
+        count = self._failed_count - len(self._failed_404) if skip_404 else self._failed_count
+        if count > 0:
+            return count
+        rm = getattr(p, "recovery_manager", None) if p else None
+        if rm is not None and hasattr(rm, "retry_counts"):
             try:
-                if p and hasattr(p, "recovery_manager"):
-                    spilled = p.recovery_manager.load_retries()
-                    if spilled:
-                        return sum(1 for item in spilled if not ("404" in str((item.get("error_msg") if isinstance(item, dict) else getattr(item, "error_msg", "")) or "").lower()))
+                counts = rm.retry_counts(wait=False) or rm.retry_counts_cached()
+                return counts[1] if skip_404 else counts[0]
             except Exception:
                 pass
-            return count
-
-        if self._failed_count > 0:
-            return self._failed_count
-        try:
-            if p and hasattr(p, "recovery_manager"):
-                spilled = p.recovery_manager.load_retries()
-                if spilled:
-                    return len(spilled)
-        except Exception:
-            pass
-        return self._failed_count
+        return count
 
     @Property(int, notify=countsChanged)
     def pendingCount(self) -> int:
@@ -983,6 +985,7 @@ class QueueModel(QAbstractListModel):
                     self._skipped_count = max(0, self._skipped_count - 1)
                 elif old_status in ("failed", "cancelled"):
                     self._failed_count = max(0, self._failed_count - 1)
+                    self._failed_404.pop(task_id, None)
                 elif old_status == "pending":
                     self._pending_count = max(0, self._pending_count - 1)
 
@@ -994,6 +997,8 @@ class QueueModel(QAbstractListModel):
                     self._skipped_count += 1
                 elif new_status in ("failed", "cancelled"):
                     self._failed_count += 1
+                    if self._is_404(task):
+                        self._failed_404[task_id] = True
                 elif new_status == "pending":
                     self._pending_count += 1
 
@@ -1024,6 +1029,7 @@ class QueueModel(QAbstractListModel):
         self._completed_count = 0
         self._skipped_count = 0
         self._failed_count = 0
+        self._failed_404 = {}
         self.endResetModel()
         self.countChanged.emit()
         self.countsChanged.emit()
@@ -1111,9 +1117,39 @@ class QueueModel(QAbstractListModel):
         """Returns detailed failed and cancelled task metadata for the Retry Modal dialog."""
         p = self.parent()
         skip_404 = bool(getattr(p, "skipRetry404", False)) if p else False
+        return self._build_failed_list(list(self._tasks), skip_404, p)
 
+    @Slot(str)
+    def prepareFailedTasksAsync(self, request_id: str):
+        """Builds the Retry dialog's list in the background (it stalled the window with big queues and
+        failed lists); failedListReady(request_id, count) follows, then the dialog takes it a page at a
+        time with getFailedTasksPage."""
+        p = self.parent()
+        skip_404 = bool(getattr(p, "skipRetry404", False)) if p else False
+        tasks = list(self._tasks)
+
+        def _job():
+            try:
+                rows = self._build_failed_list(tasks, skip_404, p)
+            except Exception as e:
+                logger.debug(f"Couldn't list the failed files: {e}", category="queue")
+                rows = []
+            self._failed_rows = rows
+            try:
+                self.failedListReady.emit(request_id, len(rows))
+            except RuntimeError:
+                pass
+        threading.Thread(target=_job, name="FailedList", daemon=True).start()
+
+    @Slot(int, int, result="QVariantList")
+    def getFailedTasksPage(self, offset: int, limit: int):
+        rows = getattr(self, "_failed_rows", []) or []
+        return rows[max(0, offset):max(0, offset) + max(0, limit)]
+
+    def _build_failed_list(self, tasks, skip_404: bool, p):
+        """The Retry dialog's rows: failed / cancelled tasks of the queue, else the saved failed files."""
         failed = []
-        for t in self._tasks:
+        for t in tasks:
             if t.status in ("failed", "cancelled") or (t.status == "pending" and (getattr(t, "retry_count", 0) > 0 or getattr(t, "error_msg", ""))):
                 err_msg = t.error_msg or ("Download cancelled by user" if t.status == "cancelled" else "Download failed")
                 if skip_404 and ("404" in str(err_msg).lower() or getattr(t, "http_status", 0) == 404):

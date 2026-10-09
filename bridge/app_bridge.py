@@ -31,6 +31,9 @@ def _post_order_key(date: str, post_id: str):
     return (str(date or "")[:10], int(pid) if pid.isdigit() else -1)
 
 
+_PATH_SAFETY_CACHE: dict = {}      # path -> (time, getPathSafetyInfo answer)
+
+
 def watchlist_cutoff(done_posts, unfinished_posts):
     """Where the Watchlist's "downloaded up to" point may move, from what actually finished.
 
@@ -252,6 +255,7 @@ class AppBridge(QObject):
     _scheduledCreatorSyncSignal = Signal(str)  # scheduler thread -> GUI thread
     # Slow folder scans run in the background; QML gets the answer here: (request id, result)
     asyncResultReady = Signal(str, 'QVariant')
+    _callOnGui = Signal(object)      # a function to run on the window thread (from background jobs)
     # A switched-off site (Kemono / Coomer) was used: (message, same link on the replacement site or "", context)
     providerDisabled = Signal(str, str, str)
 
@@ -414,6 +418,7 @@ class AppBridge(QObject):
         # Watchlist
         self._watchlist_manager = WatchlistManager(self.session_manager.config_dir)
         self._watchlist_manager.load()
+        self._watchlist_manager.background_saves = True     # written off the window thread
         self._watchlist_model = WatchlistModel(self._watchlist_manager, self)
         # Watchlist downloads: new posts that needed no files (already saved or filtered out),
         # counted as done when the download finishes
@@ -475,6 +480,11 @@ class AppBridge(QObject):
         if not self.recovery_manager:
             from core.recovery_manager import RecoveryManager
             self.recovery_manager = RecoveryManager(self.session_manager.config_dir)
+        # The failed files saved for Retry Failed are read in the background; the button recounts
+        # (on the window thread) once they're in
+        self.recovery_manager.on_retries_loaded = lambda: self._queue_model._guiCall.emit(
+            self._queue_model.failedCountChanged.emit)
+        self.recovery_manager.retry_counts(wait=False)
         self._has_recovery_session = self.recovery_manager.has_unfinished_session()
         self._recovery_summary = self.recovery_manager.get_recovery_summary() if self._has_recovery_session else {}
 
@@ -499,6 +509,7 @@ class AppBridge(QObject):
         # Connect private signals to main-thread handlers with QueuedConnection
         self._progressSignal.connect(self._handle_progress,    Qt.QueuedConnection)
         self._taskSignal.connect(self._handle_task_status,     Qt.QueuedConnection)
+        self._callOnGui.connect(self._run_on_gui, Qt.QueuedConnection)
         self._finishedSignal.connect(self._handle_finished,    Qt.QueuedConnection)
         self._throttledSignal.connect(self._handle_throttled,  Qt.QueuedConnection)
         self._pauseSignal.connect(self._handle_pause_changed,  Qt.QueuedConnection)
@@ -1621,6 +1632,49 @@ class AppBridge(QObject):
             self.archiveUpdated.emit()
         return deleted
 
+    # ── Archive changes in the background ───────────────────────────────────
+    # On a big archive a delete updates every index and "clear" rewrites the whole file: seconds on
+    # the window thread. Each answers with asyncResultReady(request_id, result) like the sync version.
+    def _archive_change_async(self, request_id: str, fn, *args) -> None:
+        def _job():
+            result = fn(*args)
+            changed = (result is True) or (isinstance(result, int) and not isinstance(result, bool) and result > 0)
+            if changed:
+                self.archiveRecordCountChanged.emit()
+                self.archiveUpdated.emit()
+            return result
+        self._run_async(request_id, _job)
+
+    @Slot(str, int)
+    def deleteArchiveRecordAsync(self, request_id: str, recordId: int):
+        self._archive_change_async(request_id, self.archive_manager.delete_record, recordId)
+
+    @Slot(str, str, str)
+    def deleteArchivePostAsync(self, request_id: str, service: str, postId: str):
+        self._archive_change_async(request_id, self.archive_manager.delete_by_post, service, postId)
+
+    @Slot(str, str, str)
+    def deleteArchiveCreatorAsync(self, request_id: str, creatorId: str, service: str = ""):
+        self._archive_change_async(request_id, self.archive_manager.delete_by_creator, creatorId, service)
+
+    @Slot(str, str, str)
+    def removeMissingArchiveRecordsForCreatorAsync(self, request_id: str, service: str, creatorId: str):
+        self._archive_change_async(request_id, self.archive_manager.remove_missing_for_creator, service, creatorId)
+
+    @Slot(str)
+    def clearDownloadArchiveAsync(self, request_id: str):
+        def _clear():
+            ok = self.archive_manager.clear_archive()
+            self.archiveRecordCountChanged.emit()
+            self.archiveUpdated.emit()
+            return ok
+        self._run_async(request_id, _clear)
+
+    @Slot(str, str)
+    def importArchiveFileAsync(self, request_id: str, filepath: str):
+        clean_path = filepath.replace("file:///", "").replace("file://", "")
+        self._archive_change_async(request_id, self.archive_manager.import_archive, clean_path)
+
     @Property(bool, notify=archiveRebuildStatusChanged)
     def isArchiveRebuilding(self) -> bool:
         return self._is_archive_rebuilding
@@ -2055,8 +2109,21 @@ class AppBridge(QObject):
     # ── Link Vault Properties ────────────────────────────────────────────────
     @Property(str, notify=linkVaultChanged)
     def linkVaultTreeJson(self) -> str:
+        # Built once per vault change and filter: it was rebuilt (the whole vault) on every read
         from core.link_vault_manager import link_vault_manager
-        return json.dumps(link_vault_manager.get_tree_model(self._vault_search, self._vault_platform), ensure_ascii=False)
+        key = (getattr(link_vault_manager, "revision", 0), len(link_vault_manager.data.get("links", [])),
+               self._vault_search, self._vault_platform)
+        cached = self.__dict__.get("_vault_json_cache")
+        if cached and cached[0] == key:
+            return cached[1]
+        text = json.dumps(link_vault_manager.get_tree_model(self._vault_search, self._vault_platform), ensure_ascii=False)
+        self._vault_json_cache = (key, text)
+        return text
+
+    @Slot(str)
+    def linkVaultTreeJsonAsync(self, request_id: str):
+        """linkVaultTreeJson built in the background (answer: asyncResultReady)."""
+        self._run_async(request_id, lambda: self.linkVaultTreeJson)
 
     @Property(int, notify=linkVaultChanged)
     def linkVaultTotalLinks(self) -> int:
@@ -3783,6 +3850,10 @@ class AppBridge(QObject):
             except Exception:
                 pass
             try:
+                self._watchlist_manager.flush()
+            except Exception:
+                pass
+            try:
                 if tasks:
                     self.recovery_manager.save_checkpoint(tasks=tasks, batches=batches, settings=settings,
                                                           status="paused" if was_downloading else "interrupted")
@@ -4416,17 +4487,24 @@ class AppBridge(QObject):
             os.path.join(self._download_dir, f"Pawchive log {stamp}.log"),
             "Log Files (*.log *.txt);;All Files (*)"
         )
-        if save_path:
+        if not save_path:
+            return
+        session_file = logger.get_current_log_file()
+        # The panel's text is read here (window thread); the copy / write runs in the background
+        # (a long session's log is many MB)
+        text = None if (session_file and os.path.isfile(session_file)) else self._log_model.get_all_text()
+
+        def _write():
             try:
-                session_file = logger.get_current_log_file()
-                if session_file and os.path.isfile(session_file):
+                if text is None:
                     shutil.copyfile(session_file, save_path)
                 else:
                     with open(save_path, "w", encoding="utf-8") as f:
-                        f.write(self._log_model.get_all_text())
+                        f.write(text)
                 logger.success(f"Log exported to: {save_path}", category="logger")
             except Exception:
                 logger.exception("Failed to export the log", category="logger")
+        threading.Thread(target=_write, name="LogExport", daemon=True).start()
 
     @Slot()
     def clearLogs(self):
@@ -4955,66 +5033,72 @@ class AppBridge(QObject):
                 self.downloader.resume()
             return
 
-        try:
-            all_tasks = self._queue_model.tasks
-            completed_count = sum(1 for t in all_tasks if t.status == "completed")
-            failed_count = sum(1 for t in all_tasks if t.status == "failed")
-            pending_count = sum(1 for t in all_tasks if t.status in ("pending", "cancelled"))
-            downloading_count = sum(1 for t in all_tasks if t.status in ("downloading", "retrying"))
+        # Written in the background: a big queue took seconds to serialize on the window thread
+        all_tasks = list(self._queue_model.tasks)
+        groups = list(self._queue_model.groups)
 
-            total_bytes_sum = sum(max(t.file_size, t.downloaded_bytes) for t in all_tasks)
-            downloaded_bytes_sum = sum(t.downloaded_bytes for t in all_tasks)
-            overall_pct = (downloaded_bytes_sum / total_bytes_sum * 100.0) if total_bytes_sum > 0 else (100.0 if completed_count == len(all_tasks) and all_tasks else 0.0)
-
-            unique_creators = sorted(list(set(t.creator_name for t in all_tasks if t.creator_name)))
+        def _write():
             try:
-                from services import update_service as _us
-                app_version = str(_us._read_version_file(_us.get_app_dir()).get("version") or "")
-            except Exception:
-                app_version = ""
+                completed_count = sum(1 for t in all_tasks if t.status == "completed")
+                failed_count = sum(1 for t in all_tasks if t.status == "failed")
+                pending_count = sum(1 for t in all_tasks if t.status in ("pending", "cancelled"))
+                downloading_count = sum(1 for t in all_tasks if t.status in ("downloading", "retrying"))
 
-            snapshot = {
-                "_summary": {
-                    "title": "Pawchive Downloader Queue State Backup",
-                    "app_version": app_version,
-                    "exported_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "creators": unique_creators,
-                    "total_batches": len(self._queue_model.groups),
-                    "total_files": len(all_tasks),
-                    "completed_files": completed_count,
-                    "pending_files": pending_count + downloading_count,
-                    "failed_files": failed_count,
-                    "overall_progress": f"{overall_pct:.1f}%",
-                    "current_saved_data": self._queue_model._format_size(downloaded_bytes_sum),
-                    "total_queue_data": self._queue_model._format_size(total_bytes_sum),
-                    "destination_directory": self._download_dir
-                },
-                "settings": {
-                    "download_dir": self._download_dir,
-                    "threads": self._threads_count,
-                    # (no login cookie: exported files get shared, and the cookie is your login)
-                    "user_agent": self._user_agent,
-                    "manga_mode": self._manga_mode,
-                    "subfolder_per_post": self._subfolder_per_post,
-                    "date_prefix": self._date_prefix,
-                    "file_index_prefix": self._file_index_prefix,
-                    "separate_by_known": self._separate_folders_by_known
-                },
-                "batches": self._queue_model.groups,
-                "tasks": [t.to_dict() for t in all_tasks]
-            }
+                total_bytes_sum = sum(max(t.file_size, t.downloaded_bytes) for t in all_tasks)
+                downloaded_bytes_sum = sum(t.downloaded_bytes for t in all_tasks)
+                overall_pct = (downloaded_bytes_sum / total_bytes_sum * 100.0) if total_bytes_sum > 0 else (100.0 if completed_count == len(all_tasks) and all_tasks else 0.0)
 
-            with open(save_path, "w", encoding="utf-8") as f:
-                json.dump(snapshot, f, indent=2, ensure_ascii=False)
+                unique_creators = sorted(list(set(t.creator_name for t in all_tasks if t.creator_name)))
+                try:
+                    from services import update_service as _us
+                    app_version = str(_us._read_version_file(_us.get_app_dir()).get("version") or "")
+                except Exception:
+                    app_version = ""
 
-            logger.success(f"Queue snapshot exported successfully to: {save_path}", category="session")
-            self.exportCompleted.emit(save_path, was_downloading)
+                snapshot = {
+                    "_summary": {
+                        "title": "Pawchive Downloader Queue State Backup",
+                        "app_version": app_version,
+                        "exported_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "creators": unique_creators,
+                        "total_batches": len(groups),
+                        "total_files": len(all_tasks),
+                        "completed_files": completed_count,
+                        "pending_files": pending_count + downloading_count,
+                        "failed_files": failed_count,
+                        "overall_progress": f"{overall_pct:.1f}%",
+                        "current_saved_data": self._queue_model._format_size(downloaded_bytes_sum),
+                        "total_queue_data": self._queue_model._format_size(total_bytes_sum),
+                        "destination_directory": self._download_dir
+                    },
+                    "settings": {
+                        "download_dir": self._download_dir,
+                        "threads": self._threads_count,
+                        # (no login cookie: exported files get shared, and the cookie is your login)
+                        "user_agent": self._user_agent,
+                        "manga_mode": self._manga_mode,
+                        "subfolder_per_post": self._subfolder_per_post,
+                        "date_prefix": self._date_prefix,
+                        "file_index_prefix": self._file_index_prefix,
+                        "separate_by_known": self._separate_folders_by_known
+                    },
+                    "batches": groups,
+                    "tasks": [t.to_dict() for t in all_tasks]
+                }
 
-        except Exception as e:
-            logger.error(f"Failed to export queue state: {e}", category="session")
-            if was_downloading:
-                self.downloader.resume()
-            self.exportFailed.emit(str(e))
+                with open(save_path, "w", encoding="utf-8") as f:
+                    json.dump(snapshot, f, indent=2, ensure_ascii=False)
+
+                logger.success(f"Queue snapshot exported successfully to: {save_path}", category="session")
+                self.exportCompleted.emit(save_path, was_downloading)
+
+            except Exception as e:
+                logger.error(f"Failed to export queue state: {e}", category="session")
+                if was_downloading:
+                    self.downloader.resume()
+                self.exportFailed.emit(str(e))
+
+        threading.Thread(target=_write, name="QueueExport", daemon=True).start()
 
     @Slot()
     def resumeAfterExport(self):
@@ -5049,47 +5133,56 @@ class AppBridge(QObject):
         if not file_path:
             return
 
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+        # Reading, checking every file on disk and building the tasks run in the background (a big
+        # queue file froze the window); the queue itself changes on the window thread
+        def _read():
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
 
-            raw_tasks = data.get("tasks", []) if isinstance(data, dict) else []
-            if not isinstance(raw_tasks, list) or not raw_tasks:
-                raise ValueError("The selected JSON file does not contain a valid 'tasks' list.")
+                raw_tasks = data.get("tasks", []) if isinstance(data, dict) else []
+                if not isinstance(raw_tasks, list) or not raw_tasks:
+                    raise ValueError("The selected JSON file does not contain a valid 'tasks' list.")
 
-            # Where the files were meant to go on the computer that exported the queue
-            old_root = ""
-            if isinstance(data.get("settings"), dict):
-                old_root = str(data["settings"].get("download_dir") or "")
-            if not old_root and isinstance(data.get("_summary"), dict):
-                old_root = str(data["_summary"].get("destination_directory") or "")
+                # Where the files were meant to go on the computer that exported the queue
+                old_root = ""
+                if isinstance(data.get("settings"), dict):
+                    old_root = str(data["settings"].get("download_dir") or "")
+                if not old_root and isinstance(data.get("_summary"), dict):
+                    old_root = str(data["_summary"].get("destination_directory") or "")
 
-            loaded_tasks: List[DownloadTask] = []
-            moved_inside = 0
-            skipped_links = 0
-            for t_dict in raw_tasks:
-                if not isinstance(t_dict, dict):
-                    continue
-                task = DownloadTask.from_dict(t_dict)
-                if not re.match(r"^(https?|tg)://", task.url or "", re.IGNORECASE):
-                    skipped_links += 1
-                    continue
-                safe_path, was_moved = self._safe_import_path(task.target_path, old_root)
-                if not safe_path:
-                    skipped_links += 1
-                    continue
-                task.target_path = safe_path
-                moved_inside += int(was_moved)
-                self._verify_task_on_disk(task)
-                loaded_tasks.append(task)
-            if moved_inside:
-                logger.warning(
-                    f"{moved_inside} file(s) in the imported queue pointed outside your download folders; "
-                    f"they'll be saved inside {self._download_dir} instead.", category="session")
-            if skipped_links:
-                logger.warning(f"{skipped_links} entr(y/ies) in the imported queue had no usable link and were left out.",
-                               category="session")
+                loaded_tasks: List[DownloadTask] = []
+                moved_inside = 0
+                skipped_links = 0
+                for t_dict in raw_tasks:
+                    if not isinstance(t_dict, dict):
+                        continue
+                    task = DownloadTask.from_dict(t_dict)
+                    if not re.match(r"^(https?|tg)://", task.url or "", re.IGNORECASE):
+                        skipped_links += 1
+                        continue
+                    safe_path, was_moved = self._safe_import_path(task.target_path, old_root)
+                    if not safe_path:
+                        skipped_links += 1
+                        continue
+                    task.target_path = safe_path
+                    moved_inside += int(was_moved)
+                    self._verify_task_on_disk(task)
+                    loaded_tasks.append(task)
+                if moved_inside:
+                    logger.warning(
+                        f"{moved_inside} file(s) in the imported queue pointed outside your download folders; "
+                        f"they'll be saved inside {self._download_dir} instead.", category="session")
+                if skipped_links:
+                    logger.warning(f"{skipped_links} entr(y/ies) in the imported queue had no usable link and were left out.",
+                                   category="session")
+            except Exception as e:
+                logger.error(f"Failed to import queue state: {e}", category="session")
+                self.importFailed.emit(str(e))
+                return
+            self._callOnGui.emit(lambda: _apply(loaded_tasks))
 
+        def _apply(loaded_tasks):
             if merge_mode == "replace":
                 self._queue_model.setTasks(loaded_tasks)
                 self._active_queue_model.setTasks(loaded_tasks)
@@ -5126,9 +5219,7 @@ class AppBridge(QObject):
             self.statusTextChanged.emit()
             self.importCompleted.emit(len(loaded_tasks), len(creators))
 
-        except Exception as e:
-            logger.error(f"Failed to import queue state: {e}", category="session")
-            self.importFailed.emit(str(e))
+        threading.Thread(target=_read, name="QueueImport", daemon=True).start()
 
     def _allowed_download_roots(self) -> List[str]:
         roots = [self._download_dir]
@@ -8073,7 +8164,23 @@ class AppBridge(QObject):
         Analyze path to verify safety for bulk operations like Clean, Delete, Auto-Sort, and Batch Rename.
         Foolproof protection blocking OS drive root, Users folder, Program Files, Python installations,
         and Windows/application directories on the system drive.
+
+        Answers are kept for 30 s: QML bindings ask on every folder change and repaint, and the check
+        touches the disk (slow on network drives).
         """
+        cache = _PATH_SAFETY_CACHE
+        key = path or ""
+        hit = cache.get(key)
+        now = time.monotonic()
+        if hit and now - hit[0] < 30.0:
+            return dict(hit[1])
+        info = AppBridge._path_safety_info(self, path)
+        if len(cache) > 500:
+            cache.clear()
+        cache[key] = (now, info)
+        return dict(info)
+
+    def _path_safety_info(self, path: str) -> dict:
         if not path or not path.strip():
             return {
                 "is_blocked": True,
@@ -8439,6 +8546,13 @@ class AppBridge(QObject):
             self._watchlist_model.refresh()
             self.watchlistChanged.emit()
         return changed
+
+    @Slot(object)
+    def _run_on_gui(self, fn) -> None:
+        try:
+            fn()
+        except Exception:
+            logger.exception("A background job's last step failed", category="system")
 
     def _run_async(self, request_id: str, fn, *args) -> None:
         """Runs fn(*args) in a background thread and sends the result to QML with asyncResultReady.

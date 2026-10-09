@@ -1145,5 +1145,6 @@
   "toast_archive_repaired": "La base de données de l'archive était endommagée et a été réparée (%1 enregistrements conservés). Tu peux réessayer.",
   "toast_archive_repair_failed": "La base de données de l'archive est endommagée et n'a pas pu être réparée : %1",
   "archive_show_more_posts": "Afficher %1 publications de plus (%2 restantes)",
-  "archive_show_more_files": "Afficher %1 fichiers de plus (%2 restants)"
+  "archive_show_more_files": "Afficher %1 fichiers de plus (%2 restants)",
+  "toast_importing": "Importation dans l'archive…"
 }
