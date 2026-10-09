@@ -5,10 +5,64 @@ Exposes an observable QAbstractListModel for active, pending, completed, and fai
 
 import threading
 import time
+from bisect import bisect_left, insort
 from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt, Signal, Slot, Property, QObject, QTimer, QThread
 from typing import List, Dict, Any, Optional
 from core.downloader import DownloadTask
 from core.logger import logger
+
+
+class _RowIndex:
+    """The row of each visible task, without renumbering the rows below a removed one (that cost
+    0.1 s per 300,000 rows for every batch of finished files).
+
+    Every task gets a slot number when it's added to the end of the list; slots never change. The
+    slots of removed tasks are kept in a sorted list, so a task's row is its slot minus the removed
+    slots before it (one binary search). The slots are numbered again from 0 once many are removed."""
+
+    COMPACT_AT = 50_000
+
+    def __init__(self, tasks=()):
+        self.reset(tasks)
+
+    def reset(self, tasks) -> None:
+        self._slot = {id(t): i for i, t in enumerate(tasks)}
+        self._next = len(self._slot)
+        self._dead: List[int] = []
+
+    def append(self, task) -> None:
+        self._slot[id(task)] = self._next
+        self._next += 1
+
+    def get(self, task_id, default=None):
+        s = self._slot.get(task_id)
+        return default if s is None else s - bisect_left(self._dead, s)
+
+    def __getitem__(self, task_id) -> int:
+        s = self._slot[task_id]
+        return s - bisect_left(self._dead, s)
+
+    def __contains__(self, task_id) -> bool:
+        return task_id in self._slot
+
+    def __len__(self) -> int:
+        return len(self._slot)
+
+    def remove(self, task_id) -> None:
+        s = self._slot.pop(task_id, None)
+        if s is not None:
+            insort(self._dead, s)
+
+    def remove_many(self, task_ids) -> None:
+        gone = [s for s in (self._slot.pop(t, None) for t in task_ids) if s is not None]
+        if len(gone) > 8:
+            self._dead = sorted(self._dead + gone)
+        else:
+            for s in gone:
+                insort(self._dead, s)
+
+    def needs_compacting(self) -> bool:
+        return len(self._dead) > self.COMPACT_AT
 
 
 class QueueGroupsModel(QAbstractListModel):
@@ -506,7 +560,7 @@ class QueueModel(QAbstractListModel):
     cleared = Signal()
     _guiCall = Signal(object)
     IMMEDIATE_REMOVAL_ROWS = 2000
-    RESET_AFTER_RUNS = 500         # more separate runs of rows leaving the filter: the list is rebuilt   # above this, rows leaving the filter are removed in batches
+    RESET_AFTER_RUNS = 150         # more separate runs of rows leaving the filter: the list is rebuilt   # above this, rows leaving the filter are removed in batches
 
     def __init__(self, parent=None, enable_groups: bool = True):
         super().__init__(parent)
@@ -518,7 +572,7 @@ class QueueModel(QAbstractListModel):
         self._selected_batch_id: str = ""
         self._view_mode: str = "grouped" # "grouped" or "flat"
         self._visible_tasks: List[DownloadTask] = []
-        self._visible_task_row: Dict[int, int] = {}
+        self._visible_task_row = _RowIndex()
         self._groups_model = QueueGroupsModel(self) if enable_groups else None
         self._last_counts: Optional[tuple] = None
         self._pending_count: int = 0
@@ -616,20 +670,20 @@ class QueueModel(QAbstractListModel):
         return True
 
     def _flush_removals(self):
-        """Removes the rows that left the filter: each run of neighbouring rows in one step, then
-        the row numbers are rebuilt once."""
+        """Removes the rows that left the filter: each run of neighbouring rows in one step (the
+        rows below don't need renumbering, see _RowIndex)."""
         gone = self._pending_removals
         self._pending_removals = set()
         rows = sorted((self._visible_task_row[tid] for tid in gone if tid in self._visible_task_row), reverse=True)
         if not rows:
             return
         runs = 1 + sum(1 for a, b in zip(rows, rows[1:]) if a - b != 1)
-        if runs > self.RESET_AFTER_RUNS:
+        if runs > self.RESET_AFTER_RUNS or self._visible_task_row.needs_compacting():
             # Thousands of scattered rows (files skipped quickly): each removal moved the whole rest
             # of the list (20,000 of them took 9 s on a 300,000-row list). The list is rebuilt once.
             self.beginResetModel()
             self._visible_tasks = [t for t in self._visible_tasks if id(t) not in gone]
-            self._visible_task_row = {id(t): r for r, t in enumerate(self._visible_tasks)}
+            self._visible_task_row.reset(self._visible_tasks)
             self.endResetModel()
             self.countChanged.emit()
             return
@@ -644,11 +698,7 @@ class QueueModel(QAbstractListModel):
             del self._visible_tasks[lo:hi + 1]
             self.endRemoveRows()
             i += 1
-        for tid in gone:
-            self._visible_task_row.pop(tid, None)
-        start = rows[-1]
-        v = self._visible_tasks
-        self._visible_task_row.update({id(v[r]): r for r in range(start, len(v))})
+        self._visible_task_row.remove_many(gone)
         self.countChanged.emit()
 
     _STATUS_FILTERS = {"downloading": ("downloading", "retrying"), "completed": ("completed",),
@@ -663,7 +713,7 @@ class QueueModel(QAbstractListModel):
             self._visible_tasks = list(self._tasks)          # everything: no check per task (big queues)
         else:
             self._visible_tasks = [t for t in self._tasks if t.status in wanted]
-        self._visible_task_row = {id(t): i for i, t in enumerate(self._visible_tasks)}
+        self._visible_task_row.reset(self._visible_tasks)
 
     # ── Properties ────────────────────────────────────────────────────────────
     @Property(int, notify=minFileSizeChanged)
@@ -947,8 +997,8 @@ class QueueModel(QAbstractListModel):
         if shown:
             first = len(self._visible_tasks)
             self.beginInsertRows(QModelIndex(), first, first + len(shown) - 1)
-            for k, t in enumerate(shown):
-                self._visible_task_row[id(t)] = first + k
+            for t in shown:
+                self._visible_task_row.append(t)
             self._visible_tasks.extend(shown)
             self.endInsertRows()
         self.countChanged.emit()
@@ -1102,20 +1152,18 @@ class QueueModel(QAbstractListModel):
                         self.ErrorMsgRole
                     ])
                 elif len(self._visible_tasks) <= self.IMMEDIATE_REMOVAL_ROWS:
-                    # Short lists: the row goes at once (renumbering a few rows costs nothing)
+                    # Short lists: the row goes at once
                     self.beginRemoveRows(QModelIndex(), row, row)
                     self._visible_tasks.pop(row)
-                    del self._visible_task_row[task_id]
-                    for r in range(row, len(self._visible_tasks)):
-                        self._visible_task_row[id(self._visible_tasks[r])] = r
+                    self._visible_task_row.remove(task_id)
+                    if self._visible_task_row.needs_compacting():
+                        self._visible_task_row.reset(self._visible_tasks)
                     self.endRemoveRows()
                     self.countChanged.emit()
                 else:
                     self._pending_removals.add(task_id)
                     if not self._removal_timer.isActive():
-                        # Each batch renumbers the rows below it (~0.1 s per 300,000 rows): long lists
-                        # get their batches less often, so the window stays mostly free
-                        self._removal_timer.start(max(250, min(2000, len(self._visible_tasks) // 150)))
+                        self._removal_timer.start()
             else:
                 if matches and task_id in self._pending_removals:
                     self._pending_removals.discard(task_id)      # back in the filter before it left
@@ -1123,7 +1171,7 @@ class QueueModel(QAbstractListModel):
                     row = len(self._visible_tasks)
                     self.beginInsertRows(QModelIndex(), row, row)
                     self._visible_tasks.append(task)
-                    self._visible_task_row[task_id] = row
+                    self._visible_task_row.append(task)
                     self.endInsertRows()
                     self.countChanged.emit()
 
@@ -1173,7 +1221,7 @@ class QueueModel(QAbstractListModel):
         self._counts_timer.stop()
         self._tasks.clear()
         self._visible_tasks.clear()
-        self._visible_task_row.clear()
+        self._visible_task_row.reset(())
         self._task_last_status.clear()
         self._task_last_emit.clear()
         self._last_counts = (0, 0, 0, 0, 0)

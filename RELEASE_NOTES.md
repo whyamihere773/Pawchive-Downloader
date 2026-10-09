@@ -4,7 +4,7 @@
 * **Thousands of creators, no slowdown**: Only the creators on screen are drawn, so very long creator lists scroll smoothly and keep your place when the list refreshes.
 * **Downloads keep going while you browse**: Looking through or searching the archive no longer holds up running downloads.
 * **Export works and tells you if it can't**: Exporting the archive runs in the background, and if something goes wrong you now get a clear message instead of "Exported 0 records".
-* **Ready for millions of files**: The creator list, statistics and site filter now load in a fraction of a second even with millions of downloaded files, and opening a creator is instant. The first time you start this version, your archive is prepared for this in the background (a minute or so for very large archives); until then the tab works as before.
+* **Ready for millions of files**: The creator list, statistics, site filter and file-type filter now load in a fraction of a second even with millions of downloaded files, and opening a creator is instant. The first time you start this version, your archive is prepared for this in the background (a minute or so for very large archives); until then the tab works as before.
 * **Much faster search**: Searching file names, post titles and creators takes milliseconds instead of seconds and still finds any part of a name.
 * **Weekly health check**: Once a week the archive is checked for damage in the background and a safety copy is kept next to it, if your drive has room for one. Damage found is repaired automatically.
 

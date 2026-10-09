@@ -312,20 +312,25 @@ class ArchiveManager:
         return where, list(params) + extra
 
     def _summaries_from_index(self, conn: sqlite3.Connection, service: str,
-                              sort_by: str) -> List[Dict[str, Any]]:
+                              sort_by: str, cat: Optional[str] = None) -> List[Dict[str, Any]]:
         """get_creator_summaries from the summary table: one row per creator instead of grouping every
-        record."""
+        record (cat: only that file type's files, from the per-type table)."""
         clean_svc = (service or "").strip().lower()
-        sql = ("SELECT service, creator_id, creator_name, files, missing, verified, posts, newest, oldest, max_id "
-               "FROM archive_creators")
+        conds: List[str] = []
         params: List[Any] = []
+        if cat:
+            conds.append("cat = ?")
+            params.append(cat)
         if clean_svc and clean_svc != "all":
-            sql += " WHERE service = ?"
+            conds.append("service = ?")
             params.append(clean_svc)
+        sql = ("SELECT service, creator_id, creator_name, files, missing, verified, posts, newest, oldest, newest_id "
+               f"FROM {'archive_creator_cats' if cat else 'archive_creators'}"
+               + (f" WHERE {' AND '.join(conds)}" if conds else ""))
         rows = conn.execute(sql + ";", params).fetchall()
         creators: Dict[Tuple[str, str], Dict[str, Any]] = {}
         members: Dict[Tuple[str, str], set] = {}
-        for (r_svc, r_cid, r_cname, n, n_missing, n_verified, n_posts, newest, oldest, max_id) in rows:
+        for (r_svc, r_cid, r_cname, n, n_missing, n_verified, n_posts, newest, oldest, newest_id) in rows:
             if not n:
                 continue
             key = self._creator_key(r_svc, r_cid, r_cname)
@@ -336,7 +341,7 @@ class ArchiveManager:
                     "unverified_count": 0, "post_count": 0, "posts": [], "_rank": None,
                 }
                 members[key] = set()
-            rank = (str(newest or ""), int(max_id or 0))
+            rank = (str(newest or ""), int(newest_id or 0))
             if c["_rank"] is None or rank > c["_rank"]:
                 c["_rank"] = rank
                 clean_cname = str(r_cname or "").strip()
@@ -362,9 +367,13 @@ class ArchiveManager:
             if len(mem) > 1:
                 # One creator under several ids / spellings: a post shared by them counts once
                 cond = " OR ".join(["(service = ? AND creator_id = ? AND creator_name = ?)"] * len(mem))
-                c["post_count"] = int(conn.execute(
-                    f"SELECT COUNT(DISTINCT post_id) FROM archive_posts WHERE {cond};",
-                    [x for t in mem for x in t]).fetchone()[0] or 0)
+                if cat:
+                    n_posts = conn.execute(f"SELECT COUNT(DISTINCT post_id) FROM archive_post_cats "
+                                           f"WHERE cat = ? AND ({cond});", [cat] + [x for t in mem for x in t])
+                else:
+                    n_posts = conn.execute(f"SELECT COUNT(DISTINCT post_id) FROM archive_posts WHERE {cond};",
+                                           [x for t in mem for x in t])
+                c["post_count"] = int(n_posts.fetchone()[0] or 0)
             result.append(c)
         self._creator_members = {k: sorted(v, key=lambda t: tuple(str(x or "") for x in t))
                                  for k, v in members.items()}
@@ -557,12 +566,14 @@ class ArchiveManager:
         to the window on each refresh froze it (#28)."""
         if not self._ensure_db():
             return []
-        if not (query or "").strip() and (file_type or "all").strip().lower() in ("", "all"):
+        clean_ft = (file_type or "all").strip().lower()
+        if not (query or "").strip() and (clean_ft in ("", "all") or clean_ft in FILE_TYPE_CATEGORIES):
             try:
                 with self._rlock:
                     conn = self._reader()
                     if conn is not None and self._summaries_ready(conn):
-                        return self._summaries_from_index(conn, service, sort_by)
+                        return self._summaries_from_index(conn, service, sort_by,
+                                                          cat=clean_ft if clean_ft in FILE_TYPE_CATEGORIES else None)
             except Exception as e:
                 logger.debug(f"Archive summaries not used: {e}", category="archive")
         with self._rlock:
@@ -1462,8 +1473,8 @@ class ArchiveManager:
                 cursor.execute(f"DELETE FROM downloaded_files WHERE {cond};", cparams)
                 affected = cursor.rowcount
                 if bulk:
-                    cursor.execute(f"DELETE FROM archive_posts WHERE {cond};", cparams)
-                    cursor.execute(f"DELETE FROM archive_creators WHERE {cond};", cparams)
+                    for table in ("archive_post_cats", "archive_creator_cats", "archive_posts", "archive_creators"):
+                        cursor.execute(f"DELETE FROM {table} WHERE {cond};", cparams)
                     for ext, n in exts:
                         cursor.execute("UPDATE archive_exts SET files = files - ? WHERE ext = ?;", (n, ext))
                     cursor.execute("DELETE FROM archive_exts WHERE files <= 0;")
