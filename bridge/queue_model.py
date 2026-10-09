@@ -1251,7 +1251,7 @@ class QueueModel(QAbstractListModel):
         if selected_set:
             self._tasks = [
                 t for t in self._tasks
-                if not (t.status in ("failed", "cancelled") and (t.file_id in selected_set or t.url in selected_set or t.filename in selected_set))
+                if not (t.status in ("failed", "cancelled") and ((t.file_id or t.url or t.filename) in selected_set))
             ]
         else:
             self._tasks = [t for t in self._tasks if t.status not in ("failed", "cancelled")]
@@ -1414,7 +1414,7 @@ class QueueModel(QAbstractListModel):
         """Flags only the user-selected failed/cancelled tasks for retry."""
         selected_set = set(selected_file_ids)
         for t in self._tasks:
-            if (t.status in ("failed", "cancelled") or t.status == "pending") and (t.file_id in selected_set or t.url in selected_set or t.filename in selected_set):
+            if (t.status in ("failed", "cancelled") or t.status == "pending") and ((t.file_id or t.url or t.filename) in selected_set):
                 t.retry_count = getattr(t, "retry_count", 0) + 1
                 t.retry_capped = False
                 t.status = "pending"

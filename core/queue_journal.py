@@ -136,6 +136,10 @@ class QueueJournal:
                         if self._fp.get(k) != fp:
                             self._fp[k] = fp
                             upserts.append(self._row(k, pos, t, artist_of, platform_of))
+                        if pos % 1000 == 999:
+                            # A full save of a big queue is seconds of Python work: the window gets
+                            # its turn between slices instead of waiting for all of it
+                            time.sleep(0.001)
                     for k in [k for k in self._fp if k not in now_keys]:
                         del self._fp[k]
                         deletes.append((k,))

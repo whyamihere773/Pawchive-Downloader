@@ -246,6 +246,7 @@ class AppBridge(QObject):
 
     _progressSignal    = Signal(dict)    # carries progress info dict
     _taskSignal        = Signal(object)  # carries a DownloadTask object
+    _tasksSignal       = Signal(list)    # many DownloadTasks at once (e.g. a whole retry)
     _finishedSignal    = Signal(bool, str)
     _throttledSignal   = Signal(int)     # carries new worker concurrency count
     _pauseSignal       = Signal(bool)    # carries pause state (True=paused, False=resumed)
@@ -509,6 +510,7 @@ class AppBridge(QObject):
 
         self.downloader.on_progress_update        = lambda info: _safe_emit(self._progressSignal, info)
         self.downloader.on_task_status_changed    = lambda task: _safe_emit(self._taskSignal, task)
+        self.downloader.on_tasks_changed          = lambda tasks: _safe_emit(self._tasksSignal, tasks)
         self.downloader.on_download_finished      = lambda ok, msg: _safe_emit(self._finishedSignal, ok, msg)
         self.downloader.on_concurrency_throttled  = lambda count: _safe_emit(self._throttledSignal, count)
         self.downloader.on_pause_changed          = lambda paused: _safe_emit(self._pauseSignal, paused)
@@ -516,6 +518,7 @@ class AppBridge(QObject):
         # Connect private signals to main-thread handlers with QueuedConnection
         self._progressSignal.connect(self._handle_progress,    Qt.QueuedConnection)
         self._taskSignal.connect(self._handle_task_status,     Qt.QueuedConnection)
+        self._tasksSignal.connect(self._handle_tasks_status,   Qt.QueuedConnection)
         self._callOnGui.connect(self._run_on_gui, Qt.QueuedConnection)
         self._finishedSignal.connect(self._handle_finished,    Qt.QueuedConnection)
         self._throttledSignal.connect(self._handle_throttled,  Qt.QueuedConnection)
@@ -3964,95 +3967,82 @@ class AppBridge(QObject):
 
     def _retry_failed(self, include_cancelled: bool = True):
         """Shared retry logic. Automatic retries pass include_cancelled=False."""
-        options = self._get_filter_options()
-        self._is_downloading = True
-        self.isDownloadingChanged.emit()
-
-        if (not self.downloader.tasks or len(self.downloader.tasks) < len(self._queue_model.tasks)) and self._queue_model.tasks:
-            self.downloader.tasks = self._queue_model.getTasks()
-
-        # If no failed tasks are in memory, check if they were spilled to disk
-        if not any(t.status in ("failed", "cancelled") for t in self.downloader.tasks):
-            spilled = self.recovery_manager.load_retries()
-            if spilled:
-                from core.downloader import DownloadTask
-                restored = [DownloadTask.from_dict(d) if isinstance(d, dict) else d for d in spilled]
-                self.downloader.tasks.extend(restored)
-                if self._queue_model:
-                    self._queue_model.addTasks(restored)
-
-        count = self.downloader.retry_failed_tasks(options, self._cookie_string, include_cancelled=include_cancelled)
-        if count == 0 and not self.downloader.is_running:
-            self._is_downloading = False
-            self.isDownloadingChanged.emit()
-            self._status_text = "Progress: Idle (no failed tasks)"
-            self.statusTextChanged.emit()
-        elif count > 0:
-            logger.info(f"Retrying {count} failed tasks with {self._threads_count} worker threads...", category="downloader")
+        self._start_retry(None, include_cancelled)
 
     @Slot("QVariantList")
     def retrySelectedTasks(self, selected_ids: list):
         """Retries only selected failed tasks."""
-        options = self._get_filter_options()
-        self._is_downloading = True
-        self.isDownloadingChanged.emit()
-
-        if (not self.downloader.tasks or len(self.downloader.tasks) < len(self._queue_model.tasks)) and self._queue_model.tasks:
-            self.downloader.tasks = self._queue_model.getTasks()
-
-        existing_ids = {t.file_id for t in self.downloader.tasks} | {t.url for t in self.downloader.tasks} | {t.filename for t in self.downloader.tasks}
-        if any(sid not in existing_ids for sid in selected_ids):
-            spilled = self.recovery_manager.load_retries()
-            if spilled:
-                from core.downloader import DownloadTask
-                restored = [DownloadTask.from_dict(d) if isinstance(d, dict) else d for d in spilled]
-                new_tasks = [t for t in restored if (t.file_id not in existing_ids and t.url not in existing_ids and t.filename not in existing_ids)]
-                if new_tasks:
-                    self.downloader.tasks.extend(new_tasks)
-                    if self._queue_model:
-                        self._queue_model.addTasks(new_tasks)
-
-        count = self.downloader.retry_selected_tasks(selected_ids, options, self._cookie_string)
-        if count == 0 and not self.downloader.is_running:
-            self._is_downloading = False
-            self.isDownloadingChanged.emit()
-            self._status_text = "Progress: Idle (no selected tasks to retry)"
-            self.statusTextChanged.emit()
-        elif count > 0:
-            logger.info(f"Retrying {count} selected tasks...", category="downloader")
+        self._start_retry([str(i) for i in (selected_ids or []) if i], True)
 
     @Slot(str)
     def retrySingleTask(self, file_id: str):
         """Retries only a single specific failed task."""
-        if not file_id:
+        if file_id:
+            self._start_retry([file_id], True)
+
+    def _start_retry(self, selected: Optional[list], include_cancelled: bool):
+        """Gets failed files ready for a retry (selected: their names in the Retry Failed list; None:
+        all). Reading the failed files saved on disk, rebuilding them and matching them against the
+        queue run in the background: on the window thread they froze it for seconds with thousands of
+        files. The retry itself starts back on the window thread."""
+        if selected is not None and not selected:
             return
-        options = self._get_filter_options()
+        if getattr(self, "_retry_preparing", False):
+            return                            # a retry is already being prepared
+        self._retry_preparing = True
         self._is_downloading = True
         self.isDownloadingChanged.emit()
+        self._status_text = "Preparing the retry…"
+        self.statusTextChanged.emit()
+        queue_tasks = self._queue_model.getTasks() if self._queue_model.tasks else []
+        current = self.downloader.tasks
 
-        if (not self.downloader.tasks or len(self.downloader.tasks) < len(self._queue_model.tasks)) and self._queue_model.tasks:
-            self.downloader.tasks = self._queue_model.getTasks()
+        def _prepare():
+            restored = []
+            base = current
+            try:
+                if (not base or len(base) < len(queue_tasks)) and queue_tasks:
+                    base = queue_tasks
+                key = KemonoDownloader.task_key
+                if selected is None:
+                    need_saved = not any(t.status in ("failed", "cancelled") for t in base)
+                else:
+                    have = {key(t) for t in base}
+                    wanted = set(selected)
+                    need_saved = bool(wanted - have)
+                if need_saved:
+                    spilled = self.recovery_manager.load_retries()
+                    if spilled:
+                        from core.downloader import DownloadTask
+                        restored = [DownloadTask.from_dict(d) if isinstance(d, dict) else d for d in spilled]
+                        if selected is not None:
+                            restored = [t for t in restored if key(t) not in have and key(t) in wanted]
+            except Exception as e:
+                logger.error(f"Couldn't prepare the retry: {e}", category="downloader")
+            self._callOnGui.emit(lambda: self._finish_retry(base, restored, selected, include_cancelled))
+        threading.Thread(target=_prepare, name="RetryPrepare", daemon=True).start()
 
-        existing_ids = {t.file_id for t in self.downloader.tasks} | {t.url for t in self.downloader.tasks} | {t.filename for t in self.downloader.tasks}
-        if file_id not in existing_ids:
-            spilled = self.recovery_manager.load_retries()
-            if spilled:
-                from core.downloader import DownloadTask
-                restored = [DownloadTask.from_dict(d) if isinstance(d, dict) else d for d in spilled]
-                matching = [t for t in restored if (t.file_id == file_id or t.url == file_id or t.filename == file_id)]
-                if matching:
-                    self.downloader.tasks.extend(matching)
-                    if self._queue_model:
-                        self._queue_model.addTasks(matching)
-
-        count = self.downloader.retry_selected_tasks([file_id], options, self._cookie_string)
+    def _finish_retry(self, base: list, restored: list, selected: Optional[list], include_cancelled: bool):
+        self._retry_preparing = False
+        if base is not self.downloader.tasks:
+            self.downloader.tasks = base
+        if restored:
+            self.downloader.tasks.extend(restored)
+            if self._queue_model:
+                self._queue_model.addTasks(restored)
+        options = self._get_filter_options()
+        if selected is None:
+            count = self.downloader.retry_failed_tasks(options, self._cookie_string, include_cancelled=include_cancelled)
+        else:
+            count = self.downloader.retry_selected_tasks(selected, options, self._cookie_string)
         if count == 0 and not self.downloader.is_running:
             self._is_downloading = False
             self.isDownloadingChanged.emit()
-            self._status_text = "Progress: Idle"
+            self._status_text = "Progress: Idle (no failed tasks)" if selected is None else "Progress: Idle (no selected tasks to retry)"
             self.statusTextChanged.emit()
         elif count > 0:
-            logger.info(f"Retrying single task: {file_id}", category="downloader")
+            logger.info(f"Retrying {count} {'failed' if selected is None else 'selected'} task(s) with "
+                        f"{self._threads_count} worker threads...", category="downloader")
 
     @Slot()
     @Slot("QVariantList")
@@ -4752,7 +4742,7 @@ class AppBridge(QObject):
             sel_set = set(str(x) for x in selected_file_ids if x)
             tasks_to_export = [
                 t for t in all_failed
-                if t.file_id in sel_set or t.url in sel_set or t.filename in sel_set
+                if (t.file_id or t.url or t.filename) in sel_set
             ]
             if not tasks_to_export:
                 tasks_to_export = all_failed
@@ -4983,6 +4973,28 @@ class AppBridge(QObject):
             if now - self._last_archive_emit_time >= 2.0:
                 self._last_archive_emit_time = now
                 self.archiveRecordCountChanged.emit()
+
+    TASK_UPDATES_PER_TURN = 300
+
+    @Slot(list)
+    def _handle_tasks_status(self, tasks: list):
+        """Many files changed at once (a retry of thousands): the lists are updated a few hundred files
+        per event-loop turn, so the window keeps answering meanwhile (all at once froze it for seconds)."""
+        queue = self.__dict__.setdefault("_task_update_queue", [])
+        queue.extend(tasks)
+        if not getattr(self, "_task_updates_scheduled", False):
+            self._task_updates_scheduled = True
+            QTimer.singleShot(0, self._apply_task_updates)
+
+    def _apply_task_updates(self):
+        queue = self._task_update_queue
+        batch, self._task_update_queue = queue[:self.TASK_UPDATES_PER_TURN], queue[self.TASK_UPDATES_PER_TURN:]
+        for task in batch:
+            self._handle_task_status(task)
+        if self._task_update_queue:
+            QTimer.singleShot(0, self._apply_task_updates)
+        else:
+            self._task_updates_scheduled = False
 
     def _invalidate_folder_stats(self, file_path: str):
         """Forget the Gallery's cached totals for every folder above a new file. They are checked

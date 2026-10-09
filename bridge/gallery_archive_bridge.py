@@ -11,6 +11,7 @@ password are reported back so the Gallery can ask for one.
 import os
 import shutil
 import threading
+import time
 
 from PySide6.QtCore import QObject, Property, Signal, Slot
 

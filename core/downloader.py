@@ -69,15 +69,42 @@ _PERMANENT_ERRORS = (
 )
 
 
+# Embedded-video sites that no longer exist: their links never work again
+DEAD_VIDEO_HOSTS = ("gfycat.com",)
+
+# For embedded videos (yt-dlp) only what the site states plainly counts as permanent. A bare
+# "404" / "410" doesn't: RedGifs answers "410 Gone" for videos some users can still play in a browser.
+_PERMANENT_EMBED_ERRORS = (
+    "private video", "video unavailable", "this video is unavailable", "video is private",
+    "account associated with this video has been terminated", "members-only", "join this channel",
+)
+
+
+def friendly_embed_error(msg: str, url: str = "") -> str:
+    """yt-dlp's error for an embedded video, said plainly for the known cases."""
+    m, u = (msg or "").lower(), (url or "").lower()
+    if any(h in u or h in m for h in DEAD_VIDEO_HOSTS):
+        return "Gfycat shut down in 2023: this video can't be downloaded any more"
+    if "redgifs" in (u + m) and ("410" in m or "gone" in m):
+        return ("RedGifs says this video was deleted (HTTP 410). If it still plays in your browser, it "
+                "may only be available while logged in there")
+    return msg
+
+
 def is_permanent_failure(task) -> bool:
     """A failed file that will fail the same way every time (missing on the server, a private or
-    removed video, or out of retries). The Watchlist counts these posts as done, so it stops
-    offering the same posts again after every download (#28)."""
+    removed video, a site that no longer exists, or out of retries). The Watchlist counts these
+    posts as done, so it stops offering the same posts again after every download (#28)."""
     if getattr(task, "retry_capped", False):
         return True
+    m = str(getattr(task, "error_msg", "") or "").lower()
+    url = str(getattr(task, "url", "") or "").lower()
+    if any(h in url for h in DEAD_VIDEO_HOSTS) or "gfycat shut down" in m:
+        return True
+    if getattr(task, "is_ytdlp", False):
+        return any(k in m for k in _PERMANENT_EMBED_ERRORS) or is_not_a_video_error(m)
     if getattr(task, "http_status", 0) in (404, 410):
         return True
-    m = str(getattr(task, "error_msg", "") or "").lower()
     return any(k in m for k in _PERMANENT_ERRORS) or is_not_a_video_error(m)
 
 
@@ -422,6 +449,7 @@ class KemonoDownloader:
         # Callbacks for UI updates
         self.on_progress_update: Optional[Callable[[Dict[str, Any]], None]] = None
         self.on_task_status_changed: Optional[Callable[[DownloadTask], None]] = None
+        self.on_tasks_changed: Optional[Callable[[List[DownloadTask]], None]] = None     # many at once
         self.on_download_finished: Optional[Callable[[bool, str], None]] = None
         self.on_concurrency_throttled: Optional[Callable[[int], None]] = None
         self.on_pause_changed: Optional[Callable[[bool], None]] = None
@@ -1741,7 +1769,6 @@ class KemonoDownloader:
         self._dispatch_cursor = 0
         session_id = self._session_id
 
-        self._keep_paths_apart(tasks, [])
         self.tasks = tasks
         self.current_options = options
         self._cancel_event.clear()
@@ -1752,9 +1779,8 @@ class KemonoDownloader:
             except Exception:
                 pass
         self._is_running = True
-        # In the background: the first save of a big queue takes seconds, and this runs on the window thread
-        self._save_recovery_checkpoint(options, async_write=True)
-
+        # (the save-path check and the first recovery save run at the start of the download thread:
+        # on a big queue they took the window thread most of a second)
         self._download_thread = threading.Thread(
             target=self._run_download_loop,
             args=(options, cookie_str, session_id),
@@ -1808,24 +1834,29 @@ class KemonoDownloader:
         Sharing one made the second count as "already downloaded", overwrite the first, or — when
         both downloaded at once — mix into the same temporary file. Files not downloaded yet get
         "name (2).ext", "name (3).ext"…; returns how many were renamed."""
+        if os.sep == "\\":
+            def norm(p: str) -> str:          # os.path.normcase, without its slow Windows call per path
+                return p.replace("/", "\\").lower()
+        else:
+            norm = os.path.normcase
         taken: Dict[str, DownloadTask] = {}
         for t in existing:
             if getattr(t, "target_path", ""):
-                taken[os.path.normcase(t.target_path)] = t
+                taken[norm(t.target_path)] = t
         renamed = 0
         for t in new_tasks:
             path = getattr(t, "target_path", "")
             if not path:
                 continue
-            key = os.path.normcase(path)
+            key = norm(path)
             other = taken.get(key)
             if other is not None and other is not t and other.url != t.url                     and t.status in ("pending", "failed", "cancelled"):
                 stem, ext = os.path.splitext(path)
                 n = 2
-                while os.path.normcase(f"{stem} ({n}){ext}") in taken:
+                while norm(f"{stem} ({n}){ext}") in taken:
                     n += 1
                 t.target_path = f"{stem} ({n}){ext}"
-                key = os.path.normcase(t.target_path)
+                key = norm(t.target_path)
                 renamed += 1
             taken.setdefault(key, t)
         if renamed:
@@ -1908,6 +1939,22 @@ class KemonoDownloader:
                 if self.on_concurrency_throttled:
                     self.on_concurrency_throttled(self.max_workers)
 
+    @staticmethod
+    def task_key(t) -> str:
+        """How the Retry Failed list names a file (its id, else its URL, else its name)."""
+        return t.file_id or t.url or t.filename
+
+    def _notify_many(self, tasks) -> None:
+        """Tells the window about many changed files at once (one message per file piled up into
+        seconds-long pauses when thousands were retried)."""
+        if not tasks:
+            return
+        if self.on_tasks_changed:
+            self.on_tasks_changed(list(tasks))
+        elif self.on_task_status_changed:
+            for t in tasks:
+                self.on_task_status_changed(t)
+
     def retry_failed_tasks(self, options: FilterOptions, cookie_str: str, max_auto_retries: int = 5,
                            include_cancelled: bool = True) -> int:
         """Resets all tasks with status 'failed' (and 'cancelled', unless include_cancelled is False)
@@ -1931,6 +1978,7 @@ class KemonoDownloader:
             return 0
 
         eligible_tasks = []
+        capped = []
         for t in all_failed:
             err = str(getattr(t, "error_msg", "")).lower()
             if skip_404 and ("404" in err or getattr(t, "http_status", 0) == 404):
@@ -1955,10 +2003,10 @@ class KemonoDownloader:
                 orig_err = getattr(t, "error_msg", "") or "Download failed"
                 if f"({max_auto_retries} retries)" not in orig_err:
                     t.error_msg = f"{orig_err} (Stopped after {max_auto_retries} retries)"
-                if self.on_task_status_changed:
-                    self.on_task_status_changed(t)
+                capped.append(t)
             else:
                 eligible_tasks.append(t)
+        self._notify_many(capped)
 
         if not eligible_tasks:
             logger.info(f"All {len(all_failed)} failed task(s) reached max retry limit ({max_auto_retries}). Skipped by auto-retry but preserved in modal.", category="downloader")
@@ -1974,8 +2022,7 @@ class KemonoDownloader:
             t.speed_bps = 0
             t.speed_str = "0 KB/s"
             t.eta_str = "--"
-            if self.on_task_status_changed:
-                self.on_task_status_changed(t)
+        self._notify_many(eligible_tasks)
 
         logger.info(f"Flagged {len(eligible_tasks)} failed tasks for retry (attempt {eligible_tasks[0].retry_count}/{max_auto_retries}).", category="downloader")
 
@@ -1998,8 +2045,9 @@ class KemonoDownloader:
         selected_set = set(selected_ids)
         target_tasks = []
         for t in self.tasks:
-            is_match = (t.file_id in selected_set or t.url in selected_set or t.filename in selected_set)
-            if not is_match:
+            # Matched by the same name the list gives it (a file name used to match every file with
+            # that name, e.g. all "001.jpg"s of other posts)
+            if self.task_key(t) not in selected_set:
                 continue
             is_eligible = (
                 t.status in ("failed", "cancelled")
@@ -2025,8 +2073,7 @@ class KemonoDownloader:
             t.speed_bps = 0
             t.speed_str = "0 KB/s"
             t.eta_str = "--"
-            if self.on_task_status_changed:
-                self.on_task_status_changed(t)
+        self._notify_many(target_tasks)
 
         logger.info(f"Flagged {len(target_tasks)} selected tasks for retry.", category="downloader")
 
@@ -2072,6 +2119,8 @@ class KemonoDownloader:
         return "\n".join(lines)
 
     def _run_download_loop(self, options: FilterOptions, cookie_str: str, session_id: int = 0):
+        self._keep_paths_apart(self.tasks, [])
+        self._save_recovery_checkpoint(options, async_write=True)
         self.current_options = options
         self.start_time = time.time()
         self.downloaded_bytes = 0
@@ -2742,6 +2791,7 @@ class KemonoDownloader:
                 logger.success(f"✔ [yt-dlp] {task.filename} successfully downloaded", category="ytdlp")
                 return True, "Completed"
             else:
+                msg = friendly_embed_error(msg, task.url)
                 logger.warning(f"✖ [yt-dlp] {task.filename}: {msg}", category="ytdlp")
                 return False, msg
 

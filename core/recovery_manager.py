@@ -129,7 +129,13 @@ class RecoveryManager:
 
     def _platform_of(self, t: Any) -> str:
         g = (lambda n: t.get(n, "")) if isinstance(t, dict) else (lambda n: getattr(t, n, ""))
-        return self._detect_platform(g("service") or "", url=g("url") or "")
+        service, url = g("service") or "", g("url") or ""
+        key = (service, url.split("://")[-1].split("/")[0])
+        cache = self.__dict__.setdefault("_platform_cache", {})
+        name = cache.get(key)
+        if name is None:
+            name = cache[key] = self._detect_platform(service, url=url)
+        return name
 
     def build_summary(self, tasks: List[Any], batches: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
         """
