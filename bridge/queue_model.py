@@ -505,7 +505,8 @@ class QueueModel(QAbstractListModel):
     batchRemoveRequested = Signal(str)
     cleared = Signal()
     _guiCall = Signal(object)
-    IMMEDIATE_REMOVAL_ROWS = 2000   # above this, rows leaving the filter are removed in batches
+    IMMEDIATE_REMOVAL_ROWS = 2000
+    RESET_AFTER_RUNS = 500         # more separate runs of rows leaving the filter: the list is rebuilt   # above this, rows leaving the filter are removed in batches
 
     def __init__(self, parent=None, enable_groups: bool = True):
         super().__init__(parent)
@@ -621,6 +622,16 @@ class QueueModel(QAbstractListModel):
         self._pending_removals = set()
         rows = sorted((self._visible_task_row[tid] for tid in gone if tid in self._visible_task_row), reverse=True)
         if not rows:
+            return
+        runs = 1 + sum(1 for a, b in zip(rows, rows[1:]) if a - b != 1)
+        if runs > self.RESET_AFTER_RUNS:
+            # Thousands of scattered rows (files skipped quickly): each removal moved the whole rest
+            # of the list (20,000 of them took 9 s on a 300,000-row list). The list is rebuilt once.
+            self.beginResetModel()
+            self._visible_tasks = [t for t in self._visible_tasks if id(t) not in gone]
+            self._visible_task_row = {id(t): r for r, t in enumerate(self._visible_tasks)}
+            self.endResetModel()
+            self.countChanged.emit()
             return
         i = 0
         while i < len(rows):
@@ -1102,7 +1113,9 @@ class QueueModel(QAbstractListModel):
                 else:
                     self._pending_removals.add(task_id)
                     if not self._removal_timer.isActive():
-                        self._removal_timer.start()
+                        # Each batch renumbers the rows below it (~0.1 s per 300,000 rows): long lists
+                        # get their batches less often, so the window stays mostly free
+                        self._removal_timer.start(max(250, min(2000, len(self._visible_tasks) // 150)))
             else:
                 if matches and task_id in self._pending_removals:
                     self._pending_removals.discard(task_id)      # back in the filter before it left

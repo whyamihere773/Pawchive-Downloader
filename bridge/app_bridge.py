@@ -64,7 +64,7 @@ from bridge.log_model import LogModel
 from bridge.queue_model import QueueModel
 from bridge.known_model import KnownModel
 from bridge.watchlist_model import WatchlistModel
-from bridge.archive_creators_model import ArchiveCreatorsModel
+from bridge.archive_creators_model import ArchiveCreatorsModel, RecordListModel
 from bridge.decompressor_bridge import DecompressorBridge
 from core.watchlist_manager import WatchlistManager
 from services.batch_loader import BatchLoader
@@ -426,6 +426,7 @@ class AppBridge(QObject):
         self._watchlist_manager.background_saves = True     # written off the window thread
         self._watchlist_model = WatchlistModel(self._watchlist_manager, self)
         self._archive_creators_model = ArchiveCreatorsModel(self)
+        self._vault_creators_model = RecordListModel(self, key_field="creator_key")
         # Watchlist downloads: new posts that needed no files (already saved or filtered out),
         # counted as done when the download finishes
         self._watchlist_pending_updates: Dict[Tuple[str, str], List[Tuple[str, str]]] = {}
@@ -2040,6 +2041,11 @@ class AppBridge(QObject):
         return self._watchlist_model
 
     @Property(QObject, constant=True)
+    def linkVaultCreatorsModel(self) -> RecordListModel:
+        """The Link Vault's creators (filled by linkVaultTreeJsonAsync)."""
+        return self._vault_creators_model
+
+    @Property(QObject, constant=True)
     def archiveCreatorsModel(self) -> ArchiveCreatorsModel:
         """The Archive tab's creators (filled by getArchiveDataAsync)."""
         return self._archive_creators_model
@@ -2132,23 +2138,43 @@ class AppBridge(QObject):
         return self._is_cloud_downloading
 
     # ── Link Vault Properties ────────────────────────────────────────────────
-    @Property(str, notify=linkVaultChanged)
-    def linkVaultTreeJson(self) -> str:
-        # Built once per vault change and filter: it was rebuilt (the whole vault) on every read
+    def _vault_tree(self) -> list:
+        """The Link Vault's tree for the current search / platform. Built once per vault change and
+        filter: it was rebuilt (the whole vault) on every read."""
         from core.link_vault_manager import link_vault_manager
         key = (getattr(link_vault_manager, "revision", 0), len(link_vault_manager.data.get("links", [])),
                self._vault_search, self._vault_platform)
-        cached = self.__dict__.get("_vault_json_cache")
+        cached = self.__dict__.get("_vault_tree_cache")
         if cached and cached[0] == key:
             return cached[1]
-        text = json.dumps(link_vault_manager.get_tree_model(self._vault_search, self._vault_platform), ensure_ascii=False)
-        self._vault_json_cache = (key, text)
-        return text
+        tree = link_vault_manager.get_tree_model(self._vault_search, self._vault_platform)
+        self._vault_tree_cache = (key, tree)
+        return tree
+
+    @Property(str, notify=linkVaultChanged)
+    def linkVaultTreeJson(self) -> str:
+        return json.dumps(self._vault_tree(), ensure_ascii=False)
 
     @Slot(str)
     def linkVaultTreeJsonAsync(self, request_id: str):
-        """linkVaultTreeJson built in the background (answer: asyncResultReady)."""
-        self._run_async(request_id, lambda: self.linkVaultTreeJson)
+        """The Link Vault's creators, built in the background into linkVaultCreatorsModel (the view
+        shows them with applyPending()); asyncResultReady answers with their number. Sending the
+        whole tree as one JSON text to parse on the window thread froze big vaults."""
+        def _job():
+            try:
+                tree = self._vault_tree()
+            except Exception as e:
+                logger.error(f"Background task failed: {e}", category="system")
+                tree = []
+
+            def _deliver():
+                self._vault_creators_model.set_pending(tree)
+                self.asyncResultReady.emit(request_id, {"count": len(tree)})
+            try:
+                self._callOnGui.emit(_deliver)
+            except RuntimeError:
+                pass      # the app is closing
+        threading.Thread(target=_job, daemon=True, name=f"async:{request_id[:24]}").start()
 
     @Property(int, notify=linkVaultChanged)
     def linkVaultTotalLinks(self) -> int:

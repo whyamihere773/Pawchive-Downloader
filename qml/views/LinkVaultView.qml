@@ -102,12 +102,13 @@ Item {
 
     // Parsed tree data from bridge. Read again only while the tab is visible, at most every 150 ms:
     // the vault changes with every harvested link while downloading, and each read rebuilt it all
-    property var vaultData: []
+    // The creators: a model in Python (the whole vault as one JSON text, parsed here, froze big vaults)
+    readonly property var vaultModel: bridge ? bridge.linkVaultCreatorsModel : null
     property bool _vaultStale: true
     property string _vaultRequest: ""
     function refreshVault() {
         _vaultStale = false
-        if (!bridge) { vaultData = []; return }
+        if (!bridge) return
         // Built in the background; parsed when it arrives (onAsyncResultReady)
         _vaultRequest = "vault-tree-" + Date.now()
         bridge.linkVaultTreeJsonAsync(_vaultRequest)
@@ -126,11 +127,7 @@ Item {
         function onAsyncResultReady(requestId, result) {
             if (requestId !== linkVaultRoot._vaultRequest) return
             linkVaultRoot._vaultRequest = ""
-            try {
-                linkVaultRoot.vaultData = result ? JSON.parse(result) : []
-            } catch (e) {
-                linkVaultRoot.vaultData = []
-            }
+            if (linkVaultRoot.vaultModel) linkVaultRoot.vaultModel.applyPending()
         }
     }
 
@@ -823,7 +820,7 @@ Item {
             // Empty State Graphic
             Rectangle {
                 anchors.centerIn: parent
-                visible: linkVaultRoot.vaultData.length === 0
+                visible: !linkVaultRoot.vaultModel || linkVaultRoot.vaultModel.count === 0
                 width: Math.min(parent.width - 40, 380)
                 height: 200
                 color: "#141720"
@@ -861,13 +858,13 @@ Item {
             SmoothListView {
                 id: creatorFlickable
                 anchors.fill: parent
-                visible: linkVaultRoot.vaultData.length > 0
+                visible: !!linkVaultRoot.vaultModel && linkVaultRoot.vaultModel.count > 0
                 spacing: 10
                 cacheBuffer: 800
                 currentIndex: -1
                 highlightFollowsCurrentItem: false
                 bottomMargin: 24
-                model: linkVaultRoot.vaultData
+                model: linkVaultRoot.vaultModel
 
                         delegate: Rectangle {
                             id: creatorCard
