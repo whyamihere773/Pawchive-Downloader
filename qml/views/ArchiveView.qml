@@ -8,7 +8,10 @@ Rectangle {
     id: root
 
     property var bridge: null
-    property var hierarchyData: []
+    // The creators (a model in Python: a JavaScript array of every creator froze the window at
+    // tens of thousands of creators). _creatorsRevision changes whenever a new list is shown.
+    readonly property var creatorsModel: root.bridge ? root.bridge.archiveCreatorsModel : null
+    property int _creatorsRevision: 0
     property var statistics: ({
         total_files: 0,
         total_creators: 0,
@@ -186,13 +189,10 @@ Rectangle {
             }
             if (requestId !== root._reloadRequest) return
             root._reloadRequest = ""
-            if (result) {
-                var creators = result.hierarchy || []
+            if (result && root.creatorsModel) {
                 if (root._expandOnResult) {
                     root._expandOnResult = false
-                    var all = {}
-                    for (var i = 0; i < creators.length; i++) all[creators[i].creator_name] = true
-                    root.expandedCreators = all
+                    root.expandedCreators = root.creatorsModel.allNamesMap()
                 }
                 // Open creators keep their posts on screen while they're read again; with other
                 // filters (search, site, type) the old ones don't apply
@@ -201,12 +201,12 @@ Rectangle {
                 var sig = root._filterSignature()
                 var keep = {}
                 var stale = {}
-                for (var j = 0; j < creators.length; j++) {
-                    var c = creators[j]
-                    if (root.expandedCreators && root.expandedCreators[c.creator_name]
-                            && sig === root._postsFilter && root.loadedPosts[c.key]) {
-                        keep[c.key] = root.loadedPosts[c.key]
-                        stale[c.key] = true
+                if (sig === root._postsFilter) {
+                    for (var k in root.loadedPosts) {
+                        if (root.creatorsModel.pendingHasKey(k)) {
+                            keep[k] = root.loadedPosts[k]
+                            stale[k] = true
+                        }
                     }
                 }
                 root._postsFilter = sig
@@ -214,7 +214,8 @@ Rectangle {
                 root._stalePosts = stale
                 root.loadedPosts = keep
                 var keepY = creatorsListView.contentY
-                root.hierarchyData = creators
+                root.creatorsModel.applyPending()
+                root._creatorsRevision += 1
                 if (keepY > 0)
                     creatorsListView.contentY = Math.min(keepY, Math.max(0, creatorsListView.contentHeight - creatorsListView.height))
                 root.statistics = result.statistics
@@ -1292,12 +1293,9 @@ Rectangle {
                     // Expand / Collapse All toggle
                     StyledButton {
                         property bool allExpanded: {
-                            if (!root.hierarchyData || root.hierarchyData.length === 0) return false
-                            var count = 0
-                            for (var i = 0; i < root.hierarchyData.length; i++) {
-                                if (root.expandedCreators && root.expandedCreators[root.hierarchyData[i].creator_name]) count++
-                            }
-                            return count === root.hierarchyData.length
+                            var rev = root._creatorsRevision       // (a new list is checked again)
+                            if (!root.creatorsModel || root.creatorsModel.count === 0) return false
+                            return root.creatorsModel.allIn(root.expandedCreators || {})
                         }
                         text: allExpanded ? root.tr("btn_collapse_all", "Collapse All") : root.tr("btn_expand_all", "Expand All")
                         iconText: allExpanded ? "🔼" : "🔽"
@@ -1307,11 +1305,7 @@ Rectangle {
                             if (allExpanded) {
                                 root.expandedCreators = {}
                             } else {
-                                var newMap = {}
-                                for (var i = 0; i < root.hierarchyData.length; i++) {
-                                    newMap[root.hierarchyData[i].creator_name] = true
-                                }
-                                root.expandedCreators = newMap
+                                root.expandedCreators = root.creatorsModel ? root.creatorsModel.allNamesMap() : ({})
                             }
                         }
                     }
@@ -1609,7 +1603,7 @@ Rectangle {
             ColumnLayout {
                 anchors.centerIn: parent
                 spacing: 12
-                visible: root.hierarchyData.length === 0
+                visible: !root.creatorsModel || root.creatorsModel.count === 0
 
                 Text {
                     text: "🗃️"
@@ -1670,12 +1664,12 @@ Rectangle {
                 id: creatorsListView
                 objectName: "archiveCreatorsList"
                 anchors.fill: parent
-                visible: root.hierarchyData.length > 0
+                visible: !!root.creatorsModel && root.creatorsModel.count > 0
                 spacing: 8
                 cacheBuffer: 800
                 currentIndex: -1
                 highlightFollowsCurrentItem: false
-                model: root.hierarchyData
+                model: root.creatorsModel
 
                         delegate: Rectangle {
                             id: creatorCard

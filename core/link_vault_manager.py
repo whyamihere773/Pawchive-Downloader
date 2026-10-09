@@ -1,8 +1,10 @@
 """
 Link Vault Manager
 Permanent cloud link harvester, credential database, and health probing engine.
-Maintains an atomic, persistent repository in config/link_vault.json with automatic
-.bak fallback, uncapped post text storage, and Creator > Posts > Links tree modeling.
+Stored in config/link_vault.db (SQLite: a save writes only the creators, posts and links that changed;
+the whole vault used to be rewritten as JSON, with an fsync and a .bak copy, after every change). Older
+versions' link_vault.json is imported once and kept as link_vault.json.migrated. Uncapped post text
+storage, and Creator > Posts > Links tree modeling.
 """
 
 import os
@@ -20,8 +22,74 @@ if __name__ == "__main__" or "core" not in sys.modules:
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
 
+import contextlib
+import sqlite3
+
 from core.logger import logger
 from core.text_utils import strip_html_tags
+
+
+class LinkVaultStore:
+    """link_vault.db: one row per creator, post and link (each as JSON), written as they change."""
+
+    def __init__(self, path: str):
+        self.path = path
+        self._ready = False
+
+    def exists(self) -> bool:
+        return os.path.exists(self.path)
+
+    @contextlib.contextmanager
+    def _db(self):
+        os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
+        conn = sqlite3.connect(self.path, timeout=30.0)
+        try:
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA synchronous=NORMAL;")
+            if not self._ready:
+                conn.executescript("""
+                    CREATE TABLE IF NOT EXISTS creators (key TEXT PRIMARY KEY, data TEXT NOT NULL);
+                    CREATE TABLE IF NOT EXISTS posts (post_id TEXT PRIMARY KEY, seq INTEGER, data TEXT NOT NULL);
+                    CREATE TABLE IF NOT EXISTS links (id TEXT PRIMARY KEY, seq INTEGER, data TEXT NOT NULL);
+                """)
+                conn.commit()
+                self._ready = True
+            yield conn
+        finally:
+            conn.close()
+
+    def load(self) -> Optional[Dict[str, Any]]:
+        """The vault, or None when the database is empty."""
+        with self._db() as conn:
+            creators = {k: json.loads(d) for k, d in conn.execute("SELECT key, data FROM creators;")}
+            posts = {pid: json.loads(d) for pid, d in conn.execute("SELECT post_id, data FROM posts ORDER BY seq;")}
+            links = [json.loads(d) for (d,) in conn.execute("SELECT data FROM links ORDER BY seq;")]
+        if not (creators or posts or links):
+            return None
+        return {"version": 1, "creators": creators, "posts": posts, "links": links}
+
+    def write(self, creators: Dict[str, Any], posts: Dict[str, Any], links: Dict[str, Any],
+              gone_creators=(), gone_posts=(), gone_links=(), seq_of=None, replace_all: bool = False) -> None:
+        dumps = lambda o: json.dumps(o, ensure_ascii=False, separators=(",", ":"))  # noqa: E731
+        seq_of = seq_of or {}
+        with self._db() as conn:
+            with conn:
+                if replace_all:
+                    conn.execute("DELETE FROM creators;")
+                    conn.execute("DELETE FROM posts;")
+                    conn.execute("DELETE FROM links;")
+                conn.executemany("INSERT INTO creators (key, data) VALUES (?, ?) "
+                                 "ON CONFLICT(key) DO UPDATE SET data = excluded.data;",
+                                 [(k, dumps(v)) for k, v in creators.items()])
+                conn.executemany("INSERT INTO posts (post_id, seq, data) VALUES (?, ?, ?) "
+                                 "ON CONFLICT(post_id) DO UPDATE SET data = excluded.data;",
+                                 [(k, seq_of.get(("p", k), 0), dumps(v)) for k, v in posts.items()])
+                conn.executemany("INSERT INTO links (id, seq, data) VALUES (?, ?, ?) "
+                                 "ON CONFLICT(id) DO UPDATE SET data = excluded.data;",
+                                 [(k, seq_of.get(("l", k), 0), dumps(v)) for k, v in links.items()])
+                conn.executemany("DELETE FROM creators WHERE key = ?;", [(k,) for k in gone_creators])
+                conn.executemany("DELETE FROM posts WHERE post_id = ?;", [(k,) for k in gone_posts])
+                conn.executemany("DELETE FROM links WHERE id = ?;", [(k,) for k in gone_links])
 
 
 class LinkVaultManager:
@@ -39,12 +107,21 @@ class LinkVaultManager:
         self.config_dir = config_dir
         os.makedirs(self.config_dir, exist_ok=True)
 
-        self.vault_file = os.path.join(self.config_dir, "link_vault.json")
+        self.vault_file = os.path.join(self.config_dir, "link_vault.json")      # older versions (imported once)
         self.bak_file = os.path.join(self.config_dir, "link_vault.json.bak")
+        self.store = LinkVaultStore(os.path.join(self.config_dir, "link_vault.db"))
         self._lock = threading.Lock()
         self._probing_active = False
+        # What changed since the last save (only that is written), and lookups by link id / by link
+        self._dirty = {"creators": set(), "posts": set(), "links": set()}
+        self._gone = {"creators": set(), "posts": set(), "links": set()}
+        self._write_all = False
+        self._seq = 0
+        self._seq_of: Dict[tuple, int] = {}
+        self._link_by_id: Dict[str, Dict[str, Any]] = {}
+        self._link_by_sig: Dict[str, Dict[str, Any]] = {}
 
-        self.data: Dict[str, Any] = {
+        self._data: Dict[str, Any] = {
             "version": 1,
             "creators": {},
             "posts": {},
@@ -52,45 +129,113 @@ class LinkVaultManager:
         }
         self._load()
 
+    @property
+    def data(self) -> Dict[str, Any]:
+        return self._data
+
+    @data.setter
+    def data(self, value: Dict[str, Any]) -> None:
+        """Replacing the whole vault: everything is written by the next save."""
+        self._data = self._validate_schema(value or {})
+        self._rebuild_indexes_unlocked()
+        self._write_all = True
+
     def _load(self):
-        """Loads vault data with automatic .bak fallback."""
+        """Loads the vault from link_vault.db; an older version's link_vault.json (or its .bak) is
+        imported the first time and kept, renamed to .migrated."""
         with self._lock:
-            # 1. Primary file
-            if os.path.exists(self.vault_file):
-                try:
-                    with open(self.vault_file, "r", encoding="utf-8") as f:
-                        content = json.load(f)
-                        if isinstance(content, dict) and "links" in content:
-                            self.data = self._validate_schema(content)
-                            logger.info(
-                                f"Link Vault loaded: {len(self.data.get('creators', {}))} creators, "
-                                f"{len(self.data.get('links', []))} links.",
-                                category="vault"
-                            )
-                            return
-                except Exception as e:
-                    logger.warning(f"Failed to load primary link_vault.json: {e}; checking backup...", category="vault")
+            data = None
+            try:
+                if self.store.exists():
+                    data = self.store.load()
+            except Exception as e:
+                logger.error(f"Failed to load link_vault.db: {e}", category="vault")
+            imported = False
+            if data is None:
+                data = self._read_legacy_json()
+                imported = data is not None
+            self._data = self._validate_schema(data or {})
+            self._rebuild_indexes_unlocked()
+            if imported:
+                self._write_all = True
+                if self._save_unlocked():
+                    for path in (self.vault_file, self.bak_file):
+                        self._keep_aside(path)
+                    logger.info("Link Vault moved to the new format; the old file is kept as link_vault.json.migrated.",
+                                category="vault")
+            if self.data["creators"] or self.data["links"]:
+                logger.info(
+                    f"Link Vault loaded: {len(self.data.get('creators', {}))} creators, "
+                    f"{len(self.data.get('links', []))} links.",
+                    category="vault"
+                )
 
-            # 2. Fallback to .bak file
-            if os.path.exists(self.bak_file):
+    def _read_legacy_json(self) -> Optional[Dict[str, Any]]:
+        for path in (self.vault_file, self.bak_file):
+            if os.path.exists(path):
                 try:
-                    with open(self.bak_file, "r", encoding="utf-8") as f:
+                    with open(path, "r", encoding="utf-8") as f:
                         content = json.load(f)
-                        if isinstance(content, dict) and "links" in content:
-                            self.data = self._validate_schema(content)
+                    if isinstance(content, dict) and "links" in content:
+                        if path == self.bak_file:
                             logger.success("Recovered Link Vault from .bak backup.", category="vault")
-                            self._save_unlocked()
-                            return
+                        return content
                 except Exception as e:
-                    logger.error(f"Backup link_vault.json.bak also failed to load: {e}", category="vault")
+                    logger.warning(f"Failed to load {os.path.basename(path)}: {e}", category="vault")
+        return None
 
-            # 3. Default empty schema
-            self.data = {
-                "version": 1,
-                "creators": {},
-                "posts": {},
-                "links": []
-            }
+    @staticmethod
+    def _keep_aside(path: str) -> None:
+        """Renames an imported file to "<name>.migrated" (never deleted)."""
+        if not os.path.exists(path):
+            return
+        target = path + ".migrated"
+        n = 2
+        while os.path.exists(target):
+            target = f"{path}.migrated-{n}"
+            n += 1
+        try:
+            os.replace(path, target)
+        except OSError as e:
+            logger.warning(f"Couldn't rename {os.path.basename(path)} after importing it: {e}", category="vault")
+
+    def _rebuild_indexes_unlocked(self) -> None:
+        self._link_by_id = {}
+        self._link_by_sig = {}
+        self._seq_of = {}
+        self._seq = 0
+        for pid in self.data["posts"]:
+            self._seq += 1
+            self._seq_of[("p", pid)] = self._seq
+        for lnk in self.data["links"]:
+            self._seq += 1
+            self._index_link_unlocked(lnk)
+
+    def _index_link_unlocked(self, lnk: Dict[str, Any]) -> None:
+        lid = lnk.get("id")
+        if lid:
+            self._link_by_id[lid] = lnk
+            if ("l", lid) not in self._seq_of:
+                self._seq += 1
+                self._seq_of[("l", lid)] = self._seq
+        self._link_by_sig.setdefault(f"{lnk.get('creator_key', '')}|{self.normalize_url(lnk.get('url', ''))}", lnk)
+
+    def _touch(self, kind: str, key: str) -> None:
+        if kind == "posts" and ("p", key) not in self._seq_of:
+            self._seq += 1
+            self._seq_of[("p", key)] = self._seq
+        self._dirty[kind].add(key)
+        self._gone[kind].discard(key)
+
+    def _forget(self, kind: str, key: str) -> None:
+        self._dirty[kind].discard(key)
+        self._gone[kind].add(key)
+        if kind == "links":
+            lnk = self._link_by_id.pop(key, None)
+            if lnk is not None:
+                sig = f"{lnk.get('creator_key', '')}|{self.normalize_url(lnk.get('url', ''))}"
+                if self._link_by_sig.get(sig) is lnk:
+                    del self._link_by_sig[sig]
 
     @staticmethod
     def _validate_schema(raw: Dict[str, Any]) -> Dict[str, Any]:
@@ -103,46 +248,37 @@ class LinkVaultManager:
         }
 
     def save(self):
-        """Thread-safe atomic save with .bak rotation and fsync."""
+        """Writes what changed since the last save (one transaction)."""
         with self._lock:
             self._save_unlocked()
 
-    def _save_unlocked(self):
-        """Internal atomic write."""
+    def _save_unlocked(self) -> bool:
+        """Internal write of the changed rows. True when everything is saved."""
         self.revision = getattr(self, "revision", 0) + 1      # every change is saved: readers cache by it
-        tmp_path = f"{self.vault_file}.tmp"
+        d = self.data
+        if self._write_all:
+            creators, posts = dict(d["creators"]), dict(d["posts"])
+            links = {lnk.get("id"): lnk for lnk in d["links"] if lnk.get("id")}
+            gone = {"creators": set(), "posts": set(), "links": set()}
+        else:
+            creators = {k: d["creators"][k] for k in self._dirty["creators"] if k in d["creators"]}
+            posts = {k: d["posts"][k] for k in self._dirty["posts"] if k in d["posts"]}
+            links = {k: self._link_by_id[k] for k in self._dirty["links"] if k in self._link_by_id}
+            gone = {k: set(v) for k, v in self._gone.items()}
+        if not (creators or posts or links or any(gone.values()) or self._write_all):
+            return True
         try:
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(self.data, f, indent=2, ensure_ascii=False)
-                f.flush()
-                try:
-                    os.fsync(f.fileno())
-                except Exception:
-                    pass
-
-            if os.path.exists(self.vault_file):
-                try:
-                    import shutil
-                    shutil.copy2(self.vault_file, self.bak_file)
-                except Exception as e:
-                    logger.debug(f"Could not rotate link vault .bak: {e}", category="vault")
-
-            os.replace(tmp_path, self.vault_file)
-
-            # Ensure .bak exists even on initial creation
-            if not os.path.exists(self.bak_file):
-                try:
-                    import shutil
-                    shutil.copy2(self.vault_file, self.bak_file)
-                except Exception:
-                    pass
+            self.store.write(creators, posts, links, gone["creators"], gone["posts"], gone["links"],
+                             seq_of=self._seq_of, replace_all=self._write_all)
         except Exception as e:
             logger.error(f"Failed to persist link vault: {e}", category="vault")
-            if os.path.exists(tmp_path):
-                try:
-                    os.remove(tmp_path)
-                except Exception:
-                    pass
+            return False                    # (kept as changed: written with the next save)
+        self._write_all = False
+        for v in self._dirty.values():
+            v.clear()
+        for v in self._gone.values():
+            v.clear()
+        return True
 
     @staticmethod
     def normalize_url(url: str) -> str:
@@ -193,12 +329,7 @@ class LinkVaultManager:
             else:
                 self.data["creators"][creator_key]["creator_name"] = creator_name
                 self.data["creators"][creator_key]["updated_at"] = now_iso
-
-            # Index existing links for fast O(1) deduplication: (creator_key, normalized_url)
-            existing_link_signatures: Set[str] = {
-                f"{item.get('creator_key', '')}|{self.normalize_url(item.get('url', ''))}"
-                for item in self.data["links"]
-            }
+            self._touch("creators", creator_key)
 
             for p in harvested_posts:
                 post_id = str(p.get("post_id") or p.get("id") or str(uuid.uuid4())[:8])
@@ -220,6 +351,7 @@ class LinkVaultManager:
                     "post_url": post_url,
                     "passwords": list(set(post_passwords))
                 }
+                self._touch("posts", post_id)
 
                 # Add links
                 links_list = p.get("links") or []
@@ -240,14 +372,14 @@ class LinkVaultManager:
                         continue
 
                     sig = f"{creator_key}|{norm_url}"
-                    if sig in existing_link_signatures:
+                    existing = self._link_by_sig.get(sig)
+                    if existing is not None:
                         # Update passwords if newly discovered
-                        for existing in self.data["links"]:
-                            if existing.get("creator_key") == creator_key and self.normalize_url(existing.get("url", "")) == norm_url:
-                                current_pws = set(existing.get("passwords", []))
-                                current_pws.update(link_passwords)
-                                existing["passwords"] = sorted(list(current_pws))
-                                break
+                        current_pws = set(existing.get("passwords", []))
+                        if not current_pws.issuperset(link_passwords):
+                            current_pws.update(link_passwords)
+                            existing["passwords"] = sorted(list(current_pws))
+                            self._touch("links", existing.get("id"))
                         continue
 
                     link_entry = {
@@ -265,11 +397,13 @@ class LinkVaultManager:
                         "added_at": now_iso
                     }
                     self.data["links"].append(link_entry)
-                    existing_link_signatures.add(sig)
+                    self._index_link_unlocked(link_entry)
+                    self._touch("links", link_entry["id"])
                     new_links_count += 1
 
-            # Recalculate counts
-            self._recalculate_counts_unlocked()
+            # Recalculate counts (this creator's: every creator's was recounted over every post and
+            # link on each harvest)
+            self._recalculate_counts_unlocked({creator_key})
             self._save_unlocked()
 
         if new_links_count > 0:
@@ -279,13 +413,28 @@ class LinkVaultManager:
             )
         return new_links_count
 
-    def _recalculate_counts_unlocked(self):
-        """Recalculates post and link counts per creator."""
-        for ckey, cinfo in self.data["creators"].items():
-            c_posts = [p for p in self.data["posts"].values() if p.get("creator_key") == ckey]
-            c_links = [lnk for lnk in self.data["links"] if lnk.get("creator_key") == ckey]
-            cinfo["post_count"] = len(c_posts)
-            cinfo["link_count"] = len(c_links)
+    def _recalculate_counts_unlocked(self, only: Optional[Set[str]] = None):
+        """Recalculates post and link counts per creator (of the creators in `only`, or all), in one
+        pass over the posts and links."""
+        keys = set(self.data["creators"]) if only is None else {k for k in only if k in self.data["creators"]}
+        if not keys:
+            return
+        posts = dict.fromkeys(keys, 0)
+        links = dict.fromkeys(keys, 0)
+        for p in self.data["posts"].values():
+            k = p.get("creator_key")
+            if k in posts:
+                posts[k] += 1
+        for lnk in self.data["links"]:
+            k = lnk.get("creator_key")
+            if k in links:
+                links[k] += 1
+        for k in keys:
+            cinfo = self.data["creators"][k]
+            if cinfo.get("post_count") != posts[k] or cinfo.get("link_count") != links[k]:
+                cinfo["post_count"] = posts[k]
+                cinfo["link_count"] = links[k]
+                self._touch("creators", k)
 
     def get_tree_model(self, search_query: str = "", platform_filter: str = "") -> List[Dict[str, Any]]:
         """
@@ -384,10 +533,11 @@ class LinkVaultManager:
     def delete_link(self, link_id: str) -> bool:
         """Deletes a single link by ID."""
         with self._lock:
-            before_len = len(self.data["links"])
-            self.data["links"] = [lnk for lnk in self.data["links"] if lnk.get("id") != link_id]
-            if len(self.data["links"]) < before_len:
-                self._recalculate_counts_unlocked()
+            lnk = self._link_by_id.get(link_id)
+            if lnk is not None:
+                self.data["links"] = [x for x in self.data["links"] if x.get("id") != link_id]
+                self._forget("links", link_id)
+                self._recalculate_counts_unlocked({lnk.get("creator_key", "")})
                 self._save_unlocked()
                 logger.info(f"Link {link_id} deleted from Link Vault.", category="vault")
                 return True
@@ -407,13 +557,11 @@ class LinkVaultManager:
                 clean_pws.append(val)
 
         with self._lock:
-            found = False
-            for lnk in self.data["links"]:
-                if lnk.get("id") == link_id:
-                    lnk["passwords"] = clean_pws
-                    found = True
-                    break
+            lnk = self._link_by_id.get(link_id)
+            found = lnk is not None
             if found:
+                lnk["passwords"] = clean_pws
+                self._touch("links", link_id)
                 self._save_unlocked()
                 logger.info(f"Updated passwords for link {link_id} ({len(clean_pws)} saved).", category="vault")
                 return True
@@ -423,13 +571,20 @@ class LinkVaultManager:
         """Deletes a post and all its associated links."""
         with self._lock:
             removed = False
+            affected = set()
             if post_id in self.data["posts"]:
+                affected.add(self.data["posts"][post_id].get("creator_key", ""))
                 del self.data["posts"][post_id]
+                self._forget("posts", post_id)
                 removed = True
-            before_len = len(self.data["links"])
-            self.data["links"] = [lnk for lnk in self.data["links"] if lnk.get("post_id") != post_id]
-            if removed or len(self.data["links"]) < before_len:
-                self._recalculate_counts_unlocked()
+            gone = [lnk for lnk in self.data["links"] if lnk.get("post_id") == post_id]
+            if gone:
+                self.data["links"] = [lnk for lnk in self.data["links"] if lnk.get("post_id") != post_id]
+                for lnk in gone:
+                    affected.add(lnk.get("creator_key", ""))
+                    self._forget("links", lnk.get("id"))
+            if removed or gone:
+                self._recalculate_counts_unlocked(affected)
                 self._save_unlocked()
                 logger.info(f"Post {post_id} and child links deleted from Link Vault.", category="vault")
                 return True
@@ -441,16 +596,20 @@ class LinkVaultManager:
             creator_key = creator_key.lower()
             if creator_key in self.data["creators"]:
                 del self.data["creators"][creator_key]
+                self._forget("creators", creator_key)
                 # Remove posts
-                self.data["posts"] = {
-                    pid: p for pid, p in self.data["posts"].items()
-                    if p.get("creator_key") != creator_key
-                }
+                for pid, p in list(self.data["posts"].items()):
+                    if p.get("creator_key") == creator_key:
+                        del self.data["posts"][pid]
+                        self._forget("posts", pid)
                 # Remove links
-                self.data["links"] = [
-                    lnk for lnk in self.data["links"]
-                    if lnk.get("creator_key") != creator_key
-                ]
+                keep = []
+                for lnk in self.data["links"]:
+                    if lnk.get("creator_key") == creator_key:
+                        self._forget("links", lnk.get("id"))
+                    else:
+                        keep.append(lnk)
+                self.data["links"] = keep
                 self._save_unlocked()
                 logger.info(f"Creator {creator_key} purged from Link Vault.", category="vault")
                 return True
@@ -459,11 +618,13 @@ class LinkVaultManager:
     def clean_dead_links(self) -> int:
         """Purges all links verified as dead (HTTP 404 or host dead)."""
         with self._lock:
-            initial_count = len(self.data["links"])
-            self.data["links"] = [lnk for lnk in self.data["links"] if lnk.get("health") != "dead"]
-            purged = initial_count - len(self.data["links"])
+            dead = [lnk for lnk in self.data["links"] if lnk.get("health") == "dead"]
+            purged = len(dead)
             if purged > 0:
-                self._recalculate_counts_unlocked()
+                self.data["links"] = [lnk for lnk in self.data["links"] if lnk.get("health") != "dead"]
+                for lnk in dead:
+                    self._forget("links", lnk.get("id"))
+                self._recalculate_counts_unlocked({lnk.get("creator_key", "") for lnk in dead})
                 self._save_unlocked()
                 logger.success(f"Cleaned {purged} dead links from Link Vault.", category="vault")
             return purged
@@ -471,11 +632,11 @@ class LinkVaultManager:
     def update_link_health(self, link_id: str, health: str, save: bool = True):
         """Updates health status for a single link ('alive', 'dead', 'unknown')."""
         with self._lock:
-            for lnk in self.data["links"]:
-                if lnk.get("id") == link_id:
-                    lnk["health"] = health
-                    lnk["last_checked"] = datetime.datetime.now().isoformat()
-                    break
+            lnk = self._link_by_id.get(link_id)       # (a walk through every link for each result)
+            if lnk is not None:
+                lnk["health"] = health
+                lnk["last_checked"] = datetime.datetime.now().isoformat()
+                self._touch("links", link_id)
         if save:
             self.save()
 

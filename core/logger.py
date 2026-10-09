@@ -17,8 +17,9 @@ import sys
 import os
 import datetime
 import threading
+import time
 import traceback
-from typing import Callable, List
+from typing import Callable, List, Optional
 
 from core.log_utils import redact, system_summary
 
@@ -87,6 +88,12 @@ class AppLogger:
         self._crash_file = None
         self._ended = False
         self._version_label = ""
+        # Lines are written to the file by a background writer a few times a second (warnings and
+        # errors at once): opening the file for every line cost milliseconds on Windows (antivirus
+        # checks on close), paid by whichever thread logged, the window's too
+        self._file_queue: List[str] = []
+        self._write_wanted = threading.Event()
+        self._writer: Optional[threading.Thread] = None
 
     @classmethod
     def instance(cls) -> "AppLogger":
@@ -159,6 +166,7 @@ class AppLogger:
             if self._ended or not self._current_log_path:
                 return
             self._ended = True
+            self.flush()
             now = datetime.datetime.now()
             ran = _format_duration((now - self._session_start_time).total_seconds())
             self._append_raw(f"{SESSION_END_MARKER} {reason} at {now:%Y-%m-%d %H:%M:%S} (ran {ran}) ===\n")
@@ -361,14 +369,38 @@ class AppLogger:
         except Exception:
             pass
 
-    def _append_to_file(self, text: str):
+    def _append_to_file(self, text: str, urgent: bool = False):
         with self._file_lock:
-            if self._current_log_path:
-                self._append_raw(text)
-            else:
+            if not self._current_log_path:
                 self._pending.append(text)
                 if len(self._pending) > _MAX_PENDING_LINES:
                     del self._pending[: len(self._pending) - _MAX_PENDING_LINES]
+                return
+            self._file_queue.append(text)
+            if self._ended:
+                urgent = True                     # (no writer after the closing line)
+            elif self._writer is None or not self._writer.is_alive():
+                self._writer = threading.Thread(target=self._writer_loop, name="LogWriter", daemon=True)
+                self._writer.start()
+        if urgent:
+            self.flush()
+        else:
+            self._write_wanted.set()
+
+    def _writer_loop(self):
+        while True:
+            self._write_wanted.wait()
+            time.sleep(0.3)                       # lines logged together are written together
+            self._write_wanted.clear()
+            self.flush()
+
+    def flush(self) -> None:
+        """Writes the lines still waiting for the background writer."""
+        with self._file_lock:
+            if not self._file_queue:
+                return
+            text, self._file_queue = "".join(self._file_queue), []
+            self._append_raw(text)
 
     def add_listener(self, callback: Callable[[LogEntry], None]):
         if callback not in self._listeners:
@@ -387,7 +419,7 @@ class AppLogger:
         log_line = f"[{entry.created:%Y-%m-%d %H:%M:%S}.{entry.created.microsecond // 1000:03d}] [{entry.level.upper():<7}] [{entry.category}] {entry.message}\n"
         if entry.details:
             log_line += "".join(f"    | {ln}\n" for ln in entry.details.rstrip("\n").split("\n"))
-        self._append_to_file(log_line)
+        self._append_to_file(log_line, urgent=entry.level in (LogLevel.WARNING, LogLevel.ERROR))
 
         try:
             if sys.stdout is not None:

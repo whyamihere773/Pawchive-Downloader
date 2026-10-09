@@ -104,7 +104,7 @@ def _setup_memory_management(app, win, app_bridge, memory_collector):
             last["t"] = _time.monotonic()
             # On the window thread: a Qt object freed by the collector must be destroyed on it
             # (from another thread that crashes the app); minimized, the short pause isn't seen
-            QTimer.singleShot(0, lambda: memory_collector.collect(reason="window minimized"))
+            QTimer.singleShot(0, lambda: memory_collector.collect(reason="window minimized", deep=True))
 
     win.visibilityChanged.connect(_on_visibility)
 
@@ -144,6 +144,7 @@ def main():
 
     from bridge.translation_manager import TranslationManager
     app_bridge = AppBridge()
+    app_bridge.archive_manager.start_maintenance()      # weekly check + safety copy, a while after start
 
     locales_dir = os.path.join(base_dir, "locales")
     translation_manager = TranslationManager(locales_dir=locales_dir)

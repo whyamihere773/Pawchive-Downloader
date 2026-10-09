@@ -4,6 +4,9 @@
 * **Thousands of creators, no slowdown**: Only the creators on screen are drawn, so very long creator lists scroll smoothly and keep your place when the list refreshes.
 * **Downloads keep going while you browse**: Looking through or searching the archive no longer holds up running downloads.
 * **Export works and tells you if it can't**: Exporting the archive runs in the background, and if something goes wrong you now get a clear message instead of "Exported 0 records".
+* **Ready for millions of files**: The creator list, statistics and site filter now load in a fraction of a second even with millions of downloaded files, and opening a creator is instant. The first time you start this version, your archive is prepared for this in the background (a minute or so for very large archives); until then the tab works as before.
+* **Much faster search**: Searching file names, post titles and creators takes milliseconds instead of seconds and still finds any part of a name.
+* **Weekly health check**: Once a week the archive is checked for damage in the background and a safety copy is kept next to it, if your drive has room for one. Damage found is repaired automatically.
 
 ---
 
@@ -47,9 +50,12 @@
 
 * **Calmer scrolling**: The mouse wheel no longer flings long lists far past where you wanted to go.
 * **Link Vault opens fast**: Large vaults now open in a moment instead of freezing the app; with tens of thousands of links it used to take minutes.
+* **Link Vault keeps up with big vaults**: Saving links found by a scan, checking link health and editing passwords stay quick with tens of thousands of links (they used to slow down with every link added). The vault is now kept in a small database and moved over automatically; the old file is kept as a backup.
+* **Less disk activity while downloading**: The download history and the log file are written in small batches instead of being rewritten or reopened for every file. The history is moved over automatically and no longer forgets older files.
 * **Gallery stays responsive**: Opening folders, moving files and undoing a move no longer freeze the window, even when moving to another drive.
 * **Background imports and exports**: Importing or exporting the download queue, exporting logs and clearing or importing the archive run in the background.
 * **No hiccup after start-up**: A short freeze a few seconds after opening the app is gone.
+* **Fewer random micro-freezes**: With very large queues, watchlists or archives, the app no longer pauses for a moment every now and then to tidy up memory.
 * **Freezes report themselves**: If the window ever stops responding, the log now says for how long and what it was busy with, which makes bug reports much easier to fix.
 
 ---

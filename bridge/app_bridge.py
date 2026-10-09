@@ -64,6 +64,7 @@ from bridge.log_model import LogModel
 from bridge.queue_model import QueueModel
 from bridge.known_model import KnownModel
 from bridge.watchlist_model import WatchlistModel
+from bridge.archive_creators_model import ArchiveCreatorsModel
 from bridge.decompressor_bridge import DecompressorBridge
 from core.watchlist_manager import WatchlistManager
 from services.batch_loader import BatchLoader
@@ -424,6 +425,7 @@ class AppBridge(QObject):
         self._watchlist_manager.load()
         self._watchlist_manager.background_saves = True     # written off the window thread
         self._watchlist_model = WatchlistModel(self._watchlist_manager, self)
+        self._archive_creators_model = ArchiveCreatorsModel(self)
         # Watchlist downloads: new posts that needed no files (already saved or filtered out),
         # counted as done when the download finishes
         self._watchlist_pending_updates: Dict[Tuple[str, str], List[Tuple[str, str]]] = {}
@@ -1506,13 +1508,25 @@ class AppBridge(QObject):
         """The Archive view's creators and statistics, read in the background. Only one entry per
         creator: a creator's posts and files are read when it's opened (getArchiveCreatorPostsAsync).
         Sending every file of a big archive to the window on each refresh froze it (#28)."""
-        def _load():
-            return {
-                "hierarchy": self.archive_manager.get_creator_summaries(
-                    query=query, service=service, file_type=fileType, sort_by=sortBy),
-                "statistics": self.archive_manager.get_statistics(),
-            }
-        self._run_async(request_id, _load)
+        # The creators go into archiveCreatorsModel (the view applies them with applyPending());
+        # sending them all to the window as one list took seconds with tens of thousands of creators
+        def _job():
+            try:
+                creators = self.archive_manager.get_creator_summaries(
+                    query=query, service=service, file_type=fileType, sort_by=sortBy)
+                stats = self.archive_manager.get_statistics()
+            except Exception as e:
+                logger.error(f"Background task failed: {e}", category="system")
+                creators, stats = [], {}
+
+            def _deliver():
+                self._archive_creators_model.set_pending(creators)
+                self.asyncResultReady.emit(request_id, {"count": len(creators), "statistics": stats})
+            try:
+                self._callOnGui.emit(_deliver)
+            except RuntimeError:
+                pass      # the app is closing
+        threading.Thread(target=_job, daemon=True, name=f"async:{request_id[:24]}").start()
 
     @Slot(str, str, str, str, str)
     def getArchiveCreatorPostsAsync(self, request_id: str, creatorKey: str, query: str = "",
@@ -2024,6 +2038,11 @@ class AppBridge(QObject):
     @Property(QObject, constant=True)
     def watchlistModel(self) -> WatchlistModel:
         return self._watchlist_model
+
+    @Property(QObject, constant=True)
+    def archiveCreatorsModel(self) -> ArchiveCreatorsModel:
+        """The Archive tab's creators (filled by getArchiveDataAsync)."""
+        return self._archive_creators_model
 
     @Property(bool, notify=watchlistApplyGlobalSettingsChanged)
     def watchlistApplyGlobalSettings(self) -> bool:
@@ -4515,6 +4534,7 @@ class AppBridge(QObject):
         )
         if not save_path:
             return
+        logger.flush()
         session_file = logger.get_current_log_file()
         # The panel's text is read here (window thread); the copy / write runs in the background
         # (a long session's log is many MB)

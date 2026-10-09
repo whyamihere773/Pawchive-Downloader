@@ -16,6 +16,7 @@ import datetime
 import threading
 from typing import Optional, List, Dict, Any, Tuple, Callable
 from core.logger import logger
+from core import archive_index
 
 
 FILE_TYPE_CATEGORIES = {
@@ -53,6 +54,10 @@ class ArchiveManager:
         self._repair_lock = threading.Lock()
         self._auto_repair_tried = False        # repaired by itself at most once per session
         self.on_repair_finished: Optional[Callable[[Dict[str, Any]], None]] = None
+        # Summary tables + search index (core/archive_index.py), filled in for existing archives
+        self._backfill_thread: Optional[threading.Thread] = None
+        self._index_ready = False
+        self._maintenance_stop = threading.Event()
 
         if self._enabled:
             self._init_db()
@@ -98,9 +103,12 @@ class ArchiveManager:
         except Exception as e:
             logger.error(f"Failed to initialize download archive database: {e}", category="archive")
             self._conn = None
+            return
+        self._start_backfill()
 
-    def _create_schema(self, conn: sqlite3.Connection) -> None:
-        """Tables, columns added by later versions, indexes and the one-time data repair."""
+    def _create_schema(self, conn: sqlite3.Connection, summaries: bool = True) -> None:
+        """Tables, columns added by later versions, indexes, the one-time data repair and (summaries)
+        the summary tables + search index."""
         conn.execute("""
             CREATE TABLE IF NOT EXISTS downloaded_files (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -150,14 +158,11 @@ class ArchiveManager:
             CREATE INDEX IF NOT EXISTS idx_archive_creator
             ON downloaded_files(service, creator_id);
         """)
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_archive_post
-            ON downloaded_files(service, post_id);
-        """)
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_archive_ext
-            ON downloaded_files(file_ext);
-        """)
+        # Not needed: (service, post_id) lookups use idx_archive_unique, and the file-type filter /
+        # statistics never used the extension index (they compare LOWER(file_ext)). Each one cost
+        # hundreds of MB in a big archive.
+        conn.execute("DROP INDEX IF EXISTS idx_archive_post;")
+        conn.execute("DROP INDEX IF EXISTS idx_archive_ext;")
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_archive_missing
             ON downloaded_files(is_missing);
@@ -231,6 +236,154 @@ class ArchiveManager:
             logger.debug(f"Archive repair migration notice: {e_repair}", category="archive")
 
         conn.commit()
+        if summaries:
+            try:
+                archive_index.ensure(conn)
+            except Exception as e_idx:
+                logger.warning(f"Archive summaries unavailable ({e_idx}); the Archive tab uses slower queries.",
+                               category="archive")
+
+    # ── Summaries & search index ───────────────────────────────────────────────
+
+    def _start_backfill(self) -> None:
+        """Fills the summaries / search index in for records that existed before them (an archive
+        from an older version, or after a repair), a slice at a time in the background."""
+        if self._backfill_thread is not None and self._backfill_thread.is_alive():
+            return
+        conn = self._conn
+        if conn is None:
+            return
+        try:
+            wm, done, _ = archive_index.state(conn)
+        except Exception:
+            return
+        if done >= wm:
+            return
+        self._index_ready = False
+
+        def _step() -> bool:
+            with self._lock:
+                if self._conn is None:
+                    return True
+                try:
+                    return archive_index.backfill_step(self._conn)
+                except Exception as e:
+                    logger.warning(f"Preparing the archive summaries stopped: {e}", category="archive")
+                    self._note_error(e)
+                    return True
+
+        def _run():
+            t0 = time.time()
+            if wm - done > 200_000:
+                logger.info(f"📦 Preparing the download archive for fast browsing and search "
+                            f"({wm - done:,} records, in the background)…", category="archive")
+            if archive_index.backfill(_step, should_stop=lambda: self._conn is None) and self._conn is not None:
+                self._stats_cache = None
+                if wm - done > 200_000:
+                    logger.info(f"📦 Download archive ready for fast browsing ({time.time() - t0:.0f} s).",
+                                category="archive")
+        self._backfill_thread = threading.Thread(target=_run, name="ArchiveSummaries", daemon=True)
+        self._backfill_thread.start()
+
+    def _summaries_ready(self, conn: sqlite3.Connection) -> bool:
+        if not self._index_ready:
+            try:
+                self._index_ready = archive_index.is_ready(conn)
+            except Exception:
+                self._index_ready = False
+        return self._index_ready
+
+    def _fast_where(self, conn: sqlite3.Connection, query: str = "", service: str = "all",
+                    file_type: str = "all") -> Tuple[str, List[Any]]:
+        """_where, with the search text looked up in the search index when it's ready (LIKE over
+        every record took seconds in a big archive)."""
+        clean_q = (query or "").strip()
+        fq = archive_index.fts_query(clean_q)
+        if not clean_q or fq is None or not self._summaries_ready(conn) or not archive_index.state(conn)[2]:
+            return self._where(query, service, file_type)
+        where, params = self._where("", service, file_type)
+        cond = "id IN (SELECT rowid FROM archive_fts WHERE archive_fts MATCH ?)"
+        extra = [fq]
+        hq = clean_q.lower()
+        if re.fullmatch(r"[0-9a-f]{8,64}", hq):
+            cond = f"({cond} OR (file_hash >= ? AND file_hash < ?))"     # a file hash (its start)
+            extra += [hq, hq + "g"]
+        where = f"{where} AND {cond}" if where else f"WHERE {cond}"
+        return where, list(params) + extra
+
+    def _summaries_from_index(self, conn: sqlite3.Connection, service: str,
+                              sort_by: str) -> List[Dict[str, Any]]:
+        """get_creator_summaries from the summary table: one row per creator instead of grouping every
+        record."""
+        clean_svc = (service or "").strip().lower()
+        sql = ("SELECT service, creator_id, creator_name, files, missing, verified, posts, newest, oldest, max_id "
+               "FROM archive_creators")
+        params: List[Any] = []
+        if clean_svc and clean_svc != "all":
+            sql += " WHERE service = ?"
+            params.append(clean_svc)
+        rows = conn.execute(sql + ";", params).fetchall()
+        creators: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        members: Dict[Tuple[str, str], set] = {}
+        for (r_svc, r_cid, r_cname, n, n_missing, n_verified, n_posts, newest, oldest, max_id) in rows:
+            if not n:
+                continue
+            key = self._creator_key(r_svc, r_cid, r_cname)
+            c = creators.get(key)
+            if c is None:
+                c = creators[key] = {
+                    "service": key[0], "total_files": 0, "missing_count": 0, "verified_count": 0,
+                    "unverified_count": 0, "post_count": 0, "posts": [], "_rank": None,
+                }
+                members[key] = set()
+            rank = (str(newest or ""), int(max_id or 0))
+            if c["_rank"] is None or rank > c["_rank"]:
+                c["_rank"] = rank
+                clean_cname = str(r_cname or "").strip()
+                clean_cid = str(r_cid or "").strip()
+                c["creator_name"] = clean_cname or clean_cid or "Unknown Creator"
+                c["creator_id"] = clean_cid or clean_cname or "unknown"
+            members[key].add((r_svc, r_cid, r_cname))
+            n, n_missing, n_verified = int(n or 0), int(n_missing or 0), int(n_verified or 0)
+            c["total_files"] += n
+            c["missing_count"] += n_missing
+            c["verified_count"] += n_verified
+            c["unverified_count"] += n - n_missing - n_verified
+            c["post_count"] += int(n_posts or 0)
+            if newest and (not c.get("newest_downloaded_at") or newest > c["newest_downloaded_at"]):
+                c["newest_downloaded_at"] = newest
+            if oldest and (not c.get("oldest_downloaded_at") or oldest < c["oldest_downloaded_at"]):
+                c["oldest_downloaded_at"] = oldest
+        result = []
+        for key, c in creators.items():
+            c.pop("_rank", None)
+            c["key"] = f"{key[0]}|{key[1]}"
+            mem = members[key]
+            if len(mem) > 1:
+                # One creator under several ids / spellings: a post shared by them counts once
+                cond = " OR ".join(["(service = ? AND creator_id = ? AND creator_name = ?)"] * len(mem))
+                c["post_count"] = int(conn.execute(
+                    f"SELECT COUNT(DISTINCT post_id) FROM archive_posts WHERE {cond};",
+                    [x for t in mem for x in t]).fetchone()[0] or 0)
+            result.append(c)
+        self._creator_members = {k: sorted(v, key=lambda t: tuple(str(x or "") for x in t))
+                                 for k, v in members.items()}
+        self._sort_creators(result, sort_by)
+        return result
+
+    def _members_of(self, conn: sqlite3.Connection, key: Tuple[str, str]) -> List[Tuple[str, str, str]]:
+        """The raw (service, creator id, name) rows of a creator in the tab, from the last summaries or
+        else from the summary table (without either, every record had to be read)."""
+        member = self._creator_members.get(key)
+        if member:
+            return member
+        if not self._summaries_ready(conn):
+            return []
+        found = sorted({(sv, cid, cn) for sv, cid, cn in
+                        conn.execute("SELECT service, creator_id, creator_name FROM archive_creators WHERE service = ?;",
+                                     (key[0],))
+                        if self._creator_key(sv, cid, cn) == key})
+        return found
 
     def _close_unlocked(self) -> None:
         """Close database connection (must be called with self._lock held)."""
@@ -250,6 +403,7 @@ class ArchiveManager:
 
     def close(self) -> None:
         """Safely close database connection."""
+        self._maintenance_stop.set()
         with self._lock:
             self._close_unlocked()
 
@@ -260,8 +414,84 @@ class ArchiveManager:
             if self._conn is not None:
                 try:
                     self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                    self._conn.execute("PRAGMA optimize;")      # keeps the query planner's numbers fresh
                 except Exception as e:
                     logger.debug(f"Archive checkpoint skipped: {e}", category="archive")
+
+    # ── Weekly maintenance ─────────────────────────────────────────────────────
+
+    MAINTENANCE_EVERY = 7 * 24 * 3600
+
+    def start_maintenance(self, delay: float = 300.0) -> None:
+        """A while after start (in the background): the weekly check and safety copy, when due."""
+        def _run():
+            if self._maintenance_stop.wait(delay):
+                return
+            try:
+                self.run_maintenance()
+            except Exception as e:
+                logger.debug(f"Archive maintenance skipped: {e}", category="archive")
+        threading.Thread(target=_run, name="ArchiveMaintenance", daemon=True).start()
+
+    def _meta(self, key: str, value: Optional[str] = None) -> str:
+        with self._lock:
+            if self._conn is None:
+                return ""
+            self._conn.execute("CREATE TABLE IF NOT EXISTS archive_meta (k TEXT PRIMARY KEY, v TEXT);")
+            if value is not None:
+                self._conn.execute("INSERT INTO archive_meta (k, v) VALUES (?, ?) "
+                                   "ON CONFLICT(k) DO UPDATE SET v = excluded.v;", (key, value))
+                self._conn.commit()
+                return value
+            row = self._conn.execute("SELECT v FROM archive_meta WHERE k = ?;", (key,)).fetchone()
+            return row[0] if row else ""
+
+    def run_maintenance(self, force: bool = False) -> Dict[str, Any]:
+        """Once a week: checks the database for damage (repaired automatically if found) and keeps a
+        safety copy, download_archive.db.bak, when the drive has room for it (3x the archive). Reads
+        a snapshot, so downloads keep recording files meanwhile."""
+        result: Dict[str, Any] = {"checked": False, "ok": None, "backup": ""}
+        if not self._enabled or not os.path.exists(self.db_path) or not self._ensure_db():
+            return result
+        try:
+            last = float(self._meta("maintenance_at") or 0)
+        except ValueError:
+            last = 0.0
+        if not force and time.time() - last < self.MAINTENANCE_EVERY:
+            return result
+        t0 = time.time()
+        conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True, timeout=30.0)
+        try:
+            ok = self._quick_check(conn)
+            result.update(checked=True, ok=ok)
+            if not ok:
+                conn.close()
+                conn = None
+                logger.warning("📦 The weekly check found damage in the download archive.", category="archive")
+                self._note_error(sqlite3.DatabaseError("database disk image is malformed (weekly check)"))
+                return result
+            import shutil
+            size = os.path.getsize(self.db_path)
+            if os.path.exists(self.db_path + "-wal"):
+                size += os.path.getsize(self.db_path + "-wal")
+            free = shutil.disk_usage(self.config_dir).free
+            if free >= size * 3 + 1024 ** 3:
+                bak, tmp = self.db_path + ".bak", self.db_path + ".bak.tmp"
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+                conn.execute("VACUUM INTO ?;", (tmp,))
+                os.replace(tmp, bak)
+                result["backup"] = bak
+            else:
+                logger.info(f"📦 Archive safety copy skipped: not enough free space ({free / 1024 ** 3:.1f} GB free).",
+                            category="archive")
+        finally:
+            if conn is not None:
+                conn.close()
+        self._meta("maintenance_at", str(time.time()))
+        logger.info(f"📦 Weekly archive check: no problems found{'; safety copy saved' if result['backup'] else ''} "
+                    f"({time.time() - t0:.0f} s).", category="archive")
+        return result
 
     # ── Reading for the Archive tab ────────────────────────────────────────────
 
@@ -327,7 +557,18 @@ class ArchiveManager:
         to the window on each refresh froze it (#28)."""
         if not self._ensure_db():
             return []
-        where, params = self._where(query, service, file_type)
+        if not (query or "").strip() and (file_type or "all").strip().lower() in ("", "all"):
+            try:
+                with self._rlock:
+                    conn = self._reader()
+                    if conn is not None and self._summaries_ready(conn):
+                        return self._summaries_from_index(conn, service, sort_by)
+            except Exception as e:
+                logger.debug(f"Archive summaries not used: {e}", category="archive")
+        with self._rlock:
+            conn = self._reader()
+            where, params = self._fast_where(conn, query, service, file_type) if conn is not None \
+                else self._where(query, service, file_type)
         # Grouped by post: far fewer rows than files, and the creator's post count comes out of it
         sql = f"""
             SELECT service, creator_id, creator_name, post_id, post_title, COUNT(*),
@@ -416,8 +657,12 @@ class ArchiveManager:
             return []
         svc, _, name = str(creator_key or "").partition("|")
         key = (svc, name)
-        where, params = self._where(query, service, file_type)
-        member = self._creator_members.get(key) or []
+        with self._rlock:
+            conn = self._reader()
+            if conn is None:
+                return []
+            where, params = self._fast_where(conn, query, service, file_type)
+            member = self._members_of(conn, key)
         ids = sorted({str(cid) for (_s, cid, _n) in member if cid not in (None, "")})
         svcs = sorted({str(sv) for (sv, _c, _n) in member if sv is not None})
         if member and ids and svcs and all(cid not in (None, "") for (_s, cid, _n) in member):
@@ -501,6 +746,14 @@ class ArchiveManager:
                     if self._quick_check(self._conn):
                         count = self._conn.execute("SELECT COUNT(*) FROM downloaded_files;").fetchone()[0]
                         result.update(ok=True, method="reindex", kept=int(count or 0))
+                        try:
+                            # The summaries and the search index may not match the records any more
+                            archive_index.ensure(self._conn)
+                            archive_index.restart(self._conn)
+                            self._index_ready = False
+                            self._start_backfill()
+                        except Exception as ie:
+                            logger.debug(f"Archive summaries not rebuilt after the repair: {ie}", category="archive")
                         return self._finish_repair(result)
                 except Exception as re_err:
                     logger.info(f"REINDEX didn't repair the archive ({re_err}); copying the readable records…",
@@ -535,7 +788,7 @@ class ArchiveManager:
                 os.remove(f)
         new = sqlite3.connect(tmp)
         try:
-            self._create_schema(new)
+            self._create_schema(new, summaries=False)      # (set up after the copy; filled in in the background)
             old_cols = [r[1] for r in self._conn.execute("PRAGMA table_info(downloaded_files);")]
             new_cols = {r[1] for r in new.execute("PRAGMA table_info(downloaded_files);")}
             cols = [c for c in old_cols if c in new_cols]
@@ -575,6 +828,10 @@ class ArchiveManager:
                 raise sqlite3.DatabaseError("none of its records can be read")
             new.execute("PRAGMA user_version = 2;")
             new.commit()
+            try:
+                archive_index.ensure(new)
+            except Exception as ie:
+                logger.debug(f"Archive summaries not set up in the repaired copy: {ie}", category="archive")
             if not self._quick_check(new):
                 raise sqlite3.DatabaseError("the repaired copy didn't pass its check")
         except Exception as e:
@@ -594,6 +851,7 @@ class ArchiveManager:
             except OSError:
                 pass
         os.replace(tmp, self.db_path)
+        self._index_ready = False
         self._init_db_unlocked()
         return kept, lost
 
@@ -818,7 +1076,10 @@ class ArchiveManager:
         """
         if not self._ensure_db():
             return []
-        where_clause, params = self._where(query, service, file_type)
+        with self._rlock:
+            conn = self._reader()
+            where_clause, params = self._fast_where(conn, query, service, file_type) if conn is not None \
+                else self._where(query, service, file_type)
         sql = f"""
             SELECT id, service, creator_id, creator_name, post_id, post_title,
                    file_id, file_hash, filename, file_size, file_ext, downloaded_at,
@@ -1015,6 +1276,14 @@ class ArchiveManager:
             conn = self._reader()
             if conn is None:
                 return stats
+            try:
+                if self._summaries_ready(conn):
+                    self._statistics_from_index(conn, stats)
+                    self._stats_cache = dict(stats)
+                    self._stats_cache_time = now
+                    return stats
+            except Exception as e:
+                logger.debug(f"Archive summaries not used for statistics: {e}", category="archive")
 
             try:
                 cursor = conn.cursor()
@@ -1082,6 +1351,38 @@ class ArchiveManager:
                 self._note_error(e)
                 return stats
 
+    def _statistics_from_index(self, conn: sqlite3.Connection, stats: Dict[str, Any]) -> None:
+        """get_statistics from the summary tables (every record was counted several times over)."""
+        creators = set()
+        total = missing = verified = 0
+        for svc, cid, cname, n, n_missing, n_verified in conn.execute(
+                "SELECT service, creator_id, creator_name, files, missing, verified FROM archive_creators;"):
+            if not n:
+                continue
+            s_key = (str(svc or "").strip() or "unknown")
+            creators.add(s_key + ":" + (str(cname or "").strip() or str(cid or "").strip() or "Unknown Creator"))
+            total += int(n or 0)
+            missing += int(n_missing or 0)
+            verified += int(n_verified or 0)
+            sc = str(svc or "").strip().lower() or "unknown"
+            stats["service_counts"][sc] = stats["service_counts"].get(sc, 0) + int(n or 0)
+        stats["total_files"] = total
+        stats["total_creators"] = len(creators)
+        stats["total_posts"] = int(conn.execute(
+            "SELECT COUNT(*) FROM (SELECT DISTINCT service, post_id FROM archive_posts);").fetchone()[0] or 0)
+        for ext, cnt in conn.execute("SELECT ext, files FROM archive_exts;"):
+            ext_str = str(ext or "").lower()
+            for cat, ext_set in FILE_TYPE_CATEGORIES.items():
+                if ext_str in ext_set:
+                    stats["category_counts"][cat] += int(cnt or 0)
+                    break
+            else:
+                stats["category_counts"]["other"] += int(cnt or 0)
+        stats["category_counts"]["removed"] = missing
+        stats["missing_files"] = missing
+        stats["verified_files"] = verified
+        stats["total_links"] = stats["category_counts"].get("links", 0)
+
     def delete_record(self, record_id: int) -> bool:
         """Delete a single archive record by primary key."""
         with self._lock:
@@ -1141,21 +1442,40 @@ class ArchiveManager:
                 cursor = self._conn.cursor()
                 clean_cid = str(creator_id or "")
                 clean_svc = str(service or "").lower()
-                if clean_svc:
-                    cursor.execute(
-                        "DELETE FROM downloaded_files WHERE (creator_id = ? OR creator_name = ?) AND service = ?;",
-                        (clean_cid, clean_cid, clean_svc)
-                    )
-                else:
-                    cursor.execute(
-                        "DELETE FROM downloaded_files WHERE (creator_id = ? OR creator_name = ?);",
-                        (clean_cid, clean_cid)
-                    )
+                cond = "(creator_id = ? OR creator_name = ?)" + (" AND service = ?" if clean_svc else "")
+                cparams = (clean_cid, clean_cid, clean_svc) if clean_svc else (clean_cid, clean_cid)
+                wm, done, fts = archive_index.state(self._conn)
+                bulk = wm > 0 or done > 0
+                if bulk:
+                    # A creator can have hundreds of thousands of records: the summaries and the search
+                    # index are fixed up in a few statements instead of record by record
+                    archive_index.paused(self._conn, True)
+                    counted = f"{cond} AND (id <= ? OR id > ?)"
+                    if fts:
+                        cursor.execute(
+                            "INSERT INTO archive_fts (archive_fts, rowid, filename, post_title, creator_name, creator_id, post_id) "
+                            f"SELECT 'delete', id, filename, post_title, creator_name, creator_id, post_id FROM downloaded_files WHERE {counted};",
+                            cparams + (done, wm))
+                    exts = cursor.execute(
+                        f"SELECT LOWER(IFNULL(file_ext, '')), COUNT(*) FROM downloaded_files WHERE {counted} GROUP BY 1;",
+                        cparams + (done, wm)).fetchall()
+                cursor.execute(f"DELETE FROM downloaded_files WHERE {cond};", cparams)
                 affected = cursor.rowcount
+                if bulk:
+                    cursor.execute(f"DELETE FROM archive_posts WHERE {cond};", cparams)
+                    cursor.execute(f"DELETE FROM archive_creators WHERE {cond};", cparams)
+                    for ext, n in exts:
+                        cursor.execute("UPDATE archive_exts SET files = files - ? WHERE ext = ?;", (n, ext))
+                    cursor.execute("DELETE FROM archive_exts WHERE files <= 0;")
+                    archive_index.paused(self._conn, False)
                 self._conn.commit()
                 self._stats_cache = None
                 return affected
             except Exception as e:
+                try:
+                    self._conn.rollback()       # (never leave the summaries paused)
+                except Exception:
+                    pass
                 logger.error(f"Failed to delete archive records for creator {creator_id}: {e}", category="archive")
                 self._note_error(e)
                 return -1
@@ -1171,13 +1491,23 @@ class ArchiveManager:
                 return False
 
             try:
-                self._conn.execute("DELETE FROM downloaded_files;")
+                if archive_index.state(self._conn) != (0, 0, False):
+                    archive_index.paused(self._conn, True)      # (record by record took ages)
+                    self._conn.execute("DELETE FROM downloaded_files;")
+                    archive_index.forget_all(self._conn)
+                    archive_index.paused(self._conn, False)
+                else:
+                    self._conn.execute("DELETE FROM downloaded_files;")
                 self._conn.commit()
                 self._conn.execute("VACUUM;")
                 self._stats_cache = None
                 logger.info("🗑️ Download Archive Database cleared.", category="archive")
                 return True
             except Exception as e:
+                try:
+                    self._conn.rollback()       # (never leave the summaries paused)
+                except Exception:
+                    pass
                 logger.error(f"Failed to clear download archive database: {e}", category="archive")
                 self._note_error(e)
                 return False

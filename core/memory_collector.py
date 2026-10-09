@@ -181,6 +181,7 @@ class MemoryCollector:
     def check(self) -> dict:
         """The light periodic pass: cleanup hooks, memory reading, peak tracking, warnings."""
         self._run_hooks()
+        self._freeze_survivors()
         mem = self.get_memory_info()
         rss = mem["rss_mb"]
         if rss >= self.high_memory_mb and not self._warned_high:
@@ -206,10 +207,25 @@ class MemoryCollector:
             self._hour_peak_mb = rss
         return mem
 
-    def collect(self, force_working_set_trim: bool = False, emit_log: bool = True, reason: str = "") -> dict:
+    @staticmethod
+    def _freeze_survivors() -> None:
+        """Objects that lived through the last minute (a loaded queue, the Watchlist, the Archive's
+        creator list…) are left out of Python's automatic collections. With millions of them, each of
+        those collections paused every thread, the window too, for 100-200 ms, at random moments.
+        Frozen objects are still freed as soon as nothing uses them; only unused objects that refer to
+        each other in a circle wait for the deep cleanup (collect(deep=True), while minimized)."""
+        if hasattr(gc, "freeze"):
+            try:
+                gc.freeze()
+            except Exception:
+                pass
+
+    def collect(self, force_working_set_trim: bool = False, emit_log: bool = True, reason: str = "",
+                deep: bool = False) -> dict:
         """
         A full garbage collection (all generations). Only run where a short pause doesn't matter:
-        after a download finishes or while the window is minimized.
+        after a download finishes or while the window is minimized. deep: also the objects frozen by
+        the periodic pass (longer; while minimized).
         `force_working_set_trim` is accepted for compatibility and ignored: forcing Windows to page
         memory out only makes Task Manager's number smaller and costs page faults afterwards.
         """
@@ -221,9 +237,14 @@ class MemoryCollector:
             t0 = time.perf_counter()
             unreachable = 0
             try:
+                if deep and hasattr(gc, "unfreeze"):
+                    gc.unfreeze()
                 unreachable = gc.collect()
             except Exception as e:
                 logger.debug(f"[Memory Collector] gc.collect error: {e}", category="system")
+            finally:
+                if deep:
+                    self._freeze_survivors()
             took_ms = (time.perf_counter() - t0) * 1000
             mem_after = self.get_memory_info()
             if emit_log:

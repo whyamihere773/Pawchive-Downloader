@@ -18,6 +18,7 @@ _NEVER_SAVED_SETTINGS = ("cookie",)
 
 
 from core.path_utils import get_config_dir
+from core.history_store import HistoryStore, import_legacy_json, SESSIONS_SHOWN
 
 
 class SessionManager:
@@ -27,7 +28,12 @@ class SessionManager:
         os.makedirs(self.config_dir, exist_ok=True)
         self.recovery_manager = RecoveryManager(self.config_dir)
         self.session_file = os.path.join(self.config_dir, "session.json")
+        # Download history: history.db (older versions' history.json is imported once and kept as
+        # history.json.migrated)
         self.history_file = os.path.join(self.config_dir, "history.json")
+        self.history_store = HistoryStore(os.path.join(self.config_dir, "history.db"))
+        self._pending_files: List[str] = []
+        self._pending_sessions: List[Dict[str, Any]] = []
         self.settings_file = os.path.join(self.config_dir, "settings.json")
 
         self.history: Dict[str, Any] = {"downloaded_files": [], "processed_posts": []}
@@ -41,40 +47,62 @@ class SessionManager:
         self.load_history()
 
     def load_history(self):
-        if os.path.exists(self.history_file):
-            try:
-                with open(self.history_file, "r", encoding="utf-8") as f:
-                    self.history = json.load(f)
-                self._downloaded_files_set = set(self.history.get("downloaded_files", []))
-                logger.info(
-                    f"Loaded {len(self.history.get('downloaded_files', []))} last downloaded files and "
-                    f"{len(self.history.get('processed_posts', []))} processed posts from history.",
-                    category="session"
-                )
-            except Exception as e:
-                logger.warning(f"Could not load download history: {e}", category="session")
+        """The History tab's sessions (the file list stays in the database). An older version's
+        history.json is moved into the database first."""
+        try:
+            if os.path.exists(self.history_file):
+                self._import_legacy_history()
+            sessions = self.history_store.recent_sessions() if self.history_store.exists() else []
+        except Exception as e:
+            logger.warning(f"Could not load download history: {e}", category="session")
+            sessions = []
+        with self._history_lock:
+            self.history = {"download_history": sessions}
+        if sessions:
+            logger.info(f"Loaded {len(sessions)} download session(s) from history.", category="session")
+
+    def _import_legacy_history(self):
+        try:
+            with open(self.history_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            logger.warning(f"Could not read the old download history: {e}", category="session")
+            return
+        if not isinstance(data, dict):
+            return
+        import_legacy_json(self.history_store, data)
+        # Kept, renamed (never deleted); renamed, it isn't imported again
+        target = self.history_file + ".migrated"
+        n = 2
+        while os.path.exists(target):
+            target = f"{self.history_file}.migrated-{n}"
+            n += 1
+        try:
+            os.replace(self.history_file, target)
+        except OSError as e:
+            logger.warning(f"Couldn't rename history.json after importing it: {e}", category="session")
 
     def save_history(self):
-        """Writes history.json now (crash-safe: a cut-off write never leaves a broken file)."""
+        """Writes the history recorded since the last save to history.db (one transaction)."""
         with self._history_write_lock:
             with self._history_lock:
                 timer, self._history_save_timer = self._history_save_timer, None
-                try:
-                    payload = json.dumps(self.history, ensure_ascii=False)
-                except Exception as e:
-                    logger.error(f"Failed to save download history: {e}", category="session")
-                    return
+                files, self._pending_files = self._pending_files, []
+                sessions, self._pending_sessions = self._pending_sessions, []
             if timer is not None:
                 timer.cancel()
             try:
-                from core.atomic_io import atomic_write_text
-                atomic_write_text(self.history_file, payload)
+                self.history_store.add_files(files)
+                self.history_store.add_sessions(sessions)
             except Exception as e:
                 logger.error(f"Failed to save download history: {e}", category="session")
+                with self._history_lock:            # tried again with the next save
+                    self._pending_files = files + self._pending_files
+                    self._pending_sessions = sessions + self._pending_sessions
 
     def _schedule_history_save(self, delay: float = 3.0):
-        """Saves history a few seconds after the latest change, in the background (writing up to
-        50,000 entries from the download loop every 3 s stalled downloads on slow drives)."""
+        """Saves history a few seconds after the latest change, in the background (the files of the
+        last few seconds are written together)."""
         with self._history_lock:
             if self._history_save_timer is not None:
                 return
@@ -86,31 +114,27 @@ class SessionManager:
     def flush_history(self):
         """Writes a pending history save right away (call before the app closes)."""
         with self._history_lock:
-            pending = self._history_save_timer is not None
+            pending = self._history_save_timer is not None or self._pending_files or self._pending_sessions
         if pending:
             self.save_history()
 
     def record_downloaded_file(self, file_id_or_path: str):
+        if not file_id_or_path:
+            return
         with self._history_lock:
-            if "downloaded_files" not in self.history:
-                self.history["downloaded_files"] = []
-            if file_id_or_path in self._downloaded_files_set:
-                return
-            self._downloaded_files_set.add(file_id_or_path)
-            self.history["downloaded_files"].append(file_id_or_path)
-            if len(self.history["downloaded_files"]) > 50000:
-                removed = self.history["downloaded_files"][:-50000]
-                self.history["downloaded_files"] = self.history["downloaded_files"][-50000:]
-                self._downloaded_files_set.difference_update(removed)
+            self._pending_files.append(file_id_or_path)
         self._schedule_history_save()
 
     def is_file_downloaded(self, file_id_or_path: str) -> bool:
-        return file_id_or_path in self._downloaded_files_set
+        with self._history_lock:
+            if file_id_or_path in self._pending_files:
+                return True
+        try:
+            return self.history_store.has_file(file_id_or_path)
+        except Exception:
+            return False
 
     def record_download_session(self, creator_name: str, url: str, service: str, file_count: int):
-        with self._history_lock:
-            if "download_history" not in self.history:
-                self.history["download_history"] = []
         entry = {
             "creator": creator_name,
             "url": url,
@@ -119,9 +143,10 @@ class SessionManager:
             "date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
         }
         with self._history_lock:
-            self.history["download_history"].insert(0, entry)
-            if len(self.history["download_history"]) > 500:
-                self.history["download_history"] = self.history["download_history"][:500]
+            sessions = self.history.setdefault("download_history", [])
+            sessions.insert(0, entry)
+            del sessions[SESSIONS_SHOWN:]
+            self._pending_sessions.append(entry)
         self._schedule_history_save(delay=0.5)
 
     def get_download_history(self):
