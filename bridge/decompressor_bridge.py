@@ -12,7 +12,7 @@ import shutil
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 from PySide6.QtCore import QObject, Signal, Slot, Property
 from PySide6.QtWidgets import QFileDialog
@@ -25,6 +25,9 @@ from services.bulk_decompressor import (
 )
 from core.archive_password_manager import archive_password_manager
 from core.logger import logger
+from core.path_translation import localize_path
+from services.ffmpeg_manager import FfmpegDownloader, find_ffmpeg
+from services.media_compressor import CompressResult, CompressSettings, compress_folder
 
 
 def _format_bytes(b: int) -> str:
@@ -67,6 +70,11 @@ class DecompressorBridge(QObject):
     passwordWrong = Signal(str)           # itemId — wrong password entered
     passwordBankChanged = Signal()
 
+    # Compress after extracting (off by default)
+    ffmpegChanged = Signal()
+    compressionReviewRequested = Signal(int, "qint64", "qint64", int)   # files, bytes before, after, failed
+    originalsHandled = Signal(str)                                      # what was done with the originals
+
     def __init__(self, watchlist_manager, app_bridge=None, parent=None):
         super().__init__(parent)
         self._watchlist_manager = watchlist_manager
@@ -103,9 +111,236 @@ class DecompressorBridge(QObject):
         self._extracted_bytes_done = 0
         self._start_time = 0.0
 
+        # Compress after extracting
+        self._compress_after = False
+        self._image_format = "webp"
+        self._image_quality = 82
+        self._video_format = "h265"
+        self._video_quality = 75
+        self._ffmpeg_path = find_ffmpeg()
+        self._ffmpeg_downloader = FfmpegDownloader()
+        self._ffmpeg_downloading = False
+        self._ffmpeg_progress = 0.0
+        self._ffmpeg_message = ""
+        self._compress_procs: set = set()
+        self._pending_originals: List[Tuple[str, str]] = []     # (original, compressed) awaiting the answer
+        self._loading_settings = False
+        self.settingsChanged.connect(self._save_settings)
+        self.locationsChanged.connect(self._save_settings)
+
         # Reactive password bank binding: selection changes update matched status
         self.selectedStatsChanged.connect(self.passwordBankChanged)
         self.isExtractingChanged.connect(self.passwordBankChanged)
+
+    # ── Saved settings ─────────────────────────────────────────────────────────
+
+    def settings_dict(self) -> Dict[str, Any]:
+        return {
+            "max_parallel": self._max_parallel,
+            "threads_per_archive": self._threads_per_archive,
+            "delete_after": self._delete_after,
+            "auto_prompt_passwords": self._auto_prompt_passwords,
+            "custom_locations": [{"path": c["path"], "creator": c.get("creator", "Custom")}
+                                 for c in self._custom_locations],
+            "compress_after": self._compress_after,
+            "image_format": self._image_format,
+            "image_quality": self._image_quality,
+            "video_format": self._video_format,
+            "video_quality": self._video_quality,
+        }
+
+    def load_settings(self, d: Dict[str, Any]) -> None:
+        """Settings from settings.json (they reset at every start before)."""
+        if not isinstance(d, dict):
+            return
+        self._loading_settings = True
+        try:
+            self.maxParallel = d.get("max_parallel", self._max_parallel)
+            self.threadsPerArchive = d.get("threads_per_archive", self._threads_per_archive)
+            self.deleteAfter = bool(d.get("delete_after", self._delete_after))
+            self.autoPromptPasswords = bool(d.get("auto_prompt_passwords", self._auto_prompt_passwords))
+            self._custom_locations = [
+                {"path": localize_path(c["path"]), "creator": c.get("creator", "Custom"), "source": "custom"}
+                for c in d.get("custom_locations") or [] if isinstance(c, dict) and c.get("path")]
+            self.compressAfter = bool(d.get("compress_after", False))
+            self.imageFormat = d.get("image_format", self._image_format)
+            self.imageQuality = d.get("image_quality", self._image_quality)
+            self.videoFormat = d.get("video_format", self._video_format)
+            self.videoQuality = d.get("video_quality", self._video_quality)
+            self.locationsChanged.emit()
+        except (TypeError, ValueError) as e:
+            logger.debug(f"Decompressor settings partly ignored: {e}", category="decompressor")
+        finally:
+            self._loading_settings = False
+
+    def _save_settings(self) -> None:
+        if self._loading_settings or not self._app_bridge or not hasattr(self._app_bridge, "saveSettings"):
+            return
+        try:
+            self._app_bridge.saveSettings()
+        except Exception as e:
+            logger.debug(f"Couldn't save the Decompressor settings: {e}", category="decompressor")
+
+    # ── Compress after extracting ──────────────────────────────────────────────
+
+    @Property(bool, notify=settingsChanged)
+    def compressAfter(self) -> bool:
+        return self._compress_after
+
+    @compressAfter.setter
+    def compressAfter(self, val: bool):
+        if self._compress_after != bool(val):
+            self._compress_after = bool(val)
+            self.settingsChanged.emit()
+
+    @Property(str, notify=settingsChanged)
+    def imageFormat(self) -> str:
+        return self._image_format
+
+    @imageFormat.setter
+    def imageFormat(self, val: str):
+        v = str(val or "").lower()
+        if v in ("webp", "avif", "jpg", "keep") and v != self._image_format:
+            self._image_format = v
+            self.settingsChanged.emit()
+
+    @Property(int, notify=settingsChanged)
+    def imageQuality(self) -> int:
+        return self._image_quality
+
+    @imageQuality.setter
+    def imageQuality(self, val: int):
+        v = max(1, min(100, int(val)))
+        if v != self._image_quality:
+            self._image_quality = v
+            self.settingsChanged.emit()
+
+    @Property(str, notify=settingsChanged)
+    def videoFormat(self) -> str:
+        return self._video_format
+
+    @videoFormat.setter
+    def videoFormat(self, val: str):
+        v = str(val or "").lower()
+        if v in ("h265", "h264", "av1", "keep") and v != self._video_format:
+            self._video_format = v
+            self.settingsChanged.emit()
+
+    @Property(int, notify=settingsChanged)
+    def videoQuality(self) -> int:
+        return self._video_quality
+
+    @videoQuality.setter
+    def videoQuality(self, val: int):
+        v = max(1, min(100, int(val)))
+        if v != self._video_quality:
+            self._video_quality = v
+            self.settingsChanged.emit()
+
+    @Property(bool, notify=ffmpegChanged)
+    def ffmpegAvailable(self) -> bool:
+        return bool(self._ffmpeg_path) and os.path.isfile(self._ffmpeg_path)
+
+    @Property(bool, notify=ffmpegChanged)
+    def ffmpegDownloading(self) -> bool:
+        return self._ffmpeg_downloading
+
+    @Property(float, notify=ffmpegChanged)
+    def ffmpegProgress(self) -> float:
+        return self._ffmpeg_progress
+
+    @Property(str, notify=ffmpegChanged)
+    def ffmpegMessage(self) -> str:
+        return self._ffmpeg_message
+
+    @Slot()
+    def downloadFfmpeg(self):
+        """Downloads FFmpeg (needed for videos) in the background."""
+        if self._ffmpeg_downloading:
+            return
+        self._ffmpeg_downloading = True
+        self._ffmpeg_progress = 0.0
+        self._ffmpeg_message = ""
+        self.ffmpegChanged.emit()
+        last = [0.0]
+
+        def _progress(done, total):
+            now = time.time()
+            if total and now - last[0] > 0.2:
+                last[0] = now
+                self._ffmpeg_progress = done / total * 100
+                self.ffmpegChanged.emit()
+
+        def _worker():
+            ok, msg = self._ffmpeg_downloader.download(_progress)
+            if ok:
+                self._ffmpeg_path = msg
+                self._ffmpeg_message = ""
+            else:
+                self._ffmpeg_message = "" if msg == "Cancelled" else msg
+                if msg != "Cancelled":
+                    logger.warning(msg, category="ffmpeg")
+            self._ffmpeg_downloading = False
+            self.ffmpegChanged.emit()
+        threading.Thread(target=_worker, daemon=True, name="FfmpegDownload").start()
+
+    @Slot()
+    def cancelFfmpegDownload(self):
+        self._ffmpeg_downloader.cancel_event.set()
+
+    def _compress_settings(self) -> Optional[CompressSettings]:
+        if not self._compress_after:
+            return None
+        s = CompressSettings(image_format=self._image_format, image_quality=self._image_quality,
+                             video_format=self._video_format, video_quality=self._video_quality,
+                             ffmpeg=self._ffmpeg_path if self.ffmpegAvailable else "")
+        if s.video_format != "keep" and not s.ffmpeg:
+            logger.warning("Videos aren't compressed: FFmpeg isn't installed (Decompressor → Compress after "
+                           "extracting → Download FFmpeg).", category="decompressor")
+        return s if (s.images_on or s.videos_on) else None
+
+    @Slot()
+    def removeCompressedOriginals(self):
+        """The user's answer at the end: the originals of the compressed files go to the Recycle Bin."""
+        pairs, self._pending_originals = self._pending_originals, []
+        if not pairs:
+            return
+
+        def _worker():
+            from PySide6.QtCore import QFile
+            moved, freed, kept = 0, 0, 0
+            for orig, new in pairs:
+                try:
+                    if not (os.path.exists(orig) and os.path.exists(new)):
+                        kept += 1
+                        continue
+                    size = os.path.getsize(orig)
+                    if not QFile.moveToTrash(orig):
+                        kept += 1
+                        continue
+                    moved += 1
+                    freed += size - os.path.getsize(new)
+                    # "clip (compressed).mp4" takes the original's name once it's gone
+                    if os.path.normcase(os.path.splitext(new)[0]) == os.path.normcase(os.path.splitext(orig)[0] + " (compressed)") \
+                            and os.path.splitext(new)[1].lower() == os.path.splitext(orig)[1].lower() and not os.path.exists(orig):
+                        os.replace(new, orig)
+                except OSError as e:
+                    kept += 1
+                    logger.debug(f"Couldn't move {orig} to the Recycle Bin: {e}", category="decompressor")
+            msg = f"Moved {moved} original(s) to the Recycle Bin, {_format_bytes(max(0, freed))} saved."
+            if kept:
+                msg += f" {kept} couldn't be moved and were kept."
+            logger.success(msg, category="decompressor")
+            self.originalsHandled.emit(msg)
+        threading.Thread(target=_worker, daemon=True, name="CompressOriginals").start()
+
+    @Slot()
+    def keepCompressedOriginals(self):
+        n = len(self._pending_originals)
+        self._pending_originals = []
+        if n:
+            logger.info(f"Kept the {n} original(s) next to their compressed copies.", category="decompressor")
+            self.originalsHandled.emit("")
 
     # ── Properties ─────────────────────────────────────────────────────────────
 
@@ -598,6 +833,9 @@ class DecompressorBridge(QObject):
         max_workers = self._max_parallel
         threads = self._threads_per_archive
         delete_after = self._delete_after
+        compress = self._compress_settings()
+        compressed_total = CompressResult()
+        compressed_lock = threading.Lock()
 
         logger.info(
             f"Starting bulk extraction: {len(selected_items)} archive(s) ({_format_bytes(self._total_bytes_to_extract)}) | "
@@ -625,7 +863,8 @@ class DecompressorBridge(QObject):
                 # Compute overall progress
                 with self._items_lock:
                     done_b = sum(
-                        (i.size if i.status == "done" else (i.size * (i.progress / 100.0) if i.status == "extracting" else 0))
+                        (i.size if i.status in ("done", "compressing")
+                         else (i.size * (i.progress / 100.0) if i.status == "extracting" else 0))
                         for i in selected_items
                     )
                 total_b = max(1, self._total_bytes_to_extract)
@@ -657,7 +896,7 @@ class DecompressorBridge(QObject):
                 if self._extract_cancel_event.is_set():
                     item.status = "skipped"
                     self.itemUpdated.emit(item.item_id, item.status, 0.0, "Cancelled")
-                    return False
+                    return None                     # stopped, not failed
 
                 item.status = "extracting"
                 item.progress = 0.0
@@ -702,7 +941,7 @@ class DecompressorBridge(QObject):
                         )
                         if ok:
                             item.password = matched_pw
-                            archive_password_manager.record_archive_password(item.path, matched_pw)
+                            archive_password_manager.record_archive_password(item.path, matched_pw, creator=item.creator)
                             self.passwordBankChanged.emit()
 
                 # 3. If still encrypted and uncracked: prompt user if enabled
@@ -754,13 +993,34 @@ class DecompressorBridge(QObject):
                                             self.passwordBankChanged.emit()
 
                 if ok:
+                    logger.success(f"✓ Extracted [{item.creator}] {item.filename} -> {item.target_dir}", category="decompressor")
+                    if compress and item.target_dir and os.path.isdir(item.target_dir) \
+                            and not self._extract_cancel_event.is_set():
+                        item.status = "compressing"
+                        item.progress = 0.0
+                        self.itemUpdated.emit(item.item_id, item.status, 0.0, "")
+                        r = compress_folder(item.target_dir, compress, cancel=self._extract_cancel_event,
+                                            on_progress=lambda pct: _update_progress(item, pct),
+                                            procs=self._compress_procs)
+                        with compressed_lock:
+                            compressed_total.merge(r)
+                        if r.compressed or r.failed:
+                            logger.info(f"🗜 [{item.creator}] {item.filename}: {len(r.compressed)} file(s) compressed, "
+                                        f"{_format_bytes(r.bytes_before)} → {_format_bytes(r.bytes_after)}"
+                                        + (f", {len(r.failed)} couldn't be" if r.failed else ""),
+                                        category="decompressor",
+                                        details="\n".join(r.failed[:50]) if r.failed else "")
                     item.status = "done"
                     item.progress = 100.0
                     item.error_message = ""
                     self.itemUpdated.emit(item.item_id, item.status, 100.0, "")
-                    logger.success(f"✓ Extracted [{item.creator}] {item.filename} -> {item.target_dir}", category="decompressor")
                     return True
                 else:
+                    if self._extract_cancel_event.is_set() and "Cancelled" in (err or ""):
+                        item.status = "skipped"
+                        item.error_message = "Cancelled"
+                        self.itemUpdated.emit(item.item_id, item.status, 0.0, item.error_message)
+                        return None
                     if self.engine.is_password_error(err):
                         item.status = "password_required"
                         item.error_message = "Password required (encrypted archive)"
@@ -781,7 +1041,7 @@ class DecompressorBridge(QObject):
                         res = f.result()
                         if res:
                             success_count += 1
-                        else:
+                        elif res is not None:
                             error_count += 1
                     except Exception as exc:
                         error_count += 1
@@ -800,6 +1060,15 @@ class DecompressorBridge(QObject):
                 f"Bulk decompression complete: {success_count} succeeded, {error_count} failed.",
                 category="decompressor"
             )
+            if compressed_total.compressed:
+                # The originals stay until the user decides (asked once, for the whole run)
+                self._pending_originals = list(compressed_total.compressed)
+                logger.success(
+                    f"🗜 Compressed {len(compressed_total.compressed)} file(s): "
+                    f"{_format_bytes(compressed_total.bytes_before)} → {_format_bytes(compressed_total.bytes_after)}.",
+                    category="decompressor")
+                self.compressionReviewRequested.emit(len(compressed_total.compressed), compressed_total.bytes_before,
+                                                     compressed_total.bytes_after, len(compressed_total.failed))
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -1126,6 +1395,11 @@ class DecompressorBridge(QObject):
         logger.warning("Bulk decompression cancelled by user.", category="decompressor")
         self._extract_cancel_event.set()
         self.engine.cancel_all()
+        for proc in list(self._compress_procs):        # ffmpeg compressing a video
+            try:
+                proc.kill()
+            except Exception:
+                pass
         # Wake any worker that is blocked waiting to show a password prompt
         with self._prompt_lock:
             for it_id, ev in list(self._prompt_events.items()):

@@ -20,11 +20,27 @@ ARCHIVE_EXTENSIONS = {
     ".tgz", ".tbz2", ".txz", ".zst", ".iso", ".cab", ".lzma"
 }
 
-# Regex to detect secondary split archive parts that shouldn't be extracted independently
-SPLIT_SECONDARY_REGEX = re.compile(
-    r'(?:\.part0*[2-9]\d*|\.part[1-9]\d{2,}|\.z0[1-9]|\.z[1-9]\d|\.r0[1-9]|\.r[1-9]\d|\.7z\.0*[2-9]\d*|\.7z\.[1-9]\d{2,})\.(?:rar|zip|7z)?$',
-    re.IGNORECASE
-)
+# Parts of a split archive: only the first one is extracted (7-Zip reads the others from it).
+# "name.part3.rar" / "name.part03.rar" / "name.part010.rar", and "name.7z.002" / "name.zip.002" / "name.002"
+_PART_RE = re.compile(r"\.part(\d+)\.(?:rar|zip|7z|exe)$", re.IGNORECASE)
+_NUMBERED_RE = re.compile(r"\.(\d{3,})$")
+_FIRST_PART_SUFFIX = re.compile(r"(?:\.part0*1\.(?:rar|zip|7z|exe)|(?:\.(?:7z|zip|rar|tar))?\.0*1)$", re.IGNORECASE)
+
+
+def is_secondary_part(filename: str) -> bool:
+    """A later part of a split archive (part 2, 3, …), which isn't extracted on its own."""
+    m = _PART_RE.search(filename) or _NUMBERED_RE.search(filename)
+    return bool(m) and int(m.group(1)) > 1
+
+
+class _SecondaryParts:
+    """Kept for callers of the old regex: .search(name) is truthy for a later part."""
+    @staticmethod
+    def search(filename: str):
+        return is_secondary_part(filename) or None
+
+
+SPLIT_SECONDARY_REGEX = _SecondaryParts()
 
 
 def get_7za_path() -> str:
@@ -65,9 +81,12 @@ def get_7za_path() -> str:
 def clean_archive_stem(filename: str) -> str:
     """Extract folder name without compound archive extensions."""
     lower = filename.lower()
-    for compound in [".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst", ".7z.001", ".part1.rar", ".part01.rar"]:
+    for compound in [".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst"]:
         if lower.endswith(compound):
             return filename[:-len(compound)].rstrip(" ._")
+    m = _FIRST_PART_SUFFIX.search(filename)        # "name.part1.rar", "name.part001.rar", "name.zip.001"
+    if m:
+        return filename[:m.start()].rstrip(" ._") or "extracted_archive"
     stem, _ = os.path.splitext(filename)
     return stem.rstrip(" ._") or "extracted_archive"
 
@@ -207,7 +226,7 @@ class BulkDecompressorEngine:
                         is_split_001 = f.lower().endswith(".001")
                         if ext in ARCHIVE_EXTENSIONS or is_split_001:
                             # Filter secondary split volumes
-                            if SPLIT_SECONDARY_REGEX.search(f):
+                            if is_secondary_part(f):
                                 continue
 
                             full_path = os.path.normpath(os.path.join(root, f))
@@ -259,8 +278,8 @@ class BulkDecompressorEngine:
     ) -> List[DiskCheckResult]:
         """
         Group selected items by filesystem drive and estimate required free disk space.
-        Conservative estimate: 2.0x archive size.
-        If delete_after is enabled: peak space needed is ~1.2x.
+        Conservative estimate: 2.0x archive size. Deleting archives afterwards doesn't lower it: they go
+        to the Recycle Bin, which keeps them on the same drive.
         """
         drive_map: Dict[str, List[ArchiveItem]] = {}
         for item in items:
@@ -287,8 +306,7 @@ class BulkDecompressorEngine:
         results: List[DiskCheckResult] = []
         for drive, drive_items in drive_map.items():
             total_arc_sz = sum(i.size for i in drive_items)
-            # Estimation multiplier: 2.0x standard, 1.2x if archives are deleted as we go
-            multiplier = 1.2 if delete_after else 2.0
+            multiplier = 2.0
             estimated_req = int(total_arc_sz * multiplier)
 
             free_bytes = 0
@@ -383,10 +401,11 @@ class BulkDecompressorEngine:
             return False
 
     def probe_if_encrypted(self, archive_path: str) -> Tuple[bool, str]:
-        """Fast in-memory test using '7za t' to check if an archive requires a password without touching the disk."""
+        """Whether an archive needs a password, from its file list ('7za l', ~0.1 s): '7za t' decompressed
+        the whole archive just to ask, which doubled the time of every extraction."""
         if not self.has_7za or not os.path.exists(archive_path):
             return False, ""
-        cmd = [self._7za_path, "t", "-y", "-p-", archive_path]
+        cmd = [self._7za_path, "l", "-slt", "-y", "-p-", archive_path]
         startupinfo = None
         creationflags = 0
         if sys.platform == "win32":
@@ -408,8 +427,10 @@ class BulkDecompressorEngine:
                 errors="replace"
             )
             out, _ = proc.communicate()
-            if proc.returncode != 0 and self.is_password_error(out):
+            if proc.returncode != 0 and self.is_password_error(out):     # encrypted file names (7z / rar)
                 return True, out.strip().splitlines()[-1] if out.strip() else "Encrypted"
+            if re.search(r"^Encrypted = \+", out or "", re.MULTILINE):    # encrypted files (zip, 7z, rar)
+                return True, "Encrypted"
             return False, ""
         except Exception:
             return False, ""
@@ -564,6 +585,19 @@ class BulkDecompressorEngine:
         # 7: Command line error
         # 8: Not enough memory
         # 255: User stopped the process
+        # 1 = finished with warnings (e.g. a file it couldn't write): what was extracted is kept, but the
+        # archive isn't deleted (those files may only be in it). The files were thrown away before.
+        if ret_code == 1 and not self.is_password_error("".join(stdout_lines)):
+            item.extracted_present = True
+            item.extracted_dir = target_dir
+            if effective_pw:
+                item.password = effective_pw
+            if progress_callback:
+                progress_callback(100.0)
+            tail = " ".join(l.strip() for l in stdout_lines[-6:] if l.strip())
+            logger.warning(f"Extracted {item.filename} with warnings (the archive was kept): {tail[:300]}",
+                           category="decompressor")
+            return True, ""
         if ret_code == 0:
             if progress_callback:
                 progress_callback(100.0)

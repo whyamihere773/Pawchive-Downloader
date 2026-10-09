@@ -77,6 +77,14 @@ Item {
     property string etaText: "--"
     property string speedText: "--"
 
+    // End of a run with "Compress after extracting": keep or remove the originals
+    property bool showCompressReview: false
+    property int compressedCount: 0
+    property real compressedBefore: 0
+    property real compressedAfter: 0
+    property int compressFailed: 0
+    property string compressNote: ""
+
     // Redecompress confirm modal state
     property bool showRedecompressModal: false
     property int redecompressAlreadyDoneCount: 0
@@ -311,8 +319,18 @@ Item {
             root.speedText = speed;
         }
         function onItemUpdated(itemId, status, progress, errMsg) {
-            root.itemsList = root.parseItems();
-            root.groupedItems = root.parseGroupedItems();
+            if (!itemRefreshTimer.running) itemRefreshTimer.start();
+        }
+        function onCompressionReviewRequested(count, before, after, failed) {
+            root.compressedCount = count;
+            root.compressedBefore = before;
+            root.compressedAfter = after;
+            root.compressFailed = failed;
+            root.compressNote = "";
+            root.showCompressReview = true;
+        }
+        function onOriginalsHandled(message) {
+            root.compressNote = message;
         }
         function onPasswordBankChanged() {
             root.itemsList = root.parseItems();
@@ -349,6 +367,16 @@ Item {
             root.redecompressAlreadyDoneCount = alreadyDone;
             root.redecompressTotalCount = total;
             root.showRedecompressModal = true;
+        }
+    }
+
+    // Progress ticks arrive up to 10 times a second per archive: the list is re-read at most every 0.25 s
+    Timer {
+        id: itemRefreshTimer
+        interval: 250
+        onTriggered: {
+            root.itemsList = root.parseItems();
+            root.groupedItems = root.parseGroupedItems();
         }
     }
 
@@ -773,6 +801,11 @@ Item {
                         Layout.fillWidth: true
                         visible: root.width < 820
                     }
+
+                    CompressAfterOptions {
+                        Layout.fillWidth: true
+                        decompressor: root.decompressor
+                    }
                 }
             }
         }
@@ -854,6 +887,16 @@ Item {
                         font.pixelSize: 11
                         color: "#A78BFA"
                     }
+                }
+
+                Text {
+                    Layout.fillWidth: true
+                    visible: root.compressNote.length > 0
+                    text: "🗜 " + root.compressNote
+                    font.family: "Segoe UI, sans-serif"
+                    font.pixelSize: 11
+                    color: "#7DD3FC"
+                    wrapMode: Text.WordWrap
                 }
 
                 Rectangle {
@@ -1553,11 +1596,14 @@ Item {
                                                 }
                                             }
 
-                                            // Extracting progress bar
+                                            // Extracting / compressing progress bar
                                             RowLayout {
                                                 anchors.fill: parent
-                                                visible: modelData.status === "extracting"
+                                                visible: modelData.status === "extracting" || modelData.status === "compressing"
                                                 spacing: 4
+                                                ToolTip.visible: compressHover.containsMouse && modelData.status === "compressing"
+                                                ToolTip.text: root.tr("decompressor_compressing", "Compressing pictures and videos…")
+                                                MouseArea { id: compressHover; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
 
                                                 Rectangle {
                                                     Layout.fillWidth: true
@@ -1569,13 +1615,13 @@ Item {
                                                         height: parent.height
                                                         radius: 2.5
                                                         width: parent.width * (Math.max(0, Math.min(100, modelData.progress)) / 100.0)
-                                                        color: "#8B5CF6"
+                                                        color: modelData.status === "compressing" ? "#38BDF8" : "#8B5CF6"
                                                     }
                                                 }
                                                 Text {
-                                                    text: Math.round(modelData.progress) + "%"
+                                                    text: (modelData.status === "compressing" ? "🗜 " : "") + Math.round(modelData.progress) + "%"
                                                     font.pixelSize: 10
-                                                    color: "#A78BFA"
+                                                    color: modelData.status === "compressing" ? "#7DD3FC" : "#A78BFA"
                                                 }
                                             }
 
@@ -2132,6 +2178,152 @@ Item {
                                 root.showRedecompressModal = false;
                                 if (decompressor) decompressor.confirmRedecompress();
                             }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ── 🗜 COMPRESSION REVIEW: KEEP OR REMOVE THE ORIGINALS ──────────────────
+    // ═══════════════════════════════════════════════════════════════════════════
+    Rectangle {
+        id: compressReviewBackdrop
+        objectName: "compressReviewModal"
+        anchors.fill: parent
+        visible: opacity > 0
+        opacity: root.showCompressReview ? 1.0 : 0.0
+        color: "#B3000000"
+        z: 998
+
+        Behavior on opacity {
+            NumberAnimation { duration: 220; easing.type: Easing.OutQuad }
+        }
+
+        MouseArea { anchors.fill: parent }
+
+        Rectangle {
+            anchors.centerIn: parent
+            width: Math.min(480, parent.width - 40)
+            implicitHeight: compressReviewCol.implicitHeight + 36
+            radius: 14
+            color: "#0F172A"
+            border.color: "#0284C7"
+            border.width: 1
+            scale: root.showCompressReview ? 1.0 : 0.80
+            opacity: root.showCompressReview ? 1.0 : 0.0
+            transformOrigin: Item.Center
+
+            Behavior on scale {
+                SpringAnimation { spring: 4.8; damping: 0.48; mass: 1.7; epsilon: 0.001 }
+            }
+            Behavior on opacity {
+                NumberAnimation { duration: 180; easing.type: Easing.OutQuad }
+            }
+
+            ColumnLayout {
+                id: compressReviewCol
+                anchors.fill: parent
+                anchors.margins: 22
+                spacing: 16
+
+                RowLayout {
+                    spacing: 12
+                    Text { text: "🗜"; font.pixelSize: 22 }
+                    ColumnLayout {
+                        spacing: 3
+                        Layout.fillWidth: true
+                        Text {
+                            text: root.tr("compress_review_title", "Compression finished")
+                            font.family: "Segoe UI, Inter, sans-serif"
+                            font.pixelSize: 15
+                            font.weight: Font.Bold
+                            color: "#7DD3FC"
+                        }
+                        Text {
+                            text: root.tr("compress_review_desc", "The compressed copies are saved next to the originals. Do you want to move the originals to the Recycle Bin?")
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 11
+                            color: "#94A3B8"
+                            wrapMode: Text.WordWrap
+                            Layout.fillWidth: true
+                        }
+                    }
+                }
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    implicitHeight: compressReviewInfo.implicitHeight + 18
+                    radius: 8
+                    color: "#0B1A2B"
+                    border.color: "#164E63"
+                    border.width: 1
+
+                    ColumnLayout {
+                        id: compressReviewInfo
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: 12
+                        spacing: 4
+
+                        Text {
+                            text: root.tr("compress_review_count", "%1 file(s) compressed: %2 → %3 (%4% smaller)")
+                                  .replace("%1", root.compressedCount)
+                                  .replace("%2", root.formatBytes(root.compressedBefore))
+                                  .replace("%3", root.formatBytes(root.compressedAfter))
+                                  .replace("%4", root.compressedBefore > 0 ? Math.round((1 - root.compressedAfter / root.compressedBefore) * 100) : 0)
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 12
+                            font.weight: Font.Medium
+                            color: "#E0F2FE"
+                            wrapMode: Text.WordWrap
+                            Layout.fillWidth: true
+                        }
+                        Text {
+                            visible: root.compressFailed > 0
+                            text: "⚠️ " + root.tr("compress_review_failed", "%1 file(s) couldn't be compressed and were left as they were (see the log).").replace("%1", root.compressFailed)
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 10
+                            color: "#FBBF24"
+                            wrapMode: Text.WordWrap
+                            Layout.fillWidth: true
+                        }
+                        Text {
+                            text: root.tr("compress_review_note", "Files that wouldn't have been smaller were left alone. Anything moved to the Recycle Bin can be restored from there.")
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 10
+                            color: "#64748B"
+                            wrapMode: Text.WordWrap
+                            Layout.fillWidth: true
+                        }
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 12
+                    Item { Layout.fillWidth: true }
+
+                    StyledButton {
+                        objectName: "compress_keep_originals"
+                        text: root.tr("compress_keep_originals", "Keep originals")
+                        variant: "outline"
+                        implicitHeight: 32
+                        onClicked: {
+                            root.showCompressReview = false;
+                            if (decompressor) decompressor.keepCompressedOriginals();
+                        }
+                    }
+                    StyledButton {
+                        objectName: "compress_remove_originals"
+                        text: root.tr("compress_remove_originals", "Move originals to Recycle Bin")
+                        variant: "primary"
+                        implicitHeight: 32
+                        onClicked: {
+                            root.showCompressReview = false;
+                            if (decompressor) decompressor.removeCompressedOriginals();
                         }
                     }
                 }

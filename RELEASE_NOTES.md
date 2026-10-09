@@ -65,6 +65,20 @@ Numbers below are for an archive with 2 million files from 20,000 creators.
 
 ---
 
+### 🗜️ Decompressor
+
+* **Compress after extracting** *(opt-in)*: Turn on "Compress pictures and videos after extracting" to save the pictures and videos from each archive in a smaller format. Pick the format (WebP, AVIF or JPG for pictures; H.265, AV1 or H.264 for videos) and the quality with a slider. In a test, WebP at the default quality cut pictures to about half their size.
+* **You decide about the originals**: Compressed copies are saved next to the originals and only kept when they're at least 5% smaller. When everything's done you're asked whether to keep the originals or move them to the Recycle Bin.
+* **Videos need FFmpeg**: Video compression uses FFmpeg, a free video tool. It isn't included with the app, but one click downloads it (about 200 MB) and checks it before use.
+* **Extracting is up to twice as fast**: Every archive used to be fully unpacked once in memory just to check whether it needed a password. That check now reads only the file list (1.7 seconds down to 0.1 seconds on a 52 MB test archive).
+* **Big split archives work**: Parts 10 to 19 of a split archive (like "comic.part12.rar") were treated as separate archives. Only the first part is extracted now, and split archives get the right folder name.
+* **Nothing thrown away after a warning**: When 7-Zip finished with a warning (for example one file it couldn't write), everything it had extracted was deleted. Those files are kept now, and the archive is kept too.
+* **Settings are remembered**: Parallel archives, threads, the Recycle Bin option, password prompts and your added folders no longer reset every time the app starts.
+* **Smoother list while extracting**: The archive list updates a few times a second instead of being rebuilt with every progress tick.
+* **Clearer results**: Archives you stop are no longer counted as failed, and the disk space check no longer assumes deleted archives free up space (they go to the Recycle Bin).
+
+---
+
 ### ⚡ A Smoother Window Everywhere
 
 * **Calmer scrolling**: The mouse wheel no longer flings long lists far past where you wanted to go.

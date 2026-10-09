@@ -285,6 +285,7 @@ class AppBridge(QObject):
         self.known_manager = KnownManager()
         self.session_manager = SessionManager()
         saved_settings = self.session_manager.load_settings()
+        self._loaded_decompressor_settings = saved_settings.get("decompressor") or {}   # (until it exists)
         self._enable_download_archive = bool(saved_settings.get("enable_download_archive", False))
         self.archive_manager = ArchiveManager(
             config_dir=self.session_manager.config_dir,
@@ -448,6 +449,7 @@ class AppBridge(QObject):
 
         # Bulk Decompressor
         self._decompressor_bridge = DecompressorBridge(self._watchlist_manager, self, self)
+        self._decompressor_bridge.load_settings(saved_settings.get("decompressor") or {})
 
         # Telegram Bridge
         self._telegram_bridge = TelegramBridge(self)
@@ -4918,6 +4920,8 @@ class AppBridge(QObject):
             "save_post_metadata": self._save_post_metadata,
             "download_embeds": self._download_embeds,
             "embed_cookies_browser": self._embed_cookies_browser,
+            "decompressor": (self._decompressor_bridge.settings_dict() if getattr(self, "_decompressor_bridge", None)
+                             else getattr(self, "_loaded_decompressor_settings", {})),
             "open_folder_on_complete": self._open_folder_on_complete,
             "play_completion_sound": self._play_completion_sound,
             "generate_desktop_report": self._generate_desktop_report,

@@ -58,6 +58,7 @@ hidden_imports = [
     'PIL',
     'PIL.Image',
     'PIL.WebPImagePlugin',
+    'PIL.AvifImagePlugin',
 
     # Internal core, bridge, and service packages
     'core',
@@ -93,6 +94,8 @@ hidden_imports = [
     'services.nhentai_client',
     'services.text_exporter',
     'services.bulk_decompressor',
+    'services.media_compressor',
+    'services.ffmpeg_manager',
     'services.report_generator',
     'services.telegram_service',
     'bridge',
