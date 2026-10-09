@@ -1158,5 +1158,11 @@
   "toast_archive_repair_failed": "The archive database is damaged and couldn't be repaired: %1",
   "archive_show_more_posts": "Show %1 more posts (%2 left)",
   "archive_show_more_files": "Show %1 more files (%2 left)",
-  "toast_importing": "Importing into the archive…"
+  "toast_importing": "Importing into the archive…",
+  "folder_change_moving": "Moving files… %1 / %2",
+  "folder_change_stop": "Stop",
+  "folder_change_stop_tip": "Stops after the current file. Files already moved stay in the new folder; the rest stay in the old one, and both folders are kept for this artist.",
+  "embed_cookies_label": "Use browser sign-in:",
+  "embed_cookies_off": "Off",
+  "embed_cookies_tip": "Embedded videos that only play while you're logged in (RedGifs, private Vimeo, age-restricted YouTube) are downloaded with that browser's sign-in. Firefox works best; Chrome, Edge and Brave have to be closed, and their newest versions can't be read at all."
 }

@@ -303,8 +303,8 @@ class ArchiveManager:
         if not clean_q or fq is None or not self._summaries_ready(conn) or not archive_index.state(conn)[2]:
             return self._where(query, service, file_type)
         where, params = self._where("", service, file_type)
-        cond = "id IN (SELECT rowid FROM archive_fts WHERE archive_fts MATCH ?)"
-        extra = [fq]
+        cond = f"id IN (SELECT rowid FROM archive_fts WHERE {archive_index.FTS_MATCH})"
+        extra = list(fq)
         hq = clean_q.lower()
         if re.fullmatch(r"[0-9a-f]{8,64}", hq):
             cond = f"({cond} OR (file_hash >= ? AND file_hash < ?))"     # a file hash (its start)
@@ -313,7 +313,8 @@ class ArchiveManager:
         return where, list(params) + extra
 
     def _summaries_from_index(self, conn: sqlite3.Connection, service: str,
-                              sort_by: str, cat: Optional[str] = None) -> List[Dict[str, Any]]:
+                              sort_by: str, cat: Optional[str] = None,
+                              name_like: Optional[str] = None) -> List[Dict[str, Any]]:
         """get_creator_summaries from the summary table: one row per creator instead of grouping every
         record (cat: only that file type's files, from the per-type table)."""
         clean_svc = (service or "").strip().lower()
@@ -325,6 +326,9 @@ class ArchiveManager:
         if clean_svc and clean_svc != "all":
             conds.append("service = ?")
             params.append(clean_svc)
+        if name_like:
+            conds.append("(creator_name LIKE ? OR creator_id LIKE ?)")
+            params += [f"%{name_like}%"] * 2
         sql = ("SELECT service, creator_id, creator_name, files, missing, verified, posts, newest, oldest, newest_id "
                f"FROM {'archive_creator_cats' if cat else 'archive_creators'}"
                + (f" WHERE {' AND '.join(conds)}" if conds else ""))
@@ -456,10 +460,33 @@ class ArchiveManager:
             row = self._conn.execute("SELECT v FROM archive_meta WHERE k = ?;", (key,)).fetchone()
             return row[0] if row else ""
 
+    def _backup_records(self) -> str:
+        """download_archive.db.bak: the downloaded_files table alone, read from a consistent snapshot
+        (downloads keep recording meanwhile). Opened as the archive, everything else is rebuilt."""
+        bak, tmp = self.db_path + ".bak", self.db_path + ".bak.tmp"
+        for f in (tmp, tmp + "-journal"):
+            if os.path.exists(f):
+                os.remove(f)
+        out = sqlite3.connect(tmp)
+        try:
+            out.execute("ATTACH DATABASE ? AS src;", (self.db_path,))       # (only read from)
+            create = out.execute("SELECT sql FROM src.sqlite_master WHERE type = 'table' AND name = 'downloaded_files';").fetchone()[0]
+            out.execute(create)
+            out.execute("INSERT INTO main.downloaded_files SELECT * FROM src.downloaded_files;")
+            seq = out.execute("SELECT seq FROM src.sqlite_sequence WHERE name = 'downloaded_files';").fetchone()
+            if seq:
+                out.execute("UPDATE sqlite_sequence SET seq = ? WHERE name = 'downloaded_files';", (seq[0],))
+            out.commit()
+            out.execute("DETACH DATABASE src;")
+        finally:
+            out.close()
+        os.replace(tmp, bak)
+        return bak
+
     def run_maintenance(self, force: bool = False) -> Dict[str, Any]:
         """Once a week: checks the database for damage (repaired automatically if found) and keeps a
-        safety copy, download_archive.db.bak, when the drive has room for it (3x the archive). Reads
-        a snapshot, so downloads keep recording files meanwhile."""
+        safety copy of the records, download_archive.db.bak, when the drive has room for it plus 1 GB.
+        Reads a snapshot, so downloads keep recording files meanwhile."""
         result: Dict[str, Any] = {"checked": False, "ok": None, "backup": ""}
         if not self._enabled or not os.path.exists(self.db_path) or not self._ensure_db():
             return result
@@ -485,13 +512,12 @@ class ArchiveManager:
             if os.path.exists(self.db_path + "-wal"):
                 size += os.path.getsize(self.db_path + "-wal")
             free = shutil.disk_usage(self.config_dir).free
-            if free >= size * 3 + 1024 ** 3:
-                bak, tmp = self.db_path + ".bak", self.db_path + ".bak.tmp"
-                if os.path.exists(tmp):
-                    os.remove(tmp)
-                conn.execute("VACUUM INTO ?;", (tmp,))
-                os.replace(tmp, bak)
-                result["backup"] = bak
+            # Only the records are copied (summaries, search index and other indexes are rebuilt from
+            # them): a smaller copy that needs less room than the archive itself
+            if free >= size + 1024 ** 3:
+                conn.close()
+                conn = None
+                result["backup"] = self._backup_records()
             else:
                 logger.info(f"📦 Archive safety copy skipped: not enough free space ({free / 1024 ** 3:.1f} GB free).",
                             category="archive")
@@ -561,20 +587,25 @@ class ArchiveManager:
         return svc, display.lower()
 
     def get_creator_summaries(self, query: str = "", service: str = "all", file_type: str = "all",
-                              sort_by: str = "creator_az") -> List[Dict[str, Any]]:
+                              sort_by: str = "creator_az",
+                              should_stop: Optional[Callable[[], bool]] = None) -> Optional[List[Dict[str, Any]]]:
         """One entry per creator (file / post counts, dates), without their posts and files: those
         are read with get_creator_posts when a creator is opened. Sending every file of a big archive
         to the window on each refresh froze it (#28)."""
         if not self._ensure_db():
             return []
         clean_ft = (file_type or "all").strip().lower()
-        if not (query or "").strip() and (clean_ft in ("", "all") or clean_ft in FILE_TYPE_CATEGORIES):
+        clean_q = (query or "").strip()
+        # (1-2 letters: the search index needs 3, and matching them in every file name took seconds and
+        # matched nearly everything: such a search looks at creator names and ids)
+        if (not clean_q or len(clean_q) < 3) and (clean_ft in ("", "all") or clean_ft in FILE_TYPE_CATEGORIES):
             try:
                 with self._rlock:
                     conn = self._reader()
                     if conn is not None and self._summaries_ready(conn):
                         return self._summaries_from_index(conn, service, sort_by,
-                                                          cat=clean_ft if clean_ft in FILE_TYPE_CATEGORIES else None)
+                                                          cat=clean_ft if clean_ft in FILE_TYPE_CATEGORIES else None,
+                                                          name_like=clean_q or None)
             except Exception as e:
                 logger.debug(f"Archive summaries not used: {e}", category="archive")
         with self._rlock:
@@ -595,7 +626,22 @@ class ArchiveManager:
                 conn = self._reader()
                 if conn is None:
                     return []
-                rows = conn.execute(sql, params).fetchall()
+                if should_stop is not None:
+                    # A newer search makes this one stop (instead of each running to the end in turn)
+                    conn.set_progress_handler(lambda: 1 if should_stop() else 0, 20000)
+                try:
+                    rows = conn.execute(sql, params).fetchall()
+                finally:
+                    if should_stop is not None:
+                        conn.set_progress_handler(None, 0)
+            if should_stop is not None and should_stop():
+                return None                              # replaced by a newer search meanwhile
+        except sqlite3.OperationalError as e:
+            if should_stop is not None and should_stop():
+                return None                          # replaced by a newer search
+            logger.error(f"Failed to read the archive's creators: {e}", category="archive")
+            self._note_error(e)
+            return []
         except Exception as e:
             logger.error(f"Failed to read the archive's creators: {e}", category="archive")
             self._note_error(e)
@@ -673,6 +719,8 @@ class ArchiveManager:
             conn = self._reader()
             if conn is None:
                 return []
+            if 0 < len((query or "").strip()) < 3 and self._summaries_ready(conn):
+                query = ""             # found by its name (a short search): all its files
             where, params = self._fast_where(conn, query, service, file_type)
             member = self._members_of(conn, key)
         ids = sorted({str(cid) for (_s, cid, _n) in member if cid not in (None, "")})
@@ -1846,42 +1894,63 @@ class ArchiveManager:
             self._note_error(e)
             return result
 
-    def relocate_files(self, old_dirs: List[str], moves: Dict[str, str]) -> int:
-        """After files were moved (Watchlist → "Change download folder"): the records of files that
-        were in old_dirs point to where the files are now. moves maps old path → new path."""
-        if not moves or not self._ensure_db():
-            return 0
+    @staticmethod
+    def _path_key(p: str) -> str:
+        return os.path.normcase(os.path.normpath(p))
 
-        def norm(p: str) -> str:
-            return os.path.normcase(os.path.normpath(p))
-        new_of = {norm(o): n for o, n in moves.items()}
+    def records_under(self, folders: List[str]) -> Dict[str, int]:
+        """{normalized file path: record id} of the records whose file is inside one of the folders
+        (looked up once before files are moved; each record then follows its file by id)."""
+        if not self._ensure_db():
+            return {}
 
         def like(prefix: str) -> str:
             return prefix.replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%"
-        updates: Dict[int, str] = {}
+        found: Dict[str, int] = {}
+        with self._rlock:
+            conn = self._reader()
+            if conn is None:
+                return {}
+            try:
+                for d in folders:
+                    base = os.path.normpath(d)
+                    for prefix in {base, base.replace("\\", "/")}:
+                        for rid, fp in conn.execute(
+                                "SELECT id, file_path FROM downloaded_files WHERE file_path LIKE ? ESCAPE '!';",
+                                (like(prefix),)):
+                            if fp:
+                                found[self._path_key(fp)] = rid
+            except Exception as e:
+                logger.error(f"Couldn't read the archive's file paths: {e}", category="archive")
+                self._note_error(e)
+        return found
+
+    def set_file_paths(self, changes: List[Tuple[int, str]]) -> int:
+        """Stores new file paths for records (id, path), in one transaction."""
+        if not changes or not self._ensure_db():
+            return 0
         with self._lock:
             if self._conn is None:
                 return 0
             try:
-                for d in old_dirs:
-                    base = os.path.normpath(d)
-                    for prefix in {base, base.replace("\\", "/")}:
-                        for rid, fp in self._conn.execute(
-                                "SELECT id, file_path FROM downloaded_files WHERE file_path LIKE ? ESCAPE '!';",
-                                (like(prefix),)):
-                            new = new_of.get(norm(fp or ""))
-                            if new:
-                                updates[rid] = new
-                if updates:
-                    self._conn.executemany("UPDATE downloaded_files SET file_path = ? WHERE id = ?;",
-                                           [(p, rid) for rid, p in updates.items()])
-                    self._conn.commit()
+                self._conn.executemany("UPDATE downloaded_files SET file_path = ? WHERE id = ?;",
+                                       [(p, rid) for rid, p in changes])
+                self._conn.commit()
             except Exception as e:
                 logger.error(f"Couldn't update the archive's file paths: {e}", category="archive")
                 self._note_error(e)
                 return 0
         self._stats_cache = None
-        return len(updates)
+        return len(changes)
+
+    def relocate_files(self, old_dirs: List[str], moves: Dict[str, str]) -> int:
+        """After files were moved: the records of files that were in old_dirs point to where the
+        files are now. moves maps old path → new path."""
+        if not moves:
+            return 0
+        ids = self.records_under(old_dirs)
+        return self.set_file_paths([(ids[k], new) for old, new in moves.items()
+                                    if (k := self._path_key(old)) in ids])
 
     def remove_missing_for_creator(self, service: str, creator_id: str) -> int:
         """Delete all archive records marked as missing (is_missing = 1) for a creator."""

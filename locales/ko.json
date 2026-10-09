@@ -1158,5 +1158,11 @@
   "toast_archive_repair_failed": "아카이브 데이터베이스가 손상되어 복구할 수 없습니다: %1",
   "archive_show_more_posts": "게시물 %1개 더 보기 (%2개 남음)",
   "archive_show_more_files": "파일 %1개 더 보기 (%2개 남음)",
-  "toast_importing": "아카이브로 가져오는 중…"
+  "toast_importing": "아카이브로 가져오는 중…",
+  "folder_change_moving": "파일 이동 중… %1 / %2",
+  "folder_change_stop": "중지",
+  "folder_change_stop_tip": "현재 파일 다음에 멈춥니다. 이미 옮긴 파일은 새 폴더에, 나머지는 기존 폴더에 남으며 이 아티스트에는 두 폴더가 모두 유지됩니다.",
+  "embed_cookies_label": "브라우저 로그인 사용:",
+  "embed_cookies_off": "끔",
+  "embed_cookies_tip": "로그인해야만 재생되는 임베드 동영상(RedGifs, 비공개 Vimeo, 연령 제한 YouTube)을 해당 브라우저의 로그인으로 다운로드합니다. Firefox가 가장 잘 동작하며, Chrome, Edge, Brave는 닫혀 있어야 하고 최신 버전은 읽을 수 없습니다."
 }

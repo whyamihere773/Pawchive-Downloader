@@ -1158,5 +1158,11 @@
   "toast_archive_repair_failed": "封存資料庫已損毀，無法修復: %1",
   "archive_show_more_posts": "再顯示 %1 篇貼文（剩餘 %2 篇）",
   "archive_show_more_files": "再顯示 %1 個檔案（剩餘 %2 個）",
-  "toast_importing": "正在匯入封存…"
+  "toast_importing": "正在匯入封存…",
+  "folder_change_moving": "正在移動檔案… %1 / %2",
+  "folder_change_stop": "停止",
+  "folder_change_stop_tip": "在目前檔案之後停止。已移動的檔案留在新資料夾，其餘留在舊資料夾；此作者的兩個資料夾都會保留。",
+  "embed_cookies_label": "使用瀏覽器登入：",
+  "embed_cookies_off": "關閉",
+  "embed_cookies_tip": "僅在登入後才能播放的嵌入影片（RedGifs、私人 Vimeo、年齡限制的 YouTube）會使用該瀏覽器的登入資訊下載。Firefox 效果最好；Chrome、Edge 和 Brave 必須先關閉，且最新版本完全無法讀取。"
 }

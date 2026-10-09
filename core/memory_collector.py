@@ -264,7 +264,10 @@ class MemoryCollector:
             self._collect_lock.release()
 
     def collect_in_background(self, reason: str = "") -> None:
-        threading.Thread(target=self.collect, kwargs={"reason": reason}, daemon=True, name="MemoryCleanup").start()
+        """Not on another thread: a Qt object freed there crashes the app. Queued for the window
+        thread instead (needs a running Qt application)."""
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, lambda: self.collect(reason=reason))
 
     def freeze_startup_objects(self) -> None:
         """After startup: collect once, then move everything still alive (character database, settings,

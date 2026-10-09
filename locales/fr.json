@@ -1158,5 +1158,11 @@
   "toast_archive_repair_failed": "La base de données de l'archive est endommagée et n'a pas pu être réparée : %1",
   "archive_show_more_posts": "Afficher %1 publications de plus (%2 restantes)",
   "archive_show_more_files": "Afficher %1 fichiers de plus (%2 restants)",
-  "toast_importing": "Importation dans l'archive…"
+  "toast_importing": "Importation dans l'archive…",
+  "folder_change_moving": "Déplacement des fichiers… %1 / %2",
+  "folder_change_stop": "Arrêter",
+  "folder_change_stop_tip": "S'arrête après le fichier en cours. Les fichiers déjà déplacés restent dans le nouveau dossier, les autres dans l'ancien ; les deux dossiers sont conservés pour cet artiste.",
+  "embed_cookies_label": "Utiliser la session du navigateur :",
+  "embed_cookies_off": "Non",
+  "embed_cookies_tip": "Les vidéos intégrées visibles uniquement une fois connecté (RedGifs, Vimeo privé, YouTube avec limite d'âge) sont téléchargées avec la session de ce navigateur. Firefox fonctionne le mieux ; Chrome, Edge et Brave doivent être fermés, et leurs versions les plus récentes ne peuvent pas être lues."
 }

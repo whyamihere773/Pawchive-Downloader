@@ -1158,5 +1158,11 @@
   "toast_archive_repair_failed": "アーカイブのデータベースが破損しており、修復できませんでした: %1",
   "archive_show_more_posts": "さらに %1 件の投稿を表示（残り %2 件）",
   "archive_show_more_files": "さらに %1 件のファイルを表示（残り %2 件）",
-  "toast_importing": "アーカイブに取り込み中…"
+  "toast_importing": "アーカイブに取り込み中…",
+  "folder_change_moving": "ファイルを移動中… %1 / %2",
+  "folder_change_stop": "停止",
+  "folder_change_stop_tip": "現在のファイルの後で停止します。移動済みのファイルは新しいフォルダーに、残りは古いフォルダーに残り、このアーティストには両方のフォルダーが使われます。",
+  "embed_cookies_label": "ブラウザーのログインを使用:",
+  "embed_cookies_off": "オフ",
+  "embed_cookies_tip": "ログイン中にしか再生できない埋め込み動画（RedGifs、非公開の Vimeo、年齢制限付きの YouTube）を、そのブラウザーのログインでダウンロードします。Firefox が最適です。Chrome、Edge、Brave は閉じておく必要があり、最新版は読み取れません。"
 }

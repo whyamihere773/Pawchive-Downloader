@@ -1158,5 +1158,11 @@
   "toast_archive_repair_failed": "Database arsip rusak dan tidak dapat diperbaiki: %1",
   "archive_show_more_posts": "Tampilkan %1 postingan lagi (sisa %2)",
   "archive_show_more_files": "Tampilkan %1 file lagi (sisa %2)",
-  "toast_importing": "Mengimpor ke arsip…"
+  "toast_importing": "Mengimpor ke arsip…",
+  "folder_change_moving": "Memindahkan file… %1 / %2",
+  "folder_change_stop": "Hentikan",
+  "folder_change_stop_tip": "Berhenti setelah file saat ini. File yang sudah dipindahkan tetap di folder baru, sisanya di folder lama; kedua folder tetap dipakai untuk artis ini.",
+  "embed_cookies_label": "Pakai login browser:",
+  "embed_cookies_off": "Mati",
+  "embed_cookies_tip": "Video tersemat yang hanya bisa diputar saat login (RedGifs, Vimeo privat, YouTube dengan batasan usia) diunduh memakai login browser tersebut. Firefox paling baik; Chrome, Edge, dan Brave harus ditutup, dan versi terbarunya sama sekali tidak bisa dibaca."
 }

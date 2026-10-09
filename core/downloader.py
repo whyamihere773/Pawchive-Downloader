@@ -16,7 +16,7 @@ import random
 import threading
 import requests
 import urllib.parse
-from collections import deque, defaultdict
+from collections import Counter, deque, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Any, Optional, Callable, Set, Tuple
 from PIL import Image
@@ -87,7 +87,8 @@ def friendly_embed_error(msg: str, url: str = "") -> str:
         return "Gfycat shut down in 2023: this video can't be downloaded any more"
     if "redgifs" in (u + m) and ("410" in m or "gone" in m):
         return ("RedGifs says this video was deleted (HTTP 410). If it still plays in your browser, it "
-                "may only be available while logged in there")
+                "may only be available while logged in there: pick that browser under \"Use browser "
+                "sign-in\" in Settings, then Retry")
     return msg
 
 
@@ -162,6 +163,11 @@ def content_hash_from_url(url: str) -> str:
 def _fq(name: str) -> str:
     """A file name for the ?f= link parameter ('#', '&', '%' etc. used to cut the link short)."""
     return urllib.parse.quote(name, safe="")
+
+
+def _counts(c: Counter) -> str:
+    """"12 already on disk, 3 filtered out" """
+    return ", ".join(f"{n} {why}" for why, n in c.most_common())
 
 
 def _content_range(value: str):
@@ -451,6 +457,7 @@ class KemonoDownloader:
         self.on_progress_update: Optional[Callable[[Dict[str, Any]], None]] = None
         self.on_task_status_changed: Optional[Callable[[DownloadTask], None]] = None
         self.on_tasks_changed: Optional[Callable[[List[DownloadTask]], None]] = None     # many at once
+        self.on_cleanup_wanted: Optional[Callable[[], None]] = None     # memory cleanup after a run
         self.on_download_finished: Optional[Callable[[bool, str], None]] = None
         self.on_concurrency_throttled: Optional[Callable[[int], None]] = None
         self.on_pause_changed: Optional[Callable[[bool], None]] = None
@@ -753,6 +760,8 @@ class KemonoDownloader:
         Filters posts and attachments, building the list of download tasks with structured paths.
         """
         new_tasks = []
+        not_queued: Counter = Counter()          # files skipped / renamed while building: counted in the
+        renamed: Counter = Counter()             # log file (a line each only in the log panel)
         self._unmatched_known_count = 0
         self.last_build_cancelled = False
         # cancel() bumps _session_id, so only a cancel issued during this build counts;
@@ -1273,7 +1282,8 @@ class KemonoDownloader:
                 file_bytes = fobj.get("bytes")
                 keep_file, f_reason = FilterEngine.should_keep_file(raw_name, options, file_size=file_bytes)
                 if not keep_file:
-                    logger.debug(f"Skipped file '{raw_name}': {f_reason}", category="filter")
+                    logger.debug(f"Skipped file '{raw_name}': {f_reason}", category="filter", to_file=False)
+                    not_queued["filtered out"] += 1
                     continue
 
                 # Normalize relative path (strip full host prefixes if present in inline content)
@@ -1354,8 +1364,9 @@ class KemonoDownloader:
                 if not options.keep_duplicates and norm_key in _batch_rel_paths[target_dest_dir]:
                     logger.debug(
                         f"Skipping identical duplicate attachment: '{raw_name}' ({clean_rel}) in post '{post_title}'",
-                        category="file"
+                        category="file", to_file=False
                     )
+                    not_queued["identical duplicates"] += 1
                     continue
 
                 # Track sequential file index per folder
@@ -1509,8 +1520,9 @@ class KemonoDownloader:
                     if prev_post_id == post_id and prev_rel == clean_rel and not options.keep_duplicates:
                         logger.debug(
                             f"Skipping identical duplicate attachment: '{sanitized_name}' in post '{post_title}'",
-                            category="file"
+                            category="file", to_file=False
                         )
+                        not_queued["identical duplicates"] += 1
                         continue
 
                     stem, ext = os.path.splitext(sanitized_name)
@@ -1530,8 +1542,9 @@ class KemonoDownloader:
                         logger.debug(
                             f"Different-post filename collision: '{sanitized_name}' belongs to post '{post_title}' ({post_id}), "
                             f"already used by previous post '{prev_post_title}' ({prev_post_id}) — saved as '{disambig_name}'",
-                            category="file"
+                            category="file", to_file=False
                         )
+                        renamed["name used by another post"] += 1
                     else:
                         # Duplicate attachment within the SAME post (e.g. raw and captioned versions, or multiple variants)
                         hash_hint = os.path.splitext(os.path.basename(clean_rel))[0][-6:] or \
@@ -1546,8 +1559,9 @@ class KemonoDownloader:
                         logger.debug(
                             f"Same-post duplicate attachment: '{sanitized_name}' already queued in post '{post_title}' — "
                             f"saving variant as '{disambig_name}'",
-                            category="file"
+                            category="file", to_file=False
                         )
+                        renamed["same name twice in a post"] += 1
 
                     # Also update the candidate URLs to use the disambiguated display name
                     candidate_urls = [
@@ -1583,7 +1597,9 @@ class KemonoDownloader:
                         on_disk = next((cp for cp in (target_path, webp_path, raw_path, raw_webp, prefixed_raw, prefixed_webp)
                                         if os.path.exists(cp) and os.path.getsize(cp) > 0), None)
                         if not (on_disk and needs_full_size_upgrade(os.path.getsize(on_disk), int(file_bytes or 0), target_path, options, on_disk)):
-                            logger.info(f"📦 Skipping archived file: '{os.path.basename(target_path)}' (present in download archive)", category="file")
+                            logger.info(f"📦 Skipping archived file: '{os.path.basename(target_path)}' (present in download archive)",
+                                        category="file", to_file=False)
+                            not_queued["in the download archive"] += 1
                             continue
 
                 # Skip if already exists on disk at target_path, webp path, or raw name path
@@ -1601,7 +1617,9 @@ class KemonoDownloader:
                                                                  options, existing_disk_path)
 
                         if not should_upgrade:
-                            logger.info(f"⏳ Skipping existing file: '{os.path.basename(target_path)}' (already present on disk)", category="file")
+                            logger.info(f"⏳ Skipping existing file: '{os.path.basename(target_path)}' (already present on disk)",
+                                        category="file", to_file=False)
+                            not_queued["already on disk"] += 1
                             continue
                         else:
                             logger.info(
@@ -1655,7 +1673,9 @@ class KemonoDownloader:
 
                     if self.archive_manager and self.archive_manager.is_enabled:
                         if self.archive_manager.is_archived(service=service, post_id=post_id, file_id=e_file_id):
-                            logger.info(f"📦 Skipping archived embedded media: '{e_name}' (present in download archive)", category="file")
+                            logger.info(f"📦 Skipping archived embedded media: '{e_name}' (present in download archive)",
+                                        category="file", to_file=False)
+                            not_queued["in the download archive"] += 1
                             continue
 
                     if not options.keep_duplicates and os.path.exists(e_target_path) and os.path.getsize(e_target_path) > 0:
@@ -1747,7 +1767,10 @@ class KemonoDownloader:
             self.harvested_links = {}
             self.harvested_links_records = []
 
-        logger.success(f"Prepared {len(new_tasks)} file download tasks.", category="downloader")
+        notes = [f"Not queued: {_counts(not_queued)}." if not_queued else "",
+                 f"Renamed to keep files apart: {_counts(renamed)}." if renamed else ""]
+        logger.success(" ".join([f"Prepared {len(new_tasks)} file download tasks."] + [n for n in notes if n]),
+                       category="downloader")
         return new_tasks
 
     def start_download_queue(self, tasks: List[DownloadTask], options: FilterOptions, cookie_str: str = ""):
@@ -2171,6 +2194,7 @@ class KemonoDownloader:
             logger.info(f"Starting download pool with {self.max_workers} worker threads{lock_label}...", category="downloader")
 
         self._run_tasks = [t for t in self.tasks if t.status == "pending"]
+        self._already_there = Counter()          # files found downloaded already (counted in the log file)
         logger.debug("Download settings saved to the log file.", category="downloader",
                      details=self._describe_run(options, cookie_str, len(self._run_tasks)))
 
@@ -2502,11 +2526,13 @@ class KemonoDownloader:
                     pass
 
         self._close_worker_sessions()
-        try:
-            from core.memory_collector import MemoryCollector
-            MemoryCollector.instance().collect(reason="download finished")
-        except Exception:
-            pass
+        # The memory cleanup runs on the window thread: a Qt object freed by it on this thread
+        # crashes the app
+        if self.on_cleanup_wanted:
+            try:
+                self.on_cleanup_wanted()
+            except Exception:
+                pass
 
         # Discard exit handlers if this thread has been superseded by a newer download session
         if session_id != self._session_id:
@@ -2554,6 +2580,9 @@ class KemonoDownloader:
             if run_tasks and len(run_tasks) < len(self.tasks):
                 run_ok = sum(1 for t in run_tasks if t.status in ("completed", "skipped"))
                 run_note = f" This run: {run_ok} of {len(run_tasks)} file(s) succeeded."
+            already = getattr(self, "_already_there", None)
+            if already:
+                run_note += f" Found downloaded already: {_counts(already)}."
             failed_tasks = [t for t in self.tasks if t.status == "failed"]
             failed_list = "\n".join(
                 f"{t.filename}: {t.error_msg or 'unknown error'}  ({t.url})" for t in failed_tasks
@@ -2642,7 +2671,10 @@ class KemonoDownloader:
                 task.eta_str = "Done"
                 if self.on_task_status_changed:
                     self.on_task_status_changed(task)
-                logger.info(f"📦 Skipping archived file: '{task.filename}' (present in download archive)", category="file")
+                logger.info(f"📦 Skipping archived file: '{task.filename}' (present in download archive)", category="file",
+                            to_file=False)
+                with self._lock:
+                    self._already_there["in the download archive"] += 1
                 return True, "Already archived"
 
         # Check if file already exists completely on disk (including webp converted version)
@@ -2695,7 +2727,10 @@ class KemonoDownloader:
                     )
                 if self.on_task_status_changed:
                     self.on_task_status_changed(task)
-                logger.info(f"⏳ Skipping existing file: '{task.filename}' (already present on disk)", category="file")
+                logger.info(f"⏳ Skipping existing file: '{task.filename}' (already present on disk)", category="file",
+                            to_file=False)
+                with self._lock:
+                    self._already_there["already on disk"] += 1
                 return True, "Already downloaded"
             else:
                 is_upgrade_download = True

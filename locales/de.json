@@ -1158,5 +1158,11 @@
   "toast_archive_repair_failed": "Die Archiv-Datenbank ist beschädigt und konnte nicht repariert werden: %1",
   "archive_show_more_posts": "%1 weitere Beiträge anzeigen (%2 übrig)",
   "archive_show_more_files": "%1 weitere Dateien anzeigen (%2 übrig)",
-  "toast_importing": "Wird ins Archiv importiert…"
+  "toast_importing": "Wird ins Archiv importiert…",
+  "folder_change_moving": "Dateien werden verschoben… %1 / %2",
+  "folder_change_stop": "Stopp",
+  "folder_change_stop_tip": "Hält nach der aktuellen Datei an. Bereits verschobene Dateien bleiben im neuen Ordner, der Rest im alten; beide Ordner bleiben für diesen Künstler erhalten.",
+  "embed_cookies_label": "Browser-Anmeldung nutzen:",
+  "embed_cookies_off": "Aus",
+  "embed_cookies_tip": "Eingebettete Videos, die nur angemeldet abspielbar sind (RedGifs, private Vimeo-Videos, YouTube mit Altersbeschränkung), werden mit der Anmeldung dieses Browsers geladen. Firefox funktioniert am besten; Chrome, Edge und Brave müssen geschlossen sein, und ihre neuesten Versionen lassen sich gar nicht auslesen."
 }

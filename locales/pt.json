@@ -1158,5 +1158,11 @@
   "toast_archive_repair_failed": "O banco de dados do arquivo está danificado e não pôde ser reparado: %1",
   "archive_show_more_posts": "Mostrar mais %1 publicações (restam %2)",
   "archive_show_more_files": "Mostrar mais %1 arquivos (restam %2)",
-  "toast_importing": "Importando para o arquivo…"
+  "toast_importing": "Importando para o arquivo…",
+  "folder_change_moving": "Movendo arquivos… %1 / %2",
+  "folder_change_stop": "Parar",
+  "folder_change_stop_tip": "Para após o arquivo atual. Os arquivos já movidos ficam na pasta nova e o resto na antiga; as duas pastas são mantidas para este artista.",
+  "embed_cookies_label": "Usar login do navegador:",
+  "embed_cookies_off": "Desligado",
+  "embed_cookies_tip": "Vídeos incorporados que só tocam com login (RedGifs, Vimeo privado, YouTube com restrição de idade) são baixados com o login desse navegador. O Firefox funciona melhor; Chrome, Edge e Brave precisam estar fechados, e as versões mais novas não podem ser lidas."
 }

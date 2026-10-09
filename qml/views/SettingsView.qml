@@ -2078,6 +2078,40 @@ SmoothFlickable {
                             onCheckedChanged: if (root.bridge) root.bridge.downloadEmbeds = checked
                         }
 
+                        // Videos that only play while logged in (only while downloading embeds)
+                        Row {
+                            visible: root.bridge ? root.bridge.downloadEmbeds : true
+                            spacing: 8
+                            leftPadding: 28
+
+                            Text {
+                                text: tr("embed_cookies_label", "Use browser sign-in:")
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 12
+                                color: "#94A3B8"
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+
+                            StyledComboBox {
+                                objectName: "embed_cookies_browser"
+                                implicitHeight: 28
+                                implicitWidth: 140
+                                model: [
+                                        { text: tr("embed_cookies_off", "Off"), value: "" },
+                                        { text: "Firefox", value: "firefox" },
+                                        { text: "Chrome", value: "chrome" },
+                                        { text: "Edge", value: "edge" },
+                                        { text: "Brave", value: "brave" },
+                                        { text: "Opera", value: "opera" },
+                                        { text: "Vivaldi", value: "vivaldi" },
+                                        { text: "Chromium", value: "chromium" }
+                                    ]
+                                value: root.bridge ? root.bridge.embedCookiesBrowser : ""
+                                tooltip: tr("embed_cookies_tip", "Embedded videos that only play while you're logged in (RedGifs, private Vimeo, age-restricted YouTube) are downloaded with that browser's sign-in. Firefox works best; Chrome, Edge and Brave have to be closed, and their newest versions can't be read at all.")
+                                onValuePicked: function(v) { if (root.bridge) root.bridge.embedCookiesBrowser = v }
+                            }
+                        }
+
                         StyledCheckBox {
                             text: tr("opt_compress_webp", "Convert downloaded PNG/JPG to WebP format")
                             checked: root.bridge ? root.bridge.compressWebp : false

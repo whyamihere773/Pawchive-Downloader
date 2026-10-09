@@ -16,6 +16,9 @@ Item {
     property string newDir: ""
     property int fileCount: 0
     property string sizeText: ""
+    property bool moving: false        // "Move files" running: progress and Stop instead of the choices
+    property int moveDone: 0
+    property int moveTotal: 0
 
     function tr(key, fallback) {
         if (!Lang) return fallback !== undefined ? fallback : key
@@ -32,12 +35,35 @@ Item {
         newDir = target
         fileCount = count
         sizeText = size
+        moving = false
+        moveDone = 0
+        moveTotal = count
         isOpen = true
     }
 
     function choose(move) {
-        isOpen = false
+        if (move) {
+            moving = true              // stays open with the progress until the move is done
+        } else {
+            isOpen = false
+        }
         if (bridge) bridge.applyWatchlistFolderChange(userId, service, newDir, move)
+    }
+
+    Connections {
+        target: root.bridge
+        function onWatchlistFolderMoveProgress(uid, svc, done, total) {
+            if (root.moving && uid === root.userId && svc === root.service) {
+                root.moveDone = done
+                root.moveTotal = total
+            }
+        }
+        function onWatchlistFolderChanged(uid, svc, message) {
+            if (root.moving && uid === root.userId && svc === root.service) {
+                root.moving = false
+                root.isOpen = false
+            }
+        }
     }
 
     anchors.fill: parent
@@ -136,10 +162,49 @@ Item {
                 wrapMode: Text.WordWrap
             }
 
+            // While moving: progress and Stop
+            ColumnLayout {
+                Layout.fillWidth: true
+                visible: root.moving
+                spacing: 8
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    height: 6
+                    radius: 3
+                    color: "#1A202C"
+                    Rectangle {
+                        width: parent.width * (root.moveTotal > 0 ? Math.min(1, root.moveDone / root.moveTotal) : 0)
+                        height: parent.height
+                        radius: 3
+                        color: "#38BDF8"
+                        Behavior on width { NumberAnimation { duration: 180 } }
+                    }
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    Text {
+                        Layout.fillWidth: true
+                        text: root.tr("folder_change_moving", "Moving files… %1 / %2").replace("%1", root.moveDone).replace("%2", root.moveTotal)
+                        font.family: "Segoe UI, sans-serif"
+                        font.pixelSize: 12
+                        color: "#CBD5E1"
+                    }
+                    StyledButton {
+                        text: root.tr("folder_change_stop", "Stop")
+                        tooltip: root.tr("folder_change_stop_tip", "Stops after the current file. Files already moved stay in the new folder; the rest stay in the old one, and both folders are kept for this artist.")
+                        variant: "outline"
+                        implicitHeight: 32
+                        onClicked: if (root.bridge) root.bridge.cancelWatchlistFolderMove()
+                    }
+                }
+            }
+
             RowLayout {
                 Layout.fillWidth: true
                 Layout.topMargin: 4
                 spacing: 10
+                visible: !root.moving
 
                 StyledButton {
                     text: root.tr("btn_cancel", "Cancel")

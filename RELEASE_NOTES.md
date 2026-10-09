@@ -11,13 +11,13 @@ Numbers below are for an archive with 2 million files from 20,000 creators.
 
 * **Archive tab opens instantly**: The creator list loads in under 0.1 seconds instead of 4.8 seconds (at 200,000 files the old version froze for 5.4 seconds). Even with 100,000 creators the tab opens in under 0.1 seconds.
 * **Opening a creator is instant**: A creator's posts appear right away instead of taking up to 10 seconds, and load a page at a time.
-* **Much faster search**: Searching file names, post titles and creators takes 0.02–0.04 seconds instead of 2.7 seconds, and still finds any part of a name.
+* **Much faster search**: Searching file names, post titles and creators takes 0.02–0.04 seconds instead of 2.7 seconds, and still finds any part of a name. Typing a new search stops the previous one right away, and one- or two-letter searches only look through creator names, so they answer in about 0.01 seconds.
 * **Instant filters**: The site filter takes 0.02 seconds instead of 1 second, and the file-type filter under 0.1 seconds instead of 4.2 seconds.
 * **Statistics in a blink**: The archive statistics load in 0.2 seconds instead of 3.3 seconds.
-* **One-time preparation**: The first time you start this version, a big archive is prepared in the background (about 2 minutes for 2 million files). The tab works as before meanwhile, and the archive file grows by roughly a third to a half to make room for the search index.
+* **One-time preparation**: The first time you start this version, a big archive is prepared in the background (about 2 minutes for 2 million files). Start-up isn't slowed down and downloads keep recording files meanwhile. The tab stays usable but loads slowly until it's done (several seconds per refresh at 2 million files), and the archive file grows by about 10–20% to make room for the search index.
 * **Downloads keep going while you browse**: Looking through or searching the archive no longer holds up running downloads.
 * **Export works and tells you if it can't**: Exporting the archive runs in the background, and if something goes wrong you now get a clear message instead of "Exported 0 records".
-* **Weekly health check**: Once a week the archive is checked for damage in the background, and a safety copy is kept next to it when your drive has at least 3 times the archive's size free. Damage found is repaired automatically.
+* **Weekly health check**: Once a week the archive is checked for damage in the background, and a safety copy of your records is kept next to it when your drive has room for it plus 1 GB. Damage found is repaired automatically.
 
 ---
 
@@ -34,7 +34,7 @@ Numbers below are for an archive with 2 million files from 20,000 creators.
 * **No more endless "Unfinished Download" prompt**: The prompt only appears when files really never got their turn. Files that failed stay in Retry Failed instead of bringing the prompt back at every start.
 * **Retry Failed count is always right**: The button no longer keeps showing a failed file after you cleared it.
 * **Retry Failed opens instantly**: With 5,000 failed files the window used to freeze for over 2 minutes; it now opens in under 0.1 seconds and fills in as you watch.
-* **Retrying doesn't freeze**: Retrying 20,000 failed files used to freeze the window for about 4 seconds, sometimes several times in a row; it now starts instantly.
+* **Retrying doesn't freeze**: Retrying 20,000 failed files used to freeze the window for about 4 seconds, sometimes several times in a row. It now starts instantly, and even with 500,000 files in the queue the window never pauses for more than about 0.1 seconds.
 * **Only the files you picked are retried**: Retrying or clearing selected failed files no longer also picks up other posts' files that happen to share a name (like "001.jpg").
 * **No more re-downloading the same images**: Small original pictures and pictures you converted to WebP are no longer "upgraded" again on every run.
 * **Huge queues stay smooth**: A queue of 500,000 files loads in 0.2 seconds instead of 3.5 seconds, and no longer freezes the app for good.
@@ -51,13 +51,15 @@ Numbers below are for an archive with 2 million files from 20,000 creators.
 * **Built for big watchlists**: With 50,000 artists, scrolling, searching and filtering all respond in under 0.1 seconds. A change saves just that artist instead of rewriting the whole watchlist file.
 * **Updates are remembered**: New posts found by a check are still listed after you restart the app.
 * **Much faster Check All**: Different sites are checked at the same time, the most active artists go first, and results appear one by one while the check runs.
-* **Pawchive shortcut**: Pawchive artists who haven't posted since their last check are skipped using one request for the whole site instead of one per artist, so checking a big watchlist takes minutes instead of hours. Everyone still gets a full check at least once a week.
+* **Pawchive and cum.st shortcut**: Artists who haven't posted since their last check are skipped using the site's list of all creators instead of one request per artist, so checking a big watchlist takes minutes instead of hours. In a live test, 45 artists on both sites were checked in 3 seconds with 11 requests. On cum.st this kicks in from about 1,700 artists, where reading its list is cheaper than checking everyone.
+* **Shortcut double-checks itself**: Each check, a few of the skipped artists are checked anyway. If one of them did post, everyone on that site is checked, and anyone the site has no update time for is always checked. Everyone still gets a full check at least once a week.
 * **Stop and continue**: The Check All button shows how far the check is, and clicking it again stops the check; the next check picks up where it stopped.
 * **Auto-check is respected**: The check at start-up now only includes artists with auto-check turned on.
 * **Connection problems don't hide updates**: If an artist can't be checked, the updates found earlier stay listed and the artist is tried again next time.
 * **Daily backup**: A copy of your watchlist is kept and used automatically if the file ever gets damaged.
 * **Long update lists**: Long update lists open 50 posts at a time.
 * **Change an artist's download folder**: The 📂 button now really changes the folder. If the artist already has files, you can move them to the new folder (the download archive follows them) or use the new folder only for new downloads.
+* **Moving shows its progress**: Moving an artist's files shows how far it is and can be stopped. Files already moved stay in the new folder, the rest stay in the old one, and the artist keeps both.
 * **Your folder choice sticks**: A folder you chose for an artist is no longer moved back into the main download folder on the next download, and multi-drive storage doesn't override it. "Add Drive/Folder" adds a location again instead of replacing the folder.
 * **No more doubled locations**: An artist's folder no longer shows up twice ("Multi-Drive Spanned (2 locations)") just because it was saved with different slashes.
 
@@ -72,7 +74,8 @@ Numbers below are for an archive with 2 million files from 20,000 creators.
 * **Gallery stays responsive**: Opening folders, moving files and undoing a move no longer freeze the window, even when moving to another drive.
 * **Background imports and exports**: Importing or exporting the download queue, exporting logs and clearing or importing the archive run in the background.
 * **No hiccup after start-up**: A freeze of up to 0.3 seconds a few seconds after opening the app is gone.
-* **Fewer random micro-freezes**: With very large queues, watchlists or archives, the app no longer pauses for 0.1–0.2 seconds every now and then to tidy up memory.
+* **Fewer random micro-freezes**: With very large queues, watchlists or archives, the app no longer pauses for 0.1–0.2 seconds every now and then to tidy up memory. The bigger tidy-up now happens while the app is minimised or you've been away from the computer for 10 minutes.
+* **Much smaller log files**: Files skipped because they're already downloaded, or renamed to keep two files apart, are still listed in the log panel but counted in a single line in the log file. Your two biggest logs would have been about 95% smaller (294 KB down to 13 KB).
 * **Freezes report themselves**: If the window ever stops responding, the log now says for how long and what it was busy with, which makes bug reports much easier to fix.
 
 ---
@@ -80,7 +83,8 @@ Numbers below are for an archive with 2 million files from 20,000 creators.
 ### ⚙️ New Settings & Options
 
 * **Site in Folder Name** *(on by default)*: Turn off "Site in Folder Name" in Downloader → Folder Organization & Naming to name creator folders "Artist" instead of "Artist [onlyfans]". Existing folders are still found under either name, so nothing gets split.
-* **Windows and Linux share your data**: Folders saved on Windows ("D:\Art") work on Linux and WSL ("/mnt/d/Art") and the other way round, for a drive shared between both systems.
+* **Windows and Linux share your data**: Folders saved on Windows ("D:\Art") work on Linux and WSL ("/mnt/d/Art") and the other way round, for a drive shared between both systems. Drives mounted elsewhere on Linux (like "/media/you/DATA") are found too, and Gallery favourites and ratings follow along.
+* **Use browser sign-in for embedded videos** *(off by default)*: In Settings, under "Download embedded media players", pick a browser so videos that only play while you're logged in (RedGifs, private Vimeo, age-restricted YouTube) can download. Firefox works best; Chrome, Edge and Brave have to be closed, and their newest versions can't be read at all. If the browser can't be read, videos download without it as before.
 
 ---
 
@@ -88,7 +92,7 @@ Numbers below are for an archive with 2 million files from 20,000 creators.
 
 * **Gallery copy, compress and extract work again**: Since v1.2.5 every file failed with "name 'time' is not defined".
 * **Gfycat links recognised as gone**: Gfycat shut down in 2023, so its links now count as permanently failed instead of being retried and offered again by the Watchlist.
-* **RedGifs "410" explained**: When RedGifs reports a video as deleted, the error now says so plainly, and the post stays retryable instead of being marked done, since some of these still play in a browser.
+* **RedGifs "410" explained**: When RedGifs reports a video as deleted, the error now says so plainly and points to the new browser sign-in setting. The post stays retryable instead of being marked done, since some of these still play in a browser.
 
 ---
 

@@ -9,11 +9,14 @@ Checking the whole Watchlist for new posts, built for big watchlists.
   they were last checked are skipped (one request instead of one per creator). Everyone still gets a
   full check at least once a week, and skipped creators keep the updates found earlier.
 - Each creator's result is reported as soon as it's known.
+- Spot checks: a few of the creators the site's list would skip are checked anyway, first. If one of them
+  has posted since its last check, the list can't be trusted that day and every creator is checked.
 """
 
+import random
 import threading
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from core.logger import logger
@@ -22,6 +25,7 @@ ROUND_MAX_AGE = 24 * 3600            # an unfinished round older than this start
 UNCHANGED_MARGIN = 24 * 3600         # "updated" must be this much older than the last check to skip
 FULL_CHECK_EVERY = 7 * 24 * 3600     # checked in full at least this often, whatever the listing says
 LISTING_MIN_CREATORS = 30            # fewer creators on a site: checking them is cheaper than the listing
+SPOT_CHECKS_MIN, SPOT_CHECKS_MAX = 3, 100   # skipped creators checked anyway, to test the list
 
 
 def site_of(entry) -> str:
@@ -42,12 +46,14 @@ class WatchlistChecker:
                  on_result: Optional[Callable[[Any, int], None]] = None,
                  on_progress: Optional[Callable[[int, int], None]] = None,
                  listing: Optional[Callable[[str], Optional[Dict[Tuple[str, str], float]]]] = None,
-                 max_parallel_sites: int = 4):
+                 max_parallel_sites: int = 4,
+                 listing_cost: Optional[Callable[[str], int]] = None):
         self.manager = manager
         self.check_one = check_one              # entry -> number of new posts (raises on failure)
         self.on_result = on_result
         self.on_progress = on_progress
         self.listing = listing                  # site -> {(service, user id): last update} or None
+        self.listing_cost = listing_cost        # site -> requests needed to read its list
         self.max_parallel_sites = max_parallel_sites
         self.cancel_event = threading.Event()
         self._lock = threading.Lock()
@@ -89,10 +95,16 @@ class WatchlistChecker:
             return set()
         candidates = [e for e in entries
                       if getattr(e, "last_checked_at", 0) and now - e.last_checked_at < FULL_CHECK_EVERY]
-        if len(candidates) < LISTING_MIN_CREATORS:
+        # Worth it when reading the site's list takes fewer requests than checking the artists it can
+        # skip (one request for Pawchive; about a thousand for cum.st)
+        cost = self.listing_cost(site) if self.listing_cost else 1
+        if len(candidates) < max(LISTING_MIN_CREATORS, int(cost * 1.5)):
             return set()
         try:
-            updated = self.listing(site)
+            try:
+                updated = self.listing(site, should_stop=self.cancel_event.is_set)
+            except TypeError:
+                updated = self.listing(site)
         except Exception as e:
             logger.debug(f"Creator list of {site} unavailable: {e}", category="watchlist")
             updated = None
@@ -100,8 +112,11 @@ class WatchlistChecker:
             return set()
         skip = set()
         for e in candidates:
-            u = updated.get(((e.service or "").lower(), str(e.user_id)))
-            if u is not None and u < e.last_checked_at - UNCHANGED_MARGIN:
+            svc = (e.service or "").lower()
+            u = updated.get((svc, str(e.user_id)))
+            if u is None:
+                u = updated.get((svc, str(e.user_id).lower()))
+            if u and u < e.last_checked_at - UNCHANGED_MARGIN:      # (0: the site doesn't know; checked)
                 skip.add(id(e))
         if skip:
             logger.info(f"Watchlist: {len(skip)} of {len(entries)} {site} artist(s) haven't posted since "
@@ -128,17 +143,24 @@ class WatchlistChecker:
         self.total = len(entries)
         self.done = already
         self._progress()
-        queues = {}
+        queues: Dict[str, deque] = {}
+        held: Dict[str, List[Any]] = {}        # skipped by the site's list, pending its spot checks
+        spots: Dict[str, Dict[int, int]] = {}   # site -> {id(creator): new posts known before}
         for site, items in by_site.items():
             items.sort(key=activity_day, reverse=True)
             skip = self._unchanged(site, items, now)
+            sample: List[Any] = []
             if skip:
-                self.skipped_unchanged += len(skip)
-                self.total_new += sum(getattr(e, "new_post_count", 0) or 0 for e in items if id(e) in skip)
-                with self._lock:
-                    self.done += len(skip)
-                self._progress()
-            queues[site] = [e for e in items if id(e) not in skip]
+                skipped = [e for e in items if id(e) in skip]
+                # 2% (3 to 100): a list that misses even 5% of updates is caught 99% of the time at 100
+                k = min(len(skipped), SPOT_CHECKS_MAX, max(SPOT_CHECKS_MIN, len(skipped) // 50))
+                sample = random.sample(skipped, k)
+                for e in sample:
+                    skip.discard(id(e))
+                held[site] = [e for e in skipped if id(e) in skip]
+                spots[site] = {id(e): getattr(e, "new_post_count", 0) or 0 for e in sample}
+            ids = {id(e) for e in sample}
+            queues[site] = deque(sample + [e for e in items if id(e) not in skip and id(e) not in ids])
 
         sites = sorted(queues, key=lambda s: -len(queues[s]))
         pending = list(sites)
@@ -150,10 +172,20 @@ class WatchlistChecker:
                     if not pending:
                         return
                     site = pending.pop(0)
-                for e in queues[site]:
+                q = queues[site]
+                waiting = dict(spots.get(site, {}))      # spot checks not done yet
+                doubt = False
+                while q:
                     if self.cancel_event.is_set():
                         return
-                    self._check(e)
+                    e = q.popleft()
+                    n = self._check(e)
+                    if id(e) in waiting:
+                        before = waiting.pop(id(e))
+                        if n is not None and n > before:
+                            doubt = True                  # posted since its last check: the list missed it
+                        if not waiting and site in held:
+                            self._settle_held(site, held.pop(site), doubt, q)
 
         threads = [threading.Thread(target=worker, name=f"WatchlistCheck-{i}", daemon=True)
                    for i in range(max(1, min(self.max_parallel_sites, len(sites))))]
@@ -165,7 +197,22 @@ class WatchlistChecker:
             self._round_finished(started)
         return self.total_new
 
-    def _check(self, e) -> None:
+    def _settle_held(self, site: str, skipped: List[Any], doubt: bool, queue: deque) -> None:
+        """After a site's spot checks: the creators its list skipped are skipped (counted with what they
+        found before), or, if a spot check found the list wrong, checked like the others."""
+        if doubt:
+            logger.warning(f"Watchlist: {site}'s creator list missed new posts in a spot check; checking all "
+                           f"{len(skipped)} artist(s) it would have skipped.", category="watchlist")
+            queue.extend(skipped)
+            return
+        with self._lock:
+            self.skipped_unchanged += len(skipped)
+            self.total_new += sum(getattr(e, "new_post_count", 0) or 0 for e in skipped)
+            self.done += len(skipped)
+        self._progress()
+
+    def _check(self, e) -> Optional[int]:
+        """Checks one creator; its number of new posts, None when it couldn't be checked."""
         try:
             n = int(self.check_one(e) or 0)
         except Exception as ex:
@@ -191,6 +238,7 @@ class WatchlistChecker:
             except Exception:
                 pass
         self._progress()
+        return n
 
     def _progress(self) -> None:
         if self.on_progress:

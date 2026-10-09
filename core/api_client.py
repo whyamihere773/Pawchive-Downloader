@@ -324,14 +324,29 @@ class KemonoApiClient:
         return bool(getattr(self._fetch_state, "failed", False))
 
     # Sites that list every creator with the time of their last update in one request
-    _CREATOR_LISTINGS = ("pawchive.pw",)
+    # Sites that list every creator with the time of their last update: Pawchive in one request,
+    # cum.st 50 at a time (in name order, which doesn't move while it's read)
+    _CREATOR_LISTINGS = ("pawchive.pw", "cum.st")
+    CUMST_PAGE, CUMST_STEP = 50, 45        # pages overlap: a creator added meanwhile can't slip between
     _listing_cache: Dict[str, tuple] = {}
     _listing_lock = threading.Lock()
+    _listing_sizes: Dict[str, int] = {"cum.st": 51000}     # last known number of creators
 
-    def fetch_creator_updates(self, domain: str, max_age: float = 600.0) -> Optional[Dict[tuple, float]]:
+    def creator_listing_cost(self, domain: str) -> int:
+        """Requests needed to read a site's creator list (0: the site has none)."""
+        domain = (domain or "").lower()
+        if domain not in self._CREATOR_LISTINGS or is_disabled(domain):
+            return 0
+        if domain == "cum.st":
+            return self._listing_sizes.get(domain, 51000) // self.CUMST_STEP + 1
+        return 1
+
+    def fetch_creator_updates(self, domain: str, max_age: float = 600.0,
+                              should_stop: Optional[Callable[[], bool]] = None) -> Optional[Dict[tuple, float]]:
         """{(service, user id): time of the creator's last update} for every creator on the site, or
-        None when the site has no such list (or it couldn't be fetched). Used by the Watchlist check to
-        skip creators that haven't posted since their last check. Cached for a few minutes."""
+        None when the site has no such list (or it couldn't be fetched, or should_stop said so). Used by
+        the Watchlist check to skip creators that haven't posted since their last check. Cached for a
+        few minutes."""
         domain = (domain or "").lower()
         if domain not in self._CREATOR_LISTINGS or is_disabled(domain):
             return None
@@ -339,6 +354,11 @@ class KemonoApiClient:
             hit = self._listing_cache.get(domain)
             if hit and time.time() - hit[0] < max_age:
                 return hit[1]
+            if domain == "cum.st":
+                updates = self._fetch_cumst_creators(should_stop)
+                if updates:
+                    self._listing_cache[domain] = (time.time(), updates)
+                return updates
             resp = self._get_with_log(f"https://{domain}/api/v1/creators", timeout=60)
             if resp is None or resp.status_code != 200:
                 return None
@@ -370,6 +390,54 @@ class KemonoApiClient:
             self._listing_cache[domain] = (time.time(), updates)
             logger.debug(f"Creator list of {domain}: {len(updates)} creators.", category="api")
             return updates
+
+    def _fetch_cumst_creators(self, should_stop: Optional[Callable[[], bool]] = None) -> Optional[Dict[tuple, float]]:
+        """cum.st's creator list, a page of 50 at a time in name order (about a thousand requests, at the
+        same pace as reading posts). A creator is found by its id and by its name (Watchlist links use
+        either); its time is the later of "updated" and "contentUpdated"."""
+        updates: Dict[tuple, float] = {}
+        offset, total, failures = 0, None, 0
+        while total is None or offset < total + self.CUMST_PAGE:
+            if should_stop is not None and should_stop():
+                return None
+            resp = self._get_with_log(f"https://cum.st/api/v1/creators?sort=name&o={offset}", timeout=30)
+            if resp is None or resp.status_code != 200:
+                failures += 1
+                if failures >= 3:
+                    logger.debug("cum.st creator list couldn't be read to the end.", category="api")
+                    return None
+                time.sleep(2.0)
+                continue
+            failures = 0
+            try:
+                data = resp.json()
+            except ValueError:
+                return None
+            creators = data.get("creators") if isinstance(data, dict) else data
+            if isinstance(data, dict) and isinstance(data.get("total"), int):
+                total = data["total"]
+                self._listing_sizes["cum.st"] = total
+            if not creators:
+                break
+            for c in creators:
+                if not isinstance(c, dict):
+                    continue
+                svc = str(c.get("service") or "").lower()
+                try:
+                    when = max(float(c.get("updated") or 0), float(c.get("contentUpdated") or 0))
+                except (TypeError, ValueError):
+                    continue
+                if when <= 0:
+                    continue                    # never updated as far as the site knows: checked normally
+                for ident in {str(c.get(k)) for k in ("id", "name", "public_id") if c.get(k)}:
+                    updates[(svc, ident)] = max(when, updates.get((svc, ident), 0.0))
+                    updates[(svc, ident.lower())] = max(when, updates.get((svc, ident.lower()), 0.0))
+            if len(creators) < self.CUMST_PAGE:
+                break
+            offset += self.CUMST_STEP
+            time.sleep(random.uniform(0.35, 0.55))
+        logger.debug(f"Creator list of cum.st: {len(updates)} names / ids.", category="api")
+        return updates or None
 
     def resolve_creator_name(self, parsed: URLParseResult) -> Optional[str]:
         """Convenience helper to resolve and return just the clean creator display name."""

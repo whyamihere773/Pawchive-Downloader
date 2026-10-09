@@ -1158,5 +1158,11 @@
   "toast_archive_repair_failed": "La base de datos del archivo está dañada y no se pudo reparar: %1",
   "archive_show_more_posts": "Mostrar %1 publicaciones más (quedan %2)",
   "archive_show_more_files": "Mostrar %1 archivos más (quedan %2)",
-  "toast_importing": "Importando al archivo…"
+  "toast_importing": "Importando al archivo…",
+  "folder_change_moving": "Moviendo archivos… %1 / %2",
+  "folder_change_stop": "Detener",
+  "folder_change_stop_tip": "Se detiene tras el archivo actual. Los archivos ya movidos quedan en la carpeta nueva y el resto en la antigua; se conservan ambas carpetas para este artista.",
+  "embed_cookies_label": "Usar sesión del navegador:",
+  "embed_cookies_off": "No",
+  "embed_cookies_tip": "Los vídeos incrustados que solo se reproducen con la sesión iniciada (RedGifs, Vimeo privado, YouTube con restricción de edad) se descargan con la sesión de ese navegador. Firefox funciona mejor; Chrome, Edge y Brave deben estar cerrados, y sus versiones más recientes no se pueden leer."
 }

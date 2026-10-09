@@ -1158,5 +1158,11 @@
   "toast_archive_repair_failed": "存档数据库已损坏，无法修复: %1",
   "archive_show_more_posts": "再显示 %1 个帖子（剩余 %2 个）",
   "archive_show_more_files": "再显示 %1 个文件（剩余 %2 个）",
-  "toast_importing": "正在导入存档…"
+  "toast_importing": "正在导入存档…",
+  "folder_change_moving": "正在移动文件… %1 / %2",
+  "folder_change_stop": "停止",
+  "folder_change_stop_tip": "在当前文件之后停止。已移动的文件留在新文件夹，其余留在旧文件夹；此作者的两个文件夹都会保留。",
+  "embed_cookies_label": "使用浏览器登录：",
+  "embed_cookies_off": "关闭",
+  "embed_cookies_tip": "仅在登录后才能播放的嵌入视频（RedGifs、私密 Vimeo、年龄限制的 YouTube）将使用该浏览器的登录信息下载。Firefox 效果最好；Chrome、Edge 和 Brave 需要先关闭，且最新版本完全无法读取。"
 }

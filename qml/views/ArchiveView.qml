@@ -52,7 +52,6 @@ Rectangle {
     property bool _needsReload: false
     property int _reloadSeq: 0
     property string _reloadRequest: ""
-    property bool _reloadAgain: false
     property bool _expandOnResult: false     // a search opens every creator it found
 
     // Posts (with their files) of the creators that are open. Only the creators come with a refresh;
@@ -149,10 +148,7 @@ Rectangle {
     // The data is read in the background; a reload asked for while one runs is done right after it
     function reload() {
         if (!root.bridge) return
-        if (root._reloadRequest !== "") {
-            root._reloadAgain = true
-            return
-        }
+        // A new request replaces one still running (the bridge stops the older read)
         root._reloadSeq += 1
         root._reloadRequest = "archive-" + root._reloadSeq
         root.bridge.getArchiveDataAsync(root._reloadRequest, root.searchFilter, root.serviceFilter, root.fileTypeFilter, root.sortOrder)
@@ -219,10 +215,6 @@ Rectangle {
                 if (keepY > 0)
                     creatorsListView.contentY = Math.min(keepY, Math.max(0, creatorsListView.contentHeight - creatorsListView.height))
                 root.statistics = result.statistics
-            }
-            if (root._reloadAgain) {
-                root._reloadAgain = false
-                root.reload()
             }
         }
         function onArchiveRepairFinished(result) {

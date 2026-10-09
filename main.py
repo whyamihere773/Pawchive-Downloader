@@ -108,6 +108,41 @@ def _setup_memory_management(app, win, app_bridge, memory_collector):
 
     win.visibilityChanged.connect(_on_visibility)
 
+    # Also when the app has been left alone (another app in front, or no input for 10 minutes), at most
+    # every 30 minutes: without ever minimizing, the full cleanup never ran
+    def _away_cleanup():
+        from PySide6.QtCore import Qt as _Qt
+        now = _time.monotonic()
+        if now - last["t"] < 1800:
+            return
+        if app.applicationState() == _Qt.ApplicationActive and _seconds_without_input() < 600:
+            return
+        last["t"] = now
+        memory_collector.collect(reason="app left alone", deep=True)
+
+    away_timer = QTimer(app)
+    away_timer.setInterval(5 * 60 * 1000)
+    away_timer.timeout.connect(_away_cleanup)
+    away_timer.start()
+
+
+def _seconds_without_input() -> float:
+    """How long the computer has had no keyboard / mouse input (Windows; elsewhere 0: unknown)."""
+    if sys.platform != "win32":
+        return 0.0
+    try:
+        import ctypes
+
+        class _LastInput(ctypes.Structure):
+            _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
+        info = _LastInput()
+        info.cbSize = ctypes.sizeof(_LastInput)
+        if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(info)):
+            return 0.0
+        return ((ctypes.windll.kernel32.GetTickCount() - info.dwTime) & 0xFFFFFFFF) / 1000.0
+    except Exception:
+        return 0.0
+
 
 def main():
     _install_qt_message_handler()

@@ -13,6 +13,19 @@ import requests
 from typing import Optional, Callable, Tuple
 from core.logger import logger
 
+# Browsers yt-dlp can read a sign-in from (Settings: "Use browser sign-in" for embedded videos)
+COOKIE_BROWSERS = ("firefox", "chrome", "edge", "brave", "opera", "vivaldi", "chromium", "safari")
+# yt-dlp's own messages when it can't read a browser's sign-in (not a video's "sign in to watch")
+_COOKIE_ERRORS = ("cookie database", "cookies database", "decrypt with dpapi", "failed to decrypt",
+                  "unsupported browser specified for cookies", "keyring")
+
+
+def is_cookie_error(text: str) -> bool:
+    """yt-dlp couldn't read the browser's sign-in (browser not installed, its cookie file locked or
+    encrypted: Chrome, Edge and Brave on Windows lock theirs while open and newer ones encrypt it)."""
+    t = (text or "").lower()
+    return any(k in t for k in _COOKIE_ERRORS)
+
 
 class YtDlpManager:
     """
@@ -43,6 +56,13 @@ class YtDlpManager:
         self._lock = threading.Lock()
         self._active_processes: set = set()
         self._proc_lock = threading.Lock()
+        self.cookies_browser = ""          # browser whose sign-in embedded videos use ("" = none)
+        self._cookies_failed = ""          # that browser's sign-in couldn't be read (warned once)
+
+    def set_cookies_browser(self, browser: str) -> None:
+        browser = (browser or "").strip().lower()
+        self.cookies_browser = browser if browser in COOKIE_BROWSERS else ""
+        self._cookies_failed = ""
 
     def get_executable_path(self) -> str:
         """Returns path to yt-dlp executable, checking local dependencies or system PATH."""
@@ -251,6 +271,24 @@ class YtDlpManager:
             if not ok or not self.is_binary_available():
                 return False, "yt-dlp.exe is missing and could not be downloaded."
 
+        browser = self.cookies_browser
+        if browser and self._cookies_failed != browser:
+            ok, msg, raw = self._download_media(url, target_folder, custom_filename, cancel_event, pause_event,
+                                                progress_callback, timeout, referer, browser)
+            if ok or not is_cookie_error(raw):
+                return ok, msg
+            # Not the video's fault: download without the sign-in (and stop trying it this session)
+            self._cookies_failed = browser
+            logger.warning(f"Couldn't use {browser.capitalize()}'s sign-in for embedded videos ({msg}). Downloading "
+                           f"them without it. Firefox works best; Chrome, Edge and Brave have to be closed, and "
+                           f"their newest versions can't be read at all.", category="ytdlp")
+        ok, msg, _raw = self._download_media(url, target_folder, custom_filename, cancel_event, pause_event,
+                                             progress_callback, timeout, referer, "")
+        return ok, msg
+
+    def _download_media(self, url, target_folder, custom_filename, cancel_event, pause_event, progress_callback,
+                        timeout, referer, browser) -> Tuple[bool, str, str]:
+        """One yt-dlp run: (success, message, yt-dlp's whole error text)."""
         os.makedirs(target_folder, exist_ok=True)
 
         if custom_filename:
@@ -271,6 +309,8 @@ class YtDlpManager:
         # Domain-locked Vimeo embeds only play when the request says it comes from the creator's site
         if referer and "vimeo.com" in url.lower():
             cmd += ["--referer", referer]
+        if browser:
+            cmd += ["--cookies-from-browser", browser]
         cmd.append(url)
 
         creationflags = 0
@@ -298,7 +338,7 @@ class YtDlpManager:
                         proc.kill()
                     except Exception:
                         pass
-                    return False, "Cancelled"
+                    return False, "Cancelled", ""
 
                 while pause_event and pause_event.is_set():
                     time.sleep(0.3)
@@ -307,7 +347,7 @@ class YtDlpManager:
                             proc.kill()
                         except Exception:
                             pass
-                        return False, "Cancelled"
+                        return False, "Cancelled", ""
 
                 line = proc.stdout.readline()
                 if line:
@@ -342,17 +382,18 @@ class YtDlpManager:
                     proc.kill()
                 except Exception:
                     pass
-                return False, "Cancelled"
+                return False, "Cancelled", ""
 
             stdout_rem, stderr_rem = proc.communicate(timeout=10)
             if proc.returncode == 0:
-                return True, "Completed"
+                return True, "Completed", ""
             else:
-                err_msg = (stderr_rem or stdout_rem or f"yt-dlp exited with code {proc.returncode}").strip()
+                full_err = (stderr_rem or stdout_rem or f"yt-dlp exited with code {proc.returncode}").strip()
+                err_msg = full_err
                 # Clean up error message for UI
                 if "ERROR:" in err_msg:
                     err_msg = err_msg.split("ERROR:")[-1].strip()
-                return False, err_msg[:120]
+                return False, err_msg[:120], full_err
 
         except Exception as e:
             if proc:
@@ -361,8 +402,8 @@ class YtDlpManager:
                 except Exception:
                     pass
             if cancel_event and cancel_event.is_set():
-                return False, "Cancelled"
-            return False, str(e)
+                return False, "Cancelled", ""
+            return False, str(e), str(e)
         finally:
             if proc is not None:
                 with self._proc_lock:

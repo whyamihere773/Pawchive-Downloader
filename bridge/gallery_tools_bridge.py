@@ -317,7 +317,15 @@ class GalleryToolsBridge(QObject):
             with open(self._marks_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
             items = data.get("items", {}) if isinstance(data, dict) else {}
-            self._marks = {k: v for k, v in items.items() if isinstance(v, dict) and v.get("path")}
+            from core.path_translation import localize_path       # (saved on the other system: D:\ ↔ /mnt/d)
+            self._marks = {}
+            for k, v in items.items():
+                if isinstance(v, dict) and v.get("path"):
+                    here = localize_path(v["path"])
+                    if here != v["path"]:
+                        v = {**v, "path": here}
+                        k = _mark_key(here)
+                    self._marks[k] = v
         except FileNotFoundError:
             self._marks = {}
         except Exception as e:

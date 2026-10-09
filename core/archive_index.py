@@ -349,9 +349,20 @@ def ensure(conn: sqlite3.Connection) -> None:
         if row is not None:
             conn.commit()
             restart(conn)
+    if fts and _has_table(conn, "archive_fts"):
+        sql = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'archive_fts';").fetchone()[0] or ""
+        if "detail=none" not in sql.replace(" ", "").lower():
+            # An index from the first version of this (twice the size): made again, every record counted again
+            for t in _ALL_TRIGGERS:
+                conn.execute(f"DROP TRIGGER IF EXISTS {t};")
+            conn.execute("DROP TABLE archive_fts;")
+            conn.execute(f"CREATE VIRTUAL TABLE archive_fts USING fts5({_FTS_COLS}, content='downloaded_files', "
+                         f"content_rowid='id', tokenize='trigram', detail=none);")
+            conn.commit()
+            restart(conn)
     if fts and not _has_table(conn, "archive_fts"):
         conn.execute(f"CREATE VIRTUAL TABLE archive_fts USING fts5({_FTS_COLS}, content='downloaded_files', "
-                     f"content_rowid='id', tokenize='trigram');")
+                     f"content_rowid='id', tokenize='trigram', detail=none);")
     # Made again on every open, so they always match this version (CREATE … IF NOT EXISTS would keep an
     # older version's)
     for t in _ALL_TRIGGERS:
@@ -392,8 +403,13 @@ def is_ready(conn: sqlite3.Connection) -> bool:
         return False
 
 
-def backfill_step(conn: sqlite3.Connection, chunk: int = 5000) -> bool:
-    """Fills in the next slice of records; True once everything is in."""
+_NEWEST_ID_OF_GROUPS = "CAST(substr(MAX(printf('%s|%020d', newest, newest_id)), -20) AS INTEGER)"
+
+
+def backfill_step(conn: sqlite3.Connection, chunk: int = 2000) -> bool:
+    """Fills in the next slice of records; True once everything is in. The slice is grouped by post and
+    file type once (a temporary table); the four summaries are made from that instead of reading the
+    records four times."""
     wm, done, fts = state(conn)
     if done >= wm:
         return True
@@ -401,35 +417,50 @@ def backfill_step(conn: sqlite3.Connection, chunk: int = 5000) -> bool:
     rng = (done, hi)
     with conn:
         conn.execute(f"""
-            INSERT INTO archive_posts (service, creator_id, creator_name, post_id, {_COUNT_COLS})
-            SELECT service, IFNULL(creator_id, ''), IFNULL(creator_name, ''), post_id, {_aggregate()}
-            FROM downloaded_files WHERE id > ? AND id <= ? GROUP BY 1, 2, 3, 4
-            ON CONFLICT DO UPDATE SET {_UPSERT_COUNTS};
+            CREATE TEMP TABLE IF NOT EXISTS backfill_slice (
+                service TEXT, creator_id TEXT, creator_name TEXT, post_id TEXT, cat TEXT,
+                files INTEGER, missing INTEGER, verified INTEGER, newest TEXT, oldest TEXT,
+                max_id INTEGER, newest_id INTEGER);
+        """)
+        conn.execute("DELETE FROM temp.backfill_slice;")
+        conn.execute(f"""
+            INSERT INTO temp.backfill_slice
+            SELECT d.service, IFNULL(d.creator_id, ''), IFNULL(d.creator_name, ''), d.post_id, IFNULL(c.cat, ''),
+                   {_aggregate("d.")}
+            FROM downloaded_files d LEFT JOIN archive_ext_cats c ON c.ext = LOWER(IFNULL(d.file_ext, ''))
+            WHERE d.id > ? AND d.id <= ? GROUP BY 1, 2, 3, 4, 5;
         """, rng)
+        groups = f"""SUM(files), SUM(missing), SUM(verified), MAX(newest), MIN(oldest), MAX(max_id),
+                     {_NEWEST_ID_OF_GROUPS}"""
+        conn.execute(f"""
+            INSERT INTO archive_posts (service, creator_id, creator_name, post_id, {_COUNT_COLS})
+            SELECT service, creator_id, creator_name, post_id, {groups}
+            FROM temp.backfill_slice WHERE true GROUP BY 1, 2, 3, 4
+            ON CONFLICT DO UPDATE SET {_UPSERT_COUNTS};
+        """)
         conn.execute(f"""
             INSERT INTO archive_creators (service, creator_id, creator_name, {_COUNT_COLS})
-            SELECT service, IFNULL(creator_id, ''), IFNULL(creator_name, ''), {_aggregate()}
-            FROM downloaded_files WHERE id > ? AND id <= ? GROUP BY 1, 2, 3
+            SELECT service, creator_id, creator_name, {groups}
+            FROM temp.backfill_slice WHERE true GROUP BY 1, 2, 3
             ON CONFLICT DO UPDATE SET {_UPSERT_COUNTS};
-        """, rng)
+        """)
+        conn.execute(f"""
+            INSERT INTO archive_post_cats (service, creator_id, creator_name, cat, post_id, {_COUNT_COLS})
+            SELECT service, creator_id, creator_name, cat, post_id,
+                   files, missing, verified, newest, oldest, max_id, newest_id
+            FROM temp.backfill_slice WHERE cat != ''
+            ON CONFLICT DO UPDATE SET {_UPSERT_COUNTS};
+        """)
+        conn.execute(f"""
+            INSERT INTO archive_creator_cats (cat, service, creator_id, creator_name, {_COUNT_COLS})
+            SELECT cat, service, creator_id, creator_name, {groups}
+            FROM temp.backfill_slice WHERE cat != '' GROUP BY 1, 2, 3, 4
+            ON CONFLICT DO UPDATE SET {_UPSERT_COUNTS};
+        """)
         conn.execute("""
             INSERT INTO archive_exts (ext, files)
             SELECT LOWER(IFNULL(file_ext, '')), COUNT(*) FROM downloaded_files WHERE id > ? AND id <= ? GROUP BY 1
             ON CONFLICT DO UPDATE SET files = files + excluded.files;
-        """, rng)
-        conn.execute(f"""
-            INSERT INTO archive_post_cats (service, creator_id, creator_name, cat, post_id, {_COUNT_COLS})
-            SELECT d.service, IFNULL(d.creator_id, ''), IFNULL(d.creator_name, ''), c.cat, d.post_id, {_aggregate("d.")}
-            FROM downloaded_files d JOIN archive_ext_cats c ON c.ext = LOWER(IFNULL(d.file_ext, ''))
-            WHERE d.id > ? AND d.id <= ? GROUP BY 1, 2, 3, 4, 5
-            ON CONFLICT DO UPDATE SET {_UPSERT_COUNTS};
-        """, rng)
-        conn.execute(f"""
-            INSERT INTO archive_creator_cats (cat, service, creator_id, creator_name, {_COUNT_COLS})
-            SELECT c.cat, d.service, IFNULL(d.creator_id, ''), IFNULL(d.creator_name, ''), {_aggregate("d.")}
-            FROM downloaded_files d JOIN archive_ext_cats c ON c.ext = LOWER(IFNULL(d.file_ext, ''))
-            WHERE d.id > ? AND d.id <= ? GROUP BY 1, 2, 3, 4
-            ON CONFLICT DO UPDATE SET {_UPSERT_COUNTS};
         """, rng)
         if fts:
             conn.execute(f"INSERT INTO archive_fts (rowid, {_FTS_COLS}) "
@@ -439,7 +470,7 @@ def backfill_step(conn: sqlite3.Connection, chunk: int = 5000) -> bool:
 
 
 def backfill(run_step: Callable[[], bool], should_stop: Callable[[], bool] = lambda: False,
-             pause: float = 0.05) -> bool:
+             pause: float = 0.01) -> bool:
     """Runs backfill steps until done (each step through run_step, which takes the writer's lock)."""
     while not should_stop():
         if run_step():
@@ -476,10 +507,14 @@ def restart(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def fts_query(text: str) -> Optional[str]:
-    """The search text as an FTS5 query matching it anywhere (None: too short for the index, which
-    needs 3 characters)."""
+# Rows of archive_fts holding the search text (the trigram index answers LIKE '%…%' itself)
+FTS_MATCH = " OR ".join(f"{c.strip()} LIKE ?" for c in _FTS_COLS.split(","))
+
+
+def fts_query(text: str) -> Optional[list]:
+    """The parameters of FTS_MATCH for the search text, matching it anywhere like LIKE '%…%' (None:
+    too short for the index, which needs 3 characters)."""
     q = (text or "").strip()
     if len(q) < 3:
         return None
-    return '"' + q.replace('"', '""') + '"'
+    return [f"%{q}%"] * len(_FTS_COLS.split(","))

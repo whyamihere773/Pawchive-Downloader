@@ -1158,5 +1158,11 @@
   "toast_archive_repair_failed": "Cơ sở dữ liệu lưu trữ bị hỏng và không thể sửa: %1",
   "archive_show_more_posts": "Hiện thêm %1 bài đăng (còn %2)",
   "archive_show_more_files": "Hiện thêm %1 tệp (còn %2)",
-  "toast_importing": "Đang nhập vào kho lưu trữ…"
+  "toast_importing": "Đang nhập vào kho lưu trữ…",
+  "folder_change_moving": "Đang di chuyển tệp… %1 / %2",
+  "folder_change_stop": "Dừng",
+  "folder_change_stop_tip": "Dừng sau tệp hiện tại. Tệp đã di chuyển ở lại thư mục mới, phần còn lại ở thư mục cũ; cả hai thư mục được giữ cho nghệ sĩ này.",
+  "embed_cookies_label": "Dùng đăng nhập trình duyệt:",
+  "embed_cookies_off": "Tắt",
+  "embed_cookies_tip": "Video nhúng chỉ phát khi đã đăng nhập (RedGifs, Vimeo riêng tư, YouTube giới hạn độ tuổi) được tải bằng đăng nhập của trình duyệt đó. Firefox hoạt động tốt nhất; Chrome, Edge và Brave phải được đóng, và phiên bản mới nhất của chúng hoàn toàn không đọc được."
 }

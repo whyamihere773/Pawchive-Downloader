@@ -1158,5 +1158,11 @@
   "toast_archive_repair_failed": "Arşiv veritabanı hasarlı ve onarılamadı: %1",
   "archive_show_more_posts": "%1 gönderi daha göster (%2 kaldı)",
   "archive_show_more_files": "%1 dosya daha göster (%2 kaldı)",
-  "toast_importing": "Arşive aktarılıyor…"
+  "toast_importing": "Arşive aktarılıyor…",
+  "folder_change_moving": "Dosyalar taşınıyor… %1 / %2",
+  "folder_change_stop": "Durdur",
+  "folder_change_stop_tip": "Geçerli dosyadan sonra durur. Taşınan dosyalar yeni klasörde, kalanlar eski klasörde kalır; bu sanatçı için iki klasör de korunur.",
+  "embed_cookies_label": "Tarayıcı oturumunu kullan:",
+  "embed_cookies_off": "Kapalı",
+  "embed_cookies_tip": "Yalnızca oturum açıkken oynatılan gömülü videolar (RedGifs, gizli Vimeo, yaş sınırlı YouTube) o tarayıcının oturumuyla indirilir. En iyi Firefox çalışır; Chrome, Edge ve Brave kapalı olmalıdır ve en yeni sürümleri hiç okunamaz."
 }

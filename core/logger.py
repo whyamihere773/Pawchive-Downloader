@@ -410,7 +410,10 @@ class AppLogger:
         if callback in self._listeners:
             self._listeners.remove(callback)
 
-    def log(self, message: str, level: str = LogLevel.INFO, category: str = "general", details: str = ""):
+    def log(self, message: str, level: str = LogLevel.INFO, category: str = "general", details: str = "",
+            to_file: bool = True):
+        """to_file=False: shown in the log panel only (a line per file skipped while building the queue
+        would make the log file huge for a big library; the file gets a count of them instead)."""
         entry = LogEntry(redact(str(message)), level, category, redact(details) if details else "")
         self._history.append(entry)
         if len(self._history) > self._max_history:
@@ -419,7 +422,8 @@ class AppLogger:
         log_line = f"[{entry.created:%Y-%m-%d %H:%M:%S}.{entry.created.microsecond // 1000:03d}] [{entry.level.upper():<7}] [{entry.category}] {entry.message}\n"
         if entry.details:
             log_line += "".join(f"    | {ln}\n" for ln in entry.details.rstrip("\n").split("\n"))
-        self._append_to_file(log_line, urgent=entry.level in (LogLevel.WARNING, LogLevel.ERROR))
+        if to_file:
+            self._append_to_file(log_line, urgent=entry.level in (LogLevel.WARNING, LogLevel.ERROR))
 
         try:
             if sys.stdout is not None:
@@ -440,11 +444,11 @@ class AppLogger:
                 except Exception:
                     pass
 
-    def debug(self, msg: str, category: str = "debug", details: str = ""):
-        self.log(msg, LogLevel.DEBUG, category, details)
+    def debug(self, msg: str, category: str = "debug", details: str = "", to_file: bool = True):
+        self.log(msg, LogLevel.DEBUG, category, details, to_file)
 
-    def info(self, msg: str, category: str = "info", details: str = ""):
-        self.log(msg, LogLevel.INFO, category, details)
+    def info(self, msg: str, category: str = "info", details: str = "", to_file: bool = True):
+        self.log(msg, LogLevel.INFO, category, details, to_file)
 
     def success(self, msg: str, category: str = "success", details: str = ""):
         self.log(msg, LogLevel.SUCCESS, category, details)

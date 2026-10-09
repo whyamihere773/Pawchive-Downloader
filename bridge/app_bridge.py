@@ -164,6 +164,7 @@ class AppBridge(QObject):
     downloadDelayChanged = Signal()
     savePostMetadataChanged = Signal()
     downloadEmbedsChanged = Signal()
+    embedCookiesBrowserChanged = Signal()
     openFolderOnCompleteChanged = Signal()
     playCompletionSoundChanged = Signal()
     generateDesktopReportChanged = Signal()
@@ -213,6 +214,7 @@ class AppBridge(QObject):
     # the artist already has files to move or keep; then (userId, service, message) when it's done
     watchlistFolderChangeRequested = Signal(str, str, str, str, str, int, str)
     watchlistFolderChanged = Signal(str, str, str)
+    watchlistFolderMoveProgress = Signal(str, str, int, int)   # (userId, service, files moved, files to move)
 
     # Link Vault signals
     linkVaultChanged          = Signal()
@@ -389,6 +391,8 @@ class AppBridge(QObject):
         self._download_delay = float(saved_settings.get("download_delay", 2.0))
         self._save_post_metadata = bool(saved_settings.get("save_post_metadata", True))
         self._download_embeds = bool(saved_settings.get("download_embeds", True))
+        # Embedded videos that need a sign-in (RedGifs, private Vimeo…) use this browser's ("" = none)
+        self._embed_cookies_browser = str(saved_settings.get("embed_cookies_browser", "") or "")
         self._open_folder_on_complete = bool(saved_settings.get("open_folder_on_complete", False))
         self._play_completion_sound = bool(saved_settings.get("play_completion_sound", False))
         self._generate_desktop_report = bool(saved_settings.get("generate_desktop_report", saved_settings.get("save_desktop_report", False)))
@@ -458,6 +462,7 @@ class AppBridge(QObject):
         self._pending_post_action: str = "none"  # action queued for countdown confirmation
 
         # Trigger background auto-check / update for standalone dependencies/yt-dlp.exe
+        self.downloader.ytdlp_manager.set_cookies_browser(self._embed_cookies_browser)
         self.downloader.ytdlp_manager.check_for_updates_async()
 
         # Status & In-depth Telemetry
@@ -519,6 +524,7 @@ class AppBridge(QObject):
         self.downloader.on_progress_update        = lambda info: _safe_emit(self._progressSignal, info)
         self.downloader.on_task_status_changed    = lambda task: _safe_emit(self._taskSignal, task)
         self.downloader.on_tasks_changed          = lambda tasks: _safe_emit(self._tasksSignal, tasks)
+        self.downloader.on_cleanup_wanted         = lambda: _safe_emit(self._callOnGui, self._cleanup_after_run)
         self.downloader.on_download_finished      = lambda ok, msg: _safe_emit(self._finishedSignal, ok, msg)
         self.downloader.on_concurrency_throttled  = lambda count: _safe_emit(self._throttledSignal, count)
         self.downloader.on_pause_changed          = lambda paused: _safe_emit(self._pauseSignal, paused)
@@ -1452,6 +1458,19 @@ class AppBridge(QObject):
             self.downloadEmbedsChanged.emit()
             self.saveSettings()
 
+    @Property(str, notify=embedCookiesBrowserChanged)
+    def embedCookiesBrowser(self) -> str:
+        return self._embed_cookies_browser
+
+    @embedCookiesBrowser.setter
+    def embedCookiesBrowser(self, val: str):
+        val = str(val or "").lower()
+        if self._embed_cookies_browser != val:
+            self._embed_cookies_browser = val
+            self.downloader.ytdlp_manager.set_cookies_browser(val)
+            self.embedCookiesBrowserChanged.emit()
+            self.saveSettings()
+
     @Property(bool, notify=openFolderOnCompleteChanged)
     def openFolderOnComplete(self) -> bool:
         return self._open_folder_on_complete
@@ -1533,17 +1552,26 @@ class AppBridge(QObject):
         creator: a creator's posts and files are read when it's opened (getArchiveCreatorPostsAsync).
         Sending every file of a big archive to the window on each refresh froze it (#28)."""
         # The creators go into archiveCreatorsModel (the view applies them with applyPending());
-        # sending them all to the window as one list took seconds with tens of thousands of creators
+        # sending them all to the window as one list took seconds with tens of thousands of creators.
+        # A newer request stops an older one that's still reading.
+        gen = self.__dict__.get("_archive_data_gen", 0) + 1
+        self._archive_data_gen = gen
+        stale = lambda: self._archive_data_gen != gen  # noqa: E731
+
         def _job():
             try:
                 creators = self.archive_manager.get_creator_summaries(
-                    query=query, service=service, file_type=fileType, sort_by=sortBy)
+                    query=query, service=service, file_type=fileType, sort_by=sortBy, should_stop=stale)
+                if creators is None or stale():
+                    return                              # replaced by a newer request
                 stats = self.archive_manager.get_statistics()
             except Exception as e:
                 logger.error(f"Background task failed: {e}", category="system")
                 creators, stats = [], {}
 
             def _deliver():
+                if stale():
+                    return
                 self._archive_creators_model.set_pending(creators)
                 self.asyncResultReady.emit(request_id, {"count": len(creators), "statistics": stats})
             try:
@@ -3935,6 +3963,12 @@ class AppBridge(QObject):
         checker = self._watchlist_checker
         if checker is not None:
             checker.cancel()        # continues where it stopped at the next check
+        move_cancel = getattr(self, "_folder_move_cancel", None)
+        if move_cancel is not None:
+            move_cancel.set()      # stops after the file it's moving; the archive keeps what moved
+            mover = getattr(self, "_folder_move_thread", None)
+            if mover is not None:
+                mover.join(timeout=10)
 
         def _persist():
             try:
@@ -4883,6 +4917,7 @@ class AppBridge(QObject):
             "download_delay": self._download_delay,
             "save_post_metadata": self._save_post_metadata,
             "download_embeds": self._download_embeds,
+            "embed_cookies_browser": self._embed_cookies_browser,
             "open_folder_on_complete": self._open_folder_on_complete,
             "play_completion_sound": self._play_completion_sound,
             "generate_desktop_report": self._generate_desktop_report,
@@ -4996,6 +5031,14 @@ class AppBridge(QObject):
             if now - self._last_archive_emit_time >= 2.0:
                 self._last_archive_emit_time = now
                 self.archiveRecordCountChanged.emit()
+
+    def _cleanup_after_run(self):
+        """Memory cleanup after a download run, on the window thread (see MemoryCollector.collect)."""
+        try:
+            from core.memory_collector import MemoryCollector
+            MemoryCollector.instance().collect(reason="download finished")
+        except Exception:
+            pass
 
     TASK_UPDATES_PER_TURN = 300
 
@@ -6487,20 +6530,54 @@ class AppBridge(QObject):
 
         self._status_text = f"Moving {entry.creator_name}'s files…"
         self.statusTextChanged.emit()
+        cancel = threading.Event()
+        self._folder_move_cancel = cancel
 
         def _move():
-            from core.folder_mover import move_folder_contents
-            moves = {}
+            from core.folder_mover import move_folder_contents, count_files
+            total = sum(count_files(d)[0] for d in olds)
+            # The archive's records are found once, then follow their files a batch at a time: a move
+            # that's stopped (or the app closed) leaves every moved file's record right
+            record_ids = self.archive_manager.records_under(olds) if self._enable_download_archive else {}
+            key = self.archive_manager._path_key
+            pending: List[Tuple[int, str]] = []
+            state = {"done": 0, "relocated": 0, "last": 0.0}
+
+            def _flush():
+                if pending:
+                    state["relocated"] += self.archive_manager.set_file_paths(list(pending))
+                    pending.clear()
+
+            def _on_file(old, new):
+                state["done"] += 1
+                rid = record_ids.get(key(old))
+                if rid is not None:
+                    pending.append((rid, new))
+                    if len(pending) >= 200:
+                        _flush()
+                now = time.monotonic()
+                if now - state["last"] > 0.2:
+                    state["last"] = now
+                    self.watchlistFolderMoveProgress.emit(userId, service, state["done"], total)
+
             moved = dup = renamed = 0
             errors = []
-            for d in olds:
-                r = move_folder_contents(d, new_dir, on_file=lambda o, n: moves.__setitem__(o, n))
-                moved, dup, renamed = moved + r.moved, dup + r.duplicates, renamed + r.renamed
-                errors += r.errors
-            relocated = self.archive_manager.relocate_files(olds, moves) if self._enable_download_archive else 0
+            try:
+                for d in olds:
+                    r = move_folder_contents(d, new_dir, cancel=cancel, on_file=_on_file)
+                    moved, dup, renamed = moved + r.moved, dup + r.duplicates, renamed + r.renamed
+                    errors += r.errors
+                    if cancel.is_set():
+                        break
+            finally:
+                _flush()
+            stopped = cancel.is_set()
+            relocated = state["relocated"]
 
             def _done():
-                _set(keep_old=bool(errors))
+                self._folder_move_cancel = None
+                # stopped or not all moved: the artist's files are in both folders, both stay known
+                _set(keep_old=bool(errors) or stopped)
                 for d in olds:
                     self._invalidate_folder_stats(os.path.join(d, "x"))
                 self._invalidate_folder_stats(os.path.join(new_dir, "x"))
@@ -6511,14 +6588,29 @@ class AppBridge(QObject):
                     msg += f", {renamed} renamed to keep both"
                 if relocated:
                     msg += f"; {relocated} archive record(s) updated"
-                (logger.warning if errors else logger.success)(
+                if stopped:
+                    msg += ". Stopped before the end: the rest stays in the old folder"
+                (logger.warning if errors or stopped else logger.success)(
                     msg + (f". {len(errors)} couldn't be moved: {errors[0]}" if errors else "."), category="watchlist")
                 self._status_text = "Progress: Idle"
                 self.statusTextChanged.emit()
-                self.watchlistFolderChanged.emit(userId, service, "" if not errors else
-                                                 f"{len(errors)} file(s) couldn't be moved (see the log)")
+                note = ""
+                if errors:
+                    note = f"{len(errors)} file(s) couldn't be moved (see the log)"
+                elif stopped:
+                    note = f"Stopped: {moved} of {total} file(s) moved"
+                self.watchlistFolderChanged.emit(userId, service, note)
             self._callOnGui.emit(_done)
-        threading.Thread(target=_move, name="FolderMove", daemon=True).start()
+        thread = threading.Thread(target=_move, name="FolderMove", daemon=True)
+        self._folder_move_thread = thread
+        thread.start()
+
+    @Slot()
+    def cancelWatchlistFolderMove(self):
+        """Stops a running "Move files" after the file it's moving (what's moved stays moved)."""
+        cancel = getattr(self, "_folder_move_cancel", None)
+        if cancel is not None:
+            cancel.set()
 
     @Slot(str, str, result="QVariantList")
     def getArtistDownloadDirs(self, userId: str, service: str) -> list:
@@ -6726,7 +6818,8 @@ class AppBridge(QObject):
                     self._watchlist_manager, self._check_watchlist_entry,
                     on_result=lambda e, n: self._watchlist_model.entry_changed(e),
                     on_progress=_progress,
-                    listing=self.api_client.fetch_creator_updates)
+                    listing=self.api_client.fetch_creator_updates,
+                    listing_cost=self.api_client.creator_listing_cost)
                 checker.done_event = done
                 self._watchlist_checker = checker
         if running is not None:
