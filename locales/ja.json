@@ -1176,8 +1176,6 @@
   "compress_fmt_h265": "H.265（おすすめ）",
   "compress_fmt_av1": "AV1（最小・低速）",
   "compress_fmt_h264": "H.264（どこでも再生できる）",
-  "compress_image_fmt_tip": "WebPは画質を保ったままサイズを約半分にします。AVIFはさらに小さくなりますが、保存が遅く、開けないソフトもあります。JPGは透過を保持できないため、透過画像はそのままにします。",
-  "compress_video_fmt_tip": "動画は.mp4で保存されます。H.265は画質を保ったまま大幅に小さくします。AV1はさらに小さくなりますが、時間がかなりかかります。H.264はサイズが大きめですが、どの端末でも再生できます。すでに選んだ形式の動画はそのままにします。",
   "compress_q_near_lossless": "ほぼロスレス",
   "compress_q_high": "高",
   "compress_q_balanced": "バランス",
@@ -1195,5 +1193,9 @@
   "compress_review_failed": "%1 個のファイルは圧縮できず、そのままにしました（ログを参照）。",
   "compress_review_note": "小さくならなかったファイルはそのままです。ごみ箱に移したものはそこから元に戻せます。",
   "compress_keep_originals": "元のファイルを残す",
-  "compress_remove_originals": "元のファイルをごみ箱へ"
+  "compress_remove_originals": "元のファイルをごみ箱へ",
+  "compress_fmt_png": "PNG（ロスレス）",
+  "compress_fmt_mkv": "MKV（H.265・字幕を保持）",
+  "compress_image_fmt_tip2": "JPGはどこでも開けますが、透過やアニメーションは保持できません。PNGは90以上なら劣化なし、それより低いと色数を減らします（イラスト向き）。WebPは画質を保ったままサイズを約半分にします。AVIFはさらに小さくなりますが低速です。GIFはGIFのまま、すべてのフレームを保持します。品質を下げると色数が減ります。",
+  "compress_video_fmt_tip2": "H.265は画質を保ったまま大幅に小さくします（.mp4）。H.264は大きめですが、どの端末でも再生できます（.mp4）。MKVはH.265を.mkvファイルに収め、すべての音声トラック・字幕・フォントを保持します。AV1は最小ですが時間がかなりかかります（.mp4）。すでに選んだ形式の動画はそのままにします。"
 }

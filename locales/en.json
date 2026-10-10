@@ -1176,8 +1176,6 @@
   "compress_fmt_h265": "H.265 (recommended)",
   "compress_fmt_av1": "AV1 (smallest, slow)",
   "compress_fmt_h264": "H.264 (plays anywhere)",
-  "compress_image_fmt_tip": "WebP keeps the quality at about half the size. AVIF is smaller still but slower to save and not every program opens it. JPG can't keep transparency, so transparent pictures are left as they are.",
-  "compress_video_fmt_tip": "Videos are saved as .mp4. H.265 keeps the quality at a much smaller size. AV1 is smaller still but takes much longer. H.264 is bigger but plays on every device. Videos already in the chosen format are left as they are.",
   "compress_q_near_lossless": "Near lossless",
   "compress_q_high": "High",
   "compress_q_balanced": "Balanced",
@@ -1195,5 +1193,9 @@
   "compress_review_failed": "%1 file(s) couldn't be compressed and were left as they were (see the log).",
   "compress_review_note": "Files that wouldn't have been smaller were left alone. Anything moved to the Recycle Bin can be restored from there.",
   "compress_keep_originals": "Keep originals",
-  "compress_remove_originals": "Move originals to Recycle Bin"
+  "compress_remove_originals": "Move originals to Recycle Bin",
+  "compress_fmt_png": "PNG (lossless)",
+  "compress_fmt_mkv": "MKV (H.265, keeps subtitles)",
+  "compress_image_fmt_tip2": "JPG opens anywhere but can't keep transparency or animation. PNG loses nothing at 90 and above; lower values use fewer colours, which suits drawings. WebP keeps the quality at about half the size. AVIF is smaller still but slower. GIFs stay GIFs with every frame kept; lower quality uses fewer colours.",
+  "compress_video_fmt_tip2": "H.265 keeps the quality at a much smaller size (.mp4). H.264 is bigger but plays on every device (.mp4). MKV is H.265 in an .mkv file that keeps every audio track, subtitles and fonts. AV1 is the smallest but takes much longer (.mp4). Videos already in the chosen format are left as they are."
 }

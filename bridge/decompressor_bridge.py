@@ -200,7 +200,7 @@ class DecompressorBridge(QObject):
     @imageFormat.setter
     def imageFormat(self, val: str):
         v = str(val or "").lower()
-        if v in ("webp", "avif", "jpg", "keep") and v != self._image_format:
+        if v in ("jpg", "png", "webp", "avif", "keep") and v != self._image_format:
             self._image_format = v
             self.settingsChanged.emit()
 
@@ -222,7 +222,7 @@ class DecompressorBridge(QObject):
     @videoFormat.setter
     def videoFormat(self, val: str):
         v = str(val or "").lower()
-        if v in ("h265", "h264", "av1", "keep") and v != self._video_format:
+        if v in ("h265", "h264", "mkv", "av1", "keep") and v != self._video_format:
             self._video_format = v
             self.settingsChanged.emit()
 

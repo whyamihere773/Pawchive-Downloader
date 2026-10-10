@@ -6,10 +6,13 @@ kept only when it's noticeably smaller, otherwise it's thrown away and the origi
 Originals are never touched here: once everything is done the user is asked whether to move them to the
 Recycle Bin.
 
-- Pictures (Pillow): WebP, AVIF or JPG at a quality from 1 to 100. Colour profiles and photo info are
-  kept; animated pictures, and transparent ones when the format can't hold transparency, are skipped.
-- Videos (ffmpeg): H.265, H.264 or AV1 in an .mp4, at a quality from 1 to 100 (mapped to each codec's CRF).
-  A video already in the chosen codec is skipped (it would only lose quality).
+- Pictures (Pillow): JPG, PNG, WebP or AVIF at a quality from 1 to 100 (PNG: lossless from 90, fewer
+  colours below). Colour profiles and photo info are kept; transparent pictures are skipped for JPG.
+  GIFs stay GIFs, every frame kept (fewer colours below quality 90); other animated pictures are only
+  re-saved in their own format.
+- Videos (ffmpeg): H.265, H.264 or AV1 in an .mp4, or H.265 in an .mkv (keeps every audio track, subtitles
+  and attached fonts), at a quality from 1 to 100 (mapped to each codec's CRF). A video already in the
+  chosen codec is skipped (it would only lose quality).
 """
 
 import os
@@ -22,10 +25,11 @@ from typing import Callable, List, Optional, Tuple
 
 from core.logger import logger
 
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tif", ".tiff"}
 VIDEO_EXTS = {".mp4", ".m4v", ".mkv", ".mov", ".avi", ".wmv", ".flv", ".mpg", ".mpeg", ".ts", ".webm"}
-IMAGE_FORMATS = {"webp": ".webp", "avif": ".avif", "jpg": ".jpg"}
-VIDEO_FORMATS = {"h265": "hevc", "h264": "h264", "av1": "av1"}      # choice -> codec name ffmpeg reports
+IMAGE_FORMATS = {"jpg": ".jpg", "png": ".png", "webp": ".webp", "avif": ".avif"}
+VIDEO_FORMATS = {"h265": "hevc", "h264": "h264", "mkv": "hevc", "av1": "av1"}   # choice -> codec ffmpeg reports
+VIDEO_EXTS_OUT = {"h265": ".mp4", "h264": ".mp4", "mkv": ".mkv", "av1": ".mp4"}
 MIN_SAVING = 0.05            # the new file must be at least 5% smaller to be kept
 
 _CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
@@ -99,32 +103,125 @@ def _keep_if_smaller(original: str, tmp: str, final: str, result: CompressResult
 
 # ── Pictures ─────────────────────────────────────────────────────────────────
 
-def compress_image(path: str, fmt: str, quality: int, result: CompressResult) -> None:
+def _png_palette(im, q: int):
+    """Below quality 90 a PNG keeps fewer colours (like pngquant): far smaller for drawings."""
     from PIL import Image
-    ext = IMAGE_FORMATS[fmt]
-    src_ext = os.path.splitext(path)[1].lower()
-    if src_ext == ext or (fmt == "jpg" and src_ext == ".jpeg"):
-        result.skipped += 1
-        return
+    colors = 256 if q >= 60 else (128 if q >= 40 else 64)
+    rgba = im.convert("RGBA")
+    return rgba.quantize(colors=colors, method=Image.Quantize.FASTOCTREE, dither=Image.Dither.FLOYDSTEINBERG)
+
+
+def _gif_frame(frame, colors: int):
+    """A frame with fewer colours that keeps its transparent pixels (their own palette entry)."""
+    from PIL import Image
+    rgba = frame.convert("RGBA")
+    alpha = rgba.getchannel("A")
+    dither = Image.Dither.FLOYDSTEINBERG
+    if alpha.getextrema()[0] >= 128:
+        return rgba.convert("RGB").quantize(colors=colors, method=Image.Quantize.MEDIANCUT, dither=dither)
+    q = rgba.convert("RGB").quantize(colors=colors - 1, method=Image.Quantize.MEDIANCUT, dither=dither)
+    pal = (q.getpalette() or [])[: (colors - 1) * 3]
+    pal += [0] * ((colors - 1) * 3 - len(pal)) + [0, 0, 0]
+    q.putpalette(pal)
+    q.paste(colors - 1, mask=alpha.point(lambda v: 255 if v < 128 else 0))
+    q.info["transparency"] = colors - 1
+    return q
+
+
+def _same_transparency(a, b, n: int) -> bool:
+    """The transparent areas of the first, middle and last frame match (within 0.5% of the pixels)."""
+    from PIL import ImageChops
+    for idx in sorted({0, n // 2, n - 1}):
+        a.seek(idx)
+        b.seek(idx)
+        aa, bb = a.convert("RGBA").getchannel("A"), b.convert("RGBA").getchannel("A")
+        off = ImageChops.difference(aa, bb).point(lambda v: 255 if v > 128 else 0).histogram()[255]
+        if off > aa.size[0] * aa.size[1] * 0.005:
+            return False
+    return True
+
+
+def compress_gif(path: str, quality: int, result: CompressResult) -> None:
+    """A GIF stays a GIF (still or animated): every frame, its timing, the looping and transparency are kept.
+    From quality 90 it's re-saved without loss; below, the frames use fewer colours."""
+    from PIL import Image, ImageSequence
     folder, name = os.path.split(path)
-    final = _free_name(folder, os.path.splitext(name)[0], ext, path)
+    final = _free_name(folder, os.path.splitext(name)[0] + " (compressed)", ".gif", path)
     tmp = final + ".pawtmp"
     q = max(1, min(100, int(quality)))
     try:
         with Image.open(path) as im:
-            if getattr(im, "is_animated", False) and getattr(im, "n_frames", 1) > 1:
-                result.skipped += 1
-                return
+            size = im.size
+            n = getattr(im, "n_frames", 1)
+            loop = im.info.get("loop")
+            durations = [max(10, int(f.info.get("duration", 100) or 100)) for f in ImageSequence.Iterator(im)]
+            im.seek(0)
+            extra = {"loop": loop} if loop is not None else {}
+            if n > 1:
+                extra["duration"] = durations
+            if q >= 90:
+                im.save(tmp, "GIF", save_all=n > 1, optimize=True, **extra)
+            else:
+                colors = 128 if q >= 60 else (64 if q >= 40 else 32)
+                frames = [_gif_frame(f, colors) for f in ImageSequence.Iterator(im)]
+                frames[0].save(tmp, "GIF", save_all=n > 1, append_images=frames[1:], optimize=True,
+                               disposal=2, **extra)
+        with Image.open(tmp) as check, Image.open(path) as orig:
+            if check.size != size or getattr(check, "n_frames", 1) != n:
+                raise ValueError("the GIF came out with a different size or number of frames")
+            if not _same_transparency(orig, check, n):
+                raise ValueError("the GIF's transparent areas changed")
+        _keep_if_smaller(path, tmp, final, result)
+    except Exception as e:
+        result.failed.append(f"{name}: {e}")
+        logger.debug(f"Couldn't compress {path}: {e}", category="decompressor")
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
+def compress_image(path: str, fmt: str, quality: int, result: CompressResult) -> None:
+    from PIL import Image
+    src_ext = os.path.splitext(path)[1].lower()
+    if src_ext == ".gif":
+        compress_gif(path, quality, result)    # GIFs stay GIFs (an animation can't become a still picture)
+        return
+    ext = IMAGE_FORMATS[fmt]
+    same = src_ext == ext or (fmt == "jpg" and src_ext == ".jpeg")
+    if same and fmt != "png":
+        result.skipped += 1                    # lossy again would only lose quality
+        return
+    folder, name = os.path.split(path)
+    stem = os.path.splitext(name)[0] + (" (compressed)" if same else "")
+    final = _free_name(folder, stem, ext, path)
+    tmp = final + ".pawtmp"
+    q = max(1, min(100, int(quality)))
+    try:
+        with Image.open(path) as im:
+            frames = getattr(im, "n_frames", 1) if getattr(im, "is_animated", False) else 1
             info = {k: im.info[k] for k in ("icc_profile", "exif") if im.info.get(k)}
             size = im.size
             has_alpha = im.mode in ("RGBA", "LA", "PA") or (im.mode == "P" and "transparency" in im.info)
-            if fmt == "jpg":
+            if frames > 1:
+                # An animated picture is only re-saved in its own format (animated PNG → PNG, losslessly)
+                if not (fmt == "png" and same):
+                    result.skipped += 1
+                    return
+                im.save(tmp, "PNG", optimize=True, save_all=True)
+            elif fmt == "jpg":
                 if has_alpha:
                     result.skipped += 1           # JPG can't keep transparency
                     return
                 im = im.convert("RGB") if im.mode != "RGB" else im
                 im.save(tmp, "JPEG", quality=q, optimize=True, progressive=True,
                         subsampling=0 if q >= 90 else 2, **info)
+            elif fmt == "png":
+                out = im if q >= 90 else _png_palette(im, q)
+                if q >= 90 and out.mode not in ("1", "L", "LA", "P", "RGB", "RGBA", "I", "I;16"):
+                    out = out.convert("RGBA" if has_alpha else "RGB")
+                out.save(tmp, "PNG", optimize=True, **info)
             else:
                 if im.mode not in ("RGB", "RGBA"):
                     im = im.convert("RGBA" if has_alpha else "RGB")
@@ -132,10 +229,12 @@ def compress_image(path: str, fmt: str, quality: int, result: CompressResult) ->
                     im.save(tmp, "WEBP", quality=q, method=6, lossless=q >= 100, **info)
                 else:
                     im.save(tmp, "AVIF", quality=q, speed=6, **info)
-        with Image.open(tmp) as check:                 # it opens, whole, at the same size
+        with Image.open(tmp) as check:                 # it opens, whole, at the same size and length
             check.load()
             if check.size != size:
                 raise ValueError(f"size changed {size} -> {check.size}")
+            if frames > 1 and getattr(check, "n_frames", 1) != frames:
+                raise ValueError(f"{frames} frames became {getattr(check, 'n_frames', 1)}")
         _keep_if_smaller(path, tmp, final, result)
     except Exception as e:
         result.failed.append(f"{name}: {e}")
@@ -168,16 +267,23 @@ def probe_video(ffmpeg: str, path: str) -> Tuple[float, str, str]:
 
 def video_command(ffmpeg: str, src: str, dst: str, fmt: str, quality: int, audio_codec: str) -> List[str]:
     crf = str(video_crf(fmt, quality))
+    head = [ffmpeg, "-hide_banner", "-nostdin", "-y", "-i", src]
+    tail = ["-progress", "pipe:1", "-nostats"]
+    x265 = ["-c:v", "libx265", "-crf", crf, "-preset", "medium", "-x265-params", "log-level=error"]
+    if fmt == "mkv":
+        # Matroska holds any audio, subtitles and attached fonts: all kept as they are
+        return [*head, "-map", "0:v:0", "-map", "0:a?", "-map", "0:s?", "-map", "0:t?", "-map_metadata", "0",
+                *x265, "-pix_fmt", "yuv420p", "-c:a", "copy", "-c:s", "copy", "-c:t", "copy", *tail,
+                "-f", "matroska", dst]
     if fmt == "h264":
         video = ["-c:v", "libx264", "-crf", crf, "-preset", "slow"]
     elif fmt == "av1":
         video = ["-c:v", "libsvtav1", "-crf", crf, "-preset", "6"]
     else:
-        video = ["-c:v", "libx265", "-crf", crf, "-preset", "medium", "-tag:v", "hvc1", "-x265-params", "log-level=error"]
+        video = [*x265, "-tag:v", "hvc1"]
     audio = ["-c:a", "copy"] if audio_codec in ("aac", "mp3") else ["-c:a", "aac", "-b:a", "192k"]
-    return [ffmpeg, "-hide_banner", "-nostdin", "-y", "-i", src, "-map", "0:v:0", "-map", "0:a?", "-sn", "-dn",
-            "-map_metadata", "0", *video, "-pix_fmt", "yuv420p", *audio, "-movflags", "+faststart",
-            "-progress", "pipe:1", "-nostats", "-f", "mp4", dst]
+    return [*head, "-map", "0:v:0", "-map", "0:a?", "-sn", "-dn", "-map_metadata", "0", *video,
+            "-pix_fmt", "yuv420p", *audio, "-movflags", "+faststart", *tail, "-f", "mp4", dst]
 
 
 def compress_video(ffmpeg: str, path: str, fmt: str, quality: int, result: CompressResult,
@@ -189,9 +295,10 @@ def compress_video(ffmpeg: str, path: str, fmt: str, quality: int, result: Compr
         result.skipped += 1                    # not a video ffmpeg can read, or already in that codec
         return
     folder, name = os.path.split(path)
-    final = _free_name(folder, os.path.splitext(name)[0], ".mp4", path)
+    out_ext = VIDEO_EXTS_OUT[fmt]
+    final = _free_name(folder, os.path.splitext(name)[0], out_ext, path)
     if os.path.normcase(final) == os.path.normcase(path):
-        final = _free_name(folder, os.path.splitext(name)[0] + " (compressed)", ".mp4", path)
+        final = _free_name(folder, os.path.splitext(name)[0] + " (compressed)", out_ext, path)
     tmp = final + ".pawtmp"
     try:
         proc = subprocess.Popen(video_command(ffmpeg, path, tmp, fmt, quality, acodec), stdout=subprocess.PIPE,

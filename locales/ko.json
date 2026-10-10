@@ -1176,8 +1176,6 @@
   "compress_fmt_h265": "H.265 (권장)",
   "compress_fmt_av1": "AV1 (가장 작음, 느림)",
   "compress_fmt_h264": "H.264 (어디서나 재생)",
-  "compress_image_fmt_tip": "WebP는 화질을 유지하면서 크기를 약 절반으로 줄입니다. AVIF는 더 작지만 저장이 느리고 일부 프로그램은 열지 못합니다. JPG는 투명도를 지원하지 않으므로 투명 이미지는 그대로 둡니다.",
-  "compress_video_fmt_tip": "동영상은 .mp4로 저장됩니다. H.265는 화질을 유지하면서 크기를 크게 줄입니다. AV1은 더 작지만 훨씬 오래 걸립니다. H.264는 더 크지만 모든 기기에서 재생됩니다. 이미 선택한 형식인 동영상은 그대로 둡니다.",
   "compress_q_near_lossless": "거의 무손실",
   "compress_q_high": "높음",
   "compress_q_balanced": "균형",
@@ -1195,5 +1193,9 @@
   "compress_review_failed": "파일 %1개는 압축하지 못해 그대로 두었습니다(로그 참고).",
   "compress_review_note": "작아지지 않았을 파일은 그대로 두었습니다. 휴지통으로 옮긴 파일은 그곳에서 복원할 수 있습니다.",
   "compress_keep_originals": "원본 유지",
-  "compress_remove_originals": "원본을 휴지통으로"
+  "compress_remove_originals": "원본을 휴지통으로",
+  "compress_fmt_png": "PNG (무손실)",
+  "compress_fmt_mkv": "MKV (H.265, 자막 유지)",
+  "compress_image_fmt_tip2": "JPG는 어디서나 열리지만 투명도와 애니메이션을 유지하지 못합니다. PNG는 90 이상에서 손실이 없고, 그보다 낮으면 색 수를 줄여 그림에 잘 맞습니다. WebP는 화질을 유지하면서 크기를 약 절반으로 줄입니다. AVIF는 더 작지만 느립니다. GIF는 모든 프레임을 유지한 채 GIF로 남습니다. 품질을 낮추면 색 수가 줄어듭니다.",
+  "compress_video_fmt_tip2": "H.265는 화질을 유지하면서 크기를 크게 줄입니다(.mp4). H.264는 더 크지만 모든 기기에서 재생됩니다(.mp4). MKV는 H.265를 .mkv 파일에 담아 모든 오디오 트랙, 자막, 글꼴을 유지합니다. AV1은 가장 작지만 훨씬 오래 걸립니다(.mp4). 이미 선택한 형식인 동영상은 그대로 둡니다."
 }

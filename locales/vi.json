@@ -1176,8 +1176,6 @@
   "compress_fmt_h265": "H.265 (khuyên dùng)",
   "compress_fmt_av1": "AV1 (nhỏ nhất, chậm)",
   "compress_fmt_h264": "H.264 (phát được ở mọi nơi)",
-  "compress_image_fmt_tip": "WebP giữ chất lượng với kích thước khoảng một nửa. AVIF còn nhỏ hơn nhưng lưu chậm hơn và không phải chương trình nào cũng mở được. JPG không giữ được độ trong suốt nên ảnh trong suốt được giữ nguyên.",
-  "compress_video_fmt_tip": "Video được lưu dưới dạng .mp4. H.265 giữ chất lượng với kích thước nhỏ hơn nhiều. AV1 còn nhỏ hơn nhưng mất nhiều thời gian hơn. H.264 lớn hơn nhưng phát được trên mọi thiết bị. Video đã ở định dạng được chọn sẽ được giữ nguyên.",
   "compress_q_near_lossless": "Gần như không mất dữ liệu",
   "compress_q_high": "Cao",
   "compress_q_balanced": "Cân bằng",
@@ -1195,5 +1193,9 @@
   "compress_review_failed": "%1 tệp không nén được và được giữ nguyên (xem nhật ký).",
   "compress_review_note": "Những tệp không nhỏ hơn được giữ nguyên. Những gì chuyển vào Thùng rác có thể khôi phục từ đó.",
   "compress_keep_originals": "Giữ bản gốc",
-  "compress_remove_originals": "Chuyển bản gốc vào Thùng rác"
+  "compress_remove_originals": "Chuyển bản gốc vào Thùng rác",
+  "compress_fmt_png": "PNG (không mất dữ liệu)",
+  "compress_fmt_mkv": "MKV (H.265, giữ phụ đề)",
+  "compress_image_fmt_tip2": "JPG mở được ở mọi nơi nhưng không giữ được độ trong suốt hay ảnh động. PNG không mất gì từ 90 trở lên; giá trị thấp hơn dùng ít màu hơn, hợp với tranh vẽ. WebP giữ chất lượng với kích thước khoảng một nửa. AVIF còn nhỏ hơn nhưng chậm hơn. GIF vẫn là GIF và giữ mọi khung hình; chất lượng thấp hơn dùng ít màu hơn.",
+  "compress_video_fmt_tip2": "H.265 giữ chất lượng với kích thước nhỏ hơn nhiều (.mp4). H.264 lớn hơn nhưng phát được trên mọi thiết bị (.mp4). MKV là H.265 trong tệp .mkv giữ mọi rãnh âm thanh, phụ đề và phông chữ. AV1 nhỏ nhất nhưng mất nhiều thời gian hơn (.mp4). Video đã ở định dạng được chọn sẽ được giữ nguyên."
 }

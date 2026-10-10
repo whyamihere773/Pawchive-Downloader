@@ -160,13 +160,14 @@ ColumnLayout {
             implicitHeight: 28
             implicitWidth: 170
             model: [
+                { text: root.tr("compress_fmt_jpg", "JPG (opens anywhere)"), value: "jpg" },
+                { text: root.tr("compress_fmt_png", "PNG (lossless)"), value: "png" },
                 { text: root.tr("compress_fmt_webp", "WebP (recommended)"), value: "webp" },
                 { text: root.tr("compress_fmt_avif", "AVIF (smallest)"), value: "avif" },
-                { text: root.tr("compress_fmt_jpg", "JPG (opens anywhere)"), value: "jpg" },
                 { text: root.tr("compress_fmt_keep", "Don't compress"), value: "keep" }
             ]
             value: root.decompressor ? root.decompressor.imageFormat : "webp"
-            tooltip: root.tr("compress_image_fmt_tip", "WebP keeps the quality at about half the size. AVIF is smaller still but slower to save and not every program opens it. JPG can't keep transparency, so transparent pictures are left as they are.")
+            tooltip: root.tr("compress_image_fmt_tip2", "JPG opens anywhere but can't keep transparency. PNG loses nothing at 90 and above; lower values use fewer colours, which suits drawings. WebP keeps the quality at about half the size. AVIF is smaller still but slower. GIFs stay GIFs with every frame kept; lower quality uses fewer colours.")
             onValuePicked: function(v) { if (root.decompressor) root.decompressor.imageFormat = v }
         }
         QualitySlider {
@@ -199,12 +200,13 @@ ColumnLayout {
             implicitWidth: 170
             model: [
                 { text: root.tr("compress_fmt_h265", "H.265 (recommended)"), value: "h265" },
-                { text: root.tr("compress_fmt_av1", "AV1 (smallest, slow)"), value: "av1" },
                 { text: root.tr("compress_fmt_h264", "H.264 (plays anywhere)"), value: "h264" },
+                { text: root.tr("compress_fmt_mkv", "MKV (H.265, keeps subtitles)"), value: "mkv" },
+                { text: root.tr("compress_fmt_av1", "AV1 (smallest, slow)"), value: "av1" },
                 { text: root.tr("compress_fmt_keep", "Don't compress"), value: "keep" }
             ]
             value: root.decompressor ? root.decompressor.videoFormat : "h265"
-            tooltip: root.tr("compress_video_fmt_tip", "Videos are saved as .mp4. H.265 keeps the quality at a much smaller size. AV1 is smaller still but takes much longer. H.264 is bigger but plays on every device. Videos already in the chosen format are left as they are.")
+            tooltip: root.tr("compress_video_fmt_tip2", "H.265 keeps the quality at a much smaller size (.mp4). H.264 is bigger but plays on every device (.mp4). MKV is H.265 in an .mkv file that keeps every audio track, subtitles and fonts. AV1 is the smallest but takes much longer (.mp4). Videos already in the chosen format are left as they are.")
             onValuePicked: function(v) { if (root.decompressor) root.decompressor.videoFormat = v }
         }
         QualitySlider {

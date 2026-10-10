@@ -1176,8 +1176,6 @@
   "compress_fmt_h265": "H.265 (recomendado)",
   "compress_fmt_av1": "AV1 (el más pequeño, lento)",
   "compress_fmt_h264": "H.264 (se reproduce en todas partes)",
-  "compress_image_fmt_tip": "WebP mantiene la calidad con aproximadamente la mitad de tamaño. AVIF es aún más pequeño, pero más lento y no todos los programas lo abren. JPG no admite transparencia, así que las imágenes transparentes se dejan como están.",
-  "compress_video_fmt_tip": "Los vídeos se guardan como .mp4. H.265 mantiene la calidad con un tamaño mucho menor. AV1 es aún más pequeño pero tarda mucho más. H.264 es más grande pero se reproduce en cualquier dispositivo. Los vídeos que ya están en el formato elegido se dejan como están.",
   "compress_q_near_lossless": "Casi sin pérdida",
   "compress_q_high": "Alta",
   "compress_q_balanced": "Equilibrada",
@@ -1195,5 +1193,9 @@
   "compress_review_failed": "%1 archivo(s) no se pudieron comprimir y se dejaron como estaban (ver el registro).",
   "compress_review_note": "Los archivos que no habrían sido más pequeños se dejaron igual. Lo que vaya a la Papelera de reciclaje se puede restaurar desde allí.",
   "compress_keep_originals": "Conservar originales",
-  "compress_remove_originals": "Mover originales a la Papelera"
+  "compress_remove_originals": "Mover originales a la Papelera",
+  "compress_fmt_png": "PNG (sin pérdida)",
+  "compress_fmt_mkv": "MKV (H.265, conserva subtítulos)",
+  "compress_image_fmt_tip2": "JPG se abre en todas partes, pero no admite transparencia ni animación. PNG no pierde nada a partir de 90; los valores más bajos usan menos colores, ideal para dibujos. WebP mantiene la calidad con aproximadamente la mitad de tamaño. AVIF es aún más pequeño pero más lento. Los GIF siguen siendo GIF y conservan todos sus fotogramas; una calidad más baja usa menos colores.",
+  "compress_video_fmt_tip2": "H.265 mantiene la calidad con un tamaño mucho menor (.mp4). H.264 es más grande pero se reproduce en cualquier dispositivo (.mp4). MKV es H.265 en un archivo .mkv que conserva todas las pistas de audio, subtítulos y fuentes. AV1 es el más pequeño pero tarda mucho más (.mp4). Los vídeos que ya están en el formato elegido se dejan como están."
 }

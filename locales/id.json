@@ -1176,8 +1176,6 @@
   "compress_fmt_h265": "H.265 (disarankan)",
   "compress_fmt_av1": "AV1 (terkecil, lambat)",
   "compress_fmt_h264": "H.264 (diputar di mana saja)",
-  "compress_image_fmt_tip": "WebP menjaga kualitas dengan ukuran sekitar setengahnya. AVIF lebih kecil lagi tetapi lebih lambat dan tidak semua program bisa membukanya. JPG tidak mendukung transparansi, jadi gambar transparan dibiarkan apa adanya.",
-  "compress_video_fmt_tip": "Video disimpan sebagai .mp4. H.265 menjaga kualitas dengan ukuran jauh lebih kecil. AV1 lebih kecil lagi tetapi jauh lebih lama. H.264 lebih besar tetapi bisa diputar di semua perangkat. Video yang sudah dalam format pilihan dibiarkan apa adanya.",
   "compress_q_near_lossless": "Hampir lossless",
   "compress_q_high": "Tinggi",
   "compress_q_balanced": "Seimbang",
@@ -1195,5 +1193,9 @@
   "compress_review_failed": "%1 file tidak bisa dikompres dan dibiarkan apa adanya (lihat log).",
   "compress_review_note": "File yang tidak akan lebih kecil dibiarkan. Apa pun yang dipindahkan ke Recycle Bin bisa dipulihkan dari sana.",
   "compress_keep_originals": "Simpan file asli",
-  "compress_remove_originals": "Pindahkan file asli ke Recycle Bin"
+  "compress_remove_originals": "Pindahkan file asli ke Recycle Bin",
+  "compress_fmt_png": "PNG (lossless)",
+  "compress_fmt_mkv": "MKV (H.265, subtitle tetap ada)",
+  "compress_image_fmt_tip2": "JPG bisa dibuka di mana saja tetapi tidak mendukung transparansi atau animasi. PNG tidak kehilangan apa pun mulai 90; nilai lebih rendah memakai lebih sedikit warna, cocok untuk gambar ilustrasi. WebP menjaga kualitas dengan ukuran sekitar setengahnya. AVIF lebih kecil lagi tetapi lebih lambat. GIF tetap menjadi GIF dengan semua frame-nya; kualitas lebih rendah memakai lebih sedikit warna.",
+  "compress_video_fmt_tip2": "H.265 menjaga kualitas dengan ukuran jauh lebih kecil (.mp4). H.264 lebih besar tetapi bisa diputar di semua perangkat (.mp4). MKV adalah H.265 dalam file .mkv yang menyimpan semua trek audio, subtitle, dan font. AV1 paling kecil tetapi jauh lebih lama (.mp4). Video yang sudah dalam format pilihan dibiarkan apa adanya."
 }

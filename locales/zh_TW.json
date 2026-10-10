@@ -1176,8 +1176,6 @@
   "compress_fmt_h265": "H.265（推薦）",
   "compress_fmt_av1": "AV1（最小，較慢）",
   "compress_fmt_h264": "H.264（到處都能播放）",
-  "compress_image_fmt_tip": "WebP 在維持畫質的同時大小約減半。AVIF 更小，但儲存較慢，且並非所有程式都能開啟。JPG 無法保留透明度，因此透明圖片維持不變。",
-  "compress_video_fmt_tip": "影片儲存為 .mp4。H.265 在維持畫質的同時大小小得多。AV1 更小，但耗時長得多。H.264 較大，但在所有裝置上都能播放。已是所選格式的影片維持不變。",
   "compress_q_near_lossless": "接近無損",
   "compress_q_high": "高",
   "compress_q_balanced": "平衡",
@@ -1195,5 +1193,9 @@
   "compress_review_failed": "%1 個檔案無法壓縮，已維持原樣（見記錄）。",
   "compress_review_note": "不會變小的檔案維持原樣。移到資源回收筒的檔案可以從那裡還原。",
   "compress_keep_originals": "保留原始檔案",
-  "compress_remove_originals": "將原始檔案移到資源回收筒"
+  "compress_remove_originals": "將原始檔案移到資源回收筒",
+  "compress_fmt_png": "PNG（無損）",
+  "compress_fmt_mkv": "MKV（H.265，保留字幕）",
+  "compress_image_fmt_tip2": "JPG 到處都能開啟，但無法保留透明度和動畫。PNG 在 90 以上完全無損，更低的數值會減少顏色數量，適合插畫。WebP 在維持畫質的同時大小約減半。AVIF 更小但較慢。GIF 仍儲存為 GIF，保留所有影格；品質越低顏色越少。",
+  "compress_video_fmt_tip2": "H.265 在維持畫質的同時大小小得多（.mp4）。H.264 較大，但在所有裝置上都能播放（.mp4）。MKV 是裝在 .mkv 檔案中的 H.265，保留所有音軌、字幕和字型。AV1 最小，但耗時長得多（.mp4）。已是所選格式的影片維持不變。"
 }
