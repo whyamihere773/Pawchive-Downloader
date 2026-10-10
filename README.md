@@ -15,6 +15,7 @@
   <a href="https://github.com/whyamihere773/Pawchive-Downloader/releases"><img src="https://img.shields.io/github/downloads/whyamihere773/Pawchive-Downloader/total?style=for-the-badge&color=success&label=Downloads" alt="Total Downloads"></a>
   <a href="https://discord.gg/YBrKkzVq8"><img src="https://img.shields.io/badge/Discord-Join%20Community-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord Server"></a>
   <img src="https://img.shields.io/badge/Platform-Windows-0078D6?style=for-the-badge&logo=windows&logoColor=white" alt="Platform: Windows">
+  <img src="https://img.shields.io/badge/Platform-Linux-FCC624?style=for-the-badge&logo=linux&logoColor=black" alt="Platform: Linux">
   <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.10+">
 </p>
 
@@ -22,10 +23,13 @@
   <a href="https://github.com/whyamihere773/Pawchive-Downloader/releases/latest">
     <img src="https://img.shields.io/badge/Download-Windows%20Executable%20(.zip)-2ea44f?style=for-the-badge&logo=windows&logoColor=white" height="42" alt="Download Windows Executable">
   </a>
+  <a href="https://github.com/whyamihere773/Pawchive-Downloader/releases/latest">
+    <img src="https://img.shields.io/badge/Download-Linux%20Build%20(.tar.gz)-2ea44f?style=for-the-badge&logo=linux&logoColor=white" height="42" alt="Download Linux Build">
+  </a>
 </p>
 
 <p align="center">
-  <em>(Portable — no Python or command-line setup required! Just extract and run <code>Pawchive Downloader.exe</code>)</em>
+  <em>(Portable — no Python or command-line setup required! Just extract and run <code>Pawchive Downloader.exe</code> on Windows or <code>./pawchive</code> on Linux)</em>
 </p>
 
 > 💬 **Need Help, Support, or Want to Chat?**  
@@ -36,22 +40,24 @@
 ## 📸 Interface Preview
 
 <p align="center">
-  <img src="assets/screenshots/01.png" alt="Pawchive Downloader Main Screen" width="95%" />
+  <img src="assets/screenshots/01.png" alt="Pawchive Downloader main screen, downloading" width="95%" />
 </p>
 
 <details>
 <summary><strong>🖼️ Click to expand more interface screenshots</strong></summary>
 <br>
 
-<img src="assets/screenshots/02.png" width="90%" />
-<img src="assets/screenshots/03.png" width="90%" />
-<img src="assets/screenshots/04.png" width="90%" />
-<img src="assets/screenshots/05.png" width="90%" />
-<img src="assets/screenshots/06.png" width="90%" />
-<img src="assets/screenshots/07.png" width="90%" />
-<img src="assets/screenshots/08.png" width="90%" />
-<img src="assets/screenshots/09.png" width="90%" />
-<img src="assets/screenshots/10.png" width="90%" />
+<img src="assets/screenshots/02.png" alt="Download queue" width="90%" />
+<img src="assets/screenshots/03.png" alt="Artist Watchlist" width="90%" />
+<img src="assets/screenshots/04.png" alt="Bulk Decompressor with media compression" width="90%" />
+<img src="assets/screenshots/05.png" alt="Permanent Link Vault" width="90%" />
+<img src="assets/screenshots/06.png" alt="Task Scheduler" width="90%" />
+<img src="assets/screenshots/07.png" alt="Media Gallery" width="90%" />
+<img src="assets/screenshots/08.png" alt="Known Series" width="90%" />
+<img src="assets/screenshots/09.png" alt="Download Archive" width="90%" />
+<img src="assets/screenshots/10.png" alt="Download History" width="90%" />
+<img src="assets/screenshots/11.png" alt="Settings" width="90%" />
+<img src="assets/screenshots/12.png" alt="Built-in manual" width="90%" />
 
 </details>
 
@@ -116,6 +122,10 @@
 
 ## 🌐 Supported Platforms & Hosts
 
+### Operating Systems
+- **Windows** 10 / 11 (64-bit): portable `.zip`
+- **Linux** (x86-64, since v1.2.2): portable `.tar.gz` for any distro with glibc 2.35 or newer
+
 ### Creator Archives & Portals
 - **Pawchive** (`pawchive.pw`)
 - **Cum.st** (`cum.st`)
@@ -141,15 +151,16 @@
 
 ## 🚀 Getting Started
 
-### Option A: Pre-compiled Windows Binary (Recommended for most users)
+### Option A: Pre-compiled Windows or Linux Build (Recommended for most users)
 
 1. Head over to the **[Latest Release](https://github.com/whyamihere773/Pawchive-Downloader/releases/latest)** page.
-2. Download `Pawchive-Downloader-v1.2.5-Windows.zip`.
-3. Extract the ZIP archive anywhere on your computer.
-4. Run `Pawchive Downloader.exe` — that's it!
+2. Download the build for your system:
+   - **Windows:** `Pawchive-Downloader-v<version>-Windows.zip`
+   - **Linux:** `Pawchive-Downloader-v<version>-Linux-x86_64.tar.gz`
+3. Extract it anywhere on your computer.
+4. Run `Pawchive Downloader.exe` on Windows, or `./pawchive` on Linux — that's it!
 
-**On Linux**, download `Pawchive-Downloader-v<version>-Linux-x86_64.tar.gz` instead, extract it, and run `./pawchive`.
-The Linux build is made on Ubuntu 22.04, so it runs on any distro with glibc 2.35 or newer (Debian 12+, Fedora 36+, Arch, Mint 21+, openSUSE Tumbleweed…).
+The Linux build (available since v1.2.2) is made on Ubuntu 22.04, so it runs on any distro with glibc 2.35 or newer (Debian 12+, Fedora 36+, Arch, CachyOS, Mint 21+, openSUSE Tumbleweed…).
 
 ---
 

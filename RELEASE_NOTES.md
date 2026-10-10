@@ -18,7 +18,7 @@ Tested with 2 million archived files, 50,000 Watchlist artists, 500,000 queued f
 
 * **Compress pictures and videos** *(opt-in)*: In the Decompressor after extracting, or from the Gallery's right-click menu. Pick a format and quality for pictures, videos and animated pictures, and choose at the end whether to keep the originals.
 * **Change an artist's download folder**: The 📂 button in the Watchlist now really changes it and can move the files already downloaded, with progress and Stop.
-* **Site in Folder Name** *(on by default)*: Turn it off to name folders "Artist" instead of "Artist [onlyfans]".
+* **Site in Folder Name** *(on by default)*: Turn it off to name folders "Artist" instead of "Artist [platform]".
 * **Windows and Linux share your data**: Folders saved on one system work on the other ("D:\Art" ↔ "/mnt/d/Art").
 * **Browser sign-in for embedded videos** *(off by default)*: Lets videos that need you to be logged in, like RedGifs, download. Firefox works best.
 * **Tidier Decompressor**: The page scrolls, its options fold away, and its settings are remembered.

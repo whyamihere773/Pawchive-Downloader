@@ -1,8 +1,8 @@
 {
-    "version": "1.2.5",
-    "commit": "",
-    "short_commit": "",
-    "date": "2026-10-06",
+    "version": "1.2.6",
+    "commit": "05170271d302f024fa50e5acce46de9524fc23db",
+    "short_commit": "0517027",
+    "date": "2026-10-10",
     "channel": "release",
     "history": [
         {
@@ -134,6 +134,11 @@
             "version": "1.2.5",
             "date": "2026-10-06",
             "notes": "Full GUI responsiveness overhaul eliminating UI stutter and freezing during high-speed downloads, logging, and queue updates. Fixed Watchlist update badge persistence, resolved first-time creator downloads grabbing low-res images instead of full resolution, fixed large zip archive downloads stalling or failing, and resolved Archive statistics crash."
+        },
+        {
+            "version": "1.2.6",
+            "date": "2026-10-10",
+            "notes": "Huge-library performance overhaul (archive, queue, Retry Failed, Watchlist, Link Vault, Known Series, Decompressor), compress pictures, videos and animated pictures from the Decompressor or the Gallery, change an artist's download folder, Windows/Linux shared paths, browser sign-in for embedded videos, and many fixes."
         }
     ]
 }
