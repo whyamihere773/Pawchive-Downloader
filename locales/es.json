@@ -1197,10 +1197,14 @@
   "compress_fmt_png": "PNG (sin pérdida)",
   "compress_fmt_mkv": "MKV (H.265, conserva subtítulos)",
   "compress_video_fmt_tip2": "H.265 mantiene la calidad con un tamaño mucho menor (.mp4). H.264 es más grande pero se reproduce en cualquier dispositivo (.mp4). MKV es H.265 en un archivo .mkv que conserva todas las pistas de audio, subtítulos y fuentes. AV1 es el más pequeño pero tarda mucho más (.mp4). Los vídeos que ya están en el formato elegido se dejan como están.",
-  "compress_animated": "Animados (GIF):",
-  "compress_fmt_gif": "GIF (conserva la animación)",
-  "compress_gif_tip": "Los GIF siguen siendo GIF: se conservan todos los fotogramas, su tiempo, la repetición y la transparencia. Desde 90 no se pierde nada; los valores más bajos usan menos colores para un archivo más pequeño.",
   "decompressor_hide_options": "Ocultar opciones",
   "decompressor_show_options": "Mostrar opciones",
-  "compress_image_fmt_tip3": "JPG se abre en todas partes, pero no admite transparencia ni animación. PNG no pierde nada a partir de 90; los valores más bajos usan menos colores, ideal para dibujos. WebP mantiene la calidad con aproximadamente la mitad de tamaño. AVIF es aún más pequeño pero más lento."
+  "compress_image_fmt_tip3": "JPG se abre en todas partes, pero no admite transparencia ni animación. PNG no pierde nada a partir de 90; los valores más bajos usan menos colores, ideal para dibujos. WebP mantiene la calidad con aproximadamente la mitad de tamaño. AVIF es aún más pequeño pero más lento.",
+  "compress_animated2": "Animadas:",
+  "compress_fmt_same": "Mismo formato (recomendado)",
+  "compress_fmt_gif2": "GIF",
+  "compress_fmt_apng": "APNG (PNG animado)",
+  "compress_fmt_webp_anim": "WebP (animado)",
+  "compress_fmt_avif_anim": "AVIF (animado)",
+  "compress_animated_tip": "GIF, PNG animados (APNG) e imágenes WebP / AVIF animadas. Siempre siguen animadas: en su propio formato o en el formato animado que elijas (WebP y AVIF animados suelen ser mucho más pequeños que GIF). Cada fotograma, su tiempo y la transparencia se comprueban antes de conservar una copia."
 }

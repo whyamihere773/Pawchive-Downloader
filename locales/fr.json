@@ -1197,10 +1197,14 @@
   "compress_fmt_png": "PNG (sans perte)",
   "compress_fmt_mkv": "MKV (H.265, garde les sous-titres)",
   "compress_video_fmt_tip2": "H.265 garde la qualité pour une taille bien plus petite (.mp4). H.264 est plus lourd mais se lit sur tous les appareils (.mp4). MKV est du H.265 dans un fichier .mkv qui garde toutes les pistes audio, les sous-titres et les polices. AV1 est le plus léger mais beaucoup plus long (.mp4). Les vidéos déjà dans le format choisi restent telles quelles.",
-  "compress_animated": "Animées (GIF) :",
-  "compress_fmt_gif": "GIF (garde l'animation)",
-  "compress_gif_tip": "Les GIF restent des GIF : toutes les images, leur durée, la boucle et la transparence sont conservées. À partir de 90 rien n'est perdu ; en dessous, moins de couleurs pour un fichier plus léger.",
   "decompressor_hide_options": "Masquer les options",
   "decompressor_show_options": "Afficher les options",
-  "compress_image_fmt_tip3": "JPG s'ouvre partout mais ne gère ni la transparence ni l'animation. PNG ne perd rien à partir de 90 ; en dessous, il utilise moins de couleurs, idéal pour les dessins. WebP garde la qualité pour environ la moitié de la taille. AVIF est encore plus léger mais plus lent."
+  "compress_image_fmt_tip3": "JPG s'ouvre partout mais ne gère ni la transparence ni l'animation. PNG ne perd rien à partir de 90 ; en dessous, il utilise moins de couleurs, idéal pour les dessins. WebP garde la qualité pour environ la moitié de la taille. AVIF est encore plus léger mais plus lent.",
+  "compress_animated2": "Animées :",
+  "compress_fmt_same": "Même format (recommandé)",
+  "compress_fmt_gif2": "GIF",
+  "compress_fmt_apng": "APNG (PNG animé)",
+  "compress_fmt_webp_anim": "WebP (animé)",
+  "compress_fmt_avif_anim": "AVIF (animé)",
+  "compress_animated_tip": "GIF, PNG animés (APNG) et images WebP / AVIF animées. Elles restent toujours animées : dans leur propre format ou dans le format animé choisi (WebP et AVIF animés sont souvent bien plus légers que GIF). Chaque image, sa durée et la transparence sont vérifiées avant de garder une copie."
 }

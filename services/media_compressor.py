@@ -8,8 +8,8 @@ Recycle Bin.
 
 - Pictures (Pillow): JPG, PNG, WebP or AVIF at a quality from 1 to 100 (PNG: lossless from 90, fewer
   colours below). Colour profiles and photo info are kept; transparent pictures are skipped for JPG.
-  GIFs stay GIFs, every frame kept (fewer colours below quality 90); other animated pictures are only
-  re-saved in their own format.
+- Animated pictures (their own setting): GIF, APNG, animated WebP and AVIF stay animated, in their own format
+  or as another animated one. Every frame, the timing and transparency are checked before a copy is kept.
 - Videos (ffmpeg): H.265, H.264 or AV1 in an .mp4, or H.265 in an .mkv (keeps every audio track, subtitles
   and attached fonts), at a quality from 1 to 100 (mapped to each codec's CRF). A video already in the
   chosen codec is skipped (it would only lose quality).
@@ -26,7 +26,12 @@ from typing import Callable, List, Optional, Tuple
 from core.logger import logger
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
-GIF_EXTS = {".gif"}                     # their own setting: always compressed as GIF
+GIF_EXTS = {".gif"}
+# Animated pictures (their own setting): GIF, animated PNG (APNG), animated WebP, animated AVIF. An animation is
+# never turned into a still picture: it stays in its format or becomes another animated one.
+ANIMATED_EXTS = {".gif", ".png", ".apng", ".webp", ".avif"}
+ANIMATED_FORMATS = {"gif": ".gif", "png": ".png", "webp": ".webp", "avif": ".avif"}   # + "same" / "keep"
+ANIMATION_MEMORY_LIMIT = 1_200_000_000   # frames x width x height x 4 bytes: bigger ones are left alone
 VIDEO_EXTS = {".mp4", ".m4v", ".mkv", ".mov", ".avi", ".wmv", ".flv", ".mpg", ".mpeg", ".ts", ".webm"}
 IMAGE_FORMATS = {"jpg": ".jpg", "png": ".png", "webp": ".webp", "avif": ".avif"}
 VIDEO_FORMATS = {"h265": "hevc", "h264": "h264", "mkv": "hevc", "av1": "av1"}   # choice -> codec ffmpeg reports
@@ -58,8 +63,8 @@ class CompressSettings:
     image_quality: int = 82
     video_format: str = "h265"        # h265 | h264 | mkv | av1 | keep
     video_quality: int = 75
-    gif_format: str = "gif"           # gif | keep
-    gif_quality: int = 82
+    animated_format: str = "same"     # same | gif | png | webp | avif | keep
+    animated_quality: int = 82
     ffmpeg: str = ""
 
     @property
@@ -67,8 +72,8 @@ class CompressSettings:
         return self.image_format in IMAGE_FORMATS
 
     @property
-    def gifs_on(self) -> bool:
-        return self.gif_format == "gif"
+    def animated_on(self) -> bool:
+        return self.animated_format == "same" or self.animated_format in ANIMATED_FORMATS
 
     @property
     def videos_on(self) -> bool:
@@ -86,14 +91,58 @@ def video_crf(fmt: str, quality: int) -> int:
     return round(40 - q * 0.2)            # h265: 100 → 20, 50 → 30
 
 
+_reserved: set = set()                 # names being written right now (pictures are compressed in parallel)
+_reserved_lock = threading.Lock()
+_calls = threading.local()             # names reserved by the compress call running on this thread
+
+
+def _releases_names(fn):
+    """The names a compress call reserved are released when it ends, however it ends."""
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        outer = getattr(_calls, "names", None)
+        _calls.names = []
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            for name in _calls.names:
+                _release(name)
+            _calls.names = outer
+    return wrapper
+
+
 def _free_name(folder: str, stem: str, ext: str, original: str) -> str:
-    """"art.webp", or "art (2).webp" when that name is taken by another file."""
-    cand = os.path.join(folder, stem + ext)
-    n = 2
-    while os.path.exists(cand) and os.path.normcase(cand) != os.path.normcase(original):
-        cand = os.path.join(folder, f"{stem} ({n}){ext}")
-        n += 1
+    """"art.webp", or "art (2).webp" when that name is taken by another file, or is being written for another
+    file at this moment ("art.gif" and "art.avif" both becoming "art.png"). Release it with _release()."""
+    with _reserved_lock:
+        cand = os.path.join(folder, stem + ext)
+        n = 2
+        while (os.path.exists(cand) and os.path.normcase(cand) != os.path.normcase(original))                 or os.path.normcase(cand) in _reserved:
+            cand = os.path.join(folder, f"{stem} ({n}){ext}")
+            n += 1
+        _reserved.add(os.path.normcase(cand))
+    if getattr(_calls, "names", None) is not None:
+        _calls.names.append(cand)
     return cand
+
+
+def _release(name: str) -> None:
+    with _reserved_lock:
+        _reserved.discard(os.path.normcase(name))
+
+
+def frame_durations(im) -> List[int]:
+    """Each frame's display time in ms. Every frame is decoded first: WebP and AVIF only set a frame's time when
+    it's decoded, and until then still show the previous frame's."""
+    out = []
+    for i in range(getattr(im, "n_frames", 1)):
+        im.seek(i)
+        im.load()
+        out.append(max(10, int(round(float(im.info.get("duration") or 100)))))
+    im.seek(0)
+    return out
 
 
 def _keep_if_smaller(original: str, tmp: str, final: str, result: CompressResult) -> None:
@@ -135,6 +184,36 @@ def _gif_frame(frame, colors: int):
     return q
 
 
+def _shared_palette_frames(frames, colors: int):
+    """Frames with fewer colours that all use ONE palette (animated PNG allows only one), built from a sample
+    of frames across the animation; transparent pixels get their own palette entry. Not dithered: dither noise
+    differs in every frame, which made animations several times bigger."""
+    from PIL import Image
+    rgba = [f.convert("RGBA") for f in frames]
+    has_alpha = any(f.getchannel("A").getextrema()[0] < 128 for f in rgba)
+    n_col = colors - 1 if has_alpha else colors
+    sample = rgba[:: max(1, len(rgba) // 16)][:16]
+    w = min(256, sample[0].width)
+    thumbs = [f.convert("RGB").resize((w, max(1, round(f.height * w / f.width)))) for f in sample]
+    montage = Image.new("RGB", (w, sum(t.height for t in thumbs)))
+    y = 0
+    for t in thumbs:
+        montage.paste(t, (0, y))
+        y += t.height
+    palette = montage.quantize(colors=n_col, method=Image.Quantize.MEDIANCUT)
+    pal = (palette.getpalette() or [])[: n_col * 3]
+    pal += [0] * (n_col * 3 - len(pal))
+    out = []
+    for f in rgba:
+        q = f.convert("RGB").quantize(palette=palette, dither=Image.Dither.NONE)
+        if has_alpha:
+            q.putpalette(pal + [0, 0, 0])
+            q.paste(n_col, mask=f.getchannel("A").point(lambda v: 255 if v < 128 else 0))
+            q.info["transparency"] = n_col
+        out.append(q)
+    return out
+
+
 def _same_transparency(a, b, n: int) -> bool:
     """The transparent areas of the first, middle and last frame match (within 0.5% of the pixels)."""
     from PIL import ImageChops
@@ -148,6 +227,7 @@ def _same_transparency(a, b, n: int) -> bool:
     return True
 
 
+@_releases_names
 def compress_gif(path: str, quality: int, result: CompressResult) -> None:
     """A GIF stays a GIF (still or animated): every frame, its timing, the looping and transparency are kept.
     From quality 90 it's re-saved without loss; below, the frames use fewer colours."""
@@ -161,8 +241,7 @@ def compress_gif(path: str, quality: int, result: CompressResult) -> None:
             size = im.size
             n = getattr(im, "n_frames", 1)
             loop = im.info.get("loop")
-            durations = [max(10, int(f.info.get("duration", 100) or 100)) for f in ImageSequence.Iterator(im)]
-            im.seek(0)
+            durations = frame_durations(im)
             extra = {"loop": loop} if loop is not None else {}
             if n > 1:
                 extra["duration"] = durations
@@ -189,6 +268,98 @@ def compress_gif(path: str, quality: int, result: CompressResult) -> None:
                 pass
 
 
+def is_animated_file(path: str) -> bool:
+    try:
+        from PIL import Image
+        with Image.open(path) as im:
+            return bool(getattr(im, "is_animated", False)) and getattr(im, "n_frames", 1) > 1
+    except Exception:
+        return False
+
+
+@_releases_names
+def compress_animated(path: str, target: str, quality: int, result: CompressResult) -> None:
+    """An animated picture (or any GIF), kept animated: in its own format ("same") or as an animated GIF, PNG
+    (APNG), WebP or AVIF. Every frame, the frame timing and transparency are checked before it's kept."""
+    from PIL import Image, ImageSequence
+    src_ext = os.path.splitext(path)[1].lower()
+    src_kind = ".png" if src_ext == ".apng" else src_ext
+    out_ext = src_kind if target == "same" else ANIMATED_FORMATS[target]
+    if out_ext == ".gif" and src_ext == ".gif":
+        compress_gif(path, quality, result)          # GIF → GIF (also still GIFs: a GIF stays a GIF)
+        return
+    folder, name = os.path.split(path)
+    same = out_ext == src_kind
+    final = _free_name(folder, os.path.splitext(name)[0] + (" (compressed)" if same else ""), out_ext, path)
+    tmp = final + ".pawtmp"
+    q = max(1, min(100, int(quality)))
+    try:
+        with Image.open(path) as im:
+            n = getattr(im, "n_frames", 1)
+            if not getattr(im, "is_animated", False) or n < 2:
+                result.skipped += 1                  # a still picture: the Pictures setting's job
+                return
+            size = im.size
+            if n * size[0] * size[1] * 4 > ANIMATION_MEMORY_LIMIT:
+                result.skipped += 1
+                logger.debug(f"{name}: {n} frames at {size[0]}x{size[1]} is too big to compress safely; left alone.",
+                             category="decompressor")
+                return
+            durations = frame_durations(im)
+            loop = int(im.info.get("loop", 0) or 0)
+            if out_ext == ".gif":
+                colors = 256 if q >= 90 else (128 if q >= 60 else (64 if q >= 40 else 32))
+                frames = [_gif_frame(f, colors) for f in ImageSequence.Iterator(im)]
+                frames[0].save(tmp, "GIF", save_all=True, append_images=frames[1:], duration=durations, loop=loop,
+                               optimize=True, disposal=2)
+            elif out_ext == ".png":
+                # Lossless first (without the alpha channel when nothing is transparent); below quality 90 a
+                # version with fewer colours is tried too, and the smaller one is kept
+                frames = [f.convert("RGBA") for f in ImageSequence.Iterator(im)]
+                opaque = all(f.getchannel("A").getextrema()[0] == 255 for f in frames)
+                full = [f.convert("RGB") for f in frames] if opaque else frames
+                full[0].save(tmp, "PNG", save_all=True, append_images=full[1:], duration=durations, loop=loop,
+                             optimize=True)
+                if q < 90:
+                    alt = tmp + "2"
+                    pal = _shared_palette_frames(frames, 256 if q >= 60 else (128 if q >= 40 else 64))
+                    pal[0].save(alt, "PNG", save_all=True, append_images=pal[1:], duration=durations, loop=loop,
+                                optimize=True)
+                    if os.path.getsize(alt) < os.path.getsize(tmp):
+                        os.replace(alt, tmp)
+                    else:
+                        os.remove(alt)
+            elif out_ext == ".webp":
+                frames = [f.convert("RGBA") for f in ImageSequence.Iterator(im)]
+                frames[0].save(tmp, "WEBP", save_all=True, append_images=frames[1:], duration=durations, loop=loop,
+                               quality=q, method=4, lossless=q >= 100)
+            else:
+                frames = [f.convert("RGBA") for f in ImageSequence.Iterator(im)]
+                frames[0].save(tmp, "AVIF", save_all=True, append_images=frames[1:], duration=durations,
+                               quality=q, speed=6)
+            frames = None
+        with Image.open(tmp) as check, Image.open(path) as orig:
+            got = getattr(check, "n_frames", 1)
+            if check.size != size or got != n:
+                raise ValueError(f"came out as {got} frame(s) at {check.size} instead of {n} at {size}")
+            new = frame_durations(check)
+            # every frame keeps its time (GIF stores 1/100 s, so up to 10 ms off)
+            if any(abs(a - b) > 10 for a, b in zip(durations, new)):
+                raise ValueError(f"the frame timing changed ({durations[:6]}… ms -> {new[:6]}… ms)")
+            if not _same_transparency(orig, check, n):
+                raise ValueError("the transparent areas changed")
+        _keep_if_smaller(path, tmp, final, result)
+    except Exception as e:
+        result.failed.append(f"{name}: {e}")
+        logger.debug(f"Couldn't compress {path}: {e}", category="decompressor")
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
+@_releases_names
 def compress_image(path: str, fmt: str, quality: int, result: CompressResult) -> None:
     from PIL import Image
     src_ext = os.path.splitext(path)[1].lower()
@@ -293,6 +464,7 @@ def video_command(ffmpeg: str, src: str, dst: str, fmt: str, quality: int, audio
             "-pix_fmt", "yuv420p", *audio, "-movflags", "+faststart", *tail, "-f", "mp4", dst]
 
 
+@_releases_names
 def compress_video(ffmpeg: str, path: str, fmt: str, quality: int, result: CompressResult,
                    cancel: Optional[threading.Event] = None,
                    on_progress: Optional[Callable[[float], None]] = None,
@@ -350,16 +522,28 @@ def compress_video(ffmpeg: str, path: str, fmt: str, quality: int, result: Compr
 
 # ── A folder ─────────────────────────────────────────────────────────────────
 
-def media_files(folder: str, settings: CompressSettings) -> Tuple[List[str], List[str]]:
-    images, videos = [], []
+def media_files(folder: str, settings: CompressSettings) -> Tuple[List[str], List[str], List[str]]:
+    """(still pictures, videos, animated pictures) to compress. GIFs always count as animated pictures (a GIF
+    stays a GIF); a PNG, WebP or AVIF is looked at to see whether it's animated."""
+    images, videos, animated = [], [], []
     for root, _dirs, files in os.walk(folder):
         for f in files:
+            p = os.path.join(root, f)
             ext = os.path.splitext(f)[1].lower()
-            if (settings.images_on and ext in IMAGE_EXTS) or (settings.gifs_on and ext in GIF_EXTS):
-                images.append(os.path.join(root, f))
+            if ext in GIF_EXTS:
+                if settings.animated_on:
+                    animated.append(p)
+            elif ext in ANIMATED_EXTS and (settings.animated_on or (settings.images_on and ext in IMAGE_EXTS)):
+                if is_animated_file(p):
+                    if settings.animated_on:
+                        animated.append(p)
+                elif settings.images_on and ext in IMAGE_EXTS:
+                    images.append(p)
+            elif settings.images_on and ext in IMAGE_EXTS:
+                images.append(p)
             elif settings.videos_on and ext in VIDEO_EXTS:
-                videos.append(os.path.join(root, f))
-    return images, videos
+                videos.append(p)
+    return images, videos, animated
 
 
 def compress_folder(folder: str, settings: CompressSettings, cancel: Optional[threading.Event] = None,
@@ -369,8 +553,8 @@ def compress_folder(folder: str, settings: CompressSettings, cancel: Optional[th
     file size. Pictures are compressed a few at a time; videos one at a time (ffmpeg uses every core)."""
     from concurrent.futures import ThreadPoolExecutor
     result = CompressResult()
-    images, videos = media_files(folder, settings)
-    sizes = {p: max(1, os.path.getsize(p)) for p in images + videos}
+    images, videos, animated = media_files(folder, settings)
+    sizes = {p: max(1, os.path.getsize(p)) for p in images + videos + animated}
     total = sum(sizes.values()) or 1
     done = [0]
     lock = threading.Lock()
@@ -385,16 +569,17 @@ def compress_folder(folder: str, settings: CompressSettings, cancel: Optional[th
         if cancel is not None and cancel.is_set():
             return CompressResult()
         r = CompressResult()
-        if os.path.splitext(p)[1].lower() in GIF_EXTS:
-            compress_gif(p, settings.gif_quality, r)
+        if p in animated_set:
+            compress_animated(p, settings.animated_format, settings.animated_quality, r)
         else:
             compress_image(p, settings.image_format, settings.image_quality, r)
         finished(p)
         return r
 
+    animated_set = set(animated)
     n = workers or max(1, min(4, (os.cpu_count() or 2) // 2))
     with ThreadPoolExecutor(max_workers=n) as pool:
-        for r in pool.map(one_image, images):
+        for r in pool.map(one_image, images + animated):
             result.merge(r)
     for v in videos:
         if cancel is not None and cancel.is_set():

@@ -1197,10 +1197,14 @@
   "compress_fmt_png": "PNG（ロスレス）",
   "compress_fmt_mkv": "MKV（H.265・字幕を保持）",
   "compress_video_fmt_tip2": "H.265は画質を保ったまま大幅に小さくします（.mp4）。H.264は大きめですが、どの端末でも再生できます（.mp4）。MKVはH.265を.mkvファイルに収め、すべての音声トラック・字幕・フォントを保持します。AV1は最小ですが時間がかなりかかります（.mp4）。すでに選んだ形式の動画はそのままにします。",
-  "compress_animated": "アニメーション（GIF）:",
-  "compress_fmt_gif": "GIF（アニメーションを保持）",
-  "compress_gif_tip": "GIFはGIFのまま、すべてのフレーム・表示時間・ループ・透過を保持します。90以上なら劣化なし、それより低いと色数を減らしてファイルを小さくします。",
   "decompressor_hide_options": "オプションを隠す",
   "decompressor_show_options": "オプションを表示",
-  "compress_image_fmt_tip3": "JPGはどこでも開けますが、透過やアニメーションは保持できません。PNGは90以上なら劣化なし、それより低いと色数を減らします（イラスト向き）。WebPは画質を保ったままサイズを約半分にします。AVIFはさらに小さくなりますが低速です。"
+  "compress_image_fmt_tip3": "JPGはどこでも開けますが、透過やアニメーションは保持できません。PNGは90以上なら劣化なし、それより低いと色数を減らします（イラスト向き）。WebPは画質を保ったままサイズを約半分にします。AVIFはさらに小さくなりますが低速です。",
+  "compress_animated2": "アニメーション:",
+  "compress_fmt_same": "同じ形式（おすすめ）",
+  "compress_fmt_gif2": "GIF",
+  "compress_fmt_apng": "APNG（アニメーションPNG）",
+  "compress_fmt_webp_anim": "WebP（アニメーション）",
+  "compress_fmt_avif_anim": "AVIF（アニメーション）",
+  "compress_animated_tip": "GIF、アニメーションPNG（APNG）、アニメーションWebP／AVIF。常にアニメーションのまま、元の形式か選んだアニメーション形式で保存します（アニメーションWebPとAVIFは通常GIFよりずっと小さくなります）。コピーを残す前に、すべてのフレーム・表示時間・透過を確認します。"
 }

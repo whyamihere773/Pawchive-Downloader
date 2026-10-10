@@ -1197,10 +1197,14 @@
   "compress_fmt_png": "PNG (sem perdas)",
   "compress_fmt_mkv": "MKV (H.265, mantém legendas)",
   "compress_video_fmt_tip2": "H.265 mantém a qualidade com um tamanho bem menor (.mp4). H.264 é maior, mas toca em qualquer aparelho (.mp4). MKV é H.265 num arquivo .mkv que mantém todas as faixas de áudio, legendas e fontes. AV1 é o menor, mas demora muito mais (.mp4). Vídeos já no formato escolhido ficam como estão.",
-  "compress_animated": "Animadas (GIF):",
-  "compress_fmt_gif": "GIF (mantém a animação)",
-  "compress_gif_tip": "GIFs continuam GIFs: todos os quadros, o tempo, a repetição e a transparência são mantidos. A partir de 90 nada se perde; valores menores usam menos cores para um arquivo menor.",
   "decompressor_hide_options": "Ocultar opções",
   "decompressor_show_options": "Mostrar opções",
-  "compress_image_fmt_tip3": "JPG abre em qualquer lugar, mas não guarda transparência nem animação. PNG não perde nada a partir de 90; valores menores usam menos cores, bom para desenhos. WebP mantém a qualidade com cerca de metade do tamanho. AVIF é ainda menor, mas mais lento."
+  "compress_image_fmt_tip3": "JPG abre em qualquer lugar, mas não guarda transparência nem animação. PNG não perde nada a partir de 90; valores menores usam menos cores, bom para desenhos. WebP mantém a qualidade com cerca de metade do tamanho. AVIF é ainda menor, mas mais lento.",
+  "compress_animated2": "Animadas:",
+  "compress_fmt_same": "Mesmo formato (recomendado)",
+  "compress_fmt_gif2": "GIF",
+  "compress_fmt_apng": "APNG (PNG animado)",
+  "compress_fmt_webp_anim": "WebP (animado)",
+  "compress_fmt_avif_anim": "AVIF (animado)",
+  "compress_animated_tip": "GIFs, PNGs animados (APNG) e imagens WebP / AVIF animadas. Elas sempre continuam animadas: no próprio formato ou no formato animado escolhido (WebP e AVIF animados costumam ser bem menores que GIF). Cada quadro, o tempo e a transparência são conferidos antes de manter uma cópia."
 }

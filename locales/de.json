@@ -1197,10 +1197,14 @@
   "compress_fmt_png": "PNG (verlustfrei)",
   "compress_fmt_mkv": "MKV (H.265, behält Untertitel)",
   "compress_video_fmt_tip2": "H.265 behält die Qualität bei viel kleinerer Größe (.mp4). H.264 ist größer, läuft aber auf jedem Gerät (.mp4). MKV ist H.265 in einer .mkv-Datei, die alle Tonspuren, Untertitel und Schriften behält. AV1 ist am kleinsten, dauert aber viel länger (.mp4). Videos, die schon im gewählten Format sind, bleiben unverändert.",
-  "compress_animated": "Animiert (GIF):",
-  "compress_fmt_gif": "GIF (Animation bleibt)",
-  "compress_gif_tip": "GIFs bleiben GIFs: alle Bilder, ihr Timing, die Wiederholung und Transparenz bleiben erhalten. Ab 90 geht nichts verloren; niedrigere Werte nutzen weniger Farben für eine kleinere Datei.",
   "decompressor_hide_options": "Optionen ausblenden",
   "decompressor_show_options": "Optionen einblenden",
-  "compress_image_fmt_tip3": "JPG öffnet überall, kann aber keine Transparenz oder Animation speichern. PNG verliert ab 90 nichts; niedrigere Werte nutzen weniger Farben, was gut zu Zeichnungen passt. WebP behält die Qualität bei etwa halber Größe. AVIF ist noch kleiner, aber langsamer."
+  "compress_image_fmt_tip3": "JPG öffnet überall, kann aber keine Transparenz oder Animation speichern. PNG verliert ab 90 nichts; niedrigere Werte nutzen weniger Farben, was gut zu Zeichnungen passt. WebP behält die Qualität bei etwa halber Größe. AVIF ist noch kleiner, aber langsamer.",
+  "compress_animated2": "Animiert:",
+  "compress_fmt_same": "Gleiches Format (empfohlen)",
+  "compress_fmt_gif2": "GIF",
+  "compress_fmt_apng": "APNG (animiertes PNG)",
+  "compress_fmt_webp_anim": "WebP (animiert)",
+  "compress_fmt_avif_anim": "AVIF (animiert)",
+  "compress_animated_tip": "GIFs, animierte PNGs (APNG) und animierte WebP-/AVIF-Bilder. Sie bleiben immer animiert: im eigenen Format oder im gewählten animierten Format (animiertes WebP und AVIF sind meist viel kleiner als GIF). Jedes Bild, sein Timing und die Transparenz werden geprüft, bevor eine Kopie behalten wird."
 }

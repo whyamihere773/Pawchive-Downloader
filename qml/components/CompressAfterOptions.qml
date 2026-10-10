@@ -41,7 +41,7 @@ ColumnLayout {
             stepSize: 1
             value: qs.value
             enabled: qs.active
-            implicitWidth: 150
+            implicitWidth: 120
             implicitHeight: 28
             onMoved: qs.moved(Math.round(value))
 
@@ -158,7 +158,7 @@ ColumnLayout {
         StyledComboBox {
             objectName: "compress_image_format"
             implicitHeight: 28
-            implicitWidth: 170
+            implicitWidth: 190
             model: [
                 { text: root.tr("compress_fmt_jpg", "JPG (opens anywhere)"), value: "jpg" },
                 { text: root.tr("compress_fmt_png", "PNG (lossless)"), value: "png" },
@@ -197,7 +197,7 @@ ColumnLayout {
         StyledComboBox {
             objectName: "compress_video_format"
             implicitHeight: 28
-            implicitWidth: 170
+            implicitWidth: 190
             model: [
                 { text: root.tr("compress_fmt_h265", "H.265 (recommended)"), value: "h265" },
                 { text: root.tr("compress_fmt_h264", "H.264 (plays anywhere)"), value: "h264" },
@@ -217,7 +217,8 @@ ColumnLayout {
         }
     }
 
-    // Animated pictures (GIF): their own setting, always kept as GIF so the animation survives
+    // Animated pictures (GIF, APNG, animated WebP / AVIF): their own setting. They stay animated, in their own
+    // format or as another animated one: an animation never becomes a still picture
     Flow {
         Layout.fillWidth: true
         Layout.leftMargin: 26
@@ -225,7 +226,7 @@ ColumnLayout {
         spacing: 10
 
         Text {
-            text: root.tr("compress_animated", "Animated (GIF):")
+            text: root.tr("compress_animated2", "Animated:")
             font.family: "Segoe UI, sans-serif"
             font.pixelSize: 11
             color: "#94A3B8"
@@ -235,22 +236,26 @@ ColumnLayout {
             wrapMode: Text.WordWrap
         }
         StyledComboBox {
-            objectName: "compress_gif_format"
+            objectName: "compress_animated_format"
             implicitHeight: 28
-            implicitWidth: 170
+            implicitWidth: 190
             model: [
-                { text: root.tr("compress_fmt_gif", "GIF (keeps animation)"), value: "gif" },
+                { text: root.tr("compress_fmt_same", "Same format (recommended)"), value: "same" },
+                { text: root.tr("compress_fmt_gif2", "GIF"), value: "gif" },
+                { text: root.tr("compress_fmt_apng", "APNG (animated PNG)"), value: "png" },
+                { text: root.tr("compress_fmt_webp_anim", "WebP (animated)"), value: "webp" },
+                { text: root.tr("compress_fmt_avif_anim", "AVIF (animated)"), value: "avif" },
                 { text: root.tr("compress_fmt_keep", "Don't compress"), value: "keep" }
             ]
-            value: root.decompressor ? root.decompressor.gifFormat : "gif"
-            tooltip: root.tr("compress_gif_tip", "GIFs stay GIFs: every frame, its timing, the looping and transparency are kept. From 90 nothing is lost; lower values use fewer colours for a smaller file.")
-            onValuePicked: function(v) { if (root.decompressor) root.decompressor.gifFormat = v }
+            value: root.decompressor ? root.decompressor.animatedFormat : "same"
+            tooltip: root.tr("compress_animated_tip", "GIFs, animated PNGs (APNG) and animated WebP / AVIF pictures. They always stay animated: in their own format, or as the animated format you pick (animated WebP and AVIF are usually much smaller than GIF). Every frame, its timing and transparency are checked before a copy is kept.")
+            onValuePicked: function(v) { if (root.decompressor) root.decompressor.animatedFormat = v }
         }
         QualitySlider {
             height: 28
-            value: root.decompressor ? root.decompressor.gifQuality : 82
-            active: root.decompressor ? root.decompressor.gifFormat !== "keep" : true
-            onMoved: function(v) { if (root.decompressor) root.decompressor.gifQuality = v }
+            value: root.decompressor ? root.decompressor.animatedQuality : 82
+            active: root.decompressor ? root.decompressor.animatedFormat !== "keep" : true
+            onMoved: function(v) { if (root.decompressor) root.decompressor.animatedQuality = v }
         }
     }
 

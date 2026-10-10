@@ -68,7 +68,7 @@ Numbers below are for an archive with 2 million files from 20,000 creators.
 ### 🗜️ Decompressor
 
 * **Compress after extracting** *(opt-in)*: Turn on "Compress pictures and videos after extracting" to save the pictures and videos from each archive in a smaller format. Pick the format (JPG, PNG, WebP or AVIF for pictures; H.265, H.264, MKV or AV1 for videos) and the quality with a slider. In a test, WebP at the default quality cut pictures to about half their size, and H.265 cut a video from 5.5 MB to 2.2 MB.
-* **GIFs stay GIFs**: Animated pictures have their own setting with its own quality slider. GIFs are compressed as GIFs, with every frame, its timing and transparency kept (a test animation went from 525 KB to 381 KB).
+* **Animated pictures stay animated**: GIFs, animated PNGs (APNG) and animated WebP and AVIF pictures have their own setting with its own quality slider. By default each keeps its own format, so GIFs stay GIFs; you can also turn them all into one animated format (a test GIF went from 71 KB to 22 KB as animated WebP). Every frame, its timing and transparency are checked before a copy is kept.
 * **MKV keeps everything**: The MKV option keeps every audio track, subtitles and attached fonts exactly as they were.
 * **You decide about the originals**: Compressed copies are saved next to the originals and only kept when they're at least 5% smaller. When everything's done you're asked whether to keep the originals or move them to the Recycle Bin.
 * **Videos need FFmpeg**: Video compression uses FFmpeg, a free video tool. It isn't included with the app, but one click downloads the official build (about 200 MB, a few seconds on a fast connection) and checks it before use.

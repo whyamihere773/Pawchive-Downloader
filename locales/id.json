@@ -1197,10 +1197,14 @@
   "compress_fmt_png": "PNG (lossless)",
   "compress_fmt_mkv": "MKV (H.265, subtitle tetap ada)",
   "compress_video_fmt_tip2": "H.265 menjaga kualitas dengan ukuran jauh lebih kecil (.mp4). H.264 lebih besar tetapi bisa diputar di semua perangkat (.mp4). MKV adalah H.265 dalam file .mkv yang menyimpan semua trek audio, subtitle, dan font. AV1 paling kecil tetapi jauh lebih lama (.mp4). Video yang sudah dalam format pilihan dibiarkan apa adanya.",
-  "compress_animated": "Animasi (GIF):",
-  "compress_fmt_gif": "GIF (animasi tetap)",
-  "compress_gif_tip": "GIF tetap menjadi GIF: semua frame, waktunya, perulangan, dan transparansi tetap ada. Mulai 90 tidak ada yang hilang; nilai lebih rendah memakai lebih sedikit warna agar file lebih kecil.",
   "decompressor_hide_options": "Sembunyikan opsi",
   "decompressor_show_options": "Tampilkan opsi",
-  "compress_image_fmt_tip3": "JPG bisa dibuka di mana saja tetapi tidak mendukung transparansi atau animasi. PNG tidak kehilangan apa pun mulai 90; nilai lebih rendah memakai lebih sedikit warna, cocok untuk gambar ilustrasi. WebP menjaga kualitas dengan ukuran sekitar setengahnya. AVIF lebih kecil lagi tetapi lebih lambat."
+  "compress_image_fmt_tip3": "JPG bisa dibuka di mana saja tetapi tidak mendukung transparansi atau animasi. PNG tidak kehilangan apa pun mulai 90; nilai lebih rendah memakai lebih sedikit warna, cocok untuk gambar ilustrasi. WebP menjaga kualitas dengan ukuran sekitar setengahnya. AVIF lebih kecil lagi tetapi lebih lambat.",
+  "compress_animated2": "Animasi:",
+  "compress_fmt_same": "Format sama (disarankan)",
+  "compress_fmt_gif2": "GIF",
+  "compress_fmt_apng": "APNG (PNG animasi)",
+  "compress_fmt_webp_anim": "WebP (animasi)",
+  "compress_fmt_avif_anim": "AVIF (animasi)",
+  "compress_animated_tip": "GIF, PNG animasi (APNG), dan gambar WebP / AVIF animasi. Semuanya tetap beranimasi: dalam format aslinya atau format animasi yang dipilih (WebP dan AVIF animasi biasanya jauh lebih kecil dari GIF). Setiap frame, waktunya, dan transparansi diperiksa sebelum salinan disimpan."
 }
