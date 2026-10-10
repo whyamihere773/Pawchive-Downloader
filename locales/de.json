@@ -1206,5 +1206,19 @@
   "compress_fmt_apng": "APNG (animiertes PNG)",
   "compress_fmt_webp_anim": "WebP (animiert)",
   "compress_fmt_avif_anim": "AVIF (animiert)",
-  "compress_animated_tip": "GIFs, animierte PNGs (APNG) und animierte WebP-/AVIF-Bilder. Sie bleiben immer animiert: im eigenen Format oder im gewählten animierten Format (animiertes WebP und AVIF sind meist viel kleiner als GIF). Jedes Bild, sein Timing und die Transparenz werden geprüft, bevor eine Kopie behalten wird."
+  "compress_animated_tip": "GIFs, animierte PNGs (APNG) und animierte WebP-/AVIF-Bilder. Sie bleiben immer animiert: im eigenen Format oder im gewählten animierten Format (animiertes WebP und AVIF sind meist viel kleiner als GIF). Jedes Bild, sein Timing und die Transparenz werden geprüft, bevor eine Kopie behalten wird.",
+  "gc_title": "Bilder & Videos komprimieren",
+  "gc_title_stopped": "Komprimierung gestoppt",
+  "gc_selected": "%1 Datei(en) ausgewählt",
+  "gc_counting": "Dateien werden geprüft…",
+  "gc_nothing": "Mit diesen Einstellungen gibt es nichts zu komprimieren (jeder Typ steht auf „Nicht komprimieren“, oder Videos brauchen FFmpeg).",
+  "gc_counts": "%1 Bild(er) · %2 Video(s) · %3 animiert · %4",
+  "gc_note": "Kopien werden neben den Originalen gespeichert und nur behalten, wenn sie mindestens 5 % kleiner sind. Am Ende entscheidest du, ob die Originale bleiben. Diese Einstellungen gelten auch für den Entpacker.",
+  "gc_starting": "Wird gestartet…",
+  "gc_running_note": "Videos dauern eine Weile. Stopp behält, was schon fertig ist.",
+  "gc_none_smaller": "Nichts wurde komprimiert: keine Kopie war kleiner, daher blieben alle Dateien unverändert.",
+  "gc_compress": "Komprimieren",
+  "gc_menu_one": "Bild / Video komprimieren…",
+  "gc_menu_many": "%1 Bilder & Videos komprimieren…",
+  "gc_menu_hint": "kleinere Dateien"
 }

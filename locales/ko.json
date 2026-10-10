@@ -1206,5 +1206,19 @@
   "compress_fmt_apng": "APNG (애니메이션 PNG)",
   "compress_fmt_webp_anim": "WebP (애니메이션)",
   "compress_fmt_avif_anim": "AVIF (애니메이션)",
-  "compress_animated_tip": "GIF, 애니메이션 PNG(APNG), 애니메이션 WebP / AVIF 이미지입니다. 항상 애니메이션이 유지되며, 원래 형식이나 선택한 애니메이션 형식으로 저장됩니다(애니메이션 WebP와 AVIF는 보통 GIF보다 훨씬 작습니다). 사본을 남기기 전에 모든 프레임, 재생 시간, 투명도를 확인합니다."
+  "compress_animated_tip": "GIF, 애니메이션 PNG(APNG), 애니메이션 WebP / AVIF 이미지입니다. 항상 애니메이션이 유지되며, 원래 형식이나 선택한 애니메이션 형식으로 저장됩니다(애니메이션 WebP와 AVIF는 보통 GIF보다 훨씬 작습니다). 사본을 남기기 전에 모든 프레임, 재생 시간, 투명도를 확인합니다.",
+  "gc_title": "이미지 및 동영상 압축",
+  "gc_title_stopped": "압축 중지됨",
+  "gc_selected": "파일 %1개 선택됨",
+  "gc_counting": "파일 확인 중…",
+  "gc_nothing": "이 설정으로는 압축할 것이 없습니다(모든 형식이 \"압축 안 함\"이거나 동영상에 FFmpeg가 필요합니다).",
+  "gc_counts": "이미지 %1 · 동영상 %2 · 애니메이션 %3 · %4",
+  "gc_note": "사본은 원본 옆에 저장되며 5% 이상 작을 때만 남습니다. 완료 후 원본을 남길지 선택합니다. 이 설정은 압축 해제 도구와 공유됩니다.",
+  "gc_starting": "시작 중…",
+  "gc_running_note": "동영상은 시간이 걸립니다. 중지해도 이미 끝난 것은 남습니다.",
+  "gc_none_smaller": "압축된 것이 없습니다. 작아진 사본이 없어 모든 파일을 그대로 두었습니다.",
+  "gc_compress": "압축",
+  "gc_menu_one": "이미지 / 동영상 압축…",
+  "gc_menu_many": "이미지 및 동영상 %1개 압축…",
+  "gc_menu_hint": "더 작은 파일"
 }

@@ -1206,5 +1206,19 @@
   "compress_fmt_apng": "APNG (PNG động)",
   "compress_fmt_webp_anim": "WebP (động)",
   "compress_fmt_avif_anim": "AVIF (động)",
-  "compress_animated_tip": "GIF, PNG động (APNG) và ảnh WebP / AVIF động. Chúng luôn giữ chuyển động: ở định dạng gốc hoặc định dạng động bạn chọn (WebP và AVIF động thường nhỏ hơn GIF nhiều). Mọi khung hình, thời gian và độ trong suốt đều được kiểm tra trước khi giữ bản sao."
+  "compress_animated_tip": "GIF, PNG động (APNG) và ảnh WebP / AVIF động. Chúng luôn giữ chuyển động: ở định dạng gốc hoặc định dạng động bạn chọn (WebP và AVIF động thường nhỏ hơn GIF nhiều). Mọi khung hình, thời gian và độ trong suốt đều được kiểm tra trước khi giữ bản sao.",
+  "gc_title": "Nén ảnh và video",
+  "gc_title_stopped": "Đã dừng nén",
+  "gc_selected": "Đã chọn %1 tệp",
+  "gc_counting": "Đang xem các tệp…",
+  "gc_nothing": "Không có gì để nén với cài đặt này (mọi loại đều đặt \"Không nén\", hoặc video cần FFmpeg).",
+  "gc_counts": "%1 ảnh · %2 video · %3 ảnh động · %4",
+  "gc_note": "Bản sao được lưu cạnh bản gốc và chỉ được giữ khi nhỏ hơn ít nhất 5%. Khi xong, bạn chọn có giữ bản gốc hay không. Các cài đặt này dùng chung với Trình giải nén.",
+  "gc_starting": "Đang bắt đầu…",
+  "gc_running_note": "Video mất một lúc. Dừng sẽ giữ phần đã xong.",
+  "gc_none_smaller": "Không có gì được nén: không bản sao nào nhỏ hơn, nên mọi tệp được giữ nguyên.",
+  "gc_compress": "Nén",
+  "gc_menu_one": "Nén ảnh / video…",
+  "gc_menu_many": "Nén %1 ảnh và video…",
+  "gc_menu_hint": "tệp nhỏ hơn"
 }

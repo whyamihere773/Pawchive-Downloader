@@ -28,7 +28,8 @@ from bridge.archive_creators_model import RecordListModel
 from core.logger import logger
 from core.path_translation import localize_path
 from services.ffmpeg_manager import FfmpegDownloader, find_ffmpeg
-from services.media_compressor import CompressResult, CompressSettings, compress_folder
+from services.media_compressor import (CompressResult, CompressSettings, classify, compress_folder, compress_paths,
+                                       media_in)
 
 
 def _format_bytes(b: int) -> str:
@@ -75,6 +76,13 @@ class DecompressorBridge(QObject):
     ffmpegChanged = Signal()
     compressionReviewRequested = Signal(int, "qint64", "qint64", int)   # files, bytes before, after, failed
     originalsHandled = Signal(str)                                      # what was done with the originals
+
+    # Gallery → right click → "Compress pictures & videos…" (any files and folders, same settings)
+    mediaCountReady = Signal(int, int, int, "qint64")       # pictures, videos, animated, their bytes
+    compressPathsProgress = Signal(float, str)              # percent, file being compressed
+    compressPathsFinished = Signal(int, "qint64", "qint64", int, int, bool)   # files, before, after, failed, left, stopped
+    galleryOriginalsHandled = Signal(str)
+    compressingPathsChanged = Signal()
 
     def __init__(self, watchlist_manager, app_bridge=None, parent=None):
         super().__init__(parent)
@@ -128,6 +136,10 @@ class DecompressorBridge(QObject):
         self._ffmpeg_message = ""
         self._compress_procs: set = set()
         self._pending_originals: List[Tuple[str, str]] = []     # (original, compressed) awaiting the answer
+        self._pending_source = "decompressor"                   # who asked: "decompressor" | "gallery"
+        self._paths_cancel = threading.Event()
+        self._compressing_paths = False
+        self._count_gen = 0
         self._loading_settings = False
         self.settingsChanged.connect(self._save_settings)
         self.locationsChanged.connect(self._save_settings)
@@ -350,22 +362,119 @@ class DecompressorBridge(QObject):
     def cancelFfmpegDownload(self):
         self._ffmpeg_downloader.cancel_event.set()
 
+    def _media_settings(self) -> CompressSettings:
+        """The formats and qualities chosen (shared by the Decompressor and the Gallery)."""
+        return CompressSettings(image_format=self._image_format, image_quality=self._image_quality,
+                                video_format=self._video_format, video_quality=self._video_quality,
+                                animated_format=self._animated_format, animated_quality=self._animated_quality,
+                                ffmpeg=self._ffmpeg_path if self.ffmpegAvailable else "")
+
     def _compress_settings(self) -> Optional[CompressSettings]:
         if not self._compress_after:
             return None
-        s = CompressSettings(image_format=self._image_format, image_quality=self._image_quality,
-                             video_format=self._video_format, video_quality=self._video_quality,
-                             animated_format=self._animated_format, animated_quality=self._animated_quality,
-                             ffmpeg=self._ffmpeg_path if self.ffmpegAvailable else "")
+        s = self._media_settings()
         if s.video_format != "keep" and not s.ffmpeg:
             logger.warning("Videos aren't compressed: FFmpeg isn't installed (Decompressor → Compress after "
                            "extracting → Download FFmpeg).", category="decompressor")
         return s if (s.images_on or s.videos_on or s.animated_on) else None
 
+    # ── Gallery: compress chosen files and folders ─────────────────────────────
+
+    @Property(bool, notify=compressingPathsChanged)
+    def compressingPaths(self) -> bool:
+        return self._compressing_paths
+
+    @Slot("QVariantList", result="QVariantList")
+    def compressibleFiles(self, paths):
+        """The files among `paths` that can be compressed at all: still pictures (JPG, PNG, BMP, TIFF), animated
+        ones (GIF, animated PNG / WebP / AVIF) and videos. Folders and other files aren't. The Gallery offers
+        "Compress pictures & videos…" only when there's one."""
+        any_format = CompressSettings(image_format="webp", video_format="h265", animated_format="same", ffmpeg="ffmpeg")
+        out = []
+        for p in list(paths or [])[:20000]:
+            p = str(p or "")
+            if p and os.path.isfile(p) and classify(p, any_format):
+                out.append(p)
+        return out
+
+    @Slot("QVariantList")
+    def countMediaPaths(self, paths):
+        """How many pictures / videos / animated pictures the chosen items hold (in the background: a
+        folder can hold a lot). Answers with mediaCountReady; a newer question replaces an older one."""
+        self._count_gen += 1
+        gen = self._count_gen
+        settings = self._media_settings()
+        paths = [str(p) for p in (paths or []) if p]
+
+        def _worker():
+            stop = threading.Event()
+            images, videos, animated = media_in(paths, settings, stop)
+            if gen != self._count_gen:
+                return
+            total = 0
+            for p in images + videos + animated:
+                try:
+                    total += os.path.getsize(p)
+                except OSError:
+                    pass
+            self.mediaCountReady.emit(len(images), len(videos), len(animated), total)
+        threading.Thread(target=_worker, daemon=True, name="MediaCount").start()
+
+    @Slot("QVariantList")
+    def compressPaths(self, paths):
+        """Compresses the pictures and videos among the chosen files and folders with the chosen formats.
+        The originals are kept until the user answers (removeCompressedOriginals / keepCompressedOriginals)."""
+        if self._compressing_paths:
+            return
+        paths = [str(p) for p in (paths or []) if p]
+        settings = self._media_settings()
+        self._paths_cancel.clear()
+        self._compressing_paths = True
+        self.compressingPathsChanged.emit()
+        last = [0.0]
+
+        def _progress(pct, name=""):
+            now = time.time()
+            if now - last[0] >= 0.1 or pct >= 100:
+                last[0] = now
+                self.compressPathsProgress.emit(float(pct), name)
+
+        def _worker():
+            r = CompressResult()
+            try:
+                found = media_in(paths, settings, self._paths_cancel)
+                r = compress_paths(paths, settings, cancel=self._paths_cancel, on_progress=_progress,
+                                   procs=self._compress_procs, found=found)
+                if r.compressed:
+                    self._pending_originals = list(r.compressed)
+                    self._pending_source = "gallery"
+                logger.info(f"🗜 Gallery: {len(r.compressed)} file(s) compressed, {_format_bytes(r.bytes_before)} → "
+                            f"{_format_bytes(r.bytes_after)}" + (f", {len(r.failed)} couldn't be" if r.failed else ""),
+                            category="decompressor", details="\n".join(r.failed[:50]) if r.failed else "")
+            except Exception as e:
+                logger.exception("Gallery compression failed", category="decompressor")
+                r.failed.append(str(e))
+            finally:
+                self._compressing_paths = False
+                self.compressingPathsChanged.emit()
+                self.compressPathsFinished.emit(len(r.compressed), r.bytes_before, r.bytes_after, len(r.failed),
+                                                r.skipped, self._paths_cancel.is_set())
+        threading.Thread(target=_worker, daemon=True, name="GalleryCompress").start()
+
+    @Slot()
+    def cancelCompressPaths(self):
+        self._paths_cancel.set()
+        for proc in list(self._compress_procs):
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
     @Slot()
     def removeCompressedOriginals(self):
         """The user's answer at the end: the originals of the compressed files go to the Recycle Bin."""
         pairs, self._pending_originals = self._pending_originals, []
+        source = self._pending_source
         if not pairs:
             return
 
@@ -394,7 +503,7 @@ class DecompressorBridge(QObject):
             if kept:
                 msg += f" {kept} couldn't be moved and were kept."
             logger.success(msg, category="decompressor")
-            self.originalsHandled.emit(msg)
+            (self.galleryOriginalsHandled if source == "gallery" else self.originalsHandled).emit(msg)
         threading.Thread(target=_worker, daemon=True, name="CompressOriginals").start()
 
     @Slot()
@@ -403,7 +512,7 @@ class DecompressorBridge(QObject):
         self._pending_originals = []
         if n:
             logger.info(f"Kept the {n} original(s) next to their compressed copies.", category="decompressor")
-            self.originalsHandled.emit("")
+            (self.galleryOriginalsHandled if self._pending_source == "gallery" else self.originalsHandled).emit("")
 
     # ── Properties ─────────────────────────────────────────────────────────────
 
@@ -1161,6 +1270,8 @@ class DecompressorBridge(QObject):
                                             procs=self._compress_procs)
                         with compressed_lock:
                             compressed_total.merge(r)
+                            if r.compressed:
+                                self._pending_source = "decompressor"
                         if r.compressed or r.failed:
                             logger.info(f"🗜 [{item.creator}] {item.filename}: {len(r.compressed)} file(s) compressed, "
                                         f"{_format_bytes(r.bytes_before)} → {_format_bytes(r.bytes_after)}"

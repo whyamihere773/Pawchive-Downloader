@@ -1206,5 +1206,19 @@
   "compress_fmt_apng": "APNG (PNG animasi)",
   "compress_fmt_webp_anim": "WebP (animasi)",
   "compress_fmt_avif_anim": "AVIF (animasi)",
-  "compress_animated_tip": "GIF, PNG animasi (APNG), dan gambar WebP / AVIF animasi. Semuanya tetap beranimasi: dalam format aslinya atau format animasi yang dipilih (WebP dan AVIF animasi biasanya jauh lebih kecil dari GIF). Setiap frame, waktunya, dan transparansi diperiksa sebelum salinan disimpan."
+  "compress_animated_tip": "GIF, PNG animasi (APNG), dan gambar WebP / AVIF animasi. Semuanya tetap beranimasi: dalam format aslinya atau format animasi yang dipilih (WebP dan AVIF animasi biasanya jauh lebih kecil dari GIF). Setiap frame, waktunya, dan transparansi diperiksa sebelum salinan disimpan.",
+  "gc_title": "Kompres gambar & video",
+  "gc_title_stopped": "Kompresi dihentikan",
+  "gc_selected": "%1 file dipilih",
+  "gc_counting": "Memeriksa file…",
+  "gc_nothing": "Tidak ada yang bisa dikompres dengan pengaturan ini (semua jenis diatur ke \"Jangan kompres\", atau video memerlukan FFmpeg).",
+  "gc_counts": "%1 gambar · %2 video · %3 animasi · %4",
+  "gc_note": "Salinan disimpan di samping file asli dan hanya dipertahankan jika setidaknya 5% lebih kecil. Setelah selesai, Anda memilih apakah file asli disimpan. Pengaturan ini sama dengan Decompressor.",
+  "gc_starting": "Memulai…",
+  "gc_running_note": "Video butuh waktu. Hentikan tetap menyimpan yang sudah selesai.",
+  "gc_none_smaller": "Tidak ada yang dikompres: tidak ada salinan yang lebih kecil, jadi semua file dibiarkan apa adanya.",
+  "gc_compress": "Kompres",
+  "gc_menu_one": "Kompres gambar / video…",
+  "gc_menu_many": "Kompres %1 gambar & video…",
+  "gc_menu_hint": "file lebih kecil"
 }

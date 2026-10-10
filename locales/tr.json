@@ -1206,5 +1206,19 @@
   "compress_fmt_apng": "APNG (hareketli PNG)",
   "compress_fmt_webp_anim": "WebP (hareketli)",
   "compress_fmt_avif_anim": "AVIF (hareketli)",
-  "compress_animated_tip": "GIF'ler, hareketli PNG'ler (APNG) ve hareketli WebP / AVIF resimleri. Her zaman hareketli kalırlar: kendi biçimlerinde ya da seçtiğin hareketli biçimde (hareketli WebP ve AVIF genellikle GIF'ten çok daha küçüktür). Kopya tutulmadan önce her kare, süresi ve saydamlık kontrol edilir."
+  "compress_animated_tip": "GIF'ler, hareketli PNG'ler (APNG) ve hareketli WebP / AVIF resimleri. Her zaman hareketli kalırlar: kendi biçimlerinde ya da seçtiğin hareketli biçimde (hareketli WebP ve AVIF genellikle GIF'ten çok daha küçüktür). Kopya tutulmadan önce her kare, süresi ve saydamlık kontrol edilir.",
+  "gc_title": "Resimleri ve videoları sıkıştır",
+  "gc_title_stopped": "Sıkıştırma durduruldu",
+  "gc_selected": "%1 dosya seçildi",
+  "gc_counting": "Dosyalar inceleniyor…",
+  "gc_nothing": "Bu ayarlarla sıkıştırılacak bir şey yok (tüm türler \"Sıkıştırma\" olarak ayarlı veya videolar için FFmpeg gerekiyor).",
+  "gc_counts": "%1 resim · %2 video · %3 hareketli · %4",
+  "gc_note": "Kopyalar orijinallerin yanına kaydedilir ve yalnızca en az %5 daha küçükse tutulur. Bitince orijinallerin kalıp kalmayacağını sen seçersin. Bu ayarlar Arşiv Açıcı ile ortaktır.",
+  "gc_starting": "Başlatılıyor…",
+  "gc_running_note": "Videolar biraz sürer. Durdur, bitmiş olanları korur.",
+  "gc_none_smaller": "Hiçbir şey sıkıştırılmadı: hiçbir kopya daha küçük çıkmadı, tüm dosyalar olduğu gibi bırakıldı.",
+  "gc_compress": "Sıkıştır",
+  "gc_menu_one": "Resmi / videoyu sıkıştır…",
+  "gc_menu_many": "%1 resmi ve videoyu sıkıştır…",
+  "gc_menu_hint": "daha küçük dosyalar"
 }

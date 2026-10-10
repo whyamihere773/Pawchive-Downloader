@@ -222,7 +222,7 @@ Item {
     readonly property bool shortcutsEnabled: (typeof appWindow !== "undefined" ? appWindow.currentTab === 6 : root.visible)
         && !isModalOpen(lightboxLoader) && !isModalOpen(batchRenameLoader) && !isModalOpen(galleryCleanerLoader)
         && !isModalOpen(rootDiskSafetyLoader) && !deleteConfirm.isOpen && !renameDialog.isOpen && !archiveModal.isOpen && !isModalOpen(archiveViewerLoader)
-        && !isModalOpen(creatorUpdatesLoader) && !isModalOpen(storageLoader)
+        && !isModalOpen(creatorUpdatesLoader) && !isModalOpen(storageLoader) && !isModalOpen(mediaCompressLoader)
         && !contextMenu.visible && !sortMenu.visible && !moreMenu.visible && !viewMenu.visible && !charMenu.visible
     // Favourite key: needs the marks store (the image viewer has its own F)
     readonly property bool markShortcutsEnabled: shortcutsEnabled && !!root.tools
@@ -1390,6 +1390,7 @@ Item {
             root.selectionAnchor = index
         }
         root.contextItems = selectedItems()
+        contextMenu.compressible = compressibleOf(root.contextItems)
         contextMenu.sourceUrl = (root.tools && root.contextItems.length === 1 && !root.contextItems[0].is_dir)
             ? (root.tools.sourcePost(root.contextItems[0].path).url || "") : ""
         var p = sourceItem.mapToItem(root, mx, my)
@@ -1655,6 +1656,29 @@ Item {
         root.requestSafeAction("Compress", function() {
             archiveModal.openCompress(items, root.workingFolder(items))
         })
+    }
+
+    // The selected files "Compress pictures & videos…" can compress (the menu offers it only when there's one):
+    // still and animated pictures and videos; folders and other files aren't
+    function compressibleOf(items) {
+        var dzb = root.bridge ? root.bridge.decompressorBridge : null
+        if (!dzb || !items || !items.length) return []
+        return dzb.compressibleFiles(_pathsOf(items.filter(function(it) { return !it.is_dir })))
+    }
+
+    // Pictures, videos and animated pictures compressed into smaller files (the Decompressor's formats)
+    function compressMedia(paths) {
+        if (!paths || !paths.length) return
+        root.requestSafeAction("Compress", function() {
+            modal(mediaCompressLoader).open(paths)
+        })
+    }
+
+    function mediaTr(key, fallback) {
+        if (typeof Lang === "undefined" || !Lang) return fallback
+        var _ = Lang.activeLanguage
+        var res = Lang.t(key)
+        return (res && res !== key) ? res : fallback
     }
 
     function extractItems(items, quick) {
@@ -4952,6 +4976,20 @@ Click to open the Downloader"
     }
 
     Loader {
+        id: mediaCompressLoader
+        objectName: "mediaCompressLoader"
+        anchors.fill: parent
+        z: 9500
+        active: false
+        sourceComponent: Component {
+            MediaCompressModal {
+                bridge: root.bridge
+                onFinished: root.refreshPreservingScroll()
+            }
+        }
+    }
+
+    Loader {
         id: archiveViewerLoader
         anchors.fill: parent
         z: 9200
@@ -5006,6 +5044,8 @@ Click to open the Downloader"
         readonly property var first: root.contextItems.length > 0 ? root.contextItems[0] : null
         // Web page of the post this file came from (looked up when the menu opens)
         property string sourceUrl: ""
+        // The selected files "Compress pictures & videos…" can compress (looked up when the menu opens)
+        property var compressible: []
         width: 230
         padding: 4
         modal: false
@@ -5129,6 +5169,16 @@ Click to open the Downloader"
                 visible: !!root.archiver
                 icon: "🗜️"; label: contextMenu.single ? "Compress…" : ("Compress " + root.contextItems.length + " items…")
                 onTriggered: { contextMenu.close(); root.compressItems(root.contextItems) }
+            }
+            MenuRow {
+                objectName: "galleryCompressMedia"
+                visible: contextMenu.compressible.length > 0
+                icon: "📉"
+                label: contextMenu.compressible.length === 1
+                       ? root.mediaTr("gc_menu_one", "Compress picture / video…")
+                       : root.mediaTr("gc_menu_many", "Compress %1 pictures & videos…").replace("%1", contextMenu.compressible.length)
+                hint: root.mediaTr("gc_menu_hint", "smaller files")
+                onTriggered: { contextMenu.close(); root.compressMedia(contextMenu.compressible) }
             }
             MenuDivider {}
             MenuRow {

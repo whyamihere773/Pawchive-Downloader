@@ -1206,5 +1206,19 @@
   "compress_fmt_apng": "APNG (animated PNG)",
   "compress_fmt_webp_anim": "WebP (animated)",
   "compress_fmt_avif_anim": "AVIF (animated)",
-  "compress_animated_tip": "GIFs, animated PNGs (APNG) and animated WebP / AVIF pictures. They always stay animated: in their own format, or as the animated format you pick (animated WebP and AVIF are usually much smaller than GIF). Every frame, its timing and transparency are checked before a copy is kept."
+  "compress_animated_tip": "GIFs, animated PNGs (APNG) and animated WebP / AVIF pictures. They always stay animated: in their own format, or as the animated format you pick (animated WebP and AVIF are usually much smaller than GIF). Every frame, its timing and transparency are checked before a copy is kept.",
+  "gc_title": "Compress pictures & videos",
+  "gc_title_stopped": "Compression stopped",
+  "gc_selected": "%1 file(s) selected",
+  "gc_counting": "Looking at the files…",
+  "gc_nothing": "Nothing to compress with these settings (every type is set to \"Don't compress\", or videos need FFmpeg).",
+  "gc_counts": "%1 picture(s) · %2 video(s) · %3 animated · %4",
+  "gc_note": "Copies are saved next to the originals and only kept when they're at least 5% smaller. When it's done you choose whether to keep the originals. These settings are shared with the Decompressor.",
+  "gc_starting": "Starting…",
+  "gc_running_note": "Videos take a while. Stop keeps what's already done.",
+  "gc_none_smaller": "Nothing was compressed: no copy came out smaller, so every file was left as it was.",
+  "gc_compress": "Compress",
+  "gc_menu_one": "Compress picture / video…",
+  "gc_menu_many": "Compress %1 pictures & videos…",
+  "gc_menu_hint": "smaller files"
 }

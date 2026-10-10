@@ -1206,5 +1206,19 @@
   "compress_fmt_apng": "APNG (PNG animado)",
   "compress_fmt_webp_anim": "WebP (animado)",
   "compress_fmt_avif_anim": "AVIF (animado)",
-  "compress_animated_tip": "GIF, PNG animados (APNG) e imágenes WebP / AVIF animadas. Siempre siguen animadas: en su propio formato o en el formato animado que elijas (WebP y AVIF animados suelen ser mucho más pequeños que GIF). Cada fotograma, su tiempo y la transparencia se comprueban antes de conservar una copia."
+  "compress_animated_tip": "GIF, PNG animados (APNG) e imágenes WebP / AVIF animadas. Siempre siguen animadas: en su propio formato o en el formato animado que elijas (WebP y AVIF animados suelen ser mucho más pequeños que GIF). Cada fotograma, su tiempo y la transparencia se comprueban antes de conservar una copia.",
+  "gc_title": "Comprimir imágenes y vídeos",
+  "gc_title_stopped": "Compresión detenida",
+  "gc_selected": "%1 archivo(s) seleccionado(s)",
+  "gc_counting": "Revisando los archivos…",
+  "gc_nothing": "No hay nada que comprimir con estos ajustes (todos los tipos están en \"No comprimir\" o los vídeos necesitan FFmpeg).",
+  "gc_counts": "%1 imagen(es) · %2 vídeo(s) · %3 animadas · %4",
+  "gc_note": "Las copias se guardan junto a los originales y solo se conservan si son al menos un 5 % más pequeñas. Al terminar eliges si conservar los originales. Estos ajustes se comparten con el Descompresor.",
+  "gc_starting": "Empezando…",
+  "gc_running_note": "Los vídeos tardan un poco. Detener conserva lo que ya está hecho.",
+  "gc_none_smaller": "No se comprimió nada: ninguna copia salió más pequeña, así que todos los archivos quedaron como estaban.",
+  "gc_compress": "Comprimir",
+  "gc_menu_one": "Comprimir imagen / vídeo…",
+  "gc_menu_many": "Comprimir %1 imágenes y vídeos…",
+  "gc_menu_hint": "archivos más pequeños"
 }

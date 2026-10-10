@@ -1206,5 +1206,19 @@
   "compress_fmt_apng": "APNG（动态 PNG）",
   "compress_fmt_webp_anim": "WebP（动态）",
   "compress_fmt_avif_anim": "AVIF（动态）",
-  "compress_animated_tip": "GIF、动态 PNG（APNG）以及动态 WebP / AVIF 图片。它们始终保持动画：保存为原格式，或你选择的动态格式（动态 WebP 和 AVIF 通常比 GIF 小得多）。保留副本前会检查每一帧、帧时长和透明度。"
+  "compress_animated_tip": "GIF、动态 PNG（APNG）以及动态 WebP / AVIF 图片。它们始终保持动画：保存为原格式，或你选择的动态格式（动态 WebP 和 AVIF 通常比 GIF 小得多）。保留副本前会检查每一帧、帧时长和透明度。",
+  "gc_title": "压缩图片和视频",
+  "gc_title_stopped": "压缩已停止",
+  "gc_selected": "已选择 %1 个文件",
+  "gc_counting": "正在查看文件…",
+  "gc_nothing": "按这些设置没有可压缩的内容（所有类型都设为“不压缩”，或视频需要 FFmpeg）。",
+  "gc_counts": "图片 %1 · 视频 %2 · 动图 %3 · %4",
+  "gc_note": "副本保存在原文件旁边，只有至少小 5% 时才保留。完成后由你决定是否保留原文件。这些设置与解压工具共用。",
+  "gc_starting": "正在开始…",
+  "gc_running_note": "视频需要一些时间。停止会保留已完成的部分。",
+  "gc_none_smaller": "没有压缩任何文件：没有副本变得更小，所有文件保持原样。",
+  "gc_compress": "压缩",
+  "gc_menu_one": "压缩图片 / 视频…",
+  "gc_menu_many": "压缩 %1 个图片和视频…",
+  "gc_menu_hint": "更小的文件"
 }

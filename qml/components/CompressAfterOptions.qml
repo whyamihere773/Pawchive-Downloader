@@ -7,6 +7,8 @@ import QtQuick.Layouts
 ColumnLayout {
     id: root
     property var decompressor: null
+    // Inside the Gallery's compress window: just the formats (no on / off option, no extraction note)
+    property bool embedded: false
     spacing: 8
 
     function tr(key, fallback) {
@@ -24,7 +26,7 @@ ColumnLayout {
         return tr("compress_q_smallest", "Smallest")
     }
 
-    readonly property bool on: decompressor ? decompressor.compressAfter : false
+    readonly property bool on: embedded || (decompressor ? decompressor.compressAfter : false)
 
     // Quality slider styled like the Downloader's
     component QualitySlider: RowLayout {
@@ -100,6 +102,7 @@ ColumnLayout {
     MouseArea {
         id: toggle
         objectName: "compress_after_toggle"
+        visible: !root.embedded
         Layout.fillWidth: true
         implicitHeight: Math.max(22, toggleRow.implicitHeight)
         hoverEnabled: true
@@ -142,7 +145,7 @@ ColumnLayout {
     // Pictures
     Flow {
         Layout.fillWidth: true
-        Layout.leftMargin: 26
+        Layout.leftMargin: root.embedded ? 0 : 26
         visible: root.on
         spacing: 10
 
@@ -181,7 +184,7 @@ ColumnLayout {
     // Videos
     Flow {
         Layout.fillWidth: true
-        Layout.leftMargin: 26
+        Layout.leftMargin: root.embedded ? 0 : 26
         visible: root.on
         spacing: 10
 
@@ -221,7 +224,7 @@ ColumnLayout {
     // format or as another animated one: an animation never becomes a still picture
     Flow {
         Layout.fillWidth: true
-        Layout.leftMargin: 26
+        Layout.leftMargin: root.embedded ? 0 : 26
         visible: root.on
         spacing: 10
 
@@ -262,7 +265,7 @@ ColumnLayout {
     // FFmpeg, needed for videos
     RowLayout {
         Layout.fillWidth: true
-        Layout.leftMargin: 26
+        Layout.leftMargin: root.embedded ? 0 : 26
         visible: root.on && root.decompressor && root.decompressor.videoFormat !== "keep" && !root.decompressor.ffmpegAvailable
         spacing: 10
 
@@ -298,8 +301,8 @@ ColumnLayout {
 
     Text {
         Layout.fillWidth: true
-        Layout.leftMargin: 26
-        visible: root.on
+        Layout.leftMargin: root.embedded ? 0 : 26
+        visible: root.on && !root.embedded
         text: root.tr("compress_after_note", "Copies are saved next to the originals and only kept when they're at least 5% smaller. When everything's done you choose whether to keep the originals.")
         font.family: "Segoe UI, sans-serif"
         font.pixelSize: 10

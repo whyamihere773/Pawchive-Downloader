@@ -522,48 +522,94 @@ def compress_video(ffmpeg: str, path: str, fmt: str, quality: int, result: Compr
 
 # ── A folder ─────────────────────────────────────────────────────────────────
 
+def classify(path: str, settings: CompressSettings) -> Optional[str]:
+    """"image", "video" or "animated" when the settings compress this file, else None. GIFs always count as
+    animated pictures (a GIF stays a GIF); a PNG, WebP or AVIF is looked at to see whether it's animated."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext in GIF_EXTS:
+        return "animated" if settings.animated_on else None
+    if ext in ANIMATED_EXTS and (settings.animated_on or (settings.images_on and ext in IMAGE_EXTS)):
+        if is_animated_file(path):
+            return "animated" if settings.animated_on else None
+        return "image" if settings.images_on and ext in IMAGE_EXTS else None
+    if settings.images_on and ext in IMAGE_EXTS:
+        return "image"
+    if settings.videos_on and ext in VIDEO_EXTS:
+        return "video"
+    return None
+
+
+def media_in(paths: List[str], settings: CompressSettings,
+             cancel: Optional[threading.Event] = None) -> Tuple[List[str], List[str], List[str]]:
+    """(still pictures, videos, animated pictures) among files and folders (folders with their sub-folders)."""
+    lists = {"image": [], "video": [], "animated": []}
+    seen = set()
+
+    def add(p):
+        key = os.path.normcase(os.path.abspath(p))
+        if key in seen:
+            return
+        seen.add(key)
+        kind = classify(p, settings)
+        if kind:
+            lists[kind].append(p)
+    for path in paths:
+        if cancel is not None and cancel.is_set():
+            break
+        if os.path.isdir(path):
+            for root, _dirs, files in os.walk(path):
+                if cancel is not None and cancel.is_set():
+                    break
+                for f in files:
+                    if not f.endswith(".pawtmp"):
+                        add(os.path.join(root, f))
+        elif os.path.isfile(path):
+            add(path)
+    return lists["image"], lists["video"], lists["animated"]
+
+
 def media_files(folder: str, settings: CompressSettings) -> Tuple[List[str], List[str], List[str]]:
-    """(still pictures, videos, animated pictures) to compress. GIFs always count as animated pictures (a GIF
-    stays a GIF); a PNG, WebP or AVIF is looked at to see whether it's animated."""
-    images, videos, animated = [], [], []
-    for root, _dirs, files in os.walk(folder):
-        for f in files:
-            p = os.path.join(root, f)
-            ext = os.path.splitext(f)[1].lower()
-            if ext in GIF_EXTS:
-                if settings.animated_on:
-                    animated.append(p)
-            elif ext in ANIMATED_EXTS and (settings.animated_on or (settings.images_on and ext in IMAGE_EXTS)):
-                if is_animated_file(p):
-                    if settings.animated_on:
-                        animated.append(p)
-                elif settings.images_on and ext in IMAGE_EXTS:
-                    images.append(p)
-            elif settings.images_on and ext in IMAGE_EXTS:
-                images.append(p)
-            elif settings.videos_on and ext in VIDEO_EXTS:
-                videos.append(p)
-    return images, videos, animated
+    """(still pictures, videos, animated pictures) in a folder and its sub-folders."""
+    return media_in([folder], settings)
 
 
 def compress_folder(folder: str, settings: CompressSettings, cancel: Optional[threading.Event] = None,
                     on_progress: Optional[Callable[[float], None]] = None, workers: int = 0,
                     procs: Optional[set] = None) -> CompressResult:
-    """Compresses the pictures and videos in a folder (and its sub-folders). on_progress: 0–100, weighted by
-    file size. Pictures are compressed a few at a time; videos one at a time (ffmpeg uses every core)."""
+    """Compresses the pictures and videos in a folder (and its sub-folders)."""
+    return compress_paths([folder], settings, cancel, on_progress, workers, procs)
+
+
+def compress_paths(paths: List[str], settings: CompressSettings, cancel: Optional[threading.Event] = None,
+                   on_progress: Optional[Callable[..., None]] = None, workers: int = 0,
+                   procs: Optional[set] = None, found=None) -> CompressResult:
+    """Compresses the pictures and videos among files and folders. on_progress(percent[, file name]): 0–100,
+    weighted by file size. Pictures are compressed a few at a time; videos one at a time (ffmpeg uses every
+    core). found: the (pictures, videos, animated) lists when they were already looked up."""
     from concurrent.futures import ThreadPoolExecutor
     result = CompressResult()
-    images, videos, animated = media_files(folder, settings)
-    sizes = {p: max(1, os.path.getsize(p)) for p in images + videos + animated}
+    images, videos, animated = found if found is not None else media_in(paths, settings, cancel)
+    sizes = {}
+    for p in images + videos + animated:
+        try:
+            sizes[p] = max(1, os.path.getsize(p))
+        except OSError:
+            sizes[p] = 1
     total = sum(sizes.values()) or 1
     done = [0]
     lock = threading.Lock()
 
+    def report(pct, name):
+        if on_progress:
+            try:
+                on_progress(pct, name)
+            except TypeError:
+                on_progress(pct)
+
     def finished(p):
         with lock:
             done[0] += sizes[p]
-            if on_progress:
-                on_progress(done[0] / total * 100)
+            report(done[0] / total * 100, os.path.basename(p))
 
     def one_image(p):
         if cancel is not None and cancel.is_set():
@@ -587,8 +633,7 @@ def compress_folder(folder: str, settings: CompressSettings, cancel: Optional[th
         base = done[0]
 
         def part(pct, base=base, v=v):
-            if on_progress:
-                on_progress((base + sizes[v] * pct / 100) / total * 100)
+            report((base + sizes[v] * pct / 100) / total * 100, os.path.basename(v))
         compress_video(settings.ffmpeg, v, settings.video_format, settings.video_quality, result, cancel, part, procs)
         finished(v)
     return result
