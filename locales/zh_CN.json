@@ -1196,6 +1196,11 @@
   "compress_remove_originals": "将原文件移到回收站",
   "compress_fmt_png": "PNG（无损）",
   "compress_fmt_mkv": "MKV（H.265，保留字幕）",
-  "compress_image_fmt_tip2": "JPG 到处都能打开，但无法保留透明度和动画。PNG 在 90 及以上完全无损，更低的数值会减少颜色数量，适合插画。WebP 在保持画质的同时体积约减半。AVIF 更小但更慢。GIF 仍保存为 GIF，保留所有帧；质量越低颜色越少。",
-  "compress_video_fmt_tip2": "H.265 在保持画质的同时体积小得多（.mp4）。H.264 较大，但在所有设备上都能播放（.mp4）。MKV 是装在 .mkv 文件中的 H.265，保留所有音轨、字幕和字体。AV1 最小，但耗时长得多（.mp4）。已是所选格式的视频保持不变。"
+  "compress_video_fmt_tip2": "H.265 在保持画质的同时体积小得多（.mp4）。H.264 较大，但在所有设备上都能播放（.mp4）。MKV 是装在 .mkv 文件中的 H.265，保留所有音轨、字幕和字体。AV1 最小，但耗时长得多（.mp4）。已是所选格式的视频保持不变。",
+  "compress_animated": "动图（GIF）：",
+  "compress_fmt_gif": "GIF（保留动画）",
+  "compress_gif_tip": "GIF 仍为 GIF：保留所有帧、帧时长、循环和透明度。90 及以上完全无损；更低的数值会减少颜色，让文件更小。",
+  "decompressor_hide_options": "隐藏选项",
+  "decompressor_show_options": "显示选项",
+  "compress_image_fmt_tip3": "JPG 到处都能打开，但无法保留透明度和动画。PNG 在 90 及以上完全无损，更低的数值会减少颜色数量，适合插画。WebP 在保持画质的同时体积约减半。AVIF 更小但更慢。"
 }

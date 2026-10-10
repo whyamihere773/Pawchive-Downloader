@@ -1196,6 +1196,11 @@
   "compress_remove_originals": "Orijinalleri Geri Dönüşüm Kutusu'na taşı",
   "compress_fmt_png": "PNG (kayıpsız)",
   "compress_fmt_mkv": "MKV (H.265, altyazıları korur)",
-  "compress_image_fmt_tip2": "JPG her yerde açılır ama saydamlığı ve animasyonu tutamaz. PNG 90 ve üzerinde hiçbir şey kaybetmez; daha düşük değerler daha az renk kullanır, bu da çizimlere uygundur. WebP kaliteyi yaklaşık yarı boyutta korur. AVIF daha da küçüktür ama daha yavaştır. GIF'ler tüm kareleriyle GIF olarak kalır; daha düşük kalite daha az renk kullanır.",
-  "compress_video_fmt_tip2": "H.265 kaliteyi çok daha küçük boyutta korur (.mp4). H.264 daha büyüktür ama her cihazda oynar (.mp4). MKV, tüm ses parçalarını, altyazıları ve yazı tiplerini koruyan bir .mkv dosyasında H.265'tir. AV1 en küçüğüdür ama çok daha uzun sürer (.mp4). Zaten seçilen biçimdeki videolar olduğu gibi bırakılır."
+  "compress_video_fmt_tip2": "H.265 kaliteyi çok daha küçük boyutta korur (.mp4). H.264 daha büyüktür ama her cihazda oynar (.mp4). MKV, tüm ses parçalarını, altyazıları ve yazı tiplerini koruyan bir .mkv dosyasında H.265'tir. AV1 en küçüğüdür ama çok daha uzun sürer (.mp4). Zaten seçilen biçimdeki videolar olduğu gibi bırakılır.",
+  "compress_animated": "Hareketli (GIF):",
+  "compress_fmt_gif": "GIF (animasyon korunur)",
+  "compress_gif_tip": "GIF'ler GIF olarak kalır: tüm kareler, süreleri, döngü ve saydamlık korunur. 90 ve üzerinde hiçbir şey kaybolmaz; daha düşük değerler daha küçük dosya için daha az renk kullanır.",
+  "decompressor_hide_options": "Seçenekleri gizle",
+  "decompressor_show_options": "Seçenekleri göster",
+  "compress_image_fmt_tip3": "JPG her yerde açılır ama saydamlığı ve animasyonu tutamaz. PNG 90 ve üzerinde hiçbir şey kaybetmez; daha düşük değerler daha az renk kullanır, bu da çizimlere uygundur. WebP kaliteyi yaklaşık yarı boyutta korur. AVIF daha da küçüktür ama daha yavaştır."
 }

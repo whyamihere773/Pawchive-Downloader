@@ -1196,6 +1196,11 @@
   "compress_remove_originals": "Move originals to Recycle Bin",
   "compress_fmt_png": "PNG (lossless)",
   "compress_fmt_mkv": "MKV (H.265, keeps subtitles)",
-  "compress_image_fmt_tip2": "JPG opens anywhere but can't keep transparency or animation. PNG loses nothing at 90 and above; lower values use fewer colours, which suits drawings. WebP keeps the quality at about half the size. AVIF is smaller still but slower. GIFs stay GIFs with every frame kept; lower quality uses fewer colours.",
-  "compress_video_fmt_tip2": "H.265 keeps the quality at a much smaller size (.mp4). H.264 is bigger but plays on every device (.mp4). MKV is H.265 in an .mkv file that keeps every audio track, subtitles and fonts. AV1 is the smallest but takes much longer (.mp4). Videos already in the chosen format are left as they are."
+  "compress_video_fmt_tip2": "H.265 keeps the quality at a much smaller size (.mp4). H.264 is bigger but plays on every device (.mp4). MKV is H.265 in an .mkv file that keeps every audio track, subtitles and fonts. AV1 is the smallest but takes much longer (.mp4). Videos already in the chosen format are left as they are.",
+  "compress_animated": "Animated (GIF):",
+  "compress_fmt_gif": "GIF (keeps animation)",
+  "compress_gif_tip": "GIFs stay GIFs: every frame, its timing, the looping and transparency are kept. From 90 nothing is lost; lower values use fewer colours for a smaller file.",
+  "decompressor_hide_options": "Hide options",
+  "decompressor_show_options": "Show options",
+  "compress_image_fmt_tip3": "JPG opens anywhere but can't keep transparency or animation. PNG loses nothing at 90 and above; lower values use fewer colours, which suits drawings. WebP keeps the quality at about half the size. AVIF is smaller still but slower."
 }

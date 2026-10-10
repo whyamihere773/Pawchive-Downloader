@@ -1196,6 +1196,11 @@
   "compress_remove_originals": "Chuyển bản gốc vào Thùng rác",
   "compress_fmt_png": "PNG (không mất dữ liệu)",
   "compress_fmt_mkv": "MKV (H.265, giữ phụ đề)",
-  "compress_image_fmt_tip2": "JPG mở được ở mọi nơi nhưng không giữ được độ trong suốt hay ảnh động. PNG không mất gì từ 90 trở lên; giá trị thấp hơn dùng ít màu hơn, hợp với tranh vẽ. WebP giữ chất lượng với kích thước khoảng một nửa. AVIF còn nhỏ hơn nhưng chậm hơn. GIF vẫn là GIF và giữ mọi khung hình; chất lượng thấp hơn dùng ít màu hơn.",
-  "compress_video_fmt_tip2": "H.265 giữ chất lượng với kích thước nhỏ hơn nhiều (.mp4). H.264 lớn hơn nhưng phát được trên mọi thiết bị (.mp4). MKV là H.265 trong tệp .mkv giữ mọi rãnh âm thanh, phụ đề và phông chữ. AV1 nhỏ nhất nhưng mất nhiều thời gian hơn (.mp4). Video đã ở định dạng được chọn sẽ được giữ nguyên."
+  "compress_video_fmt_tip2": "H.265 giữ chất lượng với kích thước nhỏ hơn nhiều (.mp4). H.264 lớn hơn nhưng phát được trên mọi thiết bị (.mp4). MKV là H.265 trong tệp .mkv giữ mọi rãnh âm thanh, phụ đề và phông chữ. AV1 nhỏ nhất nhưng mất nhiều thời gian hơn (.mp4). Video đã ở định dạng được chọn sẽ được giữ nguyên.",
+  "compress_animated": "Ảnh động (GIF):",
+  "compress_fmt_gif": "GIF (giữ chuyển động)",
+  "compress_gif_tip": "GIF vẫn là GIF: mọi khung hình, thời gian, vòng lặp và độ trong suốt đều được giữ. Từ 90 trở lên không mất gì; giá trị thấp hơn dùng ít màu hơn để tệp nhỏ hơn.",
+  "decompressor_hide_options": "Ẩn tùy chọn",
+  "decompressor_show_options": "Hiện tùy chọn",
+  "compress_image_fmt_tip3": "JPG mở được ở mọi nơi nhưng không giữ được độ trong suốt hay ảnh động. PNG không mất gì từ 90 trở lên; giá trị thấp hơn dùng ít màu hơn, hợp với tranh vẽ. WebP giữ chất lượng với kích thước khoảng một nửa. AVIF còn nhỏ hơn nhưng chậm hơn."
 }

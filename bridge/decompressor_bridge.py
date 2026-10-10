@@ -117,6 +117,9 @@ class DecompressorBridge(QObject):
         self._image_quality = 82
         self._video_format = "h265"
         self._video_quality = 75
+        self._gif_format = "gif"
+        self._gif_quality = 82
+        self._header_collapsed = False
         self._ffmpeg_path = find_ffmpeg()
         self._ffmpeg_downloader = FfmpegDownloader()
         self._ffmpeg_downloading = False
@@ -147,6 +150,9 @@ class DecompressorBridge(QObject):
             "image_quality": self._image_quality,
             "video_format": self._video_format,
             "video_quality": self._video_quality,
+            "gif_format": self._gif_format,
+            "gif_quality": self._gif_quality,
+            "header_collapsed": self._header_collapsed,
         }
 
     def load_settings(self, d: Dict[str, Any]) -> None:
@@ -167,6 +173,9 @@ class DecompressorBridge(QObject):
             self.imageQuality = d.get("image_quality", self._image_quality)
             self.videoFormat = d.get("video_format", self._video_format)
             self.videoQuality = d.get("video_quality", self._video_quality)
+            self.gifFormat = d.get("gif_format", self._gif_format)
+            self.gifQuality = d.get("gif_quality", self._gif_quality)
+            self.headerCollapsed = bool(d.get("header_collapsed", False))
             self.locationsChanged.emit()
         except (TypeError, ValueError) as e:
             logger.debug(f"Decompressor settings partly ignored: {e}", category="decompressor")
@@ -237,6 +246,39 @@ class DecompressorBridge(QObject):
             self._video_quality = v
             self.settingsChanged.emit()
 
+    @Property(str, notify=settingsChanged)
+    def gifFormat(self) -> str:
+        return self._gif_format
+
+    @gifFormat.setter
+    def gifFormat(self, val: str):
+        v = str(val or "").lower()
+        if v in ("gif", "keep") and v != self._gif_format:
+            self._gif_format = v
+            self.settingsChanged.emit()
+
+    @Property(int, notify=settingsChanged)
+    def gifQuality(self) -> int:
+        return self._gif_quality
+
+    @gifQuality.setter
+    def gifQuality(self, val: int):
+        v = max(1, min(100, int(val)))
+        if v != self._gif_quality:
+            self._gif_quality = v
+            self.settingsChanged.emit()
+
+    @Property(bool, notify=settingsChanged)
+    def headerCollapsed(self) -> bool:
+        """The top card's options folded away (remembered)."""
+        return self._header_collapsed
+
+    @headerCollapsed.setter
+    def headerCollapsed(self, val: bool):
+        if self._header_collapsed != bool(val):
+            self._header_collapsed = bool(val)
+            self.settingsChanged.emit()
+
     @Property(bool, notify=ffmpegChanged)
     def ffmpegAvailable(self) -> bool:
         return bool(self._ffmpeg_path) and os.path.isfile(self._ffmpeg_path)
@@ -293,11 +335,12 @@ class DecompressorBridge(QObject):
             return None
         s = CompressSettings(image_format=self._image_format, image_quality=self._image_quality,
                              video_format=self._video_format, video_quality=self._video_quality,
+                             gif_format=self._gif_format, gif_quality=self._gif_quality,
                              ffmpeg=self._ffmpeg_path if self.ffmpegAvailable else "")
         if s.video_format != "keep" and not s.ffmpeg:
             logger.warning("Videos aren't compressed: FFmpeg isn't installed (Decompressor → Compress after "
                            "extracting → Download FFmpeg).", category="decompressor")
-        return s if (s.images_on or s.videos_on) else None
+        return s if (s.images_on or s.videos_on or s.gifs_on) else None
 
     @Slot()
     def removeCompressedOriginals(self):

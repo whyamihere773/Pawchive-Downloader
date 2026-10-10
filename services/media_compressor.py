@@ -25,7 +25,8 @@ from typing import Callable, List, Optional, Tuple
 
 from core.logger import logger
 
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tif", ".tiff"}
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
+GIF_EXTS = {".gif"}                     # their own setting: always compressed as GIF
 VIDEO_EXTS = {".mp4", ".m4v", ".mkv", ".mov", ".avi", ".wmv", ".flv", ".mpg", ".mpeg", ".ts", ".webm"}
 IMAGE_FORMATS = {"jpg": ".jpg", "png": ".png", "webp": ".webp", "avif": ".avif"}
 VIDEO_FORMATS = {"h265": "hevc", "h264": "h264", "mkv": "hevc", "av1": "av1"}   # choice -> codec ffmpeg reports
@@ -55,13 +56,19 @@ class CompressResult:
 class CompressSettings:
     image_format: str = "webp"        # webp | avif | jpg | keep
     image_quality: int = 82
-    video_format: str = "h265"        # h265 | h264 | av1 | keep
+    video_format: str = "h265"        # h265 | h264 | mkv | av1 | keep
     video_quality: int = 75
+    gif_format: str = "gif"           # gif | keep
+    gif_quality: int = 82
     ffmpeg: str = ""
 
     @property
     def images_on(self) -> bool:
         return self.image_format in IMAGE_FORMATS
+
+    @property
+    def gifs_on(self) -> bool:
+        return self.gif_format == "gif"
 
     @property
     def videos_on(self) -> bool:
@@ -348,7 +355,7 @@ def media_files(folder: str, settings: CompressSettings) -> Tuple[List[str], Lis
     for root, _dirs, files in os.walk(folder):
         for f in files:
             ext = os.path.splitext(f)[1].lower()
-            if settings.images_on and ext in IMAGE_EXTS:
+            if (settings.images_on and ext in IMAGE_EXTS) or (settings.gifs_on and ext in GIF_EXTS):
                 images.append(os.path.join(root, f))
             elif settings.videos_on and ext in VIDEO_EXTS:
                 videos.append(os.path.join(root, f))
@@ -378,7 +385,10 @@ def compress_folder(folder: str, settings: CompressSettings, cancel: Optional[th
         if cancel is not None and cancel.is_set():
             return CompressResult()
         r = CompressResult()
-        compress_image(p, settings.image_format, settings.image_quality, r)
+        if os.path.splitext(p)[1].lower() in GIF_EXTS:
+            compress_gif(p, settings.gif_quality, r)
+        else:
+            compress_image(p, settings.image_format, settings.image_quality, r)
         finished(p)
         return r
 

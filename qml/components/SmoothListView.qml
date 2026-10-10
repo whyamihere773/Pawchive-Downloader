@@ -25,6 +25,8 @@ ListView {
     property alias verticalScrollBar: vScrollBar
     property real _lastWheelTime: 0
     property real _wheelMomentum: 1.0
+    // A page around the list that scrolls on once the list is at its top / bottom (optional)
+    property Flickable chainTo: null
 
     ScrollBar.vertical: ScrollBar {
         id: vScrollBar
@@ -58,6 +60,15 @@ ListView {
         onWheel: function(event) {
             var delta = event.angleDelta.y
             if (delta === 0) return
+
+            var page = listRoot.chainTo
+            if (page && page.contentHeight > page.height
+                    && ((delta > 0 && listRoot.atYBeginning) || (delta < 0 && listRoot.atYEnd))) {
+                var pv = (delta / 120.0) * 1100
+                page.flick(0, Math.max(-page.maximumFlickVelocity, Math.min(page.maximumFlickVelocity, pv)))
+                event.accepted = true
+                return
+            }
 
             var now = Date.now()
             var dt = now - listRoot._lastWheelTime

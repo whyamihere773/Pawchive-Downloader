@@ -68,7 +68,7 @@ Numbers below are for an archive with 2 million files from 20,000 creators.
 ### 🗜️ Decompressor
 
 * **Compress after extracting** *(opt-in)*: Turn on "Compress pictures and videos after extracting" to save the pictures and videos from each archive in a smaller format. Pick the format (JPG, PNG, WebP or AVIF for pictures; H.265, H.264, MKV or AV1 for videos) and the quality with a slider. In a test, WebP at the default quality cut pictures to about half their size, and H.265 cut a video from 5.5 MB to 2.2 MB.
-* **GIFs stay GIFs**: GIFs are compressed as GIFs, with every frame, its timing and transparency kept (a test animation went from 525 KB to 381 KB).
+* **GIFs stay GIFs**: Animated pictures have their own setting with its own quality slider. GIFs are compressed as GIFs, with every frame, its timing and transparency kept (a test animation went from 525 KB to 381 KB).
 * **MKV keeps everything**: The MKV option keeps every audio track, subtitles and attached fonts exactly as they were.
 * **You decide about the originals**: Compressed copies are saved next to the originals and only kept when they're at least 5% smaller. When everything's done you're asked whether to keep the originals or move them to the Recycle Bin.
 * **Videos need FFmpeg**: Video compression uses FFmpeg, a free video tool. It isn't included with the app, but one click downloads the official build (about 200 MB, a few seconds on a fast connection) and checks it before use.
@@ -77,6 +77,7 @@ Numbers below are for an archive with 2 million files from 20,000 creators.
 * **Nothing thrown away after a warning**: When 7-Zip finished with a warning (for example one file it couldn't write), everything it had extracted was deleted. Those files are kept now, and the archive is kept too.
 * **Settings are remembered**: Parallel archives, threads, the Recycle Bin option, password prompts and your added folders no longer reset every time the app starts.
 * **Smoother list while extracting**: The archive list updates a few times a second instead of being rebuilt with every progress tick.
+* **Room to work**: The Decompressor page now scrolls smoothly when its options and list don't fit, and the options at the top can be folded away with the arrow next to the title (the app remembers your choice).
 * **Clearer results**: Archives you stop are no longer counted as failed, and the disk space check no longer assumes deleted archives free up space (they go to the Recycle Bin).
 
 ---

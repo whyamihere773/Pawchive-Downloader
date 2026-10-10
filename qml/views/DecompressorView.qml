@@ -90,6 +90,7 @@ Item {
     property int redecompressAlreadyDoneCount: 0
     property int redecompressTotalCount: 0
 
+    readonly property bool optionsOpen: !(decompressor && decompressor.headerCollapsed)
     readonly property bool isNarrow: root.width < 760
     readonly property bool isVeryNarrow: root.width < 520
 
@@ -380,9 +381,23 @@ Item {
         }
     }
 
-    ColumnLayout {
+    // The whole page scrolls once its parts don't fit (smooth, speed-scaled flicks); the archive list
+    // keeps at least a usable height and hands the wheel on to the page at its top / bottom
+    SmoothFlickable {
+        id: pageFlick
+        objectName: "decompressorPage"
         anchors.fill: parent
-        anchors.margins: 16
+        contentWidth: width
+        contentHeight: pageCol.implicitHeight + 32
+    }
+
+    ColumnLayout {
+        id: pageCol
+        parent: pageFlick.contentItem
+        x: 16
+        y: 16
+        width: pageFlick.width - 32
+        height: Math.max(pageFlick.height - 32, implicitHeight)
         spacing: 12
 
         // ══════════════════════════════════════════════════════════════════════
@@ -610,6 +625,51 @@ Item {
                             }
                         }
                     }
+
+                    // Fold the options away / bring them back
+                    Rectangle {
+                        objectName: "decompressorFold"
+                        implicitWidth: 30
+                        implicitHeight: 30
+                        radius: 6
+                        Layout.alignment: Qt.AlignVCenter
+                        color: foldMouse.containsMouse ? "#1E293B" : "#141C2A"
+                        border.color: foldMouse.containsMouse ? "#475569" : "#334155"
+                        border.width: 1
+                        Springy { hover: foldMouse.containsMouse; pressed: foldMouse.pressed }
+
+                        Canvas {
+                            anchors.centerIn: parent
+                            width: 12
+                            height: 7
+                            rotation: root.optionsOpen ? 180 : 0
+                            Behavior on rotation { SpringAnimation { spring: 4.2; damping: 0.32; mass: 0.7; epsilon: 0.2 } }
+                            onPaint: {
+                                var ctx = getContext("2d")
+                                ctx.reset()
+                                ctx.strokeStyle = "#CBD5E1"
+                                ctx.lineWidth = 1.8
+                                ctx.lineCap = "round"
+                                ctx.beginPath()
+                                ctx.moveTo(1, 1)
+                                ctx.lineTo(width / 2, height - 1)
+                                ctx.lineTo(width - 1, 1)
+                                ctx.stroke()
+                            }
+                        }
+
+                        MouseArea {
+                            id: foldMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 300
+                            ToolTip.text: root.optionsOpen ? root.tr("decompressor_hide_options", "Hide options")
+                                                           : root.tr("decompressor_show_options", "Show options")
+                            onClicked: if (decompressor) decompressor.headerCollapsed = !decompressor.headerCollapsed
+                        }
+                    }
                 }
 
                 // Action buttons on dedicated row when narrow (< 720px, e.g. when Progress Log is open)
@@ -734,77 +794,102 @@ Item {
                     }
                 }
 
-                // Divider
-                Rectangle {
+                // The options fold away with the button on the title row: a spring whose weight grows with the
+                // panel's height, so a tall panel swings in heavier and slower than a short one
+                Item {
+                    id: optionsPane
+                    objectName: "decompressorOptions"
                     Layout.fillWidth: true
-                    height: 1
-                    color: "#1E2638"
-                }
-
-                // Configuration settings & Options (Responsive)
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    spacing: 8
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 16
-
-                        // Parallel extraction count
-                        RowLayout {
-                            spacing: 6
-                            Text {
-                                text: root.tr("decompressor_parallel", "Parallel:")
-                                font.family: "Segoe UI, sans-serif"
-                                font.pixelSize: 11
-                                color: "#94A3B8"
-                            }
-                            NumberStepper {
-                                from: 1
-                                to: 8
-                                value: decompressor ? decompressor.maxParallel : 2
-                                onValueModified: function(val) {
-                                    if (decompressor) decompressor.maxParallel = val;
-                                }
-                            }
-                        }
-
-                        // Threads per archive
-                        RowLayout {
-                            spacing: 6
-                            Text {
-                                text: root.tr("decompressor_threads", "Threads:")
-                                font.family: "Segoe UI, sans-serif"
-                                font.pixelSize: 11
-                                color: "#94A3B8"
-                            }
-                            NumberStepper {
-                                from: 1
-                                to: 16
-                                value: decompressor ? decompressor.threadsPerArchive : 2
-                                onValueModified: function(val) {
-                                    if (decompressor) decompressor.threadsPerArchive = val;
-                                }
-                            }
-                        }
-
-                        // When wide (>= 820px), show delete option on the same row
-                        DeleteArchiveOption {
-                            visible: root.width >= 820
-                        }
-
-                        Item { Layout.fillWidth: true }
+                    clip: true
+                    readonly property real fullHeight: optionsCol.implicitHeight
+                    readonly property real weight: Math.max(0.8, Math.min(2.4, fullHeight / 150))
+                    property real shown: root.optionsOpen ? fullHeight : 0
+                    Behavior on shown {
+                        SpringAnimation { spring: 2.8; damping: 0.5; mass: optionsPane.weight; epsilon: 0.3 }
                     }
+                    Layout.preferredHeight: Math.max(0, shown)
+                    visible: shown > 0.5
+                    opacity: root.optionsOpen ? 1.0 : 0.0
+                    Behavior on opacity { NumberAnimation { duration: 240; easing.type: Easing.OutQuad } }
 
-                    // When narrow (< 820px), show delete option on its own full-width row below
-                    DeleteArchiveOption {
-                        Layout.fillWidth: true
-                        visible: root.width < 820
-                    }
+                    ColumnLayout {
+                        id: optionsCol
+                        width: parent.width
+                        spacing: 12
 
-                    CompressAfterOptions {
-                        Layout.fillWidth: true
-                        decompressor: root.decompressor
+                        // Divider
+                        Rectangle {
+                            Layout.fillWidth: true
+                            height: 1
+                            color: "#1E2638"
+                        }
+
+                        // Configuration settings & Options (Responsive)
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 16
+
+                                // Parallel extraction count
+                                RowLayout {
+                                    spacing: 6
+                                    Text {
+                                        text: root.tr("decompressor_parallel", "Parallel:")
+                                        font.family: "Segoe UI, sans-serif"
+                                        font.pixelSize: 11
+                                        color: "#94A3B8"
+                                    }
+                                    NumberStepper {
+                                        from: 1
+                                        to: 8
+                                        value: decompressor ? decompressor.maxParallel : 2
+                                        onValueModified: function(val) {
+                                            if (decompressor) decompressor.maxParallel = val;
+                                        }
+                                    }
+                                }
+
+                                // Threads per archive
+                                RowLayout {
+                                    spacing: 6
+                                    Text {
+                                        text: root.tr("decompressor_threads", "Threads:")
+                                        font.family: "Segoe UI, sans-serif"
+                                        font.pixelSize: 11
+                                        color: "#94A3B8"
+                                    }
+                                    NumberStepper {
+                                        from: 1
+                                        to: 16
+                                        value: decompressor ? decompressor.threadsPerArchive : 2
+                                        onValueModified: function(val) {
+                                            if (decompressor) decompressor.threadsPerArchive = val;
+                                        }
+                                    }
+                                }
+
+                                // When wide (>= 820px), show delete option on the same row
+                                DeleteArchiveOption {
+                                    visible: root.width >= 820
+                                }
+
+                                Item { Layout.fillWidth: true }
+                            }
+
+                            // When narrow (< 820px), show delete option on its own full-width row below
+                            DeleteArchiveOption {
+                                Layout.fillWidth: true
+                                visible: root.width < 820
+                            }
+
+                            CompressAfterOptions {
+                                Layout.fillWidth: true
+                                decompressor: root.decompressor
+                            }
+                        }
                     }
                 }
             }
@@ -1209,6 +1294,7 @@ Item {
         Rectangle {
             Layout.fillWidth: true
             Layout.fillHeight: true
+            Layout.minimumHeight: 320
             radius: 10
             color: "#0B0E14"
             border.color: "#182030"
@@ -1245,6 +1331,7 @@ Item {
 
             SmoothListView {
                 id: archiveListView
+                chainTo: pageFlick
                 anchors.fill: parent
                 anchors.margins: 8
                 spacing: 8

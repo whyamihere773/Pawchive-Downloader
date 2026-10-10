@@ -167,7 +167,7 @@ ColumnLayout {
                 { text: root.tr("compress_fmt_keep", "Don't compress"), value: "keep" }
             ]
             value: root.decompressor ? root.decompressor.imageFormat : "webp"
-            tooltip: root.tr("compress_image_fmt_tip2", "JPG opens anywhere but can't keep transparency. PNG loses nothing at 90 and above; lower values use fewer colours, which suits drawings. WebP keeps the quality at about half the size. AVIF is smaller still but slower. GIFs stay GIFs with every frame kept; lower quality uses fewer colours.")
+            tooltip: root.tr("compress_image_fmt_tip3", "JPG opens anywhere but can't keep transparency. PNG loses nothing at 90 and above; lower values use fewer colours, which suits drawings. WebP keeps the quality at about half the size. AVIF is smaller still but slower.")
             onValuePicked: function(v) { if (root.decompressor) root.decompressor.imageFormat = v }
         }
         QualitySlider {
@@ -214,6 +214,43 @@ ColumnLayout {
             value: root.decompressor ? root.decompressor.videoQuality : 75
             active: root.decompressor ? (root.decompressor.videoFormat !== "keep" && root.decompressor.ffmpegAvailable) : true
             onMoved: function(v) { if (root.decompressor) root.decompressor.videoQuality = v }
+        }
+    }
+
+    // Animated pictures (GIF): their own setting, always kept as GIF so the animation survives
+    Flow {
+        Layout.fillWidth: true
+        Layout.leftMargin: 26
+        visible: root.on
+        spacing: 10
+
+        Text {
+            text: root.tr("compress_animated", "Animated (GIF):")
+            font.family: "Segoe UI, sans-serif"
+            font.pixelSize: 11
+            color: "#94A3B8"
+            width: 80
+            height: 28
+            verticalAlignment: Text.AlignVCenter
+            wrapMode: Text.WordWrap
+        }
+        StyledComboBox {
+            objectName: "compress_gif_format"
+            implicitHeight: 28
+            implicitWidth: 170
+            model: [
+                { text: root.tr("compress_fmt_gif", "GIF (keeps animation)"), value: "gif" },
+                { text: root.tr("compress_fmt_keep", "Don't compress"), value: "keep" }
+            ]
+            value: root.decompressor ? root.decompressor.gifFormat : "gif"
+            tooltip: root.tr("compress_gif_tip", "GIFs stay GIFs: every frame, its timing, the looping and transparency are kept. From 90 nothing is lost; lower values use fewer colours for a smaller file.")
+            onValuePicked: function(v) { if (root.decompressor) root.decompressor.gifFormat = v }
+        }
+        QualitySlider {
+            height: 28
+            value: root.decompressor ? root.decompressor.gifQuality : 82
+            active: root.decompressor ? root.decompressor.gifFormat !== "keep" : true
+            onMoved: function(v) { if (root.decompressor) root.decompressor.gifQuality = v }
         }
     }
 
