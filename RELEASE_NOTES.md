@@ -1,6 +1,6 @@
 ### 📊 Built for Huge Libraries
 
-* **Tested at scale**: This version was tested with 2 million archived files, 100,000 archive creators, 50,000 Watchlist artists, 500,000 queued files and a Link Vault with 10,000 creators. The window stays responsive throughout.
+* **Tested at scale**: This version was tested with 2 million archived files, 100,000 archive creators, 50,000 Watchlist artists, 500,000 queued files, a Link Vault with 10,000 creators, 10,000 Known Series characters and 5,000 archives in the Decompressor. The window stays responsive throughout.
 * **Moved over automatically**: The archive, Watchlist, download history, Link Vault and saved download progress now live in small databases, and your existing data is moved over the first time you start this version. Every old file is kept next to it as a backup (renamed to `.migrated`), so nothing is lost.
 
 ---
@@ -93,6 +93,9 @@ Numbers below are for an archive with 2 million files from 20,000 creators.
 * **No hiccup after start-up**: A freeze of up to 0.3 seconds a few seconds after opening the app is gone.
 * **Fewer random micro-freezes**: With very large queues, watchlists or archives, the app no longer pauses for 0.1–0.2 seconds every now and then to tidy up memory. The bigger tidy-up now happens while the app is minimised or you've been away from the computer for 10 minutes.
 * **Much smaller log files**: Files skipped because they're already downloaded, or renamed to keep two files apart, are still listed in the log panel but counted in a single line in the log file. Your two biggest logs would have been about 95% smaller (294 KB down to 13 KB).
+* **Big Known Series lists**: With 10,000 characters, adding or removing one used to freeze the window for almost a second; it now takes under 0.1 seconds, and the list loads three times faster at start-up.
+* **Decompressor with thousands of archives**: 5,000 archives (500 from one creator) froze the Decompressor for 2 to 5 seconds when they appeared, when scrolling and when selecting; all of that now takes under 0.1 seconds.
+* **History keeps up**: When many downloads start at once (for example a Watchlist run), the History tab refreshes once instead of once per download.
 * **Freezes report themselves**: If the window ever stops responding, the log now says for how long and what it was busy with, which makes bug reports much easier to fix.
 
 ---

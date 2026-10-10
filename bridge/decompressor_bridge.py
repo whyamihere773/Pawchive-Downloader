@@ -14,7 +14,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any, Optional, Tuple
 
-from PySide6.QtCore import QObject, Signal, Slot, Property
+from PySide6.QtCore import QObject, Signal, Slot, Property, Qt, QTimer
 from PySide6.QtWidgets import QFileDialog
 
 from services.bulk_decompressor import (
@@ -24,6 +24,7 @@ from services.bulk_decompressor import (
     get_7za_path
 )
 from core.archive_password_manager import archive_password_manager
+from bridge.archive_creators_model import RecordListModel
 from core.logger import logger
 from core.path_translation import localize_path
 from services.ffmpeg_manager import FfmpegDownloader, find_ffmpeg
@@ -130,6 +131,24 @@ class DecompressorBridge(QObject):
         self._loading_settings = False
         self.settingsChanged.connect(self._save_settings)
         self.locationsChanged.connect(self._save_settings)
+
+        # The list the view shows, kept in Python: a header row per (creator, folder) group followed by its
+        # archives' rows (none while the group is folded). It was the whole list as JSON, rebuilt on the
+        # window thread at every change, with every archive of a group built at once: 5,000 archives took
+        # ~0.5 s to show, ~0.25 s per selection change, and 2–5 s when a creator had 500 archives. As one
+        # flat list only the rows on screen exist; changes are gathered and applied together (on the next
+        # turn of the event loop; progress ticks at most every 0.2 s) and only changed rows are redrawn.
+        self._groups_model = RecordListModel(self, key_field="rowKey")
+        self._group_count = 0
+        self._any_collapsed = False
+        self._collapsed: set = set()
+        self._search = ""
+        self._groups_timer = QTimer(self)
+        self._groups_timer.setSingleShot(True)
+        self._groups_timer.timeout.connect(self._refresh_groups)
+        self.itemsChanged.connect(self._groups_soon, Qt.QueuedConnection)
+        self.itemUpdated.connect(self._groups_later, Qt.QueuedConnection)
+        self.passwordBankChanged.connect(self._groups_soon, Qt.QueuedConnection)
 
         # Reactive password bank binding: selection changes update matched status
         self.selectedStatsChanged.connect(self.passwordBankChanged)
@@ -556,6 +575,100 @@ class DecompressorBridge(QObject):
         with self._items_lock:
             data = [i.to_dict() for i in self._items]
         return json.dumps(data, ensure_ascii=False)
+
+    # ── The list the view shows ────────────────────────────────────────────────
+
+    @Property(QObject, constant=True)
+    def groupsModel(self) -> RecordListModel:
+        return self._groups_model
+
+    @Slot(str)
+    def setSearch(self, text: str):
+        self._search = str(text or "").strip().lower()
+        self._refresh_groups()
+
+    groupCountChanged = Signal()
+
+    @Property(int, notify=groupCountChanged)
+    def groupCount(self) -> int:
+        """Groups (creator + folder) shown."""
+        return self._group_count
+
+    @Property(bool, notify=groupCountChanged)
+    def anyCollapsed(self) -> bool:
+        """Some group shown is folded ("Expand All" instead of "Collapse All")."""
+        return self._any_collapsed
+
+    @Slot(str)
+    def toggleGroupCollapsed(self, key: str):
+        self._collapsed.symmetric_difference_update({key})
+        self._refresh_groups()
+
+    @Slot(bool)
+    def setAllCollapsed(self, collapsed: bool):
+        if collapsed:
+            self._collapsed = {g["groupKey"] for g in self._build_groups()}
+        else:
+            self._collapsed = set()
+        self._refresh_groups()
+
+    def _groups_soon(self, *args):
+        self._groups_timer.start(0)
+
+    def _groups_later(self, *args):
+        if not self._groups_timer.isActive():
+            self._groups_timer.start(200)
+
+    def _build_groups(self) -> List[Dict[str, Any]]:
+        q = self._search
+        with self._items_lock:
+            groups: Dict[tuple, Dict[str, Any]] = {}
+            for item in self._items:
+                c = item.creator or "Unknown"
+                if q and q not in c.lower() and q not in item.filename.lower() and q not in item.directory.lower():
+                    continue
+                raw_root = item.scan_root or item.directory
+                key = (c, os.path.normcase(os.path.normpath(raw_root)) if raw_root else "")
+                g = groups.get(key)
+                if g is None:
+                    g = groups[key] = {"creator": c, "directory": raw_root, "groupKey": f"{c}|{raw_root}",
+                                       "items": [], "totalCount": 0, "selectedCount": 0, "totalBytes": 0,
+                                       "selectedBytes": 0}
+                g["items"].append(item.to_dict())
+                g["totalCount"] += 1
+                g["totalBytes"] += item.size
+                if item.selected:
+                    g["selectedCount"] += 1
+                    g["selectedBytes"] += item.size
+        out = list(groups.values())
+        for g in out:
+            g["allSelected"] = g["totalCount"] > 0 and g["selectedCount"] == g["totalCount"]
+            g["someSelected"] = 0 < g["selectedCount"] < g["totalCount"]
+        return out
+
+    def _build_rows(self) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        groups = self._build_groups()
+        for g in groups:
+            key = g["groupKey"]
+            collapsed = key in self._collapsed
+            items = g.pop("items")
+            g.update(kind="group", rowKey="g|" + key, collapsed=collapsed)
+            rows.append(g)
+            if not collapsed:
+                for it in items:
+                    it.update(kind="item", rowKey="i|" + it["id"], groupKey=key)
+                    rows.append(it)
+        any_collapsed = any(r.get("collapsed") for r in rows if r["kind"] == "group")
+        if self._group_count != len(groups) or self._any_collapsed != any_collapsed:
+            self._group_count = len(groups)
+            self._any_collapsed = any_collapsed
+            self.groupCountChanged.emit()
+        return rows
+
+    def _refresh_groups(self):
+        self._groups_timer.stop()
+        self._groups_model.set_creators(self._build_rows())
 
     @Property(str, notify=itemsChanged)
     def groupedItemsJson(self) -> str:

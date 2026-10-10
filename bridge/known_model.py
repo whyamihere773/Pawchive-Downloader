@@ -19,6 +19,7 @@ class KnownModel(QAbstractListModel):
         self._guiCall.connect(self._run_gui_call, Qt.QueuedConnection)
         self.known_manager = known_manager
         self.known_manager.on_entries_changed = self.refresh
+        self.known_manager.background_reload = True      # edits show at once; indexes rebuild in the background
         self._filtered_entries: List[str] = list(self.known_manager.entries)
         self._search_query: str = ""
 
@@ -78,7 +79,26 @@ class KnownModel(QAbstractListModel):
     def refresh(self):
         if self._off_gui_thread(self.refresh):
             return
+        new = self.known_manager.search(self._search_query)
+        old = self._filtered_entries
+        if new == old:
+            return                                  # (the background rebuild after an edit: same list)
+        # One character added or removed: just that row. Resetting a list of thousands made the window wait.
+        if abs(len(new) - len(old)) == 1:
+            longer, shorter = (new, old) if len(new) > len(old) else (old, new)
+            i = next((k for k, (a, b) in enumerate(zip(longer, shorter)) if a != b), len(shorter))
+            if longer[i + 1:] == shorter[i:] and longer[:i] == shorter[:i]:
+                if len(new) > len(old):
+                    self.beginInsertRows(QModelIndex(), i, i)
+                    self._filtered_entries = new
+                    self.endInsertRows()
+                else:
+                    self.beginRemoveRows(QModelIndex(), i, i)
+                    self._filtered_entries = new
+                    self.endRemoveRows()
+                self.countChanged.emit()
+                return
         self.beginResetModel()
-        self._filtered_entries = self.known_manager.search(self._search_query)
+        self._filtered_entries = new
         self.endResetModel()
         self.countChanged.emit()

@@ -21,7 +21,7 @@ Item {
     property var collapsedBankCreators: ({})
     property string selectedBankCreator: "Global"
     property bool isCreatorMenuOpen: false
-    property var pwBankTree: parsePasswordBankTree()
+    property var pwBankTree: []          // filled when the Password Bank opens (and while it is open)
 
     function parsePasswordBankTree() {
         if (!decompressor || !decompressor.passwordBankTreeJson) return [];
@@ -89,6 +89,24 @@ Item {
     property bool showRedecompressModal: false
     property int redecompressAlreadyDoneCount: 0
     property int redecompressTotalCount: 0
+
+    // The archive rows' texts, looked up once (and again when the language changes): each row asked for
+    // ~15 translations through Python, which made building rows while scrolling a long list stall
+    readonly property var rowText: ({
+        btn_try_extract: tr("btn_try_extract", "Try & Extract"),
+        decompressor_already_extracted: tr("decompressor_already_extracted", "Already Extracted"),
+        decompressor_compressing: tr("decompressor_compressing", "Compressing pictures and videos…"),
+        decompressor_creator_toggle_tip: tr("decompressor_creator_toggle_tip", "Toggle all archives for this creator"),
+        decompressor_done: tr("decompressor_done", "Extracted"),
+        decompressor_error: tr("decompressor_error", "Error"),
+        decompressor_pending: tr("decompressor_pending", "Pending"),
+        decompressor_pre_extracted: tr("decompressor_pre_extracted", "Pre-extracted"),
+        status_password_required: tr("status_password_required", "Password Required"),
+        tip_already_extracted: tr("tip_already_extracted", "Files from this archive are already present on disk. Selecting it will re-extract and overwrite them."),
+        tip_enter_password: tr("tip_enter_password", "Enter password to decrypt this archive"),
+        tip_open_folder: tr("tip_open_folder", "Open folder in File Explorer"),
+        tip_pre_extracted: tr("tip_pre_extracted", "This archive was already extracted before scanning. Select it and re-run to overwrite.")
+    })
 
     readonly property bool optionsOpen: !(decompressor && decompressor.headerCollapsed)
     readonly property bool isNarrow: root.width < 760
@@ -208,95 +226,29 @@ Item {
         return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
     }
 
-    property var collapsedCreators: ({})
-
-    // Stable unique key per group — uses scan_root (exposed as 'directory' in groupedItemsJson)
-    function groupKey(grp) {
-        return (grp.creator || "") + "|" + (grp.directory || "");
-    }
-
+    // Folding a creator's group is kept in Python: the list only holds the rows of open groups
     function isCreatorCollapsed(grp) {
-        return !!root.collapsedCreators[root.groupKey(grp)];
+        return !!grp.collapsed;
     }
 
     function toggleCreatorCollapse(grp) {
-        var key = root.groupKey(grp);
-        var copy = Object.assign({}, root.collapsedCreators);
-        if (copy[key]) {
-            delete copy[key];
-        } else {
-            copy[key] = true;
-        }
-        root.collapsedCreators = copy;
+        if (decompressor) decompressor.toggleGroupCollapsed(grp.groupKey);
     }
 
     function expandAllCreators() {
-        root.collapsedCreators = {};
+        if (decompressor) decompressor.setAllCollapsed(false);
     }
 
     function collapseAllCreators() {
-        var copy = {};
-        for (var i = 0; i < root.groupedItems.length; i++) {
-            copy[root.groupKey(root.groupedItems[i])] = true;
-        }
-        root.collapsedCreators = copy;
+        if (decompressor) decompressor.setAllCollapsed(true);
     }
 
-    function parseItems() {
-        if (!decompressor || !decompressor.itemsJson) return [];
-        try {
-            var all = JSON.parse(decompressor.itemsJson);
-            if (!root.searchText) return all;
-            var q = root.searchText.toLowerCase();
-            return all.filter(function(item) {
-                return (item.filename && item.filename.toLowerCase().indexOf(q) !== -1) ||
-                       (item.creator && item.creator.toLowerCase().indexOf(q) !== -1) ||
-                       (item.directory && item.directory.toLowerCase().indexOf(q) !== -1);
-            });
-        } catch (e) {
-            return [];
-        }
-    }
-
-    function parseGroupedItems() {
-        if (!decompressor || !decompressor.groupedItemsJson) return [];
-        try {
-            var rawGroups = JSON.parse(decompressor.groupedItemsJson);
-            if (!root.searchText) return rawGroups;
-            var q = root.searchText.toLowerCase();
-            var filtered = [];
-            for (var i = 0; i < rawGroups.length; i++) {
-                var grp = rawGroups[i];
-                var grpMatch = (grp.creator && grp.creator.toLowerCase().indexOf(q) !== -1);
-                var matchedItems = [];
-                for (var j = 0; j < grp.items.length; j++) {
-                    var itm = grp.items[j];
-                    if (grpMatch || (itm.filename && itm.filename.toLowerCase().indexOf(q) !== -1) ||
-                        (itm.directory && itm.directory.toLowerCase().indexOf(q) !== -1)) {
-                        matchedItems.push(itm);
-                    }
-                }
-                if (matchedItems.length > 0) {
-                    var newGrp = Object.assign({}, grp);
-                    newGrp.items = matchedItems;
-                    filtered.push(newGrp);
-                }
-            }
-            return filtered;
-        } catch (e) {
-            return [];
-        }
-    }
-
-    property var itemsList: parseItems()
-    property var groupedItems: parseGroupedItems()
+    // The groups shown (one per creator and folder), kept in Python: only the groups that change are redrawn
+    readonly property var groupsModel: decompressor ? decompressor.groupsModel : null
+    readonly property int groupCount: decompressor ? decompressor.groupCount : 0
 
     Connections {
         target: decompressor
-        function onItemsChanged() {
-            root.itemsList = root.parseItems();
-            root.groupedItems = root.parseGroupedItems();
-        }
         function onDiskCheckCompleted(jsonResults) {
             try {
                 root.diskCheckData = JSON.parse(jsonResults);
@@ -319,9 +271,6 @@ Item {
             root.etaText = eta;
             root.speedText = speed;
         }
-        function onItemUpdated(itemId, status, progress, errMsg) {
-            if (!itemRefreshTimer.running) itemRefreshTimer.start();
-        }
         function onCompressionReviewRequested(count, before, after, failed) {
             root.compressedCount = count;
             root.compressedBefore = before;
@@ -334,8 +283,9 @@ Item {
             root.compressNote = message;
         }
         function onPasswordBankChanged() {
-            root.itemsList = root.parseItems();
-            root.pwBankTree = root.parsePasswordBankTree();
+            // (only while the Password Bank is open: it's rebuilt for every archive, and this fires at
+            // every selection change; opening it reads it fresh)
+            if (root.showPasswordBank) root.pwBankTree = root.parsePasswordBankTree();
         }
         function onPasswordPromptRequested(itemId, filename, creator, directory, errorMsg, size) {
             root.promptItemId = itemId;
@@ -368,16 +318,6 @@ Item {
             root.redecompressAlreadyDoneCount = alreadyDone;
             root.redecompressTotalCount = total;
             root.showRedecompressModal = true;
-        }
-    }
-
-    // Progress ticks arrive up to 10 times a second per archive: the list is re-read at most every 0.25 s
-    Timer {
-        id: itemRefreshTimer
-        interval: 250
-        onTriggered: {
-            root.itemsList = root.parseItems();
-            root.groupedItems = root.parseGroupedItems();
         }
     }
 
@@ -1102,7 +1042,7 @@ Item {
                     Text {
                         id: expTxt
                         anchors.centerIn: parent
-                        text: Object.keys(root.collapsedCreators).length > 0
+                        text: (decompressor && decompressor.anyCollapsed)
                               ? ("▼ " + root.tr("decompressor_expand_all", "Expand All"))
                               : ("▶ " + root.tr("decompressor_collapse_all", "Collapse All"))
                         font.pixelSize: 11
@@ -1114,7 +1054,7 @@ Item {
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
-                            if (Object.keys(root.collapsedCreators).length > 0) {
+                            if (decompressor && decompressor.anyCollapsed) {
                                 root.expandAllCreators();
                             } else {
                                 root.collapseAllCreators();
@@ -1152,8 +1092,7 @@ Item {
                             onTextChanged: {
                                 if (root.searchText !== text) {
                                     root.searchText = text;
-                                    root.itemsList = root.parseItems();
-                                    root.groupedItems = root.parseGroupedItems();
+                                    if (decompressor) decompressor.setSearch(text);
                                 }
                             }
                         }
@@ -1189,8 +1128,7 @@ Item {
                         onTextChanged: {
                             if (root.searchText !== text) {
                                 root.searchText = text;
-                                root.itemsList = root.parseItems();
-                                root.groupedItems = root.parseGroupedItems();
+                                if (decompressor) decompressor.setSearch(text);
                             }
                         }
                     }
@@ -1207,7 +1145,7 @@ Item {
                     text: (decompressor
                            ? (root.tr("decompressor_selected", "Selected:") + " " + decompressor.selectedCount + " / " + decompressor.totalCount +
                               " (" + root.formatBytes(decompressor.selectedBytes) + " / " + root.formatBytes(decompressor.totalBytes) + ") • " +
-                              root.groupedItems.length + " " + (root.groupedItems.length === 1 ? "Creator" : "Creators"))
+                              root.groupCount + " " + (root.groupCount === 1 ? "Creator" : "Creators"))
                            : "")
                     font.family: "Segoe UI, sans-serif"
                     font.pixelSize: 11
@@ -1304,7 +1242,7 @@ Item {
             // Empty state
             ColumnLayout {
                 anchors.centerIn: parent
-                visible: root.groupedItems.length === 0
+                visible: root.groupCount === 0
                 spacing: 8
 
                 Text {
@@ -1334,210 +1272,202 @@ Item {
                 chainTo: pageFlick
                 anchors.fill: parent
                 anchors.margins: 8
-                spacing: 8
+                spacing: 0
                 clip: true
-                visible: root.groupedItems.length > 0
-                model: root.groupedItems
+                visible: root.groupCount > 0
+                model: root.groupsModel
 
-                delegate: Rectangle {
-                    id: creatorGroupCard
+                // One row per creator group header and per archive (rows of folded groups aren't in the
+                // list): only the rows on screen are built, however many archives a creator has
+                delegate: Item {
+                    id: rowCell
                     width: archiveListView.width - 12
-                    radius: 8
-                    color: "#0D111A"
-                    border.color: root.isCreatorCollapsed(modelData) ? "#1A2234" : "#28344E"
-                    border.width: 1
-                    clip: true
+                    readonly property bool isGroup: modelData.kind === "group"
+                    height: isGroup ? 46 : 41
 
-                    implicitHeight: groupCol.implicitHeight + 12
-
-                    ColumnLayout {
-                        id: groupCol
-                        anchors.top: parent.top
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.margins: 6
-                        spacing: 4
-
-                        // ── 1. Creator Group Header Row ───────────────────────
-                        Rectangle {
-                            Layout.fillWidth: true
-                            height: 38
-                            radius: 6
-                            color: headerMouse.containsMouse ? "#161D2C" : "#111622"
-                            border.color: headerMouse.containsMouse ? "#334155" : "transparent"
-                            border.width: 1
-
-                            RowLayout {
-                                anchors.fill: parent
-                                anchors.leftMargin: 8
-                                anchors.rightMargin: 8
-                                spacing: 8
-
-                                // Expand/Collapse Chevron
-                                Text {
-                                    text: root.isCreatorCollapsed(modelData) ? "▶" : "▼"
-                                    font.pixelSize: 10
-                                    color: "#94A3B8"
-                                    Layout.alignment: Qt.AlignVCenter
-                                }
-
-                                // Creator Checkbox (Batch select/deselect all in this creator)
+                    Loader {
+                        active: rowCell.isGroup
+                        visible: active
+                        y: 8
+                        width: parent.width
+                        height: 38
+                        sourceComponent: Component {
+                                // ── 1. Creator Group Header Row ───────────────────────
                                 Rectangle {
-                                    width: 18
-                                    height: 18
-                                    radius: 4
-                                    color: modelData.allSelected ? "#38BDF8" : (modelData.someSelected ? "#1E293B" : "#111827")
-                                    border.color: modelData.allSelected ? "#38BDF8" : (modelData.someSelected ? "#60A5FA" : (crCheckMouse.containsMouse ? "#64748B" : "#334155"))
-                                    border.width: (modelData.allSelected || modelData.someSelected) ? 1.5 : 1
+                                    anchors.fill: parent
+                                    radius: 6
+                                    color: headerMouse.containsMouse ? "#161D2C" : "#111622"
+                                    border.color: headerMouse.containsMouse ? "#334155" : (root.isCreatorCollapsed(modelData) ? "#1A2234" : "#28344E")
+                                    border.width: 1
 
-                                    Text {
-                                        anchors.centerIn: parent
-                                        text: modelData.allSelected ? "✓" : (modelData.someSelected ? "−" : "")
-                                        font.pixelSize: 11
-                                        font.weight: Font.Bold
-                                        color: modelData.allSelected ? "#0F172A" : "#60A5FA"
+                                    RowLayout {
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 8
+                                        anchors.rightMargin: 8
+                                        spacing: 8
+
+                                        // Expand/Collapse Chevron
+                                        Text {
+                                            text: root.isCreatorCollapsed(modelData) ? "▶" : "▼"
+                                            font.pixelSize: 10
+                                            color: "#94A3B8"
+                                            Layout.alignment: Qt.AlignVCenter
+                                        }
+
+                                        // Creator Checkbox (Batch select/deselect all in this creator)
+                                        Rectangle {
+                                            width: 18
+                                            height: 18
+                                            radius: 4
+                                            color: modelData.allSelected ? "#38BDF8" : (modelData.someSelected ? "#1E293B" : "#111827")
+                                            border.color: modelData.allSelected ? "#38BDF8" : (modelData.someSelected ? "#60A5FA" : (crCheckMouse.containsMouse ? "#64748B" : "#334155"))
+                                            border.width: (modelData.allSelected || modelData.someSelected) ? 1.5 : 1
+
+                                            Text {
+                                                anchors.centerIn: parent
+                                                text: modelData.allSelected ? "✓" : (modelData.someSelected ? "−" : "")
+                                                font.pixelSize: 11
+                                                font.weight: Font.Bold
+                                                color: modelData.allSelected ? "#0F172A" : "#60A5FA"
+                                            }
+
+                                            MouseArea {
+                                                id: crCheckMouse
+                                                anchors.fill: parent
+                                                hoverEnabled: true
+                                                cursorShape: Qt.PointingHandCursor
+                                                ToolTip.visible: containsMouse
+                                                ToolTip.delay: 300
+                                                ToolTip.text: root.rowText.decompressor_creator_toggle_tip
+                                                onClicked: {
+                                                    if (decompressor)
+                                                        decompressor.toggleCreatorByScanRoot(modelData.creator, modelData.directory);
+                                                }
+                                            }
+                                        }
+
+                                        // Creator Icon & Name + folder path
+                                        Text { text: "🎨"; font.pixelSize: 12 }
+                                        Column {
+                                            spacing: 1
+                                            Layout.fillWidth: true
+                                            Text {
+                                                text: modelData.creator || "Unknown"
+                                                font.family: "Segoe UI, Inter, sans-serif"
+                                                font.pixelSize: 13
+                                                font.weight: 600
+                                                color: "#F8FAFC"
+                                                elide: Text.ElideRight
+                                                width: parent.width
+                                            }
+                                            Text {
+                                                text: modelData.directory || ""
+                                                font.family: "Segoe UI, sans-serif"
+                                                font.pixelSize: 9
+                                                color: "#4B5563"
+                                                elide: Text.ElideLeft
+                                                width: parent.width
+                                                visible: text !== ""
+                                            }
+                                        }
+
+                                        // Archive count & total size badge
+                                        Rectangle {
+                                            height: 20
+                                            implicitWidth: crCountText.implicitWidth + 12
+                                            radius: 10
+                                            color: "#1E293B"
+                                            border.color: "#334155"
+                                            border.width: 1
+
+                                            Text {
+                                                id: crCountText
+                                                anchors.centerIn: parent
+                                                text: modelData.totalCount + " " + (modelData.totalCount === 1 ? "archive" : "archives") + " • " + root.formatBytes(modelData.totalBytes)
+                                                font.family: "Segoe UI, sans-serif"
+                                                font.pixelSize: 10
+                                                font.weight: Font.Medium
+                                                color: "#94A3B8"
+                                            }
+                                        }
+
+                                        // Selection counter badge
+                                        Rectangle {
+                                            height: 20
+                                            implicitWidth: crSelText.implicitWidth + 10
+                                            radius: 10
+                                            color: modelData.selectedCount > 0 ? "#064E3B" : "#181D26"
+                                            border.color: modelData.selectedCount > 0 ? "#059669" : "#242C3B"
+                                            border.width: 1
+                                            visible: modelData.selectedCount > 0
+
+                                            Text {
+                                                id: crSelText
+                                                anchors.centerIn: parent
+                                                text: modelData.selectedCount + " selected"
+                                                font.family: "Segoe UI, sans-serif"
+                                                font.pixelSize: 10
+                                                font.weight: 600
+                                                color: "#34D399"
+                                            }
+                                        }
+
+                                        Item { Layout.fillWidth: true }
+
+                                        // Open creator folder button
+                                        Rectangle {
+                                            height: 24
+                                            implicitWidth: 26
+                                            radius: 4
+                                            color: crFoldMouse.containsMouse ? "#1E293B" : "transparent"
+                                            border.color: crFoldMouse.containsMouse ? "#475569" : "transparent"
+                                            border.width: 1
+                                            visible: !!modelData.directory
+
+                                            Text {
+                                                anchors.centerIn: parent
+                                                text: "📂"
+                                                font.pixelSize: 11
+                                            }
+
+                                            MouseArea {
+                                                id: crFoldMouse
+                                                anchors.fill: parent
+                                                hoverEnabled: true
+                                                cursorShape: Qt.PointingHandCursor
+                                                ToolTip.visible: containsMouse
+                                                ToolTip.delay: 300
+                                                ToolTip.text: root.rowText.tip_open_folder
+                                                onClicked: {
+                                                    if (decompressor) decompressor.openFolder(modelData.directory);
+                                                }
+                                            }
+                                        }
                                     }
 
+                                    // Header click toggles expand/collapse
                                     MouseArea {
-                                        id: crCheckMouse
+                                        id: headerMouse
                                         anchors.fill: parent
                                         hoverEnabled: true
                                         cursorShape: Qt.PointingHandCursor
-                                        ToolTip.visible: containsMouse
-                                        ToolTip.delay: 300
-                                        ToolTip.text: root.tr("decompressor_creator_toggle_tip", "Toggle all archives for this creator")
-                                        onClicked: {
-                                            if (decompressor)
-                                                decompressor.toggleCreatorByScanRoot(modelData.creator, modelData.directory);
-                                        }
+                                        z: -1
+                                        onClicked: root.toggleCreatorCollapse(modelData)
                                     }
                                 }
-
-                                // Creator Icon & Name + folder path
-                                Text { text: "🎨"; font.pixelSize: 12 }
-                                Column {
-                                    spacing: 1
-                                    Layout.fillWidth: true
-                                    Text {
-                                        text: modelData.creator || "Unknown"
-                                        font.family: "Segoe UI, Inter, sans-serif"
-                                        font.pixelSize: 13
-                                        font.weight: 600
-                                        color: "#F8FAFC"
-                                        elide: Text.ElideRight
-                                        width: parent.width
-                                    }
-                                    Text {
-                                        text: modelData.directory || ""
-                                        font.family: "Segoe UI, sans-serif"
-                                        font.pixelSize: 9
-                                        color: "#4B5563"
-                                        elide: Text.ElideLeft
-                                        width: parent.width
-                                        visible: text !== ""
-                                    }
-                                }
-
-                                // Archive count & total size badge
-                                Rectangle {
-                                    height: 20
-                                    implicitWidth: crCountText.implicitWidth + 12
-                                    radius: 10
-                                    color: "#1E293B"
-                                    border.color: "#334155"
-                                    border.width: 1
-
-                                    Text {
-                                        id: crCountText
-                                        anchors.centerIn: parent
-                                        text: modelData.totalCount + " " + (modelData.totalCount === 1 ? "archive" : "archives") + " • " + root.formatBytes(modelData.totalBytes)
-                                        font.family: "Segoe UI, sans-serif"
-                                        font.pixelSize: 10
-                                        font.weight: Font.Medium
-                                        color: "#94A3B8"
-                                    }
-                                }
-
-                                // Selection counter badge
-                                Rectangle {
-                                    height: 20
-                                    implicitWidth: crSelText.implicitWidth + 10
-                                    radius: 10
-                                    color: modelData.selectedCount > 0 ? "#064E3B" : "#181D26"
-                                    border.color: modelData.selectedCount > 0 ? "#059669" : "#242C3B"
-                                    border.width: 1
-                                    visible: modelData.selectedCount > 0
-
-                                    Text {
-                                        id: crSelText
-                                        anchors.centerIn: parent
-                                        text: modelData.selectedCount + " selected"
-                                        font.family: "Segoe UI, sans-serif"
-                                        font.pixelSize: 10
-                                        font.weight: 600
-                                        color: "#34D399"
-                                    }
-                                }
-
-                                Item { Layout.fillWidth: true }
-
-                                // Open creator folder button
-                                Rectangle {
-                                    height: 24
-                                    implicitWidth: 26
-                                    radius: 4
-                                    color: crFoldMouse.containsMouse ? "#1E293B" : "transparent"
-                                    border.color: crFoldMouse.containsMouse ? "#475569" : "transparent"
-                                    border.width: 1
-                                    visible: !!modelData.directory
-
-                                    Text {
-                                        anchors.centerIn: parent
-                                        text: "📂"
-                                        font.pixelSize: 11
-                                    }
-
-                                    MouseArea {
-                                        id: crFoldMouse
-                                        anchors.fill: parent
-                                        hoverEnabled: true
-                                        cursorShape: Qt.PointingHandCursor
-                                        ToolTip.visible: containsMouse
-                                        ToolTip.delay: 300
-                                        ToolTip.text: root.tr("tip_open_folder", "Open folder in File Explorer")
-                                        onClicked: {
-                                            if (decompressor) decompressor.openFolder(modelData.directory);
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Header click toggles expand/collapse
-                            MouseArea {
-                                id: headerMouse
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                cursorShape: Qt.PointingHandCursor
-                                z: -1
-                                onClicked: root.toggleCreatorCollapse(modelData)
-                            }
                         }
+                    }
 
-                        // ── 2. Nested Child Archives Tree View ───────────────
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            Layout.leftMargin: 12
-                            Layout.rightMargin: 4
-                            spacing: 3
-                            visible: !root.isCreatorCollapsed(modelData)
-
-                            Repeater {
-                                model: root.isCreatorCollapsed(modelData) ? null : modelData.items
-
-                                delegate: Rectangle {
+                    Loader {
+                        active: !rowCell.isGroup
+                        visible: active
+                        x: 14
+                        width: parent.width - 18
+                        height: 38
+                        sourceComponent: Component {
+                                Rectangle {
                                     id: archiveRow
-                                    Layout.fillWidth: true
-                                    height: 38
+                                    anchors.fill: parent
                                     radius: 5
                                     // Color coding:
                                     //  - already extracted (extractedPresent): warm amber tint
@@ -1668,7 +1598,7 @@ Item {
                                                 Text {
                                                     id: alreadyExtractedTxt
                                                     anchors.centerIn: parent
-                                                    text: modelData.extractedPresent ? ("🗂 " + root.tr("decompressor_already_extracted", "Already Extracted")) : root.tr("decompressor_pending", "Pending")
+                                                    text: modelData.extractedPresent ? ("🗂 " + root.rowText.decompressor_already_extracted) : root.rowText.decompressor_pending
                                                     font.pixelSize: 9
                                                     font.weight: modelData.extractedPresent ? Font.Bold : Font.Normal
                                                     color: modelData.extractedPresent ? "#FBB040" : "#64748B"
@@ -1679,7 +1609,7 @@ Item {
                                                     hoverEnabled: modelData.extractedPresent
                                                     ToolTip.visible: containsMouse && modelData.extractedPresent
                                                     ToolTip.delay: 300
-                                                    ToolTip.text: root.tr("tip_already_extracted", "Files from this archive are already present on disk. Selecting it will re-extract and overwrite them.")
+                                                    ToolTip.text: root.rowText.tip_already_extracted
                                                 }
                                             }
 
@@ -1688,9 +1618,9 @@ Item {
                                                 anchors.fill: parent
                                                 visible: modelData.status === "extracting" || modelData.status === "compressing"
                                                 spacing: 4
-                                                ToolTip.visible: compressHover.containsMouse && modelData.status === "compressing"
-                                                ToolTip.text: root.tr("decompressor_compressing", "Compressing pictures and videos…")
-                                                MouseArea { id: compressHover; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
+                                                ToolTip.visible: compressHover.hovered && modelData.status === "compressing"
+                                                ToolTip.text: root.rowText.decompressor_compressing
+                                                HoverHandler { id: compressHover }
 
                                                 Rectangle {
                                                     Layout.fillWidth: true
@@ -1727,8 +1657,8 @@ Item {
                                                     id: doneTxt
                                                     anchors.centerIn: parent
                                                     text: (modelData.extractedPresent && modelData.progress < 100.0)
-                                                          ? ("🗂 " + root.tr("decompressor_pre_extracted", "Pre-extracted"))
-                                                          : ("✓ " + root.tr("decompressor_done", "Extracted"))
+                                                          ? ("🗂 " + root.rowText.decompressor_pre_extracted)
+                                                          : ("✓ " + root.rowText.decompressor_done)
                                                     font.pixelSize: 9
                                                     font.weight: 600
                                                     color: modelData.extractedPresent && modelData.progress < 100.0 ? "#FBB040" : "#34D399"
@@ -1738,7 +1668,7 @@ Item {
                                                     hoverEnabled: modelData.extractedPresent && modelData.progress < 100.0
                                                     ToolTip.visible: containsMouse && modelData.extractedPresent && modelData.progress < 100.0
                                                     ToolTip.delay: 300
-                                                    ToolTip.text: root.tr("tip_pre_extracted", "This archive was already extracted before scanning. Select it and re-run to overwrite.")
+                                                    ToolTip.text: root.rowText.tip_pre_extracted
                                                 }
                                             }
 
@@ -1755,7 +1685,7 @@ Item {
                                                 Text {
                                                     id: errTxt
                                                     anchors.centerIn: parent
-                                                    text: "⚠️ " + root.tr("decompressor_error", "Error")
+                                                    text: "⚠️ " + root.rowText.decompressor_error
                                                     font.pixelSize: 9
                                                     font.weight: Font.Bold
                                                     color: "#FCA5A5"
@@ -1783,7 +1713,7 @@ Item {
                                                 Text {
                                                     id: pwReqTxt
                                                     anchors.centerIn: parent
-                                                    text: "🔐 " + root.tr("status_password_required", "Password Required")
+                                                    text: "🔐 " + root.rowText.status_password_required
                                                     font.pixelSize: 9
                                                     font.weight: Font.Bold
                                                     color: "#FCD34D"
@@ -1793,7 +1723,7 @@ Item {
                                                     hoverEnabled: true
                                                     ToolTip.visible: containsMouse
                                                     ToolTip.delay: 100
-                                                    ToolTip.text: root.tr("tip_enter_password", "Enter password to decrypt this archive")
+                                                    ToolTip.text: root.rowText.tip_enter_password
                                                 }
                                             }
                                         }
@@ -1814,7 +1744,7 @@ Item {
                                                 spacing: 4
                                                 Text { text: "🔑"; font.pixelSize: 9 }
                                                 Text {
-                                                    text: root.tr("btn_try_extract", "Try & Extract")
+                                                    text: root.rowText.btn_try_extract
                                                     font.pixelSize: 9
                                                     font.weight: Font.Medium
                                                     color: "#38BDF8"
@@ -1828,7 +1758,7 @@ Item {
                                                 cursorShape: Qt.PointingHandCursor
                                                 ToolTip.visible: containsMouse
                                                 ToolTip.delay: 300
-                                                ToolTip.text: root.tr("tip_enter_password", "Enter password to decrypt this archive")
+                                                ToolTip.text: root.rowText.tip_enter_password
                                                 onClicked: {
                                                     root.promptItemId = modelData.id;
                                                     root.promptFilename = modelData.filename;
@@ -1865,7 +1795,7 @@ Item {
                                                 cursorShape: Qt.PointingHandCursor
                                                 ToolTip.visible: containsMouse
                                                 ToolTip.delay: 300
-                                                ToolTip.text: root.tr("tip_open_folder", "Open folder in File Explorer")
+                                                ToolTip.text: root.rowText.tip_open_folder
                                                 onClicked: if (decompressor) decompressor.openFolder(modelData.directory)
                                             }
                                         }
@@ -1881,7 +1811,6 @@ Item {
                                         onClicked: if (decompressor) decompressor.toggleItem(modelData.id)
                                     }
                                 }
-                            }
                         }
                     }
                 }

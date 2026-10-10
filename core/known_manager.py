@@ -420,6 +420,11 @@ Katarin
 
         try:
             current_franchise: Optional[str] = None
+            # (sets for the "already listed" checks: searching the lists made a 10,000-line Known.txt take
+            # ~0.5 s, on the window thread at each add / remove)
+            seen_entries: Set[str] = set()
+            seen_standalone: Set[str] = set()
+            seen_in_section: Dict[str, Set[str]] = {}
             with open(self.file_path, "r", encoding="utf-8") as f:
                 for line in f:
                     cleaned = line.strip()
@@ -441,19 +446,23 @@ Katarin
                             self.franchise_resolver.register_alias(al, current_franchise, persist=False)
                         continue
 
-                    if cleaned not in entries:
+                    if cleaned not in seen_entries:
+                        seen_entries.add(cleaned)
                         entries.append(cleaned)
-                    
+
                     if current_franchise:
                         entry_franchise_map[cleaned.lower()] = current_franchise
                         canon = self._canonical_entry(cleaned)
                         entry_franchise_map[canon.lower()] = current_franchise
                         for al in self._entry_aliases(cleaned):
                             entry_franchise_map[al.lower()] = current_franchise
-                        if cleaned not in franchise_sections[current_franchise]:
+                        in_section = seen_in_section.setdefault(current_franchise, set())
+                        if cleaned not in in_section:
+                            in_section.add(cleaned)
                             franchise_sections[current_franchise].append(cleaned)
                     else:
-                        if cleaned not in standalone_entries:
+                        if cleaned not in seen_standalone:
+                            seen_standalone.add(cleaned)
                             standalone_entries.append(cleaned)
 
             # Build custom phone book index for O(1) matching
@@ -664,33 +673,69 @@ Katarin
             logger.error(f"Failed to save Known.txt: {e}", category="known")
             return False
 
-    def _commit(self):
-        """Save, then reload so the matching indexes (built in load) include the change."""
-        if self.save(notify=False):
-            self.load(log=False)
+    # In the app (background_reload, set by the Known Series list) an edit shows at once and the matching
+    # indexes are rebuilt in the background: with thousands of characters the rebuild took 0.1–0.9 s on the
+    # window thread at each add / remove. The next edit waits for a rebuild still running, so a rebuild
+    # never swaps in a list older than an edit made meanwhile.
+    background_reload = False
+    _edit_lock = threading.Lock()
+
+    def _entries_as_saved(self) -> List[str]:
+        """The list the next reload builds from the saved file (standalone characters first, then each
+        franchise's), so the list shown at once doesn't change order when the background reload ends."""
+        seen: Set[str] = set()
+        out: List[str] = []
+        for e in self.standalone_entries + [c for chars in self.franchise_sections.values() for c in chars]:
+            if e not in seen:
+                seen.add(e)
+                out.append(e)
+        return out
+
+    def _notify_changed(self):
         if self.on_entries_changed:
             try:
                 self.on_entries_changed()
             except Exception:
                 pass
 
+    def _commit(self):
+        """Save, then reload so the matching indexes (built in load) include the change."""
+        if not self.save(notify=False):
+            self._notify_changed()
+            return
+        if not self.background_reload:
+            self.load(log=False)
+            self._notify_changed()
+            return
+        self._notify_changed()                         # the list itself is already up to date
+
+        def _rebuild():
+            with self._edit_lock:
+                self.load(log=False)
+            self._notify_changed()
+        threading.Thread(target=_rebuild, name="KnownReload", daemon=True).start()
+
     def add_entry(self, name: str) -> bool:
         name = name.strip()
         if not name:
             return False
-        # Case-insensitive duplicate check
-        existing_lower = [e.lower() for e in self.entries]
-        if name.lower() not in existing_lower:
+        with self._edit_lock:
+            # Case-insensitive duplicate check
+            if name.lower() in {e.lower() for e in self.entries}:
+                return False
             self.standalone_entries.append(name)
-            self._commit()
-            return True
-        return False
+            self.entries = self._entries_as_saved()
+        self._commit()
+        return True
 
     def add_entries(self, names: List[str]) -> List[str]:
         """Adds the plausible names from a list of candidates as standalone entries."""
-        added = self.filter_candidates(names)
+        with self._edit_lock:
+            added = self.filter_candidates(names)
+            if added:
+                self.standalone_entries.extend(added)
+                self.entries = self._entries_as_saved()
         if added:
-            self.standalone_entries.extend(added)
             self._commit()
         return added
 
@@ -790,15 +835,18 @@ Katarin
         target = (name or "").strip().lower()
         if not target:
             return False
-        removed = False
-        before = len(self.standalone_entries)
-        self.standalone_entries = [e for e in self.standalone_entries if e.lower() != target]
-        removed = removed or len(self.standalone_entries) != before
-        for franchise, chars in self.franchise_sections.items():
-            kept = [c for c in chars if c.lower() != target]
-            if len(kept) != len(chars):
-                self.franchise_sections[franchise] = kept
-                removed = True
+        with self._edit_lock:
+            removed = False
+            before = len(self.standalone_entries)
+            self.standalone_entries = [e for e in self.standalone_entries if e.lower() != target]
+            removed = removed or len(self.standalone_entries) != before
+            for franchise, chars in self.franchise_sections.items():
+                kept = [c for c in chars if c.lower() != target]
+                if len(kept) != len(chars):
+                    self.franchise_sections[franchise] = kept
+                    removed = True
+            if removed:
+                self.entries = self._entries_as_saved()
         if removed:
             self._commit()
         return removed

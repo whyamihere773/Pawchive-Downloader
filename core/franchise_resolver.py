@@ -310,6 +310,12 @@ class FranchiseResolver:
         self._canonicals: Dict[str, str] = {}  # lowercase canonical -> display canonical
         self._negative_cache: Set[str] = set()
         self._last_online_query_time: float = 0.0
+        # Answers reused while the alias map is unchanged (_ver goes up when it changes): Known.txt asks
+        # for every franchise's aliases at each reload, and each answer walked the whole 100,000-alias map
+        self._ver = 0
+        self._offline_miss: Dict[str, int] = {}          # normalized text -> _ver when nothing matched
+        self._by_canonical: Optional[Dict[str, Set[str]]] = None
+        self._by_canonical_ver = -1
 
         if cache_path:
             self._cache_path = cache_path
@@ -389,6 +395,8 @@ class FranchiseResolver:
             return
 
         with self._lock:
+            if self._alias_to_canonical.get(a_norm) != canonical or self._canonicals.get(c_norm) != canonical:
+                self._ver += 1
             self._canonicals[c_norm] = canonical
             self._alias_to_canonical[a_norm] = canonical
             if persist:
@@ -400,12 +408,15 @@ class FranchiseResolver:
             return []
         resolved = self.resolve(canonical_or_alias, allow_online=False) or canonical_or_alias
         c_norm = self._normalize(resolved)
-        aliases: Set[str] = set()
         with self._lock:
             target_canonical = self._canonicals.get(c_norm, resolved)
-            for a_norm, can in self._alias_to_canonical.items():
-                if can.lower() == target_canonical.lower() or can.lower() == resolved.lower():
-                    aliases.add(a_norm)
+            if self._by_canonical is None or self._by_canonical_ver != self._ver:
+                index: Dict[str, Set[str]] = {}
+                for a_norm, can in self._alias_to_canonical.items():
+                    index.setdefault(can.lower(), set()).add(a_norm)
+                self._by_canonical, self._by_canonical_ver = index, self._ver
+            aliases = set(self._by_canonical.get(target_canonical.lower(), ()))
+            aliases |= self._by_canonical.get(resolved.lower(), set())
         return sorted(aliases)
 
     def resolve(self, text: str, allow_online: bool = True) -> Optional[str]:
@@ -424,7 +435,27 @@ class FranchiseResolver:
             # 1. Exact match in alias or canonical map (O(1))
             if norm in self._alias_to_canonical:
                 return self._alias_to_canonical[norm]
+            known_miss = self._offline_miss.get(norm) == self._ver
+        if not known_miss:
+            hit = self._resolve_offline(norm)
+            if hit:
+                return hit
 
+        # 4. Online Auto-Discovery via AniList GraphQL
+        is_single_short_word = len(norm.split()) == 1 and len(norm) < 5
+        if allow_online and norm not in self._negative_cache and len(norm) >= 4 and not is_single_short_word:
+            discovered = self._query_anilist(text)
+            if discovered:
+                return discovered
+            else:
+                self._negative_cache.add(norm)
+
+        return None
+
+    def _resolve_offline(self, norm: str) -> Optional[str]:
+        """Steps 2 and 3 of resolve (substring, then fuzzy match); a miss is remembered until the alias
+        map changes."""
+        with self._lock:
             # 2. Substring & Prefix match (e.g. "Classroom of the Elite Season 2" -> "Classroom of the Elite")
             for alias_norm, canonical in self._alias_to_canonical.items():
                 alias_words = alias_norm.split()
@@ -436,12 +467,18 @@ class FranchiseResolver:
                 elif alias_norm == norm:
                     return canonical
 
-            # 3. High-Confidence Fuzzy Match (Auto-heals artist typos like "Danmacchi", "Fellings")
+            # 3. High-Confidence Fuzzy Match (Auto-heals artist typos like "Danmacchi", "Fellings").
+            # difflib's cheap upper bounds rule most aliases out before the full comparison.
             best_canonical = None
             best_ratio = 0.0
+            sm = difflib.SequenceMatcher(None)
+            sm.set_seq2(norm)
             for alias_norm, canonical in self._alias_to_canonical.items():
                 if len(alias_norm) >= 4 and abs(len(alias_norm) - len(norm)) <= 4:
-                    ratio = difflib.SequenceMatcher(None, norm, alias_norm).ratio()
+                    sm.set_seq1(alias_norm)
+                    if sm.real_quick_ratio() < 0.85 or sm.quick_ratio() < 0.85:
+                        continue
+                    ratio = sm.ratio()
                     if ratio > best_ratio and ratio >= 0.85:
                         best_ratio = ratio
                         best_canonical = canonical
@@ -449,17 +486,9 @@ class FranchiseResolver:
             if best_canonical:
                 # Register the typo variant so next time is O(1)
                 self._alias_to_canonical[norm] = best_canonical
+                self._ver += 1
                 return best_canonical
-
-        # 4. Online Auto-Discovery via AniList GraphQL
-        is_single_short_word = len(norm.split()) == 1 and len(norm) < 5
-        if allow_online and norm not in self._negative_cache and len(norm) >= 4 and not is_single_short_word:
-            discovered = self._query_anilist(text)
-            if discovered:
-                return discovered
-            else:
-                self._negative_cache.add(norm)
-
+            self._offline_miss[norm] = self._ver
         return None
 
     def _query_anilist(self, search_term: str) -> Optional[str]:
@@ -525,6 +554,7 @@ class FranchiseResolver:
                 # Register discovered aliases
                 with self._lock:
                     c_norm = self._normalize(canonical)
+                    self._ver += 1
                     self._canonicals[c_norm] = canonical
                     self._alias_to_canonical[st_norm] = canonical
                     for t in titles:

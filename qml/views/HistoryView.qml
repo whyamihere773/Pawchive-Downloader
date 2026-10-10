@@ -20,8 +20,15 @@ Rectangle {
     Connections {
         target: root.bridge
         function onDownloadHistoryChanged() {
-            historyListModel.reload()
+            if (!historyReloadTimer.running) historyReloadTimer.start()
         }
+    }
+
+    // Many downloads starting together (a Watchlist run) asked for a full reload each: one at most every 0.2 s
+    Timer {
+        id: historyReloadTimer
+        interval: 200
+        onTriggered: historyListModel.reload()
     }
 
     // Local JS model wrapper
@@ -32,9 +39,10 @@ Rectangle {
             clear()
             if (!root.bridge) return
             var entries = root.bridge.getDownloadHistory()
+            var rows = []
             for (var i = 0; i < entries.length; i++) {
                 var e = entries[i]
-                historyListModel.append({
+                rows.push({
                     creator: e.creator || "Unknown",
                     url:     e.url || "",
                     service: (e.service || "").toUpperCase(),
@@ -42,6 +50,7 @@ Rectangle {
                     date:    e.date || ""
                 })
             }
+            historyListModel.append(rows)       // all at once (a change signal per row before)
         }
     }
 
