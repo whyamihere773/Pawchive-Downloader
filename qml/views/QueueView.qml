@@ -420,12 +420,15 @@ Rectangle {
                         readonly property int cardFailed: (typeof failedFiles !== "undefined" ? failedFiles : (model && model.failedFiles !== undefined ? model.failedFiles : 0))
                         readonly property string cardStatus: (typeof status !== "undefined" ? status : (model && model.status !== undefined ? model.status : "pending"))
                         readonly property string cardBatchId: (typeof batchId !== "undefined" ? batchId : (model && model.batchId !== undefined ? model.batchId : ""))
+                        readonly property bool cardIsActiveDownloading: groupCard.cardDownloading > 0 || groupCard.cardStatus === "downloading"
+                        readonly property bool cardIsBatchPaused: groupCard.cardStatus === "paused" || (typeof isPaused !== "undefined" ? isPaused : (model && model.isPaused !== undefined ? model.isPaused : false)) || (root.bridge && root.bridge.queueModel && root.bridge.queueModel.isBatchPaused(groupCard.cardBatchId))
+                        readonly property bool cardIsEffectivelyPaused: cardIsBatchPaused || (root.bridge && root.bridge.isPaused && (cardIsActiveDownloading || (cardPending > 0 && root.bridge.isDownloading)))
                         width: groupsList.width - 12
                         height: cardInnerCol.implicitHeight + 20
                         implicitHeight: height
                         radius: 8
                         color: groupCard.cardStatus === "failed" ? "#22161A" : (groupCard.cardStatus === "downloading" ? "#131E30" : (groupCard.cardStatus === "skipped" ? "#1C150E" : (cardMouse.containsMouse ? "#1D2332" : "#171B26")))
-                        border.color: groupCard.cardStatus === "downloading" ? "#0EA5E9" : (groupCard.cardStatus === "failed" ? "#EF4444" : (groupCard.cardStatus === "skipped" ? "#B45309" : (cardMouse.containsMouse ? "#3B465E" : "#283042")))
+                        border.color: groupCard.cardIsEffectivelyPaused ? "#F59E0B" : (groupCard.cardStatus === "downloading" ? "#0EA5E9" : (groupCard.cardStatus === "failed" ? "#EF4444" : (groupCard.cardStatus === "skipped" ? "#B45309" : (cardMouse.containsMouse ? "#3B465E" : "#283042"))))
                         border.width: 1.5
 
                         Behavior on color { ColorAnimation { duration: 150 } }
@@ -453,8 +456,11 @@ Rectangle {
                                 spacing: 8
 
                                 Rectangle {
-                                    height: 20
-                                    width: svcText.implicitWidth + 10
+                                    implicitHeight: 20
+                                    implicitWidth: svcText.implicitWidth + 10
+                                    Layout.preferredHeight: 20
+                                    Layout.preferredWidth: svcText.implicitWidth + 10
+                                    Layout.alignment: Qt.AlignVCenter
                                     radius: 4
                                     color: "#222C3D"
                                     Text {
@@ -473,16 +479,20 @@ Rectangle {
                                     font.pixelSize: 13
                                     font.weight: Font.Bold
                                     color: "#F8FAFC"
+                                    Layout.alignment: Qt.AlignVCenter
                                 }
 
                                 Text {
                                     text: "•"
                                     color: "#64748B"
                                     font.pixelSize: 11
+                                    Layout.alignment: Qt.AlignVCenter
                                 }
 
                                 Text {
                                     Layout.fillWidth: true
+                                    Layout.minimumWidth: 40
+                                    Layout.alignment: Qt.AlignVCenter
                                     text: modelData.postTitle
                                     font.family: "Segoe UI, sans-serif"
                                     font.pixelSize: 12
@@ -492,20 +502,24 @@ Rectangle {
 
                                 // Status Badge
                                 Rectangle {
-                                    height: 20
-                                    width: stText.implicitWidth + 10
+                                    implicitHeight: 20
+                                    implicitWidth: stText.implicitWidth + 14
+                                    Layout.preferredHeight: 20
+                                    Layout.preferredWidth: implicitWidth
+                                    Layout.minimumWidth: implicitWidth
+                                    Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
                                     radius: 4
-                                    color: modelData.status === "completed" ? "#064E3B" : (modelData.status === "downloading" ? "#0C4A6E" : (modelData.status === "skipped" ? "#451A03" : (modelData.status === "failed" ? "#7F1D1D" : "#1E293B")))
-                                    border.color: modelData.status === "completed" ? "#10B981" : (modelData.status === "downloading" ? "#0EA5E9" : (modelData.status === "skipped" ? "#F59E0B" : (modelData.status === "failed" ? "#EF4444" : "#475569")))
+                                    color: groupCard.cardIsEffectivelyPaused ? "#451A03" : (modelData.status === "completed" ? "#064E3B" : (modelData.status === "downloading" ? "#0C4A6E" : (modelData.status === "skipped" ? "#451A03" : (modelData.status === "failed" ? "#7F1D1D" : "#1E293B"))))
+                                    border.color: groupCard.cardIsEffectivelyPaused ? "#F59E0B" : (modelData.status === "completed" ? "#10B981" : (modelData.status === "downloading" ? "#0EA5E9" : (modelData.status === "skipped" ? "#F59E0B" : (modelData.status === "failed" ? "#EF4444" : "#475569"))))
                                     border.width: 1
 
                                     Text {
                                         id: stText
                                         anchors.centerIn: parent
-                                        text: modelData.status.toUpperCase()
+                                        text: groupCard.cardIsEffectivelyPaused ? "PAUSED" : (modelData.status ? modelData.status.toUpperCase() : "")
                                         font.pixelSize: 9
                                         font.bold: true
-                                        color: modelData.status === "completed" ? "#6EE7B7" : (modelData.status === "downloading" ? "#7DD3FC" : (modelData.status === "skipped" ? "#FDE68A" : (modelData.status === "failed" ? "#FCA5A5" : "#94A3B8")))
+                                        color: groupCard.cardIsEffectivelyPaused ? "#FDE68A" : (modelData.status === "completed" ? "#6EE7B7" : (modelData.status === "downloading" ? "#7DD3FC" : (modelData.status === "skipped" ? "#FDE68A" : (modelData.status === "failed" ? "#FCA5A5" : "#94A3B8"))))
                                     }
                                 }
                             }
@@ -526,6 +540,7 @@ Rectangle {
                                         font.pixelSize: 10
                                         color: "#64748B"
                                         Layout.preferredWidth: 36
+                                        Layout.minimumWidth: 36
                                     }
 
                                     Rectangle {
@@ -549,7 +564,9 @@ Rectangle {
                                         font.family: "Cascadia Code, Segoe UI, sans-serif"
                                         font.pixelSize: 10
                                         color: "#94A3B8"
-                                        Layout.preferredWidth: modelData.skippedFiles > 0 ? 80 : 42
+                                        Layout.preferredWidth: implicitWidth
+                                        Layout.minimumWidth: implicitWidth
+                                        Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
                                         horizontalAlignment: Text.AlignRight
                                     }
                                 }
@@ -566,6 +583,7 @@ Rectangle {
                                         font.pixelSize: 10
                                         color: "#64748B"
                                         Layout.preferredWidth: 36
+                                        Layout.minimumWidth: 36
                                     }
 
                                     Rectangle {
@@ -589,7 +607,9 @@ Rectangle {
                                         font.family: "Cascadia Code, Segoe UI, sans-serif"
                                         font.pixelSize: 10
                                         color: "#38BDF8"
-                                        Layout.preferredWidth: 42
+                                        Layout.preferredWidth: Math.max(42, implicitWidth)
+                                        Layout.minimumWidth: Math.max(42, implicitWidth)
+                                        Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
                                         horizontalAlignment: Text.AlignRight
                                     }
                                 }
@@ -657,7 +677,7 @@ Rectangle {
                                         tooltip: root.tr("btn_view_files", "View Files")
                                         onClicked: {
                                             if (root.bridge && root.bridge.queueModel) {
-                                                root.bridge.queueModel.selectedBatchId = modelData.batchId
+                                                root.bridge.queueModel.selectedBatchId = groupCard.cardBatchId
                                             }
                                         }
                                     }
@@ -677,9 +697,23 @@ Rectangle {
                                     }
 
                                     StyledButton {
-                                        visible: groupCard.cardDownloading > 0 || groupCard.cardPending > 0
+                                        visible: groupCard.cardIsActiveDownloading || groupCard.cardPending > 0 || groupCard.cardIsBatchPaused
+                                        text: root.isVeryNarrow ? "" : (groupCard.cardIsBatchPaused ? root.tr("action_resume", "Resume") : root.tr("action_pause", "Pause"))
+                                        iconText: groupCard.cardIsBatchPaused ? "▶" : "⏸"
+                                        variant: "ghost"
+                                        implicitHeight: 24
+                                        tooltip: groupCard.cardIsBatchPaused ? root.tr("tip_resume_download", "Resume paused download") : root.tr("tip_pause_download", "Pause download")
+                                        onClicked: {
+                                            if (root.bridge && root.bridge.queueModel) {
+                                                root.bridge.queueModel.toggleBatchPause(groupCard.cardBatchId)
+                                            }
+                                        }
+                                    }
+
+                                    StyledButton {
+                                        visible: groupCard.cardDownloading > 0 || groupCard.cardPending > 0 || groupCard.cardIsBatchPaused
                                         text: root.isVeryNarrow ? "" : root.tr("btn_cancel_batch", "Cancel")
-                                        iconText: "⏸"
+                                        iconText: "✕"
                                         variant: "ghost"
                                         implicitHeight: 24
                                         tooltip: root.tr("btn_cancel_batch", "Cancel")
@@ -758,9 +792,23 @@ Rectangle {
                                 }
 
                                 StyledButton {
-                                    visible: groupCard.cardDownloading > 0 || groupCard.cardPending > 0
+                                    visible: groupCard.cardIsActiveDownloading || groupCard.cardPending > 0 || groupCard.cardIsBatchPaused
+                                    text: groupCard.cardIsBatchPaused ? root.tr("action_resume", "Resume") : root.tr("action_pause", "Pause")
+                                    iconText: groupCard.cardIsBatchPaused ? "▶" : "⏸"
+                                    variant: "ghost"
+                                    implicitHeight: 24
+                                    tooltip: groupCard.cardIsBatchPaused ? root.tr("tip_resume_download", "Resume paused download") : root.tr("tip_pause_download", "Pause download")
+                                    onClicked: {
+                                        if (root.bridge && root.bridge.queueModel) {
+                                            root.bridge.queueModel.toggleBatchPause(groupCard.cardBatchId)
+                                        }
+                                    }
+                                }
+
+                                StyledButton {
+                                    visible: groupCard.cardDownloading > 0 || groupCard.cardPending > 0 || groupCard.cardIsBatchPaused
                                     text: root.tr("btn_cancel_batch", "Cancel")
-                                    iconText: "⏸"
+                                    iconText: "✕"
                                     variant: "ghost"
                                     implicitHeight: 24
                                     tooltip: root.tr("btn_cancel_batch", "Cancel")

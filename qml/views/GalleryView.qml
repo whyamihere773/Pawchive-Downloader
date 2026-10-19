@@ -778,6 +778,7 @@ Item {
         var out = []
         for (var key in counts) out.push({ name: display[key], count: counts[key] })
         out.sort(function(a, b) { return b.count - a.count || a.name.localeCompare(b.name) })
+        if (out.length > 500) out = out.slice(0, 500)
         return out
     }
 

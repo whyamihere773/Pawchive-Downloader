@@ -1365,20 +1365,52 @@ SmoothFlickable {
                         ColumnLayout {
                             Layout.fillWidth: true
                             Layout.minimumWidth: 0
-                            spacing: 4
+                            spacing: 6
 
-                            Text {
-                                text: root.tr("label_skip_words", "🚫 Skip with words (comma-separated):")
-                                font.family: "Segoe UI, sans-serif"
-                                font.pixelSize: 11
-                                color: "#94A3B8"
+                            // Header row: Label + Preset Dropdown
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 6
+
+                                Text {
+                                    text: root.tr("label_skip_words", "🚫 Skip with words (comma-separated):")
+                                    font.family: "Segoe UI, sans-serif"
+                                    font.pixelSize: 11
+                                    color: "#94A3B8"
+                                    Layout.fillWidth: true
+                                    elide: Text.ElideRight
+                                }
+
+                                StyledComboBox {
+                                    id: filterProfileCombo
+                                    implicitHeight: 24
+                                    implicitWidth: 160
+                                    Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
+                                    model: [
+                                        { text: root.tr("profile_none", "Preset: None"), value: "clear" },
+                                        { text: root.tr("profile_wip_sketches", "✏️ WIP & Sketches"), value: "wip_sketches" },
+                                        { text: root.tr("profile_low_quality", "📉 Low Quality & Previews"), value: "low_quality" },
+                                        { text: root.tr("profile_wip_and_low_quality", "🎨 WIP, Sketches & Low-Res"), value: "wip_and_low_quality" },
+                                        { text: root.tr("profile_watermarks", "🏷️ Watermarks & Samples"), value: "watermarks_samples" },
+                                        { text: root.tr("profile_final_art_only", "⭐ Final Art Only"), value: "final_art_only" },
+                                        { text: root.tr("profile_large_media_only", "📦 Large Media Only"), value: "large_media_only" },
+                                        { text: root.tr("profile_custom", "Preset: Custom / Manual"), value: "custom" }
+                                    ]
+                                    value: root.bridge ? root.bridge.filterProfile : "clear"
+                                    tooltip: root.tr("tooltip_filter_profile", "Select a preset filter profile to automatically skip unwanted posts or files (e.g., drafts, low-resolution previews, or work-in-progress).")
+                                    onValuePicked: function(v) {
+                                        if (root.bridge) root.bridge.applyFilterProfile(v)
+                                    }
+                                }
                             }
 
+                            // Text Field + Scope Button
                             RowLayout {
                                 Layout.fillWidth: true
                                 spacing: 6
 
                                 StyledTextField {
+                                    id: skipWordsField
                                     Layout.fillWidth: true
                                     Layout.minimumWidth: 0
                                     placeholderText: root.tr("placeholder_skip_words", "e.g., WIP, preview, [1GB-2GB]")
@@ -1409,22 +1441,143 @@ SmoothFlickable {
                                     }
                                 }
                             }
+
+                            // Quick add chips flow
+                            Flow {
+                                Layout.fillWidth: true
+                                spacing: 5
+
+                                Text {
+                                    text: root.tr("label_quick_add", "Quick add:")
+                                    font.family: "Segoe UI, sans-serif"
+                                    font.pixelSize: 10
+                                    color: "#64748B"
+                                    height: 20
+                                    verticalAlignment: Text.AlignVCenter
+                                }
+
+                                Repeater {
+                                    model: [
+                                        { label: "+ WIP", tag: "WIP" },
+                                        { label: "+ Sketch", tag: "sketch" },
+                                        { label: "+ Draft", tag: "draft" },
+                                        { label: "+ Preview", tag: "preview" },
+                                        { label: "+ Low-Res [>=500KB]", tag: "lowres, [>=500KB]" },
+                                        { label: "+ Watermark", tag: "watermark" }
+                                    ]
+
+                                    delegate: Rectangle {
+                                        implicitHeight: 20
+                                        implicitWidth: chipText.implicitWidth + 14
+                                        radius: 4
+                                        color: chipMouse.pressed ? "#0F172A" : (chipMouse.containsMouse ? "#1E293B" : "#141923")
+                                        border.color: chipMouse.containsMouse ? "#38BDF8" : "#283042"
+                                        border.width: 1
+
+                                        Behavior on color { ColorAnimation { duration: 100 } }
+                                        Behavior on border.color { ColorAnimation { duration: 100 } }
+
+                                        Text {
+                                            id: chipText
+                                            anchors.centerIn: parent
+                                            text: modelData.label
+                                            font.family: "Segoe UI, sans-serif"
+                                            font.pixelSize: 10
+                                            font.weight: Font.Medium
+                                            color: chipMouse.containsMouse ? "#38BDF8" : "#94A3B8"
+                                            Behavior on color { ColorAnimation { duration: 100 } }
+                                        }
+
+                                        MouseArea {
+                                            id: chipMouse
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                if (root.bridge) root.bridge.appendKeywordsToSkip(modelData.tag)
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Rectangle {
+                                    visible: root.bridge && root.bridge.skipWords.length > 0
+                                    implicitHeight: 20
+                                    implicitWidth: clearChipText.implicitWidth + 12
+                                    radius: 4
+                                    color: clearChipMouse.pressed ? "#450A0A" : (clearChipMouse.containsMouse ? "#2A1215" : "#181316")
+                                    border.color: clearChipMouse.containsMouse ? "#EF4444" : "#4A2024"
+                                    border.width: 1
+
+                                    Behavior on color { ColorAnimation { duration: 100 } }
+                                    Behavior on border.color { ColorAnimation { duration: 100 } }
+
+                                    Text {
+                                        id: clearChipText
+                                        anchors.centerIn: parent
+                                        text: root.tr("chip_clear", "Clear ✕")
+                                        font.family: "Segoe UI, sans-serif"
+                                        font.pixelSize: 10
+                                        font.weight: Font.Medium
+                                        color: clearChipMouse.containsMouse ? "#F87171" : "#A85353"
+                                        Behavior on color { ColorAnimation { duration: 100 } }
+                                    }
+
+                                    MouseArea {
+                                        id: clearChipMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            if (root.bridge) root.bridge.applyFilterProfile("clear")
+                                        }
+                                    }
+                                }
+                            }
                         }
 
                         // Remove words
                         ColumnLayout {
                             Layout.fillWidth: true
                             Layout.minimumWidth: 0
-                            spacing: 4
+                            spacing: 6
 
-                            Text {
-                                text: root.tr("label_remove_words", "✂️ Remove words from name:")
-                                font.family: "Segoe UI, sans-serif"
-                                font.pixelSize: 11
-                                color: "#94A3B8"
+                            // Header row: Label + Preset Dropdown
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 6
+
+                                Text {
+                                    text: root.tr("label_remove_words", "✂️ Remove words from name:")
+                                    font.family: "Segoe UI, sans-serif"
+                                    font.pixelSize: 11
+                                    color: "#94A3B8"
+                                    Layout.fillWidth: true
+                                    elide: Text.ElideRight
+                                }
+
+                                StyledComboBox {
+                                    id: removeProfileCombo
+                                    implicitHeight: 24
+                                    implicitWidth: 160
+                                    Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
+                                    model: [
+                                        { text: root.tr("profile_none", "Preset: None"), value: "clear" },
+                                        { text: root.tr("profile_clean_names", "✨ Clean Names"), value: "clean_names" },
+                                        { text: root.tr("profile_patreon_promo", "✂️ Patreon & Promo"), value: "patreon_promo" },
+                                        { text: root.tr("profile_watermarks", "🏷️ Watermark Tags"), value: "watermark_tags" },
+                                        { text: root.tr("profile_custom", "Preset: Custom / Manual"), value: "custom" }
+                                    ]
+                                    value: root.bridge ? root.bridge.removeWordsProfile : "clear"
+                                    tooltip: root.tr("tooltip_remove_words_profile", "Select a preset profile to strip unwanted platform tags and sample markers from saved filenames.")
+                                    onValuePicked: function(v) {
+                                        if (root.bridge) root.bridge.applyRemoveWordsProfile(v)
+                                    }
+                                }
                             }
 
                             StyledTextField {
+                                id: removeWordsField
                                 Layout.fillWidth: true
                                 Layout.minimumWidth: 0
                                 placeholderText: root.tr("placeholder_remove_words", "e.g., patreon, HD, [sample]")
@@ -1432,6 +1585,98 @@ SmoothFlickable {
                                 onTextChanged: {
                                     if (root.bridge && root.bridge.removeWords !== text) {
                                         root.bridge.removeWords = text
+                                    }
+                                }
+                            }
+
+                            // Quick add chips flow
+                            Flow {
+                                Layout.fillWidth: true
+                                spacing: 5
+
+                                Text {
+                                    text: root.tr("label_quick_add", "Quick add:")
+                                    font.family: "Segoe UI, sans-serif"
+                                    font.pixelSize: 10
+                                    color: "#64748B"
+                                    height: 20
+                                    verticalAlignment: Text.AlignVCenter
+                                }
+
+                                Repeater {
+                                    model: [
+                                        { label: "+ patreon", tag: "patreon" },
+                                        { label: "+ fanbox", tag: "fanbox" },
+                                        { label: "+ HD", tag: "HD" },
+                                        { label: "+ [sample]", tag: "[sample]" },
+                                        { label: "+ preview", tag: "preview" }
+                                    ]
+
+                                    delegate: Rectangle {
+                                        implicitHeight: 20
+                                        implicitWidth: remChipText.implicitWidth + 14
+                                        radius: 4
+                                        color: remChipMouse.pressed ? "#0F172A" : (remChipMouse.containsMouse ? "#1E293B" : "#141923")
+                                        border.color: remChipMouse.containsMouse ? "#38BDF8" : "#283042"
+                                        border.width: 1
+
+                                        Behavior on color { ColorAnimation { duration: 100 } }
+                                        Behavior on border.color { ColorAnimation { duration: 100 } }
+
+                                        Text {
+                                            id: remChipText
+                                            anchors.centerIn: parent
+                                            text: modelData.label
+                                            font.family: "Segoe UI, sans-serif"
+                                            font.pixelSize: 10
+                                            font.weight: Font.Medium
+                                            color: remChipMouse.containsMouse ? "#38BDF8" : "#94A3B8"
+                                            Behavior on color { ColorAnimation { duration: 100 } }
+                                        }
+
+                                        MouseArea {
+                                            id: remChipMouse
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                if (root.bridge) root.bridge.appendKeywordsToRemove(modelData.tag)
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Rectangle {
+                                    visible: root.bridge && root.bridge.removeWords.length > 0
+                                    implicitHeight: 20
+                                    implicitWidth: clearRemChipText.implicitWidth + 12
+                                    radius: 4
+                                    color: clearRemChipMouse.pressed ? "#450A0A" : (clearRemChipMouse.containsMouse ? "#2A1215" : "#181316")
+                                    border.color: clearRemChipMouse.containsMouse ? "#EF4444" : "#4A2024"
+                                    border.width: 1
+
+                                    Behavior on color { ColorAnimation { duration: 100 } }
+                                    Behavior on border.color { ColorAnimation { duration: 100 } }
+
+                                    Text {
+                                        id: clearRemChipText
+                                        anchors.centerIn: parent
+                                        text: root.tr("chip_clear", "Clear ✕")
+                                        font.family: "Segoe UI, sans-serif"
+                                        font.pixelSize: 10
+                                        font.weight: Font.Medium
+                                        color: clearRemChipMouse.containsMouse ? "#F87171" : "#A85353"
+                                        Behavior on color { ColorAnimation { duration: 100 } }
+                                    }
+
+                                    MouseArea {
+                                        id: clearRemChipMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            if (root.bridge) root.bridge.applyRemoveWordsProfile("clear")
+                                        }
                                     }
                                 }
                             }
@@ -2966,11 +3211,11 @@ SmoothFlickable {
                         spacing: 8
 
                         StyledButton {
-                            text: root.tr("btn_add_all_queue", "Add All to Queue")
-                            iconText: "▶"
+                            text: (root.bridge && root.bridge.isDownloading) ? root.tr("action_queue_at_end", "Queue at End") : root.tr("btn_add_all_queue", "Add All to Queue")
+                            iconText: (root.bridge && root.bridge.isDownloading) ? "➕" : "▶"
                             variant: "primary"
-                            tooltip: root.tr("btn_add_all_queue_tip", "Parse and start downloading all URLs above")
-                            enabled: batchInput.text.trim().length > 0 && root.bridge && !root.bridge.isDownloading
+                            tooltip: (root.bridge && root.bridge.isDownloading) ? root.tr("btn_add_all_queue_active_tip", "Add all URLs to the end of the active download queue with current filter settings") : root.tr("btn_add_all_queue_tip", "Parse and start downloading all URLs above")
+                            enabled: batchInput.text.trim().length > 0 && root.bridge
                             onClicked: {
                                 if (root.bridge) {
                                     var count = root.bridge.batchLoadUrls(batchInput.text)

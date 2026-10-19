@@ -1,8 +1,8 @@
 {
-    "version": "1.2.9",
+    "version": "1.3.0",
     "commit": "",
     "short_commit": "",
-    "date": "2026-10-15",
+    "date": "2026-10-19",
     "channel": "release",
     "history": [
         {
@@ -154,6 +154,11 @@
             "version": "1.2.9",
             "date": "2026-10-15",
             "notes": "Added global bandwidth limiter with support for MB/s and mbps speed caps across all concurrent workers and download streams, live speed limit indicator badge, fix Retry Failed button staying active after successful retries, and clean Linux startup warnings."
+        },
+        {
+            "version": "1.3.0",
+            "date": "2026-10-19",
+            "notes": "Content search and post tags in Gallery (descriptions, titles, tags, and character tagging for generic files), smarter ETA calculations, independent batch pause and queue display improvements, filter presets and quick keyword chips, live URL queueing during active downloads, false 404 prevention, and strict thumbnail download controls."
         }
     ]
 }

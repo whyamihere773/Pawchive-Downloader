@@ -54,7 +54,7 @@ def watchlist_cutoff(done_posts, unfinished_posts):
     return newest_pid, newest_date, day_ids
 from core.logger import logger
 from core.parser import KemonoURLParser, URLParseResult
-from core.filter_engine import FilterEngine, FilterOptions, FilenameStyles
+from core.filter_engine import FilterEngine, FilterOptions, FilenameStyles, FILTER_PROFILES, REMOVE_WORDS_PROFILES
 from core.file_order import normalize_file_order, order_files
 from core.api_client import KemonoApiClient
 from core.downloader import KemonoDownloader, DownloadTask, is_permanent_failure
@@ -102,8 +102,10 @@ class AppBridge(QObject):
     filterCharactersChanged = Signal()
     characterScopeChanged = Signal()
     skipWordsChanged = Signal()
+    filterProfileChanged = Signal()
     skipScopeChanged = Signal()
     removeWordsChanged = Signal()
+    removeWordsProfileChanged = Signal()
     dateAfterChanged = Signal()
     dateBeforeChanged = Signal()
     dateAutoScanPagesChanged = Signal()
@@ -320,9 +322,11 @@ class AppBridge(QObject):
         self._download_dir = saved_settings.get("download_dir", os.path.join(os.path.expanduser("~"), "Downloads", "KemonoDownloads"))
         self._filter_characters = ""
         self._character_scope = saved_settings.get("character_scope", "title")
-        self._skip_words = ""
+        self._skip_words = saved_settings.get("skip_words", "")
         self._skip_scope = saved_settings.get("skip_scope", "posts")
-        self._remove_words = ""
+        self._remove_words = saved_settings.get("remove_words", "")
+        self._filter_profile = saved_settings.get("filter_profile", FilterEngine.match_filter_profile(self._skip_words))
+        self._remove_words_profile = saved_settings.get("remove_words_profile", FilterEngine.match_remove_words_profile(self._remove_words))
         # Date range filters apply to one download; remembering them silently skipped posts later
         self._date_after = ""
         self._date_before = ""
@@ -580,6 +584,8 @@ class AppBridge(QObject):
         self._queue_model.batchRetryRequested.connect(self._handle_batch_retry)
         self._queue_model.batchCancelRequested.connect(self._handle_batch_cancel)
         self._queue_model.batchRemoveRequested.connect(self._handle_batch_remove)
+        self._queue_model.batchPauseRequested.connect(self._handle_batch_pause)
+        self._queue_model.batchResumeRequested.connect(self._handle_batch_resume)
         self._queue_model.cleared.connect(self._handle_queue_cleared)
         self._queued_links: set[str] = set()
 
@@ -711,6 +717,53 @@ class AppBridge(QObject):
         if self._skip_words != val:
             self._skip_words = val
             self.skipWordsChanged.emit()
+            matched = FilterEngine.match_filter_profile(val)
+            if self._filter_profile != matched:
+                self._filter_profile = matched
+                self.filterProfileChanged.emit()
+            self._settings_save_timer.start()
+
+    @Property(str, notify=filterProfileChanged)
+    def filterProfile(self) -> str:
+        return self._filter_profile
+
+    @filterProfile.setter
+    def filterProfile(self, val: str):
+        if self._filter_profile != val:
+            self.applyFilterProfile(val)
+
+    @Slot(str)
+    def applyFilterProfile(self, profile_key: str):
+        """Applies a preset filter profile or clears keywords."""
+        if profile_key == "clear":
+            self._filter_profile = "clear"
+            self.filterProfileChanged.emit()
+            self.skipWords = ""
+        elif profile_key in FILTER_PROFILES:
+            self._filter_profile = profile_key
+            self.filterProfileChanged.emit()
+            self.skipWords = FILTER_PROFILES[profile_key]["keywords"]
+        elif profile_key == "custom":
+            self._filter_profile = "custom"
+            self.filterProfileChanged.emit()
+            self._settings_save_timer.start()
+
+    @Slot(str)
+    def appendKeywordsToSkip(self, keywords: str):
+        """Appends comma-separated keywords to skipWords without duplicates."""
+        if not keywords:
+            return
+        current_tokens = [t.strip() for t in self._skip_words.split(",") if t.strip()]
+        current_lower = {t.lower() for t in current_tokens}
+        new_tokens = [t.strip() for t in keywords.split(",") if t.strip()]
+        added = False
+        for token in new_tokens:
+            if token.lower() not in current_lower:
+                current_tokens.append(token)
+                current_lower.add(token.lower())
+                added = True
+        if added:
+            self.skipWords = ", ".join(current_tokens)
 
     @Property(str, notify=skipScopeChanged)
     def skipScope(self) -> str:
@@ -732,6 +785,53 @@ class AppBridge(QObject):
         if self._remove_words != val:
             self._remove_words = val
             self.removeWordsChanged.emit()
+            matched = FilterEngine.match_remove_words_profile(val)
+            if self._remove_words_profile != matched:
+                self._remove_words_profile = matched
+                self.removeWordsProfileChanged.emit()
+            self._settings_save_timer.start()
+
+    @Property(str, notify=removeWordsProfileChanged)
+    def removeWordsProfile(self) -> str:
+        return self._remove_words_profile
+
+    @removeWordsProfile.setter
+    def removeWordsProfile(self, val: str):
+        if self._remove_words_profile != val:
+            self.applyRemoveWordsProfile(val)
+
+    @Slot(str)
+    def applyRemoveWordsProfile(self, profile_key: str):
+        """Applies a preset remove words profile or clears keywords."""
+        if profile_key == "clear":
+            self._remove_words_profile = "clear"
+            self.removeWordsProfileChanged.emit()
+            self.removeWords = ""
+        elif profile_key in REMOVE_WORDS_PROFILES:
+            self._remove_words_profile = profile_key
+            self.removeWordsProfileChanged.emit()
+            self.removeWords = REMOVE_WORDS_PROFILES[profile_key]["keywords"]
+        elif profile_key == "custom":
+            self._remove_words_profile = "custom"
+            self.removeWordsProfileChanged.emit()
+            self._settings_save_timer.start()
+
+    @Slot(str)
+    def appendKeywordsToRemove(self, keywords: str):
+        """Appends comma-separated keywords to removeWords without duplicates."""
+        if not keywords:
+            return
+        current_tokens = [t.strip() for t in self._remove_words.split(",") if t.strip()]
+        current_lower = {t.lower() for t in current_tokens}
+        new_tokens = [t.strip() for t in keywords.split(",") if t.strip()]
+        added = False
+        for token in new_tokens:
+            if token.lower() not in current_lower:
+                current_tokens.append(token)
+                current_lower.add(token.lower())
+                added = True
+        if added:
+            self.removeWords = ", ".join(current_tokens)
 
     @Property(str, notify=dateAfterChanged)
     def dateAfter(self) -> str:
@@ -2559,16 +2659,40 @@ class AppBridge(QObject):
         Starts downloading queued works, or parses URL, fetches posts, and starts download.
         If tasks are already queued and current URL is blank or already queued, directly starts the queue.
         """
+        url_input = (self._current_url or "").strip()
+
         if self._is_downloading:
-            logger.warning("Download process is already running!", category="system")
-            return
+            if url_input:
+                parsed_cur = KemonoURLParser.parse(url_input)
+                if not parsed_cur.is_valid:
+                    logger.error(f"Invalid URL: {parsed_cur.error_msg} ({url_input})", category="parser")
+                    return
+                if self._refuse_if_disabled(url_input):
+                    return
+                link_type, identity_key, parent_artist_key, display_name = self._get_link_identity(parsed_cur)
+                if identity_key in self._queued_links or (parent_artist_key and parent_artist_key in self._queued_links):
+                    logger.warning(f"Skipping duplicate: {display_name} is already in queue.", category="queue")
+                    return
+                self._queued_links.add(identity_key)
+                logger.info(f"Active download running: adding '{display_name}' to end of queue with current filter settings...", category="queue")
+                self._current_url = ""
+                self.currentUrlChanged.emit()
+                self._scan_cancel_event.clear()
+                threading.Thread(
+                    target=self._async_fetch_and_start,
+                    args=(parsed_cur, True),
+                    daemon=True
+                ).start()
+                return
+            else:
+                logger.warning("Download process is already running!", category="system")
+                return
 
         # Ensure downloader tasks list is synced with queue model if needed
         if not self.downloader.tasks and self._queue_model.tasks:
             self.downloader.tasks = list(self._queue_model.tasks)
 
         has_pending = any(t.status in ("pending", "failed", "cancelled") for t in self.downloader.tasks) or (self._queue_model.pendingCount > 0)
-        url_input = (self._current_url or "").strip()
 
         # Check if URL input matches an already queued item
         url_is_already_queued = False
@@ -3500,6 +3624,7 @@ class AppBridge(QObject):
                             file_size=f.get("size", 0),
                             batch_id=f"bunkr_{parsed.post_id or creator_name or 'bunkr'}"
                         )
+                        t.options = options
                         tasks.append(t)
 
                 elif parsed.provider == "erome":
@@ -3519,6 +3644,7 @@ class AppBridge(QObject):
                             file_id=f["url"],
                             batch_id=f"erome_{parsed.post_id or creator_name or 'erome'}"
                         )
+                        t.options = options
                         tasks.append(t)
 
                 elif parsed.provider == "nhentai":
@@ -3538,6 +3664,7 @@ class AppBridge(QObject):
                             file_id=f["url"],
                             batch_id=f"nhentai_{parsed.post_id or creator_name or 'nhentai'}"
                         )
+                        t.options = options
                         tasks.append(t)
 
                 elif parsed.provider == "telegram":
@@ -3570,6 +3697,7 @@ class AppBridge(QObject):
                                 telegram_message_id=int(post.get("message_id", 0)),
                                 batch_id=f"telegram_{creator_name}"
                             )
+                            t.options = options
                             tasks.append(t)
                     else:
                         self._is_downloading = bool(self.downloader._is_running)
@@ -3807,7 +3935,7 @@ class AppBridge(QObject):
                         self.isDownloadingChanged.emit()
             else:
                 self._appendTasksSignal.emit(tasks)
-                self.downloader.append_tasks(tasks)
+                self.downloader.append_tasks(tasks, options=options, cookie_str=self._cookie_string)
                 self._status_text = f"Queued {len(tasks)} files ({creator_name})."
                 self.statusTextChanged.emit()
 
@@ -4887,7 +5015,7 @@ class AppBridge(QObject):
                 self._queued_links.add(identity_key)
                 threading.Thread(
                     target=self._async_fetch_and_start,
-                    args=(parsed, False),
+                    args=(parsed, True),
                     daemon=True
                 ).start()
             else:
@@ -5037,7 +5165,11 @@ class AppBridge(QObject):
             "page_start": 1,
             "page_end": 999999,
             "character_scope": self._character_scope,
+            "skip_words": self._skip_words,
             "skip_scope": self._skip_scope,
+            "remove_words": self._remove_words,
+            "filter_profile": self._filter_profile,
+            "remove_words_profile": self._remove_words_profile,
             "subfolder_per_post": self._subfolder_per_post,
             "date_prefix": self._date_prefix,
             "site_in_folder_name": folder_naming.include_service,
@@ -5267,6 +5399,26 @@ class AppBridge(QObject):
     @Slot(str)
     def _handle_batch_cancel(self, batch_id: str):
         self.downloader.cancel_batch(batch_id)
+
+    @Slot(str)
+    def _handle_batch_pause(self, batch_id: str):
+        if not batch_id:
+            return
+        paused_count = self.downloader.pause_batch(batch_id)
+        logger.info(f"Paused batch '{batch_id}' ({paused_count} tasks paused).", category="downloader")
+
+    @Slot(str)
+    def _handle_batch_resume(self, batch_id: str):
+        if not batch_id:
+            return
+        if not self.downloader.tasks and self._queue_model.tasks:
+            self.downloader.tasks = self._queue_model.getTasks()
+        options = self._get_filter_options()
+        self._is_downloading = True
+        self.isDownloadingChanged.emit()
+        resumed_count = self.downloader.resume_batch(batch_id, options=options, cookie_str=self._cookie_string)
+        if resumed_count > 0:
+            logger.info(f"Resumed batch '{batch_id}' ({resumed_count} tasks restored).", category="downloader")
 
     @Slot(str)
     def _handle_batch_retry(self, batch_id: str):

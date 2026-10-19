@@ -1,0 +1,168 @@
+name: Mirror to GitLab and Gitee
+
+on:
+  push:
+    branches:
+      - main
+      - experimental
+    tags:
+      - '*'
+  release:
+    types:
+      - published
+      - edited
+  workflow_dispatch:
+    inputs:
+      sync_all_releases:
+        description: "Re-sync all releases from GitHub to mirrors"
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  group: mirror-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mirror-gitlab:
+    name: Mirror to GitLab (Native Links)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prepare native GitLab README (zero GitHub redirects)
+        run: |
+          python3 - << 'EOF'
+          import re
+          from pathlib import Path
+
+          readme = Path("README.md")
+          if not readme.exists():
+              exit(0)
+          text = readme.read_text(encoding="utf-8")
+
+          base = "https://gitlab.com/whyamihere7733/Pawchive-Downloader"
+          releases_url = f"{base}/-/releases"
+          issues_url = f"{base}/-/issues"
+          clone_url = f"{base}.git"
+          win_pkg = "https://gitlab.com/api/v4/projects/whyamihere7733%2FPawchive-Downloader/packages/generic/pawchive/v1.2.9/Pawchive-Downloader-v1.2.9-Windows.zip"
+          lin_pkg = "https://gitlab.com/api/v4/projects/whyamihere7733%2FPawchive-Downloader/packages/generic/pawchive/v1.2.9/Pawchive-Downloader-v1.2.9-Linux-x86_64.tar.gz"
+
+          text = text.replace("https://github.com/whyamihere773/Pawchive-Downloader/releases/latest", releases_url)
+          text = text.replace("https://github.com/whyamihere773/Pawchive-Downloader/releases", releases_url)
+          text = text.replace("https://github.com/whyamihere773/Pawchive-Downloader.git", clone_url)
+          text = text.replace("https://github.com/whyamihere773/Pawchive-Downloader/issues", issues_url)
+          text = text.replace("https://github.com/whyamihere773/Pawchive-Downloader", base)
+          text = text.replace("img.shields.io/github/v/release/whyamihere773/Pawchive-Downloader", "img.shields.io/gitlab/v/release/whyamihere7733%2FPawchive-Downloader")
+
+          text = re.sub(
+              r'<a href="[^"]*">\s*<img src="https://img\.shields\.io/badge/Download-Windows[^"]*"',
+              f'<a href="{win_pkg}">\n    <img src="https://img.shields.io/badge/Download-Windows%20Executable%20(.zip)-2ea44f?style=for-the-badge&logo=windows&logoColor=white"',
+              text
+          )
+          text = re.sub(
+              r'<a href="[^"]*">\s*<img src="https://img\.shields\.io/badge/Download-Linux[^"]*"',
+              f'<a href="{lin_pkg}">\n    <img src="https://img.shields.io/badge/Download-Linux%20Build%20(.tar.gz)-2ea44f?style=for-the-badge&logo=linux&logoColor=white"',
+              text
+          )
+
+          readme.write_text(text, encoding="utf-8")
+          EOF
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -am "docs: mirror links for GitLab" || true
+
+      - name: Push to GitLab mirror
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        run: |
+          git push "https://oauth2:${GITLAB_TOKEN}@gitlab.com/whyamihere7733/Pawchive-Downloader.git" HEAD:main --force
+          git push "https://oauth2:${GITLAB_TOKEN}@gitlab.com/whyamihere7733/Pawchive-Downloader.git" "+refs/heads/*:refs/heads/*" "+refs/tags/*:refs/tags/*"
+
+  mirror-gitee:
+    name: Mirror to Gitee (Native Links)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prepare native Gitee README (zero GitHub redirects)
+        run: |
+          python3 - << 'EOF'
+          import re
+          from pathlib import Path
+
+          readme = Path("README.md")
+          if not readme.exists():
+              exit(0)
+          text = readme.read_text(encoding="utf-8")
+
+          base = "https://gitee.com/whyamihere773/Pawchive-Downloader"
+          releases_url = f"{base}/releases"
+          issues_url = f"{base}/issues"
+          clone_url = f"{base}.git"
+
+          text = text.replace("https://github.com/whyamihere773/Pawchive-Downloader/releases/latest", releases_url)
+          text = text.replace("https://github.com/whyamihere773/Pawchive-Downloader/releases", releases_url)
+          text = text.replace("https://github.com/whyamihere773/Pawchive-Downloader.git", clone_url)
+          text = text.replace("https://github.com/whyamihere773/Pawchive-Downloader/issues", issues_url)
+          text = text.replace("https://github.com/whyamihere773/Pawchive-Downloader", base)
+          text = text.replace("img.shields.io/github/v/release/whyamihere773/Pawchive-Downloader", "img.shields.io/badge/Release-v1.2.9-blue")
+          text = text.replace("img.shields.io/github/downloads/whyamihere773/Pawchive-Downloader/total", "img.shields.io/badge/Downloads-Latest-success")
+
+          text = re.sub(
+              r'<a href="[^"]*">\s*<img src="https://img\.shields\.io/badge/Download-Windows[^"]*"',
+              f'<a href="{releases_url}">\n    <img src="https://img.shields.io/badge/Download-Windows%20Executable%20(.zip)-2ea44f?style=for-the-badge&logo=windows&logoColor=white"',
+              text
+          )
+          text = re.sub(
+              r'<a href="[^"]*">\s*<img src="https://img\.shields\.io/badge/Download-Linux[^"]*"',
+              f'<a href="{releases_url}">\n    <img src="https://img.shields.io/badge/Download-Linux%20Build%20(.tar.gz)-2ea44f?style=for-the-badge&logo=linux&logoColor=white"',
+              text
+          )
+
+          readme.write_text(text, encoding="utf-8")
+          EOF
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -am "docs: mirror links for Gitee" || true
+
+      - name: Push to Gitee mirror
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          git push "https://whyamihere773:${GITEE_TOKEN}@gitee.com/whyamihere773/Pawchive-Downloader.git" HEAD:main --force
+          git push "https://whyamihere773:${GITEE_TOKEN}@gitee.com/whyamihere773/Pawchive-Downloader.git" "+refs/heads/*:refs/heads/*" "+refs/tags/*:refs/tags/*"
+
+  sync-releases:
+    name: Sync Release Pages to GitLab & Gitee
+    needs: [mirror-gitlab, mirror-gitee]
+    if: always() && (github.event_name == 'release' || startsWith(github.ref, 'refs/tags/') || inputs.sync_all_releases == true)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Sync release pages to GitLab and Gitee
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          if [ "${{ inputs.sync_all_releases }}" = "true" ]; then
+            python scripts/sync_releases.py --all
+          else
+            python scripts/sync_releases.py
+          fi

@@ -13,14 +13,16 @@ QML bridge for Gallery tools that don't belong in the main app bridge:
 import json
 import os
 import re
+import shlex
 import shutil
 import threading
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set, Tuple
 
 from PySide6.QtCore import Qt, QFileSystemWatcher, QMimeData, QObject, Property, QUrl, Signal, Slot
 
 from core.logger import logger
+from core.post_metadata_index import GLOBAL_POST_META_INDEX
 
 _POST_ID_PREFIX = re.compile(r"^(\d{5,})_")
 _INVALID_NAME_CHARS = set('<>:"/\\|?*')
@@ -49,23 +51,41 @@ def _file_item(entry: os.DirEntry, root: str) -> Optional[dict]:
     }
 
 
-def parse_search_query(query: str):
+def parse_search_query(query: str) -> Tuple[List[str], List[str]]:
     """Split a search into name words and file-type filters.
-
-    ".png", "*.png" and "ext:png" are type filters (several = any of them, compound
-    types like ".tar.gz" work); everything else must appear in the name.
-    """
-    words, exts = [], []
-    for tok in (query or "").lower().split():
-        if tok.startswith("ext:"):
-            tok = "." + tok[4:].lstrip(".")
-        elif tok.startswith("*."):
-            tok = tok[1:]
-        if tok.startswith(".") and len(tok) > 1:
-            exts.append(tok)
-        elif tok:
-            words.append(tok)
+    (Preserved for backwards compatibility: returns (words, exts))."""
+    words, exts, _ = parse_search_query_extended(query)
     return words, exts
+
+
+def parse_search_query_extended(query: str) -> Tuple[List[str], List[str], List[str]]:
+    """Split a search into name/content words, file-type filters, and tag filters, respecting quotes."""
+    words, exts, tag_filters = [], [], []
+    q_str = (query or "").strip()
+    try:
+        raw_tokens = shlex.split(q_str)
+    except ValueError:
+        raw_tokens = q_str.split()
+
+    for tok in raw_tokens:
+        tok_clean = tok.strip("\"' ")
+        tok_lower = tok_clean.lower()
+        if tok_lower.startswith("tag:"):
+            tag_val = tok_clean[4:].strip("\"' ")
+            if tag_val:
+                tag_filters.append(tag_val)
+        elif tok_lower.startswith("ext:"):
+            ext_val = "." + tok_clean[4:].lstrip(".").lower()
+            exts.append(ext_val)
+        elif tok_lower.startswith("*."):
+            ext_val = tok_lower[1:]
+            if len(ext_val) > 1:
+                exts.append(ext_val)
+        elif tok_lower.startswith(".") and len(tok_lower) > 1:
+            exts.append(tok_lower)
+        elif tok_lower:
+            words.append(tok_lower)
+    return words, exts, tag_filters
 
 
 def name_matches(name: str, is_dir: bool, words: List[str], exts: List[str]) -> bool:
@@ -173,16 +193,16 @@ class GalleryToolsBridge(QObject):
     # ── Recursive search ────────────────────────────────────────────────────
     @Slot(str, str, int, result=int)
     def startSearch(self, root: str, query: str, maxResults: int = 5000) -> int:
-        """Search names under root. Results arrive through searchBatch; returns the search token."""
+        """Search names and metadata/tags under root. Results arrive through searchBatch; returns the search token."""
         with self._lock:
             self._search_token += 1
             token = self._search_token
-        words, exts = parse_search_query(query)
-        if not root or not os.path.isdir(root) or not (words or exts):
+        words, exts, tag_filters = parse_search_query_extended(query)
+        if not root or not os.path.isdir(root) or not (words or exts or tag_filters):
             self.searchBatch.emit(token, [], True, 0)
             return token
         threading.Thread(
-            target=self._run_search, args=(token, os.path.normpath(root), words, exts, max(1, maxResults)),
+            target=self._run_search, args=(token, os.path.normpath(root), words, exts, tag_filters, max(1, maxResults)),
             daemon=True, name="GallerySearch",
         ).start()
         return token
@@ -192,7 +212,7 @@ class GalleryToolsBridge(QObject):
         with self._lock:
             self._search_token += 1
 
-    def _run_search(self, token: int, root: str, words: List[str], exts: List[str], max_results: int):
+    def _run_search(self, token: int, root: str, words: List[str], exts: List[str], tag_filters: List[str], max_results: int):
         batch: List[dict] = []
         found = 0
         scanned = 0
@@ -208,6 +228,14 @@ class GalleryToolsBridge(QObject):
                     entries = list(it)
             except OSError:
                 continue
+
+            folder_all_match = False
+            folder_matching_files: Set[str] = set()
+            if words or tag_filters:
+                folder_all_match, folder_matching_files = GLOBAL_POST_META_INDEX.search_folder_records(
+                    folder, words, tag_filters
+                )
+
             for entry in entries:
                 try:
                     is_dir = entry.is_dir(follow_symlinks=False)
@@ -215,7 +243,23 @@ class GalleryToolsBridge(QObject):
                     is_dir = False
                 if is_dir:
                     stack.append(entry.path)
+
+                matched = False
+                # 1. Filename match (legacy)
                 if name_matches(entry.name, is_dir, words, exts):
+                    if not tag_filters:
+                        matched = True
+
+                # 2. Post metadata / content / tag match
+                if not matched and not is_dir:
+                    ext_ok = not exts or any(entry.name.lower().endswith(e) for e in exts)
+                    if ext_ok:
+                        if folder_all_match:
+                            matched = True
+                        elif folder_matching_files and entry.name.lower() in folder_matching_files:
+                            matched = True
+
+                if matched:
                     item = _file_item(entry, root)
                     if item:
                         batch.append(item)
@@ -600,13 +644,15 @@ class GalleryToolsBridge(QObject):
 
     def _run_tags(self, token, km, work):
         result = {}
-        if km is not None:
-            for i, (path, title) in enumerate(work):
-                if token != self._tag_token:
-                    return
-                tags = self.tags_for_title(km, title)
-                if tags:
-                    result[path] = tags
+        for i, (path, title) in enumerate(work):
+            if token != self._tag_token:
+                return
+            legacy = self.tags_for_title(km, title) if km is not None else []
+            tags = GLOBAL_POST_META_INDEX.extract_tags_for_file(
+                path, title=title, km=km, legacy_tags=legacy
+            )
+            if tags:
+                result[path] = tags
         if token == self._tag_token:
             self.tagsReady.emit(token, result)
 

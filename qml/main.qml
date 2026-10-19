@@ -1070,6 +1070,9 @@ ApplicationWindow {
                 anchors.bottom: parent.bottom
                 transform: Translate { y: -16 * appWindow.chromeSlide }
                 bridge: appBridge
+                onStartRequested: {
+                    if (appBridge) appBridge.startDownload()
+                }
                 onQueueRequested: {
                     if (appBridge) appBridge.addToQueue()
                 }
@@ -1249,35 +1252,41 @@ ApplicationWindow {
                     height: parent.height
                     spacing: 6
 
-                    // ── PRIMARY: Start Download / Extract Links / Downloading indicator ────
+                    // ── PRIMARY: Start Download / Extract Links / Queue at End / Downloading indicator ────
                     Rectangle {
                         id: mainStartBtn
                         property bool isLinksMode: appBridge ? appBridge.filterType === "links" : false
                         property bool isFavoritesMode: (appBridge && appBridge.favoriteMode && (!appBridge.currentUrl || appBridge.currentUrl.trim().length === 0))
                         property bool isDownloading: appBridge ? appBridge.isDownloading : false
                         property bool hasPendingQueue: (appBridge && appBridge.queueModel) ? (appBridge.queueModel.pendingCount > 0 || appBridge.queueModel.count > 0) : false
+                        property bool hasUrlInput: (appBridge && appBridge.currentUrl && appBridge.currentUrl.trim().length > 0)
+                        property bool isQueueAtEnd: mainStartBtn.isDownloading && mainStartBtn.hasUrlInput
                         property bool isTelegramBlocked: (appBridge ? appBridge.isTelegramUrl : false) && !hasPendingQueue
 
-                        Layout.preferredWidth: Math.max(isFavoritesMode ? 175 : (isLinksMode ? 162 : 148), startBtnRow.implicitWidth + 28)
+                        Layout.preferredWidth: Math.max(isQueueAtEnd ? 160 : (isFavoritesMode ? 175 : (isLinksMode ? 162 : 148)), startBtnRow.implicitWidth + 28)
                         Layout.preferredHeight: 34
                         radius: 7
 
                         color: mainStartBtn.isTelegramBlocked
                             ? "#10131B"
-                            : (mainStartBtn.isDownloading
-                                ? "#0F2A1A"
-                                : (startBtnMouse.containsMouse
-                                    ? (mainStartBtn.isFavoritesMode ? "#2E2008" : (mainStartBtn.isLinksMode ? "#0D3330" : "#1a3a52"))
-                                    : (mainStartBtn.isFavoritesMode ? "#241905" : (mainStartBtn.isLinksMode ? "#0A2825" : "#0D2137"))))
+                            : (mainStartBtn.isQueueAtEnd
+                                ? (startBtnMouse.containsMouse ? "#1A2F45" : "#0E2235")
+                                : (mainStartBtn.isDownloading
+                                    ? "#0F2A1A"
+                                    : (startBtnMouse.containsMouse
+                                        ? (mainStartBtn.isFavoritesMode ? "#2E2008" : (mainStartBtn.isLinksMode ? "#0D3330" : "#1a3a52"))
+                                        : (mainStartBtn.isFavoritesMode ? "#241905" : (mainStartBtn.isLinksMode ? "#0A2825" : "#0D2137")))))
                         border.color: mainStartBtn.isTelegramBlocked
                             ? "#334155"
-                            : (mainStartBtn.isDownloading
-                                ? "#10B981"
-                                : (mainStartBtn.isFavoritesMode ? "#F59E0B" : (mainStartBtn.isLinksMode ? "#2DD4BF" : "#38BDF8")))
+                            : (mainStartBtn.isQueueAtEnd
+                                ? "#38BDF8"
+                                : (mainStartBtn.isDownloading
+                                    ? "#10B981"
+                                    : (mainStartBtn.isFavoritesMode ? "#F59E0B" : (mainStartBtn.isLinksMode ? "#2DD4BF" : "#38BDF8"))))
                         border.width: 1
-                        opacity: mainStartBtn.isTelegramBlocked ? 0.45 : (mainStartBtn.isDownloading ? 0.7 : 1.0)
+                        opacity: mainStartBtn.isTelegramBlocked ? 0.45 : (mainStartBtn.isDownloading && !mainStartBtn.hasUrlInput ? 0.7 : 1.0)
 
-                        scale: (!mainStartBtn.isTelegramBlocked && startBtnMouse.pressed) ? 0.94 : ((!mainStartBtn.isTelegramBlocked && startBtnMouse.containsMouse) ? 1.03 : 1.0)
+                        scale: (!mainStartBtn.isTelegramBlocked && (!mainStartBtn.isDownloading || mainStartBtn.hasUrlInput) && startBtnMouse.pressed) ? 0.94 : ((!mainStartBtn.isTelegramBlocked && (!mainStartBtn.isDownloading || mainStartBtn.hasUrlInput) && startBtnMouse.containsMouse) ? 1.03 : 1.0)
                         transformOrigin: Item.Center
 
                         Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutBack; easing.overshoot: 1.5 } }
@@ -1290,19 +1299,20 @@ ApplicationWindow {
                             anchors.centerIn: parent
                             spacing: 6
                             Text {
-                                text: mainStartBtn.isTelegramBlocked ? "🚫" : (mainStartBtn.isDownloading ? "⏳" : (mainStartBtn.isFavoritesMode ? "⭐" : (mainStartBtn.isLinksMode ? "🔗" : "⚡")))
+                                text: mainStartBtn.isTelegramBlocked ? "🚫" : (mainStartBtn.isQueueAtEnd ? "➕" : (mainStartBtn.isDownloading ? "⏳" : (mainStartBtn.isFavoritesMode ? "⭐" : (mainStartBtn.isLinksMode ? "🔗" : "⚡"))))
                                 font.pixelSize: 13
                                 anchors.verticalCenter: parent.verticalCenter
                             }
                             Text {
                                 text: mainStartBtn.isTelegramBlocked ? appWindow.tr("action_select_required", "Use 'Select Posts'")
+                                    : (mainStartBtn.isQueueAtEnd ? appWindow.tr("action_queue_at_end", "Queue at End")
                                     : (mainStartBtn.isDownloading ? appWindow.tr("action_downloading", "Downloading…")
                                     : (mainStartBtn.isFavoritesMode ? appWindow.tr("action_download_favorites", "Download Favorites")
-                                    : (mainStartBtn.isLinksMode ? appWindow.tr("action_extract_links", "Extract Links") : appWindow.tr("action_start_download", "Start Download"))))
+                                    : (mainStartBtn.isLinksMode ? appWindow.tr("action_extract_links", "Extract Links") : appWindow.tr("action_start_download", "Start Download")))))
                                 font.family: "Segoe UI, sans-serif"
                                 font.pixelSize: 12
                                 font.weight: 600
-                                color: mainStartBtn.isTelegramBlocked ? "#64748B" : (mainStartBtn.isDownloading ? "#34D399" : (mainStartBtn.isFavoritesMode ? "#FBBF24" : (mainStartBtn.isLinksMode ? "#2DD4BF" : "#38BDF8")))
+                                color: mainStartBtn.isTelegramBlocked ? "#64748B" : (mainStartBtn.isQueueAtEnd ? "#38BDF8" : (mainStartBtn.isDownloading ? "#34D399" : (mainStartBtn.isFavoritesMode ? "#FBBF24" : (mainStartBtn.isLinksMode ? "#2DD4BF" : "#38BDF8"))))
                                 anchors.verticalCenter: parent.verticalCenter
                             }
                         }
@@ -1311,17 +1321,21 @@ ApplicationWindow {
                             id: startBtnMouse
                             anchors.fill: parent
                             hoverEnabled: true
-                            cursorShape: (mainStartBtn.isDownloading || mainStartBtn.isTelegramBlocked) ? Qt.ArrowCursor : Qt.PointingHandCursor
-                            enabled: !mainStartBtn.isDownloading && !mainStartBtn.isTelegramBlocked
+                            cursorShape: (mainStartBtn.isTelegramBlocked || (mainStartBtn.isDownloading && !mainStartBtn.hasUrlInput)) ? Qt.ArrowCursor : Qt.PointingHandCursor
+                            enabled: (!mainStartBtn.isDownloading || mainStartBtn.hasUrlInput) && !mainStartBtn.isTelegramBlocked
                             ToolTip.visible: containsMouse
                             ToolTip.delay: 300
                             ToolTip.text: mainStartBtn.isTelegramBlocked
                                 ? appWindow.tr("tip_tg_disabled", "Direct download is disabled for Telegram links. Please click 'Select Posts…' to configure download scope and media filters.")
-                                : (mainStartBtn.isFavoritesMode
-                                    ? appWindow.tr("tip_download_favorites", "Fetch and download all favorited posts from your connected account")
-                                    : (mainStartBtn.isLinksMode
-                                        ? appWindow.tr("tip_extract_links", "Scan posts for external cloud links (Mega.nz, Drive, Dropbox, etc.) — no files downloaded")
-                                        : appWindow.tr("tip_start_download", "Fetch posts from the URL and start downloading immediately")))
+                                : (mainStartBtn.isQueueAtEnd
+                                    ? appWindow.tr("tip_queue_at_end", "Add this URL to the end of the active download queue with current filter settings")
+                                    : (mainStartBtn.isDownloading
+                                        ? appWindow.tr("tip_downloading_status", "Downloads are actively in progress. Enter a URL above to queue it at the end.")
+                                        : (mainStartBtn.isFavoritesMode
+                                            ? appWindow.tr("tip_download_favorites", "Fetch and download all favorited posts from your connected account")
+                                            : (mainStartBtn.isLinksMode
+                                                ? appWindow.tr("tip_extract_links", "Scan posts for external cloud links (Mega.nz, Drive, Dropbox, etc.) — no files downloaded")
+                                                : appWindow.tr("tip_start_download", "Fetch posts from the URL and start downloading immediately")))))
                             onClicked: if (appBridge) appBridge.startDownload()
                         }
                     }

@@ -87,6 +87,8 @@ class QueueGroupsModel(QAbstractListModel):
     ActiveFileNameRole = Qt.UserRole + 19
     ActiveFileProgressPctRole = Qt.UserRole + 20
     ActiveFileSpeedRole = Qt.UserRole + 21
+    IsPausedRole = Qt.UserRole + 22
+    PausedFilesRole = Qt.UserRole + 23
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -97,6 +99,7 @@ class QueueGroupsModel(QAbstractListModel):
         self._task_last_group_status: Dict[int, str] = {}
         self._last_progress_time: Dict[str, float] = {}
         self._last_emitted_stats: Dict[str, tuple] = {}
+        self._paused_batch_ids: set = set()
         # Groups whose numbers changed since the last refresh (refreshed together, a few times a second)
         self._dirty_groups: set = set()
         self._flush_timer = QTimer(self)
@@ -113,6 +116,29 @@ class QueueGroupsModel(QAbstractListModel):
 
     _rebuilt = Signal(int, object)
     BACKGROUND_REBUILD_AT = 20000
+
+    def pause_batch(self, batch_id: str):
+        if batch_id:
+            self._paused_batch_ids.add(batch_id)
+            if batch_id in self._row_by_id:
+                row = self._row_by_id[batch_id]
+                g = self._groups[row]
+                self._calc_group_stats(g, self._tasks_by_id.get(batch_id, []))
+                idx = self.index(row, 0)
+                self.dataChanged.emit(idx, idx)
+
+    def resume_batch(self, batch_id: str):
+        if batch_id:
+            self._paused_batch_ids.discard(batch_id)
+            if batch_id in self._row_by_id:
+                row = self._row_by_id[batch_id]
+                g = self._groups[row]
+                self._calc_group_stats(g, self._tasks_by_id.get(batch_id, []))
+                idx = self.index(row, 0)
+                self.dataChanged.emit(idx, idx)
+
+    def is_batch_paused(self, batch_id: str) -> bool:
+        return batch_id in self._paused_batch_ids
 
     def rowCount(self, parent=QModelIndex()):
         return len(self._groups)
@@ -143,6 +169,8 @@ class QueueGroupsModel(QAbstractListModel):
             self.ActiveFileNameRole: "activeFileName",
             self.ActiveFileProgressPctRole: "activeFileProgressPct",
             self.ActiveFileSpeedRole: "activeFileSpeed",
+            self.IsPausedRole: "isPaused",
+            self.PausedFilesRole: "pausedFiles",
         }
         key = role_map.get(role)
         if key:
@@ -172,6 +200,8 @@ class QueueGroupsModel(QAbstractListModel):
             self.ActiveFileNameRole: b"activeFileName",
             self.ActiveFileProgressPctRole: b"activeFileProgressPct",
             self.ActiveFileSpeedRole: b"activeFileSpeed",
+            self.IsPausedRole: b"isPaused",
+            self.PausedFilesRole: b"pausedFiles",
         }
 
     @staticmethod
@@ -192,6 +222,7 @@ class QueueGroupsModel(QAbstractListModel):
         failed_files = 0
         downloading_files = 0
         pending_files = 0
+        paused_files = 0
         total_files = len(tasks)
         total_bytes = 0
         downloaded_bytes = 0
@@ -213,11 +244,18 @@ class QueueGroupsModel(QAbstractListModel):
                     active_task = t
             elif t.status == "cancelled":
                 pass
+            elif t.status == "paused":
+                paused_files += 1
             else:
                 pending_files += 1
 
+        batch_id = g.get("batchId", "")
+        is_paused = (batch_id in self._paused_batch_ids) or (paused_files > 0 and downloading_files == 0)
+
         if (completed_files + skipped_files) == total_files and total_files > 0:
             status = "skipped" if (completed_files == 0 and skipped_files > 0) else "completed"
+        elif is_paused:
+            status = "paused"
         elif downloading_files > 0:
             status = "downloading"
         elif failed_files > 0 and (completed_files + skipped_files + failed_files == total_files):
@@ -240,6 +278,8 @@ class QueueGroupsModel(QAbstractListModel):
         g["failedFiles"] = failed_files
         g["downloadingFiles"] = downloading_files
         g["pendingFiles"] = pending_files
+        g["pausedFiles"] = paused_files
+        g["isPaused"] = is_paused
         g["totalBytes"] = total_bytes
         g["downloadedBytes"] = downloaded_bytes
         g["totalBytesStr"] = self._format_size(total_bytes)
@@ -399,7 +439,7 @@ class QueueGroupsModel(QAbstractListModel):
                 self._groups.append(g)
                 self._last_emitted_stats[bid] = (
                     g["totalFiles"], g["completedFiles"], g["skippedFiles"], g["failedFiles"],
-                    g["downloadingFiles"], g["pendingFiles"], g["status"]
+                    g["downloadingFiles"], g["pendingFiles"], g["status"], g.get("isPaused", False)
                 )
             self.endInsertRows()
 
@@ -438,7 +478,7 @@ class QueueGroupsModel(QAbstractListModel):
             self._groups.append(g)
             self._last_emitted_stats[bid] = (
                 g["totalFiles"], g["completedFiles"], g["skippedFiles"], g["failedFiles"],
-                g["downloadingFiles"], g["pendingFiles"], g["status"]
+                g["downloadingFiles"], g["pendingFiles"], g["status"], g.get("isPaused", False)
             )
             self.endInsertRows()
         else:
@@ -471,7 +511,7 @@ class QueueGroupsModel(QAbstractListModel):
             old_stats = self._last_emitted_stats.get(bid)
             new_stats = (
                 g["totalFiles"], g["completedFiles"], g["skippedFiles"], g["failedFiles"],
-                g["downloadingFiles"], g["pendingFiles"], g["status"]
+                g["downloadingFiles"], g["pendingFiles"], g["status"], g.get("isPaused", False)
             )
             idx = self.index(row, 0)
             # If structural stats (counts, status) changed, emit full dataChanged
@@ -491,6 +531,7 @@ class QueueGroupsModel(QAbstractListModel):
 
     def remove_batch(self, batch_id: str):
         if batch_id in self._row_by_id:
+            self._paused_batch_ids.discard(batch_id)
             row = self._row_by_id[batch_id]
             self.beginRemoveRows(QModelIndex(), row, row)
             self._groups.pop(row)
@@ -508,6 +549,7 @@ class QueueGroupsModel(QAbstractListModel):
             self.endRemoveRows()
 
     def clear(self):
+        self._paused_batch_ids.clear()
         self.beginResetModel()
         self._groups.clear()
         self._row_by_id.clear()
@@ -557,6 +599,8 @@ class QueueModel(QAbstractListModel):
     batchRetryRequested = Signal(str)
     batchCancelRequested = Signal(str)
     batchRemoveRequested = Signal(str)
+    batchPauseRequested = Signal(str)
+    batchResumeRequested = Signal(str)
     cleared = Signal()
     _guiCall = Signal(object)
     IMMEDIATE_REMOVAL_ROWS = 2000
@@ -580,6 +624,7 @@ class QueueModel(QAbstractListModel):
         self._completed_count: int = 0
         self._skipped_count: int = 0
         self._failed_count: int = 0
+        self._paused_batch_ids: set = set()
         self._task_last_status: Dict[int, str] = {}
         self._task_last_emit: Dict[int, float] = {}
         self._failed_404: dict = {}      # id(task) of failed tasks whose error is a 404
@@ -627,7 +672,7 @@ class QueueModel(QAbstractListModel):
                 failed += 1
                 if self._is_404(t):
                     failed_404[id(t)] = True
-            elif st == "pending":
+            elif st in ("pending", "paused"):
                 pending += 1
         self._pending_count = pending
         self._downloading_count = downloading
@@ -666,7 +711,7 @@ class QueueModel(QAbstractListModel):
         elif self._filter_status == "failed":
             return task.status in ("failed", "cancelled")
         elif self._filter_status == "pending":
-            return task.status == "pending"
+            return task.status in ("pending", "paused")
         return True
 
     def _flush_removals(self):
@@ -702,7 +747,7 @@ class QueueModel(QAbstractListModel):
         self.countChanged.emit()
 
     _STATUS_FILTERS = {"downloading": ("downloading", "retrying"), "completed": ("completed",),
-                       "skipped": ("skipped",), "failed": ("failed", "cancelled"), "pending": ("pending",)}
+                       "skipped": ("skipped",), "failed": ("failed", "cancelled"), "pending": ("pending", "paused")}
 
     def _rebuild_visible(self):
         self._pending_removals = set()
@@ -1019,6 +1064,9 @@ class QueueModel(QAbstractListModel):
     def removeBatch(self, batch_id: str):
         if not batch_id:
             return
+        self._paused_batch_ids.discard(batch_id)
+        if self._groups_model:
+            self._groups_model.resume_batch(batch_id)
         self.beginResetModel()
         self._counts_timer.stop()
         self._tasks = [t for t in self._tasks if (getattr(t, "batch_id", "") or f"{t.service}_{t.creator_name}_{t.post_id}".strip("_")) != batch_id or t.status == "downloading"]
@@ -1067,11 +1115,14 @@ class QueueModel(QAbstractListModel):
     def cancelBatch(self, batch_id: str):
         if not batch_id:
             return
+        self._paused_batch_ids.discard(batch_id)
+        if self._groups_model:
+            self._groups_model.resume_batch(batch_id)
         self.beginResetModel()
         self._counts_timer.stop()
         for t in self._tasks:
             bid = getattr(t, "batch_id", "") or f"{t.service}_{t.creator_name}_{t.post_id}".strip("_")
-            if bid == batch_id and t.status in ("pending", "downloading", "retrying"):
+            if bid == batch_id and t.status in ("pending", "downloading", "retrying", "paused"):
                 t.status = "cancelled"
                 t.error_msg = "Download cancelled by user"
                 t.progress_pct = 0
@@ -1092,9 +1143,79 @@ class QueueModel(QAbstractListModel):
         self.batchCancelRequested.emit(batch_id)
 
     @Slot(str)
+    def pauseBatch(self, batch_id: str):
+        if not batch_id:
+            return
+        self._paused_batch_ids.add(batch_id)
+        if self._groups_model:
+            self._groups_model.pause_batch(batch_id)
+        self.beginResetModel()
+        self._counts_timer.stop()
+        for t in self._tasks:
+            bid = getattr(t, "batch_id", "") or f"{t.service}_{t.creator_name}_{t.post_id}".strip("_")
+            if bid == batch_id and t.status in ("pending", "downloading", "retrying"):
+                t.status = "paused"
+                t.speed_bps = 0
+                t.speed_str = "0 KB/s"
+                t.eta_str = "--"
+                self._task_last_status[id(t)] = "paused"
+        self._recalculate_counts()
+        self._last_counts = (self._pending_count, self._downloading_count, self._completed_count, self._skipped_count, self._failed_count)
+        self._rebuild_visible()
+        self.endResetModel()
+        self.countChanged.emit()
+        self.countsChanged.emit()
+        if self._groups_model:
+            self._groups_model.rebuild(self._tasks)
+            self.groupsChanged.emit()
+        self.batchPauseRequested.emit(batch_id)
+
+    @Slot(str)
+    def resumeBatch(self, batch_id: str):
+        if not batch_id:
+            return
+        self._paused_batch_ids.discard(batch_id)
+        if self._groups_model:
+            self._groups_model.resume_batch(batch_id)
+        self.beginResetModel()
+        self._counts_timer.stop()
+        for t in self._tasks:
+            bid = getattr(t, "batch_id", "") or f"{t.service}_{t.creator_name}_{t.post_id}".strip("_")
+            if bid == batch_id and t.status == "paused":
+                t.status = "pending"
+                t.error_msg = ""
+                self._task_last_status[id(t)] = "pending"
+        self._recalculate_counts()
+        self._last_counts = (self._pending_count, self._downloading_count, self._completed_count, self._skipped_count, self._failed_count)
+        self._rebuild_visible()
+        self.endResetModel()
+        self.countChanged.emit()
+        self.countsChanged.emit()
+        if self._groups_model:
+            self._groups_model.rebuild(self._tasks)
+            self.groupsChanged.emit()
+        self.batchResumeRequested.emit(batch_id)
+
+    @Slot(str, result=bool)
+    def isBatchPaused(self, batch_id: str) -> bool:
+        if not batch_id:
+            return False
+        return batch_id in self._paused_batch_ids
+
+    @Slot(str)
+    def toggleBatchPause(self, batch_id: str):
+        if self.isBatchPaused(batch_id):
+            self.resumeBatch(batch_id)
+        else:
+            self.pauseBatch(batch_id)
+
+    @Slot(str)
     def retryBatch(self, batch_id: str):
         if not batch_id:
             return
+        self._paused_batch_ids.discard(batch_id)
+        if self._groups_model:
+            self._groups_model.resume_batch(batch_id)
         p = self.parent()
         skip_404 = bool(getattr(p, "skipRetry404", False)) if p else False
         self.beginResetModel()
@@ -1191,7 +1312,7 @@ class QueueModel(QAbstractListModel):
                 elif old_status in ("failed", "cancelled"):
                     self._failed_count = max(0, self._failed_count - 1)
                     self._failed_404.pop(task_id, None)
-                elif old_status == "pending":
+                elif old_status in ("pending", "paused"):
                     self._pending_count = max(0, self._pending_count - 1)
 
                 if new_status in ("downloading", "retrying"):
@@ -1204,7 +1325,7 @@ class QueueModel(QAbstractListModel):
                     self._failed_count += 1
                     if self._is_404(task):
                         self._failed_404[task_id] = True
-                elif new_status == "pending":
+                elif new_status in ("pending", "paused"):
                     self._pending_count += 1
 
                 curr_counts = (self._pending_count, self._downloading_count, self._completed_count, self._skipped_count, self._failed_count)
@@ -1221,6 +1342,7 @@ class QueueModel(QAbstractListModel):
     def clear(self):
         if self._off_gui_thread(self.clear):
             return
+        self._paused_batch_ids.clear()
         self.beginResetModel()
         self._counts_timer.stop()
         self._tasks.clear()

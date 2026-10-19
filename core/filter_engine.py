@@ -357,10 +357,104 @@ class FilterOptions:
             file_order=d.get("file_order", "posted"),
             webp_quality=d.get("webp_quality", "balanced"),
         )
+FILTER_PROFILES = {
+    "wip_sketches": {
+        "id": "wip_sketches",
+        "name": "WIP & Sketches",
+        "keywords": "WIP, sketch, draft, rough, lineart, doodle",
+        "description": "Skip work-in-progress, sketches, drafts, roughs, and lineart",
+    },
+    "low_quality": {
+        "id": "low_quality",
+        "name": "Low Quality & Previews",
+        "keywords": "preview, thumbnail, sample, lowres, [>=500KB]",
+        "description": "Skip low-resolution previews, thumbnails, samples, and files under 500KB",
+    },
+    "wip_and_low_quality": {
+        "id": "wip_and_low_quality",
+        "name": "WIP, Sketches & Low-Res",
+        "keywords": "WIP, sketch, draft, rough, lineart, preview, thumbnail, sample, lowres, [>=500KB]",
+        "description": "Skip both drafts/sketches and low-resolution preview files",
+    },
+    "watermarks_samples": {
+        "id": "watermarks_samples",
+        "name": "Watermarks & Samples",
+        "keywords": "sample, watermark, [sample], preview",
+        "description": "Skip watermarked files, samples, and promotional previews",
+    },
+    "final_art_only": {
+        "id": "final_art_only",
+        "name": "Final Art Only",
+        "keywords": "WIP, draft, sketch, preview, sample, promo, cover, teaser",
+        "description": "Keep only completed final artwork by skipping drafts, sketches, and promo teasers",
+    },
+    "large_media_only": {
+        "id": "large_media_only",
+        "name": "Large Media Only",
+        "keywords": "preview, thumbnail, sample, [>=1MB]",
+        "description": "Skip small files under 1MB and sample previews",
+    },
+}
 
+REMOVE_WORDS_PROFILES = {
+    "clean_names": {
+        "id": "clean_names",
+        "name": "Clean Names",
+        "keywords": "patreon, fanbox, HD, [sample], preview",
+        "description": "Remove common platform labels and sample markers from filenames",
+    },
+    "patreon_promo": {
+        "id": "patreon_promo",
+        "name": "Patreon & Promo Tags",
+        "keywords": "patreon, fanbox, gumroad, subpost, [sample]",
+        "description": "Remove creator subscription platform tags and promo suffixes",
+    },
+    "watermark_tags": {
+        "id": "watermark_tags",
+        "name": "Watermark Tags",
+        "keywords": "watermark, sample, preview, promo",
+        "description": "Strip watermark and sample terms from filenames",
+    },
+}
 
 
 class FilterEngine:
+    FILTER_PROFILES = FILTER_PROFILES
+    REMOVE_WORDS_PROFILES = REMOVE_WORDS_PROFILES
+
+    @classmethod
+    def match_filter_profile(cls, text: str) -> str:
+        """Determines if the given skip_words matches one of FILTER_PROFILES.
+        Returns profile key, 'clear' if empty, or 'custom' if unrecognized."""
+        if not text or not str(text).strip():
+            return "clear"
+        tokens = {t.strip().lower() for t in str(text).split(",") if t.strip()}
+        for key, p in FILTER_PROFILES.items():
+            p_tokens = {t.strip().lower() for t in p["keywords"].split(",") if t.strip()}
+            if tokens == p_tokens:
+                return key
+        return "custom"
+
+    @classmethod
+    def match_remove_words_profile(cls, text: str) -> str:
+        """Determines if the given remove_words matches one of REMOVE_WORDS_PROFILES.
+        Returns profile key, 'clear' if empty, or 'custom' if unrecognized."""
+        if not text or not str(text).strip():
+            return "clear"
+        tokens = {t.strip().lower() for t in str(text).split(",") if t.strip()}
+        for key, p in REMOVE_WORDS_PROFILES.items():
+            p_tokens = {t.strip().lower() for t in p["keywords"].split(",") if t.strip()}
+            if tokens == p_tokens:
+                return key
+        return "custom"
+
+    @classmethod
+    def get_filter_profile(cls, key: str) -> Optional[Dict[str, Any]]:
+        return FILTER_PROFILES.get(key)
+
+    @classmethod
+    def get_remove_words_profile(cls, key: str) -> Optional[Dict[str, Any]]:
+        return REMOVE_WORDS_PROFILES.get(key)
     @staticmethod
     def get_file_type_category(filename: str) -> str:
         """Returns broad category folder name ('Images', 'Video', 'Archive', 'Audio', 'Other') for a file."""

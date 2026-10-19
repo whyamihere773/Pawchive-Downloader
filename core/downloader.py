@@ -112,7 +112,14 @@ def is_permanent_failure(task) -> bool:
 
 def is_preview_url(url: str) -> bool:
     """Thumbnail-server URLs: a small preview copy, never the full-size original."""
-    return "/thumbnail/" in (url or "")
+    if not url:
+        return False
+    u_low = url.lower()
+    if "/thumbnail/" in u_low:
+        return True
+    if any(host in u_low for host in ("img.pawchive.pw", "img.kemono.cr", "img.coomer.st", "img.cum.st")):
+        return True
+    return False
 
 
 def needs_full_size_upgrade(existing_size: int, server_size: int, target_path: str, options,
@@ -296,8 +303,10 @@ class DownloadTask:
         batch_id: str = "",
         post_url: str = "",
         post_date: str = "",
-        user_id: str = ""
+        user_id: str = "",
+        options: Optional[Any] = None
     ):
+        self.options = options
         self.url = url
         self.target_path = target_path
         self.post_title = post_title
@@ -358,6 +367,7 @@ class DownloadTask:
             "expected_sha256": getattr(self, "expected_sha256", ""),
             "fallback_urls": list(getattr(self, "fallback_urls", []) or []),
             "used_preview": bool(getattr(self, "used_preview", False)),
+            "options": self.options.to_dict() if (getattr(self, "options", None) and hasattr(self.options, "to_dict")) else None,
         }
 
     @classmethod
@@ -388,6 +398,10 @@ class DownloadTask:
         t.status = d.get("status", "pending")
         t.error_msg = d.get("error_msg", "")
         t.retry_count = int(d.get("retry_count", 0))
+        opts_raw = d.get("options")
+        if opts_raw and isinstance(opts_raw, dict):
+            from core.filter_engine import FilterOptions
+            t.options = FilterOptions.from_dict(opts_raw)
         return t
 
 
@@ -416,10 +430,14 @@ class KemonoDownloader:
         self._rate_limit_cooldown_until = 0.0
         self._cancel_event = threading.Event()
         self._pause_event = threading.Event()
+        self._paused_batches: set = set()
+        self._paused_batches_lock = threading.Lock()
         self._is_running = False
         self._session_id: int = 0
         self._download_thread: Optional[threading.Thread] = None
         self.current_options: Optional[FilterOptions] = None
+        self._batch_options: Dict[str, FilterOptions] = {}
+        self._batch_options_lock = threading.Lock()
         self._active_responses: set = set()
         self._active_resp_lock = threading.Lock()
         self._worker_sessions: set = set()
@@ -427,6 +445,7 @@ class KemonoDownloader:
         self._thread_local = threading.local()
         self._clean_cookie: str = ""
         self._post_info_pending: Dict[str, str] = {}   # post_info.txt path -> text, written after the first file
+        self._already_there = Counter()
         self._status_counter = StatusCounter()
         self._counter_sig = None
         self._dispatch_cursor = 0          # queue position where pending files started on the last scan
@@ -444,11 +463,15 @@ class KemonoDownloader:
 
         # Smart Learning ETA and speed smoothing telemetry
         self._speed_samples = deque(maxlen=40)
+        self._rolling_speed_samples: deque = deque()
         self._smoothed_speed: float = 0.0
         self._medium_speed: float = 0.0
         self._smoothed_eta: Optional[float] = None
         self._last_eta_calc_time: float = 0.0
         self._last_progress_emit_time: float = 0.0
+        self._total_paused_time: float = 0.0
+        self._pause_start_time: float = 0.0
+        self._first_byte_time: float = 0.0
 
         # Harvested external cloud links (populated in links-only mode)
         self.harvested_links: Dict[str, List[str]] = {}
@@ -559,6 +582,8 @@ class KemonoDownloader:
 
     def pause(self):
         self._pause_event.set()
+        if self._pause_start_time <= 0:
+            self._pause_start_time = time.time()
         logger.info("Download paused.", category="downloader")
         self._save_recovery_checkpoint(async_write=True)      # called from the window
         if self.on_pause_changed:
@@ -568,9 +593,15 @@ class KemonoDownloader:
                 logger.error(f"Error in on_pause_changed callback: {e}", category="downloader")
 
     def resume(self):
+        now = time.time()
+        if self._pause_start_time > 0:
+            self._total_paused_time += max(0.0, now - self._pause_start_time)
+            self._pause_start_time = 0.0
         self._pause_event.clear()
         self._speed_samples.clear()
+        self._rolling_speed_samples.clear()
         self._smoothed_speed = 0.0
+        self._last_eta_calc_time = now
         logger.info("Download resumed.", category="downloader")
         if self.on_pause_changed:
             try:
@@ -583,6 +614,8 @@ class KemonoDownloader:
         self._session_id += 1
         self._cancel_event.clear()
         self._pause_event.clear()
+        with self._paused_batches_lock:
+            self._paused_batches.clear()
         if self.on_pause_changed:
             try:
                 self.on_pause_changed(False)
@@ -594,11 +627,15 @@ class KemonoDownloader:
         self.start_time = 0.0
         self._is_running = False
         self._speed_samples.clear()
+        self._rolling_speed_samples.clear()
         self._smoothed_speed = 0.0
         self._medium_speed = 0.0
         self._smoothed_eta = None
         self._last_eta_calc_time = 0.0
         self._last_progress_emit_time = 0.0
+        self._total_paused_time = 0.0
+        self._pause_start_time = 0.0
+        self._first_byte_time = 0.0
         self.adaptive_state = "optimal"
         self.adaptive_status_text = ""
         logger.info("Downloader state fully reset.", category="downloader")
@@ -744,6 +781,37 @@ class KemonoDownloader:
                 session.close()
             except Exception:
                 pass
+
+    def _refresh_pawchive_temp_url(self, task: DownloadTask) -> Optional[str]:
+        """Re-fetches a Pawchive post page to obtain a fresh signed t1.pawchive.pw URL for an expired link."""
+        service = getattr(task, "service", "")
+        user_id = str(getattr(task, "user_id", "") or "")
+        post_id = str(getattr(task, "post_id", "") or "")
+        filename = getattr(task, "filename", "") or ""
+        if not service or not user_id or not post_id or not filename:
+            return None
+
+        page_url = f"https://pawchive.pw/{service}/user/{user_id}/post/{post_id}"
+        headers = {
+            "User-Agent": "PawchiveDownloader/1.3.0 (https://github.com/whyamihere773/Pawchive-Downloader)",
+            "Referer": "https://pawchive.pw/",
+            "X-Contact": "https://github.com/whyamihere773/Pawchive-Downloader",
+        }
+        try:
+            r = requests.get(page_url, headers=headers, timeout=15)
+            if r.status_code != 200 or not r.text:
+                return None
+            matches = re.findall(r'(?:href|src)=["\'](https://t1\.pawchive\.pw/f/[^"\']+)["\']', r.text)
+            fn_low = filename.lower()
+            for raw_u in matches:
+                u = raw_u.replace("&amp;", "&")
+                path_part = u.split("?")[0].split("/")[-1]
+                name = urllib.parse.unquote(path_part)
+                if name and (name == filename or name.lower() == fn_low):
+                    return u
+        except Exception as ex:
+            logger.debug(f"Failed re-resolving temporary URL for {filename}: {ex}", category="downloader")
+        return None
 
     def build_tasks_from_posts(
         self,
@@ -1037,6 +1105,16 @@ class KemonoDownloader:
 
                     if should_prepare_info:
                         tags_list = FilterEngine.normalize_tags(post.get("tags"))
+                        if getattr(self, "known_manager", None):
+                            try:
+                                hit = self.known_manager.find_matching_hierarchy(post_title)
+                                if hit:
+                                    fr, ch = hit
+                                    for n in (ch, fr):
+                                        if n and n.lower() != "general" and n not in tags_list:
+                                            tags_list.insert(0, n)
+                            except Exception:
+                                pass
                         tags_str = ", ".join(tags_list)
 
                         # Build creator profile URL
@@ -1182,6 +1260,7 @@ class KemonoDownloader:
 
             # Determine whether to skip the primary post.file (cover picture)
             skip_main_cover = False
+            allow_thumbnails = getattr(options, "download_thumbnails_only", False) or getattr(options, "fallback_to_thumbnails", False)
             if options.skip_post_covers:
                 if has_other_files:
                     skip_main_cover = True
@@ -1189,6 +1268,18 @@ class KemonoDownloader:
                     mf_name = (main_file.get("name") or main_file.get("originalFilename") or "").lower()
                     if mf_name.startswith("cover.") or mf_name.startswith("cover_") or mf_name.startswith("preview."):
                         skip_main_cover = True
+            elif has_other_files and not allow_thumbnails and main_file and isinstance(main_file, dict):
+                # When all thumbnail settings are disabled and other attachments exist,
+                # skip cover pictures that are thumbnails/previews
+                mf_name = (main_file.get("name") or main_file.get("originalFilename") or "").lower()
+                mf_path = str(main_file.get("path") or main_file.get("storageKey") or "").lower()
+                if (
+                    is_preview_url(mf_path) or
+                    bool(main_file.get("preview_only")) or
+                    mf_name.startswith(("cover.", "cover_", "preview.", "thumb.", "thumbnail.")) or
+                    bool(re.search(r'(_low|_thumb|\.thumb)\.[a-z0-9]+$', mf_name))
+                ):
+                    skip_main_cover = True
 
             if not skip_main_cover and main_file and isinstance(main_file, dict) and (main_file.get("path") or main_file.get("storageKey")):
                 k = self.extract_norm_rel_key(main_file)
@@ -1199,10 +1290,15 @@ class KemonoDownloader:
             if isinstance(attachments, list):
                 for att in attachments:
                     if isinstance(att, dict) and (att.get("path") or att.get("storageKey")):
-                        # If skip_post_covers is enabled, skip attachments named cover.* when other files exist
-                        if options.skip_post_covers and (has_other_files or len(attachments) > 1):
+                        # If skip_post_covers is enabled or thumbnail options are disabled, skip attachments named cover.* when other files exist
+                        if (options.skip_post_covers or (has_other_files and not allow_thumbnails)) and (has_other_files or len(attachments) > 1):
                             att_name = (att.get("name") or att.get("originalFilename") or "").lower()
-                            if att_name.startswith("cover.") or att_name.startswith("cover_") or att_name.startswith("preview."):
+                            att_path = str(att.get("path") or att.get("storageKey") or "").lower()
+                            if (
+                                att_name.startswith(("cover.", "cover_", "preview.", "thumb.", "thumbnail.")) or
+                                is_preview_url(att_path) or
+                                bool(re.search(r'(_low|_thumb|\.thumb)\.[a-z0-9]+$', att_name))
+                            ):
                                 continue
 
                         k = self.extract_norm_rel_key(att)
@@ -1406,6 +1502,18 @@ class KemonoDownloader:
                         effective_domain = "kemono.cr"
 
                 is_preview_only = bool(fobj.get("preview_only"))
+                allow_thumb_fallback = getattr(options, "fallback_to_thumbnails", False)
+                allow_thumbnails = getattr(options, "download_thumbnails_only", False) or allow_thumb_fallback
+
+                # If the attachment only has a preview thumbnail and thumbnail options are disabled, skip it
+                if is_preview_only and not allow_thumbnails:
+                    logger.debug(
+                        f"Skipping preview-only attachment '{raw_name}': thumbnail fallback is disabled",
+                        category="filter", to_file=False
+                    )
+                    not_queued["filtered out"] += 1
+                    continue
+
                 candidate_urls = []
 
                 if is_preview_only or options.download_thumbnails_only:
@@ -1437,7 +1545,8 @@ class KemonoDownloader:
                                 "/thumbnail/" in original_url or
                                 "img.pawchive" in original_url or
                                 "img.kemono" in original_url or
-                                "img.coomer" in original_url
+                                "img.coomer" in original_url or
+                                "img.cum.st" in original_url
                             )
                         )
 
@@ -1472,6 +1581,13 @@ class KemonoDownloader:
                             for u in order:
                                 if u not in candidate_urls and not is_disabled(u):
                                     candidate_urls.append(u)
+                            node_num = fobj.get("node") if isinstance(fobj, dict) else None
+                            if not node_num and isinstance(post, dict):
+                                node_num = post.get("node")
+                            if node_num is not None:
+                                node_url = f"https://n{node_num}.pawchive.pw/data{clean_rel}?f={_fq(sanitized_name)}"
+                                if node_url not in candidate_urls:
+                                    candidate_urls.append(node_url)
                             fallback_thumb_url = f"https://img.pawchive.pw/thumbnail/data{clean_rel}"
                         elif "coomer" in effective_domain:
                             # coomer.st/data/… redirects to the file server that holds the file.
@@ -1644,6 +1760,7 @@ class KemonoDownloader:
                     post_date=date_str,
                     user_id=user_id or post_user
                 )
+                task.options = options
                 task.fallback_urls = candidate_urls[1:]
                 if passwords:
                     try:
@@ -1696,6 +1813,7 @@ class KemonoDownloader:
                         post_date=date_str,
                         user_id=user_id or post_user
                     )
+                    e_task.options = options
                     new_tasks.append(e_task)
 
             post_tasks = new_tasks[post_task_start:]
@@ -1848,6 +1966,13 @@ class KemonoDownloader:
             return 0
 
         self._keep_paths_apart(deduped, self.tasks)
+        if options is not None:
+            for t in deduped:
+                if getattr(t, "options", None) is None:
+                    t.options = options
+                bid = getattr(t, "batch_id", "")
+                if bid:
+                    self.set_batch_options(bid, options)
         self.tasks.extend(deduped)
         logger.info(f"Appended {len(deduped)} new tasks to download queue (total in queue: {len(self.tasks)}).", category="downloader")
 
@@ -1893,11 +2018,83 @@ class KemonoDownloader:
                          category="downloader")
         return renamed
 
+    def is_batch_paused(self, batch_id_or_task) -> bool:
+        if not self._paused_batches:
+            return False
+        if isinstance(batch_id_or_task, str):
+            bid = batch_id_or_task
+        else:
+            t = batch_id_or_task
+            bid = getattr(t, "batch_id", "") or f"{getattr(t, 'service', '')}_{getattr(t, 'creator_name', '')}_{getattr(t, 'post_id', '')}".strip("_")
+        with self._paused_batches_lock:
+            return bid in self._paused_batches
+
+    def set_batch_options(self, batch_id: str, options: FilterOptions) -> None:
+        if batch_id and options:
+            with self._batch_options_lock:
+                self._batch_options[batch_id] = options
+
+    def get_batch_options(self, batch_id: str) -> Optional[FilterOptions]:
+        if not batch_id:
+            return None
+        with self._batch_options_lock:
+            return self._batch_options.get(batch_id)
+
+    def pause_batch(self, batch_id: str) -> int:
+        """Pauses only tasks belonging to a specific batch without stopping other batches."""
+        if not batch_id:
+            return 0
+        with self._paused_batches_lock:
+            self._paused_batches.add(batch_id)
+        paused = 0
+        for t in self.tasks:
+            bid = getattr(t, "batch_id", "") or f"{getattr(t, 'service', '')}_{getattr(t, 'creator_name', '')}_{getattr(t, 'post_id', '')}".strip("_")
+            if bid == batch_id and t.status in ("pending", "downloading", "retrying"):
+                t.status = "paused"
+                t.speed_bps = 0
+                t.speed_str = "0 KB/s"
+                t.eta_str = "--"
+                paused += 1
+                if self.on_task_status_changed:
+                    self.on_task_status_changed(t)
+        logger.info(f"Batch paused: {batch_id} ({paused} tasks paused)", category="downloader")
+        return paused
+
+    def resume_batch(self, batch_id: str, options: Optional[FilterOptions] = None, cookie_str: str = "") -> int:
+        """Resumes a paused batch and wakes/starts the download loop if necessary."""
+        if not batch_id:
+            return 0
+        with self._paused_batches_lock:
+            self._paused_batches.discard(batch_id)
+        self._dispatch_cursor = 0
+        self._last_full_scan = 0.0
+
+        resumed_tasks = []
+        for t in self.tasks:
+            bid = getattr(t, "batch_id", "") or f"{getattr(t, 'service', '')}_{getattr(t, 'creator_name', '')}_{getattr(t, 'post_id', '')}".strip("_")
+            if bid == batch_id and t.status == "paused":
+                t.status = "pending"
+                t.error_msg = ""
+                resumed_tasks.append(t)
+                if self.on_task_status_changed:
+                    self.on_task_status_changed(t)
+
+        logger.info(f"Batch resumed: {batch_id} ({len(resumed_tasks)} tasks restored to pending)", category="downloader")
+
+        if not self._is_running and resumed_tasks:
+            opts = options or self.current_options or FilterOptions()
+            cookie = cookie_str or self._clean_cookie
+            self.start_download_queue(self.tasks, opts, cookie)
+
+        return len(resumed_tasks)
+
     def cancel_batch(self, batch_id: str, notify: bool = False) -> int:
         """Cancels all pending and downloading tasks belonging to a specific batch_id."""
+        with self._paused_batches_lock:
+            self._paused_batches.discard(batch_id)
         cancelled = 0
         for t in self.tasks:
-            if getattr(t, "batch_id", "") == batch_id and t.status in ("pending", "downloading", "retrying"):
+            if getattr(t, "batch_id", "") == batch_id and t.status in ("pending", "downloading", "retrying", "paused"):
                 t.status = "cancelled"
                 t.error_msg = "Download cancelled by user"
                 t.progress_pct = 0
@@ -1911,11 +2108,13 @@ class KemonoDownloader:
 
     def retry_batch_failed(self, batch_id: str, options: Optional[FilterOptions] = None, cookie_str: str = "") -> int:
         """Resets failed/cancelled tasks in a specific batch to pending and resumes download."""
+        with self._paused_batches_lock:
+            self._paused_batches.discard(batch_id)
         failed = []
         for t in self.tasks:
             t_bid = getattr(t, "batch_id", "") or f"{t.service}_{t.creator_name}_{t.post_id}".strip("_")
             if t_bid == batch_id:
-                if t.status in ("failed", "cancelled") or (not self._is_running and t.status == "pending"):
+                if t.status in ("failed", "cancelled") or (not self._is_running and t.status in ("pending", "paused")):
                     failed.append(t)
 
         for t in failed:
@@ -1932,6 +2131,8 @@ class KemonoDownloader:
 
     def remove_batch(self, batch_id: str) -> int:
         """Removes non-active tasks belonging to a batch from the queue."""
+        with self._paused_batches_lock:
+            self._paused_batches.discard(batch_id)
         initial_count = len(self.tasks)
         self.tasks = [t for t in self.tasks if (getattr(t, "batch_id", "") or f"{t.service}_{t.creator_name}_{t.post_id}".strip("_")) != batch_id or t.status == "downloading"]
         return initial_count - len(self.tasks)
@@ -2048,6 +2249,7 @@ class KemonoDownloader:
             t.retry_capped = False
             t.status = "pending"
             t.error_msg = ""
+            t.http_status = 0
             t.progress_pct = 0
             t.downloaded_bytes = 0
             t.speed_bps = 0
@@ -2106,6 +2308,7 @@ class KemonoDownloader:
             t.retry_capped = False
             t.status = "pending"
             t.error_msg = ""
+            t.http_status = 0
             t.progress_pct = 0
             t.downloaded_bytes = 0
             t.speed_bps = 0
@@ -2163,11 +2366,15 @@ class KemonoDownloader:
         self.start_time = time.time()
         self.downloaded_bytes = 0
         self._speed_samples.clear()
+        self._rolling_speed_samples.clear()
         self._smoothed_speed = 0.0
         self._medium_speed = 0.0
         self._smoothed_eta = None
         self._last_eta_calc_time = 0.0
         self._last_progress_emit_time = 0.0
+        self._total_paused_time = 0.0
+        self._pause_start_time = 0.0
+        self._first_byte_time = 0.0
         cpu_cores = max(4, os.cpu_count() or 16)
         self.current_options = options
         is_locked = getattr(self.current_options or options, "threads_locked", False)
@@ -2364,6 +2571,14 @@ class KemonoDownloader:
                                         "⚠️ [Disk Full Alert] Destination drive ran out of space! Downloads paused to prevent file corruption. Please free space on your drive and click Resume.",
                                         category="downloader"
                                     )
+                            elif "Batch paused by user" in msg or task.status == "paused":
+                                task.status = "paused"
+                                task.error_msg = ""
+                                task.speed_bps = 0
+                                task.speed_str = "0 KB/s"
+                                task.eta_str = "Paused"
+                                if self.on_task_status_changed:
+                                    self.on_task_status_changed(task)
                             else:
                                 task.status = "failed"
                                 task.error_msg = msg
@@ -2400,6 +2615,15 @@ class KemonoDownloader:
                     if not pending_tasks and current_active == 0:
                         pending_tasks = self._collect_pending(slots_available * 4 + 8, now, full=True)
                     if not pending_tasks and current_active == 0:
+                        has_paused_tasks = any(
+                            (self.is_batch_paused(t) or t.status == "paused")
+                            for t in self.tasks
+                            if t.status in ("pending", "paused")
+                        )
+                        if has_paused_tasks and not self._cancel_event.is_set():
+                            time.sleep(0.5)
+                            continue
+
                         # Check if "auto retry at the end" is enabled dynamically
                         auto_retry_active = (
                             getattr(self.current_options, "auto_retry_at_end", False)
@@ -2498,7 +2722,8 @@ class KemonoDownloader:
                         if self.on_task_status_changed:
                             self.on_task_status_changed(task)
                         try:
-                            fut = executor.submit(self._worker_download_task, task, options)
+                            task_opts = getattr(task, "options", None) or self.get_batch_options(getattr(task, "batch_id", "")) or options
+                            fut = executor.submit(self._worker_download_task, task, task_opts)
                             active_futures[fut] = task
                         except RuntimeError:
                             # Executor was shut down (e.g. cancelled)
@@ -2564,7 +2789,7 @@ class KemonoDownloader:
             return
 
         self._is_running = False
-        duration = time.time() - self.start_time
+        duration = self._get_active_elapsed(time.time())
         completed_count = sum(1 for t in self.tasks if t.status == "completed")
         failed_count = sum(1 for t in self.tasks if t.status == "failed")
         skipped_count = sum(1 for t in self.tasks if t.status == "skipped")
@@ -2650,7 +2875,7 @@ class KemonoDownloader:
         first = None
         for i in range(self._dispatch_cursor, len(tasks)):
             t = tasks[i]
-            if t.status == "pending":
+            if t.status == "pending" and not self.is_batch_paused(t):
                 if first is None:
                     first = i
                 found.append(t)
@@ -2661,15 +2886,25 @@ class KemonoDownloader:
 
     def _worker_download_task(self, task: DownloadTask, options: FilterOptions):
         worker_session = self._get_worker_session()
-        return self._download_single_file(task, worker_session, options)
+        task_opts = getattr(task, "options", None) or self.get_batch_options(getattr(task, "batch_id", "")) or options
+        return self._download_single_file(task, worker_session, task_opts)
 
     def _download_single_file(self, task: DownloadTask, session: Optional[requests.Session] = None, options: Optional[FilterOptions] = None) -> (bool, str):
         if session is None:
             session = self._get_worker_session()
-        if options is None:
-            options = self.current_options or FilterOptions()
+        task_opts = getattr(task, "options", None) or self.get_batch_options(getattr(task, "batch_id", "")) or options or self.current_options or FilterOptions()
+        options = task_opts
         if self._cancel_event.is_set():
             return False, "Cancelled"
+
+        if self.is_batch_paused(task) or task.status == "paused":
+            task.status = "paused"
+            task.speed_bps = 0
+            task.speed_str = "0 KB/s"
+            task.eta_str = "Paused"
+            if self.on_task_status_changed:
+                self.on_task_status_changed(task)
+            return False, "Batch paused by user"
 
         while self._pause_event.is_set():
             time.sleep(0.5)
@@ -2975,12 +3210,25 @@ class KemonoDownloader:
             msg = disabled_message(task.url) or "This file's server is turned off"
             logger.warning(f"  ✖ {task.filename}: {msg}", category="file")
             return False, msg
-        if options is not None and getattr(options, "download_thumbnails_only", False):
+        allow_thumb_fallback = getattr(options, "fallback_to_thumbnails", False)
+        download_thumbs_only = getattr(options, "download_thumbnails_only", False) if options is not None else False
+
+        if download_thumbs_only:
             full_urls, preview_urls = all_urls, []
         else:
-            full_urls = [u for u in all_urls if not is_preview_url(u)] or all_urls
-            preview_urls = [u for u in all_urls if u not in full_urls]
-        urls_to_try = full_urls
+            full_urls = [u for u in all_urls if not is_preview_url(u)]
+            preview_urls = [u for u in all_urls if is_preview_url(u)]
+
+        # If all candidates are preview/thumbnail URLs and thumbnail fallback is disabled, do not download
+        if not full_urls and not download_thumbs_only:
+            if not allow_thumb_fallback:
+                msg = "Preview thumbnail skipped (fallback to thumbnails is disabled)"
+                logger.info(f"  ⏭ {task.filename}: {msg}", category="file")
+                return False, msg
+            else:
+                full_urls = preview_urls
+                preview_urls = []
+
         task._tried_urls = []
         resp = None
         browser_headers = {
@@ -2995,7 +3243,6 @@ class KemonoDownloader:
 
         try:
             # Two passes across full-size mirrors; small preview copy ONLY if fallback_to_thumbnails is enabled
-            allow_thumb_fallback = getattr(options, "fallback_to_thumbnails", False)
             pass_lists = [full_urls, full_urls] + ([preview_urls] if (preview_urls and allow_thumb_fallback) else [])
             for pass_idx, urls_to_try in enumerate(pass_lists):
                 if pass_idx == 1:
@@ -3028,7 +3275,7 @@ class KemonoDownloader:
                         req_headers["Referer"] = "https://coomer.st/"
                         req_headers["Accept"] = "*/*"
                     elif "pawchive" in u_low:
-                        req_headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                        req_headers["User-Agent"] = "PawchiveDownloader/1.3.0 (https://github.com/whyamihere773/Pawchive-Downloader)"
                         req_headers["Referer"] = "https://pawchive.pw/"
                         req_headers["Accept"] = "*/*"
                     elif "cum.st" in u_low:
@@ -3054,13 +3301,43 @@ class KemonoDownloader:
                         if resp.status_code in (200, 206, 416):
                             task.url = attempt_url
                             break
-                        elif resp.status_code == 404 and len(urls_to_try) <= 1:
-                            # Definitive 404 on single-mirror host — skip second pass to avoid redundant server load
-                            msg = "404 Not Found — file does not exist on server"
-                            logger.warning(f"  ✖ {task.filename}: {msg}", category="file", details=self._task_context(task))
-                            resp.close()
-                            resp = None
-                            return False, msg
+                        elif resp.status_code in (403, 404) and "t1.pawchive.pw" in attempt_url:
+                            # Pawchive temporary oversized download URLs are signed (?e=...&s=...) and expire over time.
+                            # Re-resolve the post page to get a fresh signed URL if available.
+                            fresh_url = self._refresh_pawchive_temp_url(task)
+                            if fresh_url and fresh_url != attempt_url:
+                                logger.info(f"✨ Refreshed expired temporary download URL for {task.filename}", category="downloader")
+                                task.url = fresh_url
+                                attempt_url = fresh_url
+                                resp.close()
+                                try:
+                                    retry_resp = session.get(fresh_url, stream=True, timeout=stream_timeout, headers=req_headers)
+                                    if retry_resp.status_code in (200, 206, 416):
+                                        resp = retry_resp
+                                        break
+                                    else:
+                                        retry_resp.close()
+                                except Exception:
+                                    pass
+                        elif resp.status_code == 404:
+                            if pass_idx < len(pass_lists) - 1:
+                                logger.debug(f"  ↪ Mirror 404 on {attempt_url} (pass {pass_idx + 1}/{len(pass_lists)}) — will retry on next pass...", category="file")
+                                resp.close()
+                                resp = None
+                                continue
+                            elif len(urls_to_try) > 1:
+                                logger.debug(f"  ↪ Mirror 404 on {attempt_url} — trying next mirror...", category="file")
+                                resp.close()
+                                resp = None
+                                continue
+                            else:
+                                # Final pass on single-mirror host — definitive 404 verified after retry
+                                task.http_status = 404
+                                msg = "404 Not Found — file does not exist on server"
+                                logger.warning(f"  ✖ {task.filename}: {msg}", category="file", details=self._task_context(task))
+                                resp.close()
+                                resp = None
+                                return False, msg
                         elif resp.status_code == 403:
                             # If we sent a Range header, the CDN might be rejecting range requests with 403.
                             # Retry from byte 0 without Range and without cookies.
@@ -3080,18 +3357,26 @@ class KemonoDownloader:
                                 except Exception:
                                     pass
 
-                            # Try without cookie and with full browser navigation headers (bypasses Cloudflare burst bot filter)
+                            # Try without cookie and with full headers (identifiable UA for Pawchive, browser headers for others)
                             try:
-                                browser_headers = {
-                                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-                                    "Sec-Fetch-Dest": "document",
-                                    "Sec-Fetch-Mode": "navigate",
-                                    "Sec-Fetch-Site": "none",
-                                    "Sec-Fetch-User": "?1",
-                                    "Upgrade-Insecure-Requests": "1",
-                                }
-                                clean_resp = requests.get(attempt_url, stream=True, timeout=stream_timeout, headers=browser_headers)
+                                if "pawchive" in attempt_url.lower():
+                                    clean_headers = {
+                                        "User-Agent": "PawchiveDownloader/1.3.0 (https://github.com/whyamihere773/Pawchive-Downloader)",
+                                        "Referer": "https://pawchive.pw/",
+                                        "Accept": "*/*",
+                                        "X-Contact": "https://github.com/whyamihere773/Pawchive-Downloader",
+                                    }
+                                else:
+                                    clean_headers = {
+                                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+                                        "Sec-Fetch-Dest": "document",
+                                        "Sec-Fetch-Mode": "navigate",
+                                        "Sec-Fetch-Site": "none",
+                                        "Sec-Fetch-User": "?1",
+                                        "Upgrade-Insecure-Requests": "1",
+                                    }
+                                clean_resp = requests.get(attempt_url, stream=True, timeout=stream_timeout, headers=clean_headers)
                                 if clean_resp.status_code in (200, 206):
                                     resp.close()
                                     resp = clean_resp
@@ -3100,13 +3385,13 @@ class KemonoDownloader:
                                     existing_size = 0
                                     break
                                 elif clean_resp.status_code == 403 and len(urls_to_try) == 1:
-                                    # Single-mirror CDN (like file.pawchive.pw) transient burst 403 — progressive pause & retry
+                                    # Single-mirror CDN transient burst 403 — progressive pause & retry
                                     clean_resp.close()
                                     for delay in (1.5, 3.0):
                                         time.sleep(delay)
                                         if self._cancel_event.is_set():
                                             break
-                                        retry_resp = requests.get(attempt_url, stream=True, timeout=stream_timeout, headers=browser_headers)
+                                        retry_resp = requests.get(attempt_url, stream=True, timeout=stream_timeout, headers=clean_headers)
                                         if retry_resp.status_code in (200, 206):
                                             resp.close()
                                             resp = retry_resp
@@ -3123,22 +3408,25 @@ class KemonoDownloader:
                             except Exception:
                                 pass
 
-                            # Still 403 — rotate to next mirror
+                            # Still 403 — rotate to next mirror or pass
                             logger.debug(f"  ↪ Mirror 403 on {attempt_url} — trying next mirror...", category="file")
                             if resp:
                                 resp.close()
                                 resp = None
                             continue
                         elif resp.status_code == 429:
-                            # 429 on this mirror — smoothly rotate to next available mirror
-                            logger.debug(f"  ↪ Mirror 429 on {attempt_url} — rotating to next mirror...", category="file")
+                            task.http_status = 429
+                            retry_after = resp.headers.get("Retry-After")
+                            delay = 2.5
+                            if retry_after and retry_after.strip().isdigit():
+                                delay = min(max(float(retry_after.strip()), 1.0), 10.0)
+                            logger.debug(f"  ↪ Rate limited (429) on {attempt_url} — waiting {delay:.1f}s before next attempt...", category="file")
                             resp.close()
                             resp = None
-                            continue
-                        elif resp.status_code == 404 and len(urls_to_try) > 1:
-                            logger.debug(f"  ↪ Mirror 404 on {attempt_url} — trying next mirror...", category="file")
-                            resp.close()
-                            resp = None
+                            if len(urls_to_try) == 1:
+                                time.sleep(delay)
+                                if self._cancel_event.is_set():
+                                    return False, "Cancelled"
                             continue
                         else:
                             resp.close()
@@ -3159,7 +3447,7 @@ class KemonoDownloader:
             if resp is None:
                 return False, "Failed to connect to any file server"
 
-            task.used_preview = is_preview_url(task.url) and not (options is not None and getattr(options, "download_thumbnails_only", False))
+            task.used_preview = (is_preview_url(task.url) or (resp and is_preview_url(getattr(resp, "url", "")))) and not (options is not None and getattr(options, "download_thumbnails_only", False))
             if task.used_preview:
                 logger.warning(
                     f"⚠ {task.filename}: the full-size file couldn't be reached, so a smaller preview copy was saved. "
@@ -3187,22 +3475,26 @@ class KemonoDownloader:
                 return False, msg
 
             if status == 403:
+                task.http_status = 403
                 msg = "403 Forbidden — content locked (membership tier access required)"
                 logger.error(f"  ✖ {task.filename}: {msg}", category="file", details=self._task_context(task))
                 return False, msg
 
             if status == 404:
+                task.http_status = 404
                 msg = "404 Not Found — file does not exist on any server mirror"
                 logger.warning(f"  ✖ {task.filename}: {msg}", category="file", details=self._task_context(task))
                 return False, msg
 
             if status == 429:
+                task.http_status = 429
                 retry_after = resp.headers.get("Retry-After", "30")
                 msg = f"429_RATE_LIMIT (Retry-After: {retry_after}s)"
                 logger.warning(f"  ⚠ {task.filename}: HTTP 429 Too Many Requests (Rate limited)", category="file")
                 return False, msg
 
             if status not in (200, 206):
+                task.http_status = status
                 msg = f"HTTP {status}"
                 logger.warning(f"  ✖ {task.filename}: {msg}", category="file", details=self._task_context(task))
                 return False, msg
@@ -3483,6 +3775,12 @@ class KemonoDownloader:
                             except Exception:
                                 pass
                             return False, "Cancelled"
+                        if self.is_batch_paused(task) or task.status == "paused":
+                            try:
+                                resp.close()
+                            except Exception:
+                                pass
+                            return False, "Batch paused by user"
                         was_paused = False
                         while self._pause_event.is_set():
                             was_paused = True
@@ -3823,13 +4121,26 @@ class KemonoDownloader:
             logger.debug(f"WebP compression skipped for {file_path}: {e}", category="downloader")
         return None
 
+    def _get_active_elapsed(self, now: float) -> float:
+        """Returns the actual active downloading elapsed time, excluding all paused periods."""
+        if self.start_time <= 0:
+            return 0.1
+        paused = self._total_paused_time
+        if self._pause_event.is_set() and self._pause_start_time > 0:
+            paused += max(0.0, now - self._pause_start_time)
+        return max(0.1, (now - self.start_time) - paused)
+
     def _calculate_instant_speed(self, now: float) -> int:
         """
         Calculates 100% accurate, real-time download throughput.
         Tracks byte delta over recent 1.0-2.0 second window for responsive, accurate network monitoring.
+        Also maintains rolling 45-second samples for sustained throughput tracking.
         """
         with self._lock:
             current_bytes = self.downloaded_bytes
+
+        if current_bytes > 0 and self._first_byte_time == 0.0:
+            self._first_byte_time = now
 
         # A gap of more than 2 s since the last sample (paused, stalled): measure afresh
         if self._speed_samples and (now - self._speed_samples[-1][0] > 2.0):
@@ -3841,6 +4152,12 @@ class KemonoDownloader:
         # Evict all samples older than 2.0 seconds
         while self._speed_samples and (now - self._speed_samples[0][0] > 2.0):
             self._speed_samples.popleft()
+
+        # Maintain rolling 45-second samples for sustained throughput tracking
+        if not self._rolling_speed_samples or (now - self._rolling_speed_samples[-1][0] >= 0.5):
+            self._rolling_speed_samples.append((now, current_bytes))
+        while self._rolling_speed_samples and (now - self._rolling_speed_samples[0][0] > 45.0):
+            self._rolling_speed_samples.popleft()
 
         if len(self._speed_samples) >= 2:
             dt = now - self._speed_samples[0][0]
@@ -3855,14 +4172,27 @@ class KemonoDownloader:
 
         return max(0, int(self._smoothed_speed))
 
+    def _get_rolling_speed(self, now: float) -> float:
+        """Computes sustained throughput over the recent 45-second window."""
+        with self._lock:
+            current_bytes = self.downloaded_bytes
+        if len(self._rolling_speed_samples) >= 2:
+            dt = now - self._rolling_speed_samples[0][0]
+            db = current_bytes - self._rolling_speed_samples[0][1]
+            if dt >= 3.0:
+                return max(0.0, db / dt)
+        return 0.0
+
     def _calculate_smart_eta(self, completed: int, failed: int, total: int, speed: int, elapsed: float) -> str:
         """
         Calculates a learning, countdown-stable ETA that resists transient network dips/crashes.
         Uses:
-        1. Long-term learned session throughput average + medium-term EMA (instead of fluctuating instant speed).
-        2. Empirical average file size learned from completed tasks.
-        3. Dual-model blending (throughput model + task completion rate).
-        4. Monotonic steady countdown with anti-jitter damping.
+        1. Multi-tier throughput baseline (rolling 45s window + sustained session average + medium EMA)
+           measured strictly from active transfer time (excluding pauses and discovery latency).
+        2. Content-aware learned file size estimation (categorized into video/archive, image/audio, other).
+        3. Adaptive confidence-weighted dual-model blending (byte-throughput prioritized when sizes are known,
+           with completion rate as safety bound driven strictly by completed downloads).
+        4. Monotonic steady countdown with early-warmup rapid convergence and anti-jitter damping.
         """
         remaining_tasks = total - completed - failed
         if total <= 0 or remaining_tasks <= 0:
@@ -3873,37 +4203,74 @@ class KemonoDownloader:
         time_since_last_calc = (now - self._last_eta_calc_time) if self._last_eta_calc_time > 0 else 0.0
         self._last_eta_calc_time = now
 
-        # ── 1. Learned File Size Estimation ──────────────────────────────────
+        # ── 1. Content-Aware Learned File Size Estimation ────────────────────
         st = self._queue_stats(now)
-        if st["done_n"]:
-            learned_avg_file_size = st["done_bytes"] / st["done_n"]
-        elif st["known_n"]:
-            learned_avg_file_size = st["known_bytes"] / st["known_n"]
-        else:
-            learned_avg_file_size = 4.5 * 1024 * 1024  # 4.5 MB realistic artwork fallback
 
-        # Calculate estimated remaining bytes
+        if st.get("done_video_n", 0) > 0:
+            avg_video = st["done_video_bytes"] / st["done_video_n"]
+        else:
+            avg_video = 60.0 * 1024 * 1024  # 60 MB realistic video/archive fallback
+        avg_video = max(1.0 * 1024 * 1024, min(1024.0 * 1024 * 1024, avg_video))
+
+        if st.get("done_image_n", 0) > 0:
+            avg_image = st["done_image_bytes"] / st["done_image_n"]
+        else:
+            avg_image = 3.5 * 1024 * 1024   # 3.5 MB realistic image/audio fallback
+        avg_image = max(100.0 * 1024, min(50.0 * 1024 * 1024, avg_image))
+
+        if st["done_n"] > 0:
+            avg_other = st["done_bytes"] / st["done_n"]
+        elif st["known_n"] > 0:
+            avg_other = st["known_bytes"] / st["known_n"]
+        else:
+            avg_other = 4.5 * 1024 * 1024   # 4.5 MB realistic artwork fallback
+        avg_other = max(200.0 * 1024, min(100.0 * 1024 * 1024, avg_other))
+
+        unknown_video_n = st.get("unknown_video_n", 0)
+        unknown_image_n = st.get("unknown_image_n", 0)
+        unknown_other_n = st.get("unknown_other_n", max(0, st["unknown_n"] - unknown_video_n - unknown_image_n))
+
+        estimated_unknown_bytes = (
+            unknown_video_n * avg_video +
+            unknown_image_n * avg_image +
+            max(0, unknown_other_n) * avg_other
+        )
         total_remaining_bytes = st["known_remaining"] + max(
-            0.0, st["unknown_n"] * learned_avg_file_size - st["unknown_downloaded"])
+            0.0, estimated_unknown_bytes - st["unknown_downloaded"]
+        )
 
         # ── 2. Derive Learning ETA Throughput Baseline ────────────────────────
-        # Rather than using the raw 1-second fluctuating speed (which jumps on dips/crashes),
-        # we compute a learned throughput baseline from historical session performance.
         with self._lock:
             current_bytes = self.downloaded_bytes
 
-        session_avg_speed = current_bytes / max(1.0, elapsed)
+        # Exclude paused time from active duration calculation
+        paused_duration = self._total_paused_time
+        if self._pause_event.is_set() and self._pause_start_time > 0:
+            paused_duration += max(0.0, now - self._pause_start_time)
 
-        # Track medium-term pace
+        # Measure session throughput from first active byte to exclude discovery/setup latency
+        if self._first_byte_time > 0 and self.start_time > 0:
+            active_transfer_time = max(0.5, (now - self._first_byte_time) - paused_duration)
+            transfer_elapsed = min(elapsed, active_transfer_time)
+        else:
+            transfer_elapsed = max(0.5, elapsed)
+
+        session_avg_speed = current_bytes / max(1.0, transfer_elapsed)
+
+        # Check sustained rolling speed over the recent 45-second window
+        rolling_speed = self._get_rolling_speed(now)
+        sustained_speed = rolling_speed if rolling_speed > 0 else session_avg_speed
+
+        # Track medium-term pace using EMA
         if self._medium_speed <= 0:
-            self._medium_speed = float(speed if speed > 0 else session_avg_speed)
+            self._medium_speed = float(speed if speed > 0 else sustained_speed)
         else:
             self._medium_speed = 0.05 * speed + 0.95 * self._medium_speed
 
         # Progressive learning anchor: As elapsed time increases, anchor heavily to the
-        # sustained empirical average so brief speed crashes (e.g. 1.5MB/s -> 500KB/s) don't affect ETA
-        learn_weight = min(0.85, max(0.20, (elapsed - 5.0) / 60.0))
-        learned_eta_speed = (1.0 - learn_weight) * self._medium_speed + learn_weight * session_avg_speed
+        # sustained empirical average so brief speed crashes don't cause wild ETA spikes
+        learn_weight = min(0.85, max(0.20, (transfer_elapsed - 5.0) / 60.0))
+        learned_eta_speed = (1.0 - learn_weight) * self._medium_speed + learn_weight * sustained_speed
 
         # ── 3. Dual-Model Target ETA Derivation ──────────────────────────────
         target_candidates = []
@@ -3912,10 +4279,11 @@ class KemonoDownloader:
         if learned_eta_speed > 512 and total_remaining_bytes > 0:
             target_candidates.append(total_remaining_bytes / learned_eta_speed)
 
-        # Model B: Task Completion Rate ETA (empirically learned tasks/sec)
-        done_count = completed + failed
-        if done_count > 0 and elapsed > 2.0:
-            tasks_per_second = done_count / elapsed
+        # Model B: Task Completion Rate ETA (empirically learned completed tasks/sec)
+        # Note: ONLY successfully completed downloads reflect actual transfer work.
+        # Failed/skipped files terminate immediately and must not artificially inflate the completion rate.
+        if completed > 0 and transfer_elapsed > 2.0:
+            tasks_per_second = completed / transfer_elapsed
             if tasks_per_second > 0:
                 target_candidates.append(remaining_tasks / tasks_per_second)
 
@@ -3924,9 +4292,17 @@ class KemonoDownloader:
                 return "Done"
             return "--"
 
-        # Blend models (65% byte-throughput + 35% task completion rate if both available)
+        # Adaptive confidence blending:
+        # If all file sizes are known, byte-throughput model is mathematically rigorous (up to 90% weight).
+        # If many sizes are unknown, blend in task completion rate (up to 45% weight).
         if len(target_candidates) == 2:
-            target_eta_seconds = 0.65 * target_candidates[0] + 0.35 * target_candidates[1]
+            total_active_remaining = st["known_n"] + st["unknown_n"]
+            if total_active_remaining > 0:
+                known_confidence = st["known_n"] / total_active_remaining
+            else:
+                known_confidence = 1.0 if st["known_bytes"] > 0 else 0.5
+            byte_weight = 0.55 + 0.35 * known_confidence
+            target_eta_seconds = byte_weight * target_candidates[0] + (1.0 - byte_weight) * target_candidates[1]
         else:
             target_eta_seconds = target_candidates[0]
 
@@ -3940,7 +4316,13 @@ class KemonoDownloader:
 
             # Then gently nudge towards target ETA using adaptive damping
             deviation = abs(target_eta_seconds - self._smoothed_eta) / max(1.0, self._smoothed_eta)
-            if deviation > 0.60:
+            if transfer_elapsed < 15.0:
+                # Early warmup: converge quickly to the true ETA
+                alpha = 0.20 if deviation > 0.25 else 0.10
+            elif target_eta_seconds < 10.0 and self._smoothed_eta > 20.0:
+                # Approaching finish: don't let ETA drag behind when completing
+                alpha = 0.15
+            elif deviation > 0.60:
                 alpha = 0.10
             elif deviation > 0.25:
                 alpha = 0.04
@@ -3970,14 +4352,36 @@ class KemonoDownloader:
             return self._task_stats
         done_bytes = done_n = known_bytes = known_n = 0
         known_remaining = unknown_n = unknown_downloaded = all_downloaded = 0
+        done_video_bytes = done_video_n = done_image_bytes = done_image_n = 0
+        unknown_video_n = unknown_image_n = unknown_other_n = 0
+
+        video_archive_exts = {
+            ".mp4", ".m4v", ".mkv", ".webm", ".mov", ".avi", ".wmv",
+            ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".iso"
+        }
+        image_audio_exts = {
+            ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg", ".ico",
+            ".mp3", ".flac", ".wav", ".m4a", ".ogg", ".opus"
+        }
+
         for t in self.tasks:
             d = t.downloaded_bytes
             all_downloaded += d
             status = t.status
+            fn = getattr(t, "filename", "") or getattr(t, "target_path", "") or getattr(t, "url", "") or ""
+            dot_idx = fn.rfind(".")
+            ext = fn[dot_idx:].split("?")[0].lower() if dot_idx != -1 else ""
+
             if status == "completed":
                 if d > 0:
                     done_bytes += d
                     done_n += 1
+                    if ext in video_archive_exts:
+                        done_video_bytes += d
+                        done_video_n += 1
+                    elif ext in image_audio_exts:
+                        done_image_bytes += d
+                        done_image_n += 1
             elif status in ("pending", "downloading"):
                 size = t.file_size
                 if size > 0:
@@ -3987,10 +4391,21 @@ class KemonoDownloader:
                 else:
                     unknown_n += 1
                     unknown_downloaded += d
+                    if ext in video_archive_exts:
+                        unknown_video_n += 1
+                    elif ext in image_audio_exts:
+                        unknown_image_n += 1
+                    else:
+                        unknown_other_n += 1
+
         self._task_stats = {
             "done_bytes": done_bytes, "done_n": done_n, "known_bytes": known_bytes, "known_n": known_n,
             "known_remaining": float(known_remaining), "unknown_n": unknown_n,
             "unknown_downloaded": float(unknown_downloaded), "all_downloaded": all_downloaded,
+            "done_video_bytes": done_video_bytes, "done_video_n": done_video_n,
+            "done_image_bytes": done_image_bytes, "done_image_n": done_image_n,
+            "unknown_video_n": unknown_video_n, "unknown_image_n": unknown_image_n,
+            "unknown_other_n": unknown_other_n,
         }
         self._task_stats_time = now
         return self._task_stats
@@ -4005,11 +4420,11 @@ class KemonoDownloader:
             return
         self._last_progress_emit_time = now
 
-        elapsed = max(0.1, now - self.start_time)
+        active_elapsed = self._get_active_elapsed(now)
         speed = self._calculate_instant_speed(now)
 
-        # Format elapsed time
-        elapsed_int = int(elapsed)
+        # Format elapsed time (active download time, excluding paused time)
+        elapsed_int = int(active_elapsed)
         if elapsed_int >= 3600:
             elapsed_str = f"{elapsed_int // 3600}h {(elapsed_int % 3600) // 60}m {elapsed_int % 60}s"
         elif elapsed_int >= 60:
@@ -4018,7 +4433,7 @@ class KemonoDownloader:
             elapsed_str = f"{elapsed_int}s"
 
         # Calculate ETA
-        eta_str = self._calculate_smart_eta(completed, failed, total, speed, elapsed)
+        eta_str = self._calculate_smart_eta(completed, failed, total, speed, active_elapsed)
 
         # Calculate progress percent
         if total > 0:
