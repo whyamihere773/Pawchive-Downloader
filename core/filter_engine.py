@@ -207,7 +207,10 @@ class FilterOptions:
         skip_retry_404: bool = False,
         group_file_type: str = "none",
         file_order: str = "posted",
-        webp_quality: str = "balanced"
+        webp_quality: str = "balanced",
+        write_sidecars: bool = False,
+        sidecar_format: str = "json",
+        sidecar_scope: str = "per_file"
     ):
         self.characters = characters
         self.character_scope = character_scope
@@ -256,6 +259,9 @@ class FilterOptions:
         self.file_order = normalize_file_order(file_order)
         # How strongly "Compress to WebP" compresses: lossless / high / balanced / small / smallest
         self.webp_quality = str(webp_quality).lower() if str(webp_quality).lower() in WEBP_QUALITY_LEVELS else "balanced"
+        self.write_sidecars = bool(write_sidecars)
+        self.sidecar_format = str(sidecar_format).lower() if str(sidecar_format).lower() in ("json", "txt", "both") else "json"
+        self.sidecar_scope = str(sidecar_scope).lower() if str(sidecar_scope).lower() in ("per_file", "per_post") else "per_file"
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize filter options to dictionary for persistence."""
@@ -304,6 +310,9 @@ class FilterOptions:
             "group_file_type": self.group_file_type,
             "file_order": self.file_order,
             "webp_quality": self.webp_quality,
+            "write_sidecars": self.write_sidecars,
+            "sidecar_format": self.sidecar_format,
+            "sidecar_scope": self.sidecar_scope,
         }
 
     @classmethod
@@ -356,6 +365,9 @@ class FilterOptions:
             group_file_type=d.get("group_file_type", "none"),
             file_order=d.get("file_order", "posted"),
             webp_quality=d.get("webp_quality", "balanced"),
+            write_sidecars=bool(d.get("write_sidecars", False)),
+            sidecar_format=d.get("sidecar_format", "json"),
+            sidecar_scope=d.get("sidecar_scope", "per_file"),
         )
 FILTER_PROFILES = {
     "wip_sketches": {

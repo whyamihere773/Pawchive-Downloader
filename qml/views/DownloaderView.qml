@@ -3261,10 +3261,4 @@ SmoothFlickable {
             }
         }
     }
-
-    // Modal popup dialog for selecting failed downloads to retry
-    RetryModal {
-        id: retryModal
-        bridge: root.bridge
-    }
 }

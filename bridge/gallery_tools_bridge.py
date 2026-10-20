@@ -152,6 +152,9 @@ class GalleryToolsBridge(QObject):
     marksChanged = Signal()
     watchedFolderChanged = Signal(str)          # the open folder's contents changed on disk
     tagsReady = Signal(int, 'QVariantMap')      # token, {path: [character / series names]}
+    tagsProgress = Signal(int, int, int)        # token, current, total
+    tagsCancelled = Signal(int, 'QVariantMap')  # token, partial {path: [names]}
+    aiModelLoadedChanged = Signal(bool)
     animationReady = Signal(str, 'QVariantMap') # path, {frames, durations} (frames 0 = not animated)
     storageProgress = Signal(int, 'QVariantMap')  # token, {files, bytes, folder}
     storageReady = Signal(int, 'QVariantMap')     # token, breakdown (see _run_storage)
@@ -598,6 +601,44 @@ class GalleryToolsBridge(QObject):
         })
 
     # ── Character / series tags ─────────────────────────────────────────────
+    @Property(bool, notify=aiModelLoadedChanged)
+    def isAiModelLoaded(self) -> bool:
+        """Returns True if any AI models (ONNX or LLM) are currently loaded in VRAM or RAM."""
+        km = getattr(self._app, "known_manager", None)
+        if km is not None:
+            sm = getattr(km, "semantic_matcher", None)
+            if sm is not None and hasattr(sm, "is_loaded") and sm.is_loaded():
+                return True
+            cr = getattr(km, "contextual_reasoner", None)
+            if cr is not None and getattr(cr, "_llm_instance", None) is not None:
+                return True
+        return False
+
+    @Slot(result=bool)
+    def unloadAiModel(self) -> bool:
+        """Explicitly unloads AI models from VRAM and RAM and runs garbage collection."""
+        unloaded = False
+        km = getattr(self._app, "known_manager", None)
+        if km is not None:
+            for engine in (getattr(km, "semantic_matcher", None), getattr(km, "contextual_reasoner", None)):
+                if engine is not None and hasattr(engine, "unload"):
+                    try:
+                        if engine.unload():
+                            unloaded = True
+                    except Exception as e:
+                        logger.debug(f"Error unloading engine {engine}: {e}", category="ai")
+        import gc
+        gc.collect()
+        self.aiModelLoadedChanged.emit(self.isAiModelLoaded)
+        logger.info("AI models unloaded from VRAM and RAM on request.", category="ai")
+        return unloaded
+
+    @Slot()
+    def cancelTagging(self) -> None:
+        """Cancels background character scanning immediately and clears AI models from VRAM."""
+        self._tag_token += 1
+        self.unloadAiModel()
+
     @Slot('QVariantList', result=int)
     def tagItems(self, items: list) -> int:
         """Tag [{path, title}] with Known-list characters / series in the background (answer: tagsReady)."""
@@ -644,8 +685,12 @@ class GalleryToolsBridge(QObject):
 
     def _run_tags(self, token, km, work):
         result = {}
+        total = len(work)
+        self.tagsProgress.emit(token, 0, total)
         for i, (path, title) in enumerate(work):
             if token != self._tag_token:
+                logger.info(f"Gallery tagging cancelled by user at item {i}/{total}.", category="gallery")
+                self.tagsCancelled.emit(token, result)
                 return
             legacy = self.tags_for_title(km, title) if km is not None else []
             tags = GLOBAL_POST_META_INDEX.extract_tags_for_file(
@@ -653,8 +698,13 @@ class GalleryToolsBridge(QObject):
             )
             if tags:
                 result[path] = tags
+            if (i + 1) % 5 == 0 or (i + 1) == total:
+                self.tagsProgress.emit(token, i + 1, total)
+
         if token == self._tag_token:
+            self.tagsProgress.emit(token, total, total)
             self.tagsReady.emit(token, result)
+            self.aiModelLoadedChanged.emit(self.isAiModelLoaded)
 
     # ── File operations with undo ───────────────────────────────────────────
     def _push_undo(self, op: dict):

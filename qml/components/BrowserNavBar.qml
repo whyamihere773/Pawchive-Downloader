@@ -123,7 +123,17 @@ Rectangle {
                 anchors.fill: parent
                 hoverEnabled: true
                 cursorShape: Qt.IBeamCursor
-                onClicked: urlInput.forceActiveFocus()
+                acceptedButtons: Qt.LeftButton | Qt.RightButton
+                onClicked: function(mouse) {
+                    if (mouse.button === Qt.RightButton) {
+                        if (typeof appWindow !== "undefined" && appWindow && typeof appWindow.openTextContextMenu === "function") {
+                            var pt = mapToItem(urlInput, mouse.x, mouse.y)
+                            appWindow.openTextContextMenu(urlInput, pt.x, pt.y)
+                        }
+                    } else {
+                        urlInput.forceActiveFocus()
+                    }
+                }
             }
 
             RowLayout {
@@ -199,6 +209,18 @@ Rectangle {
                         }
                     }
                     onAccepted: root.startRequested()
+
+                    MouseArea {
+                        anchors.fill: parent
+                        acceptedButtons: Qt.RightButton
+                        hoverEnabled: false
+                        cursorShape: Qt.IBeamCursor
+                        onClicked: function(mouse) {
+                            if (typeof appWindow !== "undefined" && appWindow && typeof appWindow.openTextContextMenu === "function") {
+                                appWindow.openTextContextMenu(urlInput, mouse.x, mouse.y)
+                            }
+                        }
+                    }
 
                     Text {
                         text: (root.bridge && root.bridge.favoriteMode)

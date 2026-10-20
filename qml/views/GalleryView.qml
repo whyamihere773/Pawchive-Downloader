@@ -52,6 +52,9 @@ Item {
     property var charTags: ({})          // path -> [names]
     property int tagsToken: -1
     property bool tagging: false
+    property int taggingCurrent: 0
+    property int taggingTotal: 0
+    property real taggingProgress: taggingTotal > 0 ? (taggingCurrent / taggingTotal) : 0.0
     property string characterFilter: ""
 
     // Group by post: files sharing a post ID prefix ("169913374_…") collapse into one stack
@@ -759,7 +762,18 @@ Item {
         }
         if (!work.length) return
         root.tagging = true
+        root.taggingCurrent = 0
+        root.taggingTotal = work.length
         root.tagsToken = root.tools.tagItems(work)
+    }
+
+    function cancelTagging() {
+        if (!root.tools) return
+        root.tools.cancelTagging()
+        root.tagging = false
+        root.taggingCurrent = 0
+        root.taggingTotal = 0
+        showToast("Character scanning stopped • AI model unloaded from VRAM", false)
     }
 
     // [{ name, count }] for the files currently listed, most common first
@@ -827,7 +841,8 @@ Item {
         root.charTags = ({})
         root.folderStats = ({})
         statsResortTimer.stop()
-        root.tagging = false
+        if (root.tagging) root.cancelTagging()
+        else { root.tagging = false; root.taggingCurrent = 0; root.taggingTotal = 0 }
         root.clearSelection()
 
         root.currentPath = targetPath
@@ -1804,6 +1819,25 @@ Item {
             if (root.inFavorites) root.refreshPreservingScroll()
             else if (root.sortKey === "rating") root.resort()
         }
+        function onTagsProgress(token, current, total) {
+            if (token !== root.tagsToken) return
+            root.taggingCurrent = current
+            root.taggingTotal = total
+        }
+        function onTagsCancelled(token, map) {
+            if (token !== root.tagsToken) return
+            root.tagging = false
+            root.taggingCurrent = 0
+            root.taggingTotal = 0
+            if (map) {
+                var merged = {}
+                for (var k in root.charTags) merged[k] = root.charTags[k]
+                for (var p in map) merged[p] = map[p]
+                root.charTags = merged
+            }
+            if (charMenu.visible) charMenu.entries = root.characterCounts()
+            if (root.characterFilter) root.applyFilter()
+        }
         function onTagsReady(token, map) {
             if (token !== root.tagsToken) return
             var merged = {}
@@ -1814,6 +1848,8 @@ Item {
             for (var i = 0; i < list.length; i++) if (!list[i].is_dir && merged[list[i].path] === undefined) merged[list[i].path] = []
             root.charTags = merged
             root.tagging = false
+            root.taggingCurrent = 0
+            root.taggingTotal = 0
             if (charMenu.visible) charMenu.entries = root.characterCounts()
             if (root.characterFilter) root.applyFilter()
         }
@@ -3297,35 +3333,6 @@ Item {
                 }
             }
 
-            // Filter by character / series from the Known list
-            Rectangle {
-                id: charButton
-                implicitWidth: 28
-                implicitHeight: 26
-                radius: 6
-                Layout.alignment: Qt.AlignVCenter
-                color: root.characterFilter ? "#12302A" : (charBtnMouse.containsMouse ? "#1E293B" : "#121622")
-                border.color: root.characterFilter ? "#34D399" : ((charBtnMouse.containsMouse || charMenu.visible) ? "#38BDF8" : "#252D3E")
-                border.width: 1
-                Text { anchors.centerIn: parent; text: "👤"; font.pixelSize: 12; opacity: root.characterFilter ? 1.0 : 0.75 }
-                Springy { hover: charBtnMouse.containsMouse; pressed: charBtnMouse.pressed }
-                MouseArea {
-                    id: charBtnMouse
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                        root.startTagging()
-                        var p = charButton.mapToItem(root, 0, charButton.height + 4)
-                        charMenu.x = Math.max(4, Math.min(p.x, root.width - charMenu.width - 4))
-                        charMenu.y = p.y
-                        charMenu.open()
-                    }
-                    ToolTip.visible: containsMouse && !charMenu.visible
-                    ToolTip.delay: 250
-                    ToolTip.text: root.characterFilter ? ("Showing only " + root.characterFilter + " (click to change)") : "Filter by character or series (names from your Known list)"
-                }
-            }
 
             // Thumbnail size (grid view only); Ctrl + mouse wheel does the same
             Row {
@@ -3608,12 +3615,18 @@ Item {
                 Text {
                     Layout.fillWidth: true
                     text: "👤 " + root.characterFilter + "  •  " + root.shownItemCount + (root.shownItemCount === 1 ? " file" : " files")
-                          + (root.tagging ? "  •  still scanning names…" : "")
+                          + (root.tagging ? ("  •  still scanning names (" + root.taggingCurrent + "/" + root.taggingTotal + ")…") : "")
                     font.family: "Segoe UI, sans-serif"
                     font.pixelSize: 11
                     font.weight: 600
                     color: "#A7F3D0"
                     elide: Text.ElideRight
+                }
+                ActionChip {
+                    visible: root.tagging
+                    icon: "⏹"; label: "Stop scan"
+                    tip: "Stop scanning and free AI model from VRAM"
+                    onTriggered: root.cancelTagging()
                 }
                 ActionChip {
                     icon: "✕"; label: "Clear filter"
@@ -5247,13 +5260,106 @@ Click to open the Downloader"
                 icon: "✕"; label: "Clear filter"
                 onTriggered: { charMenu.close(); root.setCharacterFilter("") }
             }
-            Text {
+            // Tagging Progress & Cancel Container
+            Rectangle {
                 visible: root.tagging
                 width: parent.width
-                leftPadding: 8; topPadding: 6; bottomPadding: 6
-                text: "⏳ Recognising names…"
-                font.pixelSize: 11
-                color: "#F59E0B"
+                implicitHeight: tagMenuProgCol.implicitHeight + 14
+                radius: 6
+                color: "#182030"
+                border.color: "#2C3D5A"
+                border.width: 1
+
+                ColumnLayout {
+                    id: tagMenuProgCol
+                    anchors.fill: parent
+                    anchors.margins: 6
+                    spacing: 5
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 6
+
+                        Text {
+                            text: "⏳"
+                            font.pixelSize: 11
+                            Layout.alignment: Qt.AlignVCenter
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: root.taggingTotal > 0
+                                  ? ("Scanning " + root.taggingCurrent + "/" + root.taggingTotal + " (" + Math.round(root.taggingProgress * 100) + "%)")
+                                  : "Scanning names…"
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 11
+                            font.weight: Font.DemiBold
+                            color: "#38BDF8"
+                            elide: Text.ElideRight
+                        }
+
+                        // Cancel button inside menu
+                        Rectangle {
+                            id: cancelTagBtn
+                            implicitWidth: cancelTagText.implicitWidth + 12
+                            height: 20
+                            radius: 4
+                            color: cancelTagMouse.containsMouse ? "#7F1D1D" : "#3B181E"
+                            border.color: cancelTagMouse.containsMouse ? "#F87171" : "#EF4444"
+                            border.width: 1
+                            scale: cancelTagMouse.pressed ? 0.92 : (cancelTagMouse.containsMouse ? 1.05 : 1.0)
+                            Behavior on scale { SpringAnimation { spring: 5.0; damping: 0.38; mass: 0.8 } }
+
+                            Text {
+                                id: cancelTagText
+                                anchors.centerIn: parent
+                                text: "✕ Stop"
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 10
+                                font.weight: Font.Bold
+                                color: "#FCA5A5"
+                            }
+
+                            MouseArea {
+                                id: cancelTagMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                ToolTip.visible: containsMouse
+                                ToolTip.delay: 250
+                                ToolTip.text: "Stop scanning and unload AI model from VRAM"
+                                onClicked: root.cancelTagging()
+                            }
+                        }
+                    }
+
+                    // Progress bar
+                    Rectangle {
+                        Layout.fillWidth: true
+                        height: 4
+                        radius: 2
+                        color: "#0F1420"
+
+                        Rectangle {
+                            height: parent.height
+                            radius: 2
+                            width: Math.max(0, Math.min(parent.width, parent.width * root.taggingProgress))
+                            color: "#38BDF8"
+                            Behavior on width { NumberAnimation { duration: 100 } }
+                        }
+                    }
+                }
+            }
+
+            // Free AI model from VRAM row (when not actively scanning and AI model is loaded)
+            MenuRow {
+                visible: !root.tagging && root.tools && root.tools.isAiModelLoaded
+                icon: "🧹"
+                label: "Free AI model from VRAM"
+                onTriggered: {
+                    if (root.tools) root.tools.unloadAiModel()
+                    root.showToast("AI model unloaded from VRAM", false)
+                }
             }
             Text {
                 visible: !root.tagging && charMenu.entries.length === 0

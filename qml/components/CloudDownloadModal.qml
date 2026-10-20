@@ -19,17 +19,21 @@ Rectangle {
     visible: opacity > 0
     anchors.fill: parent
     color: "#CC0B0D12" // Semi-transparent overlay backdrop
-    z: 1000
+    z: 9998
 
+    focus: isOpen
+    Keys.onEscapePressed: cloudModalRoot.isOpen = false
 
     opacity: isOpen ? 1.0 : 0.0
     Behavior on opacity {
         NumberAnimation { duration: 240; easing.type: Easing.OutCubic }
     }
 
-    // Prevent clicks from falling through
+    // Prevent clicks and wheel from falling through
     MouseArea {
         anchors.fill: parent
+        hoverEnabled: true
+        onWheel: (wheel) => wheel.accepted = true
         onClicked: {}
     }
 

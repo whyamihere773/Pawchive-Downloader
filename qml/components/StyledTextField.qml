@@ -81,6 +81,23 @@ TextField {
         }
     }
 
+    // Right-click context menu handler
+    MouseArea {
+        id: rightClickArea
+        anchors.fill: parent
+        anchors.rightMargin: (showClearButton && control.text.length > 0) ? 30 : 0
+        acceptedButtons: Qt.RightButton
+        hoverEnabled: false
+        cursorShape: Qt.IBeamCursor
+        onClicked: function(mouse) {
+            if (typeof appWindow !== "undefined" && appWindow && typeof appWindow.openTextContextMenu === "function") {
+                appWindow.openTextContextMenu(control, mouse.x, mouse.y)
+            } else if (typeof globalTextContextMenu !== "undefined" && globalTextContextMenu) {
+                globalTextContextMenu.showAt(control, mouse.x, mouse.y)
+            }
+        }
+    }
+
     background: Rectangle {
         implicitWidth: 200
         implicitHeight: control.implicitHeight

@@ -170,6 +170,9 @@ class AppBridge(QObject):
     elapsedTimeTextChanged = Signal()
     downloadDelayChanged = Signal()
     savePostMetadataChanged = Signal()
+    writeSidecarsChanged = Signal()
+    sidecarFormatChanged = Signal()
+    sidecarScopeChanged = Signal()
     downloadEmbedsChanged = Signal()
     embedCookiesBrowserChanged = Signal()
     openFolderOnCompleteChanged = Signal()
@@ -413,6 +416,9 @@ class AppBridge(QObject):
         self._user_agent = saved_settings.get("user_agent", "")
         self._download_delay = float(saved_settings.get("download_delay", 2.0))
         self._save_post_metadata = bool(saved_settings.get("save_post_metadata", True))
+        self._write_sidecars = bool(saved_settings.get("write_sidecars", False))
+        self._sidecar_format = str(saved_settings.get("sidecar_format", "json"))
+        self._sidecar_scope = str(saved_settings.get("sidecar_scope", "per_file"))
         self._download_embeds = bool(saved_settings.get("download_embeds", True))
         # Embedded videos that need a sign-in (RedGifs, private Vimeo…) use this browser's ("" = none)
         self._embed_cookies_browser = str(saved_settings.get("embed_cookies_browser", "") or "")
@@ -1644,6 +1650,42 @@ class AppBridge(QObject):
             self.savePostMetadataChanged.emit()
             self.saveSettings()
 
+    @Property(bool, notify=writeSidecarsChanged)
+    def writeSidecars(self) -> bool:
+        return self._write_sidecars
+
+    @writeSidecars.setter
+    def writeSidecars(self, val: bool):
+        val = bool(val)
+        if self._write_sidecars != val:
+            self._write_sidecars = val
+            self.writeSidecarsChanged.emit()
+            self.saveSettings()
+
+    @Property(str, notify=sidecarFormatChanged)
+    def sidecarFormat(self) -> str:
+        return self._sidecar_format
+
+    @sidecarFormat.setter
+    def sidecarFormat(self, val: str):
+        val = str(val or "json").lower()
+        if self._sidecar_format != val:
+            self._sidecar_format = val
+            self.sidecarFormatChanged.emit()
+            self.saveSettings()
+
+    @Property(str, notify=sidecarScopeChanged)
+    def sidecarScope(self) -> str:
+        return self._sidecar_scope
+
+    @sidecarScope.setter
+    def sidecarScope(self, val: str):
+        val = str(val or "per_file").lower()
+        if self._sidecar_scope != val:
+            self._sidecar_scope = val
+            self.sidecarScopeChanged.emit()
+            self.saveSettings()
+
     @Property(bool, notify=downloadEmbedsChanged)
     def downloadEmbeds(self) -> bool:
         return self._download_embeds
@@ -2622,7 +2664,10 @@ class AppBridge(QObject):
             write_audio_metadata=self._write_audio_metadata,
             skip_retry_404=self._skip_retry_404,
             group_file_type=self._group_file_type,
-            file_order=self._file_order
+            file_order=self._file_order,
+            write_sidecars=self._write_sidecars,
+            sidecar_format=self._sidecar_format,
+            sidecar_scope=self._sidecar_scope
         )
 
     def _get_link_identity(self, parsed: URLParseResult) -> tuple[str, str, Optional[str], str]:
@@ -5189,6 +5234,9 @@ class AppBridge(QObject):
             "scan_content_images": self._scan_content_images,
             "download_delay": self._download_delay,
             "save_post_metadata": self._save_post_metadata,
+            "write_sidecars": self._write_sidecars,
+            "sidecar_format": self._sidecar_format,
+            "sidecar_scope": self._sidecar_scope,
             "download_embeds": self._download_embeds,
             "embed_cookies_browser": self._embed_cookies_browser,
             "decompressor": (self._decompressor_bridge.settings_dict() if getattr(self, "_decompressor_bridge", None)
@@ -7279,6 +7327,24 @@ class AppBridge(QObject):
         count = link_vault_manager.clean_dead_links()
         self.linkVaultChanged.emit()
         return count
+
+    @Slot(str, result=int)
+    @Slot(result=int)
+    def copyVaultLinks(self, creatorKey: str = "") -> int:
+        from core.link_vault_manager import link_vault_manager
+        urls = link_vault_manager.get_all_link_urls(creatorKey)
+        if urls:
+            self.copyToClipboard("\n".join(urls))
+        return len(urls)
+
+    @Slot(str, result=int)
+    def exportVaultToFolder(self, folderPath: str) -> int:
+        from core.link_vault_manager import link_vault_manager
+        clean_path = folderPath or ""
+        if clean_path.startswith("file:"):
+            clean_path = QUrl(clean_path).toLocalFile()
+        clean_path = os.path.normpath(clean_path)
+        return link_vault_manager.export_all_to_folder(clean_path)
 
     @Slot()
     def probeVaultHealth(self):

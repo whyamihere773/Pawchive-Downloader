@@ -14,6 +14,7 @@ import datetime
 import hashlib
 import random
 import threading
+import json
 import requests
 import urllib.parse
 from collections import Counter, deque, defaultdict
@@ -793,7 +794,7 @@ class KemonoDownloader:
 
         page_url = f"https://pawchive.pw/{service}/user/{user_id}/post/{post_id}"
         headers = {
-            "User-Agent": "PawchiveDownloader/1.3.0 (https://github.com/whyamihere773/Pawchive-Downloader)",
+            "User-Agent": "PawchiveDownloader/1.3.1 (https://github.com/whyamihere773/Pawchive-Downloader)",
             "Referer": "https://pawchive.pw/",
             "X-Contact": "https://github.com/whyamihere773/Pawchive-Downloader",
         }
@@ -3275,7 +3276,7 @@ class KemonoDownloader:
                         req_headers["Referer"] = "https://coomer.st/"
                         req_headers["Accept"] = "*/*"
                     elif "pawchive" in u_low:
-                        req_headers["User-Agent"] = "PawchiveDownloader/1.3.0 (https://github.com/whyamihere773/Pawchive-Downloader)"
+                        req_headers["User-Agent"] = "PawchiveDownloader/1.3.1 (https://github.com/whyamihere773/Pawchive-Downloader)"
                         req_headers["Referer"] = "https://pawchive.pw/"
                         req_headers["Accept"] = "*/*"
                     elif "cum.st" in u_low:
@@ -3361,7 +3362,7 @@ class KemonoDownloader:
                             try:
                                 if "pawchive" in attempt_url.lower():
                                     clean_headers = {
-                                        "User-Agent": "PawchiveDownloader/1.3.0 (https://github.com/whyamihere773/Pawchive-Downloader)",
+                                        "User-Agent": "PawchiveDownloader/1.3.1 (https://github.com/whyamihere773/Pawchive-Downloader)",
                                         "Referer": "https://pawchive.pw/",
                                         "Accept": "*/*",
                                         "X-Contact": "https://github.com/whyamihere773/Pawchive-Downloader",
@@ -4093,6 +4094,73 @@ class KemonoDownloader:
                 date=getattr(task, "post_date", "") or "",
                 comment=getattr(task, "post_url", "") or task.url
             )
+
+        # 3. Metadata sidecars (Hydrus Network, Eagle, Booru taggers)
+        if getattr(options, "write_sidecars", False):
+            self._write_sidecar_metadata(task, options)
+
+    def _write_sidecar_metadata(self, task: DownloadTask, options: FilterOptions):
+        """Generates companion metadata sidecars (.json / .txt) for external gallery software."""
+        try:
+            if not task.target_path or not os.path.exists(task.target_path):
+                return
+            sidecar_fmt = getattr(options, "sidecar_format", "json").lower()
+            sidecar_scope = getattr(options, "sidecar_scope", "per_file").lower()
+
+            dest_dir = os.path.dirname(task.target_path)
+            base_name = os.path.splitext(task.target_path)[0]
+
+            paths_to_write = []
+            if sidecar_scope == "per_post":
+                if sidecar_fmt in ("json", "both"):
+                    paths_to_write.append((os.path.join(dest_dir, "post_metadata.json"), "json"))
+                if sidecar_fmt in ("txt", "both"):
+                    paths_to_write.append((os.path.join(dest_dir, "post_metadata.txt"), "txt"))
+            else:
+                if sidecar_fmt in ("json", "both"):
+                    paths_to_write.append((f"{base_name}.json", "json"))
+                if sidecar_fmt in ("txt", "both"):
+                    paths_to_write.append((f"{base_name}.txt", "txt"))
+
+            tags_list = []
+            raw_tags = getattr(task, "tags", None)
+            if raw_tags:
+                from core.filter_engine import FilterEngine
+                tags_list = FilterEngine.normalize_tags(raw_tags)
+
+            if task.creator_name and f"creator:{task.creator_name}" not in tags_list:
+                tags_list.insert(0, f"creator:{task.creator_name}")
+            if task.service and f"service:{task.service}" not in tags_list:
+                tags_list.insert(1, f"service:{task.service}")
+
+            for out_path, fmt in paths_to_write:
+                if fmt == "json":
+                    meta = {
+                        "title": task.post_title or "",
+                        "creator": task.creator_name or "",
+                        "service": task.service or "",
+                        "user_id": task.user_id or "",
+                        "post_id": task.post_id or "",
+                        "post_url": task.post_url or "",
+                        "file_url": task.url or "",
+                        "filename": task.filename or os.path.basename(task.target_path),
+                        "file_size": task.file_size or (os.path.getsize(task.target_path) if os.path.exists(task.target_path) else 0),
+                        "file_hash": task.expected_sha256 or "",
+                        "published_at": getattr(task, "post_date", "") or "",
+                        "tags": tags_list
+                    }
+                    atomic_write_text(out_path, json.dumps(meta, ensure_ascii=False, indent=2))
+                elif fmt == "txt":
+                    lines = [t for t in tags_list]
+                    if getattr(task, "post_url", ""):
+                        lines.append(f"source:{task.post_url}")
+                    if getattr(task, "post_date", ""):
+                        lines.append(f"date:{task.post_date}")
+                    if task.post_title:
+                        lines.append(f"title:{task.post_title}")
+                    atomic_write_text(out_path, "\n".join(lines) + "\n")
+        except Exception as ex:
+            logger.debug(f"Could not save metadata sidecar for {task.filename}: {ex}", category="file")
 
     def _convert_to_webp(self, file_path: str, level: str = "balanced") -> Optional[str]:
         """Converts JPG/PNG to WebP at the chosen level; returns the new path, or None when the file

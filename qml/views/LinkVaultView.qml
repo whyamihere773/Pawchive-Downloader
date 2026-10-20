@@ -438,6 +438,95 @@ Item {
                                 }
                             }
                         }
+
+                        // Action: Copy All Links
+                        Rectangle {
+                            implicitWidth: copyAllRow1.implicitWidth + 20
+                            height: 32
+                            radius: 6
+                            color: copyAllMouse1.containsMouse ? "#1E293B" : "#141720"
+                            border.color: copyAllMouse1.containsMouse ? "#7DD3FC" : "#38BDF8"
+                            border.width: 1
+                            scale: copyAllMouse1.pressed ? 0.92 : (copyAllMouse1.containsMouse ? 1.04 : 1.0)
+                            Behavior on scale { SpringAnimation { spring: 5.0; damping: 0.38; mass: 0.8 } }
+                            Behavior on color { ColorAnimation { duration: 120 } }
+
+                            Row {
+                                id: copyAllRow1
+                                anchors.centerIn: parent
+                                spacing: 6
+                                Text { text: "📋"; font.pixelSize: 12 }
+                                Text {
+                                    text: linkVaultRoot.tr("btn_copy_all_links", "Copy All Links")
+                                    font.family: "Segoe UI, sans-serif"
+                                    font.pixelSize: 11
+                                    font.weight: 600
+                                    color: "#38BDF8"
+                                }
+                            }
+
+                            MouseArea {
+                                id: copyAllMouse1
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                ToolTip.visible: containsMouse
+                                ToolTip.delay: 300
+                                ToolTip.text: linkVaultRoot.tr("tip_copy_all_links", "Copy all stored links across all creators to the clipboard")
+                                onClicked: {
+                                    if (linkVaultRoot.bridge) {
+                                        var count = linkVaultRoot.bridge.copyVaultLinks("")
+                                        linkVaultRoot.showToast(linkVaultRoot.tr("toast_links_copied", "Copied to clipboard: ") + count + " " + linkVaultRoot.tr("vault_links_pill", "Links"))
+                                    }
+                                }
+                            }
+                        }
+
+                        // Action: Bulk Export to Files
+                        Rectangle {
+                            implicitWidth: exportRow1.implicitWidth + 20
+                            height: 32
+                            radius: 6
+                            color: exportMouse1.containsMouse ? "#1F2D2A" : "#141B1A"
+                            border.color: exportMouse1.containsMouse ? "#6EE7B7" : "#10B981"
+                            border.width: 1
+                            scale: exportMouse1.pressed ? 0.92 : (exportMouse1.containsMouse ? 1.04 : 1.0)
+                            Behavior on scale { SpringAnimation { spring: 5.0; damping: 0.38; mass: 0.8 } }
+                            Behavior on color { ColorAnimation { duration: 120 } }
+
+                            Row {
+                                id: exportRow1
+                                anchors.centerIn: parent
+                                spacing: 6
+                                Text { text: "💾"; font.pixelSize: 12 }
+                                Text {
+                                    text: linkVaultRoot.tr("btn_export_files", "Export to Files")
+                                    font.family: "Segoe UI, sans-serif"
+                                    font.pixelSize: 11
+                                    font.weight: 600
+                                    color: "#34D399"
+                                }
+                            }
+
+                            MouseArea {
+                                id: exportMouse1
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                ToolTip.visible: containsMouse
+                                ToolTip.delay: 300
+                                ToolTip.text: linkVaultRoot.tr("tip_export_files", "Export each creator's links into individual unique text files in a selected folder")
+                                onClicked: {
+                                    if (linkVaultRoot.bridge) {
+                                        var folder = linkVaultRoot.bridge.browseFolderDialog(linkVaultRoot.tr("dlg_select_export_dir", "Select Folder for Link Vault Export"), "")
+                                        if (folder) {
+                                            var count = linkVaultRoot.bridge.exportVaultToFolder(folder)
+                                            linkVaultRoot.showToast(linkVaultRoot.tr("toast_vault_exported", "Exported ") + count + " " + linkVaultRoot.tr("vault_files_exported", "creator file(s) to ") + folder)
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -599,6 +688,93 @@ Item {
                             }
                         }
                     }
+
+                    // Action: Copy All Links
+                    Rectangle {
+                        implicitWidth: copyAllRow2.implicitWidth + 18
+                        height: 30
+                        radius: 6
+                        color: copyAllMouse2.containsMouse ? "#1E293B" : "#141720"
+                        border.color: copyAllMouse2.containsMouse ? "#7DD3FC" : "#38BDF8"
+                        border.width: 1
+                        scale: copyAllMouse2.pressed ? 0.92 : (copyAllMouse2.containsMouse ? 1.04 : 1.0)
+                        Behavior on scale { SpringAnimation { spring: 5.0; damping: 0.38; mass: 0.8 } }
+
+                        Row {
+                            id: copyAllRow2
+                            anchors.centerIn: parent
+                            spacing: 6
+                            Text { text: "📋"; font.pixelSize: 11 }
+                            Text {
+                                text: linkVaultRoot.tr("btn_copy_all_links", "Copy All Links")
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 10
+                                font.weight: 600
+                                color: "#38BDF8"
+                            }
+                        }
+
+                        MouseArea {
+                            id: copyAllMouse2
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 300
+                            ToolTip.text: linkVaultRoot.tr("tip_copy_all_links", "Copy all stored links across all creators to the clipboard")
+                            onClicked: {
+                                if (linkVaultRoot.bridge) {
+                                    var count = linkVaultRoot.bridge.copyVaultLinks("")
+                                    linkVaultRoot.showToast(linkVaultRoot.tr("toast_links_copied", "Copied to clipboard: ") + count + " " + linkVaultRoot.tr("vault_links_pill", "Links"))
+                                }
+                            }
+                        }
+                    }
+
+                    // Action: Bulk Export to Files
+                    Rectangle {
+                        implicitWidth: exportRow2.implicitWidth + 18
+                        height: 30
+                        radius: 6
+                        color: exportMouse2.containsMouse ? "#1F2D2A" : "#141B1A"
+                        border.color: exportMouse2.containsMouse ? "#6EE7B7" : "#10B981"
+                        border.width: 1
+                        scale: exportMouse2.pressed ? 0.92 : (exportMouse2.containsMouse ? 1.04 : 1.0)
+                        Behavior on scale { SpringAnimation { spring: 5.0; damping: 0.38; mass: 0.8 } }
+
+                        Row {
+                            id: exportRow2
+                            anchors.centerIn: parent
+                            spacing: 6
+                            Text { text: "💾"; font.pixelSize: 11 }
+                            Text {
+                                text: linkVaultRoot.tr("btn_export_files", "Export to Files")
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 10
+                                font.weight: 600
+                                color: "#34D399"
+                            }
+                        }
+
+                        MouseArea {
+                            id: exportMouse2
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 300
+                            ToolTip.text: linkVaultRoot.tr("tip_export_files", "Export each creator's links into individual unique text files in a selected folder")
+                            onClicked: {
+                                if (linkVaultRoot.bridge) {
+                                    var folder = linkVaultRoot.bridge.browseFolderDialog(linkVaultRoot.tr("dlg_select_export_dir", "Select Folder for Link Vault Export"), "")
+                                    if (folder) {
+                                        var count = linkVaultRoot.bridge.exportVaultToFolder(folder)
+                                        linkVaultRoot.showToast(linkVaultRoot.tr("toast_vault_exported", "Exported ") + count + " " + linkVaultRoot.tr("vault_files_exported", "creator file(s) to ") + folder)
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -729,6 +905,18 @@ Item {
                         onTextChanged: {
                             linkVaultRoot.searchQuery = text
                             if (linkVaultRoot.bridge) linkVaultRoot.bridge.refreshLinkVault(linkVaultRoot.searchQuery, linkVaultRoot.activePlatform)
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            acceptedButtons: Qt.RightButton
+                            hoverEnabled: false
+                            cursorShape: Qt.IBeamCursor
+                            onClicked: function(mouse) {
+                                if (typeof appWindow !== "undefined" && appWindow && typeof appWindow.openTextContextMenu === "function") {
+                                    appWindow.openTextContextMenu(searchInput, mouse.x, mouse.y)
+                                }
+                            }
                         }
                     }
 
@@ -1001,6 +1189,38 @@ Item {
                                     font.pixelSize: 10
                                     font.weight: Font.Bold
                                     color: "#38BDF8"
+                                }
+                            }
+
+                            // Copy Creator Links Button
+                            Rectangle {
+                                width: 24
+                                height: 24
+                                radius: 4
+                                color: copyCreatorMouse.containsMouse ? "#1E293B" : "transparent"
+                                border.color: copyCreatorMouse.containsMouse ? "#38BDF8" : "transparent"
+                                border.width: 1
+                                scale: copyCreatorMouse.pressed ? 0.86 : (copyCreatorMouse.containsMouse ? 1.12 : 1.0)
+                                Behavior on scale { SpringAnimation { spring: 5.0; damping: 0.35; mass: 0.7 } }
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: "📋"
+                                    font.pixelSize: 11
+                                }
+                                MouseArea {
+                                    id: copyCreatorMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    ToolTip.visible: containsMouse
+                                    ToolTip.delay: 300
+                                    ToolTip.text: linkVaultRoot.tr("tip_copy_creator_links", "Copy all links for this artist to clipboard")
+                                    onClicked: {
+                                        if (linkVaultRoot.bridge) {
+                                            var count = linkVaultRoot.bridge.copyVaultLinks(creatorItem.creator_key)
+                                            linkVaultRoot.showToast(linkVaultRoot.tr("toast_links_copied", "Copied to clipboard: ") + count + " " + linkVaultRoot.tr("vault_links_pill", "Links"))
+                                        }
+                                    }
                                 }
                             }
 

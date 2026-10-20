@@ -2366,6 +2366,65 @@ SmoothFlickable {
                         }
 
                         StyledCheckBox {
+                            text: tr("opt_write_sidecars", "Generate metadata sidecar files (for Hydrus Network, Eagle, Booru taggers)")
+                            tooltip: tr("opt_write_sidecars_tip", "Saves companion metadata files alongside downloads containing creator, title, post URL, published date, and tags for automated gallery ingestion.")
+                            checked: root.bridge ? root.bridge.writeSidecars : false
+                            onCheckedChanged: if (root.bridge) root.bridge.writeSidecars = checked
+                        }
+
+                        // Sidecar options (only while writeSidecars is active)
+                        Row {
+                            visible: root.bridge ? root.bridge.writeSidecars : false
+                            spacing: 16
+                            leftPadding: 28
+
+                            Row {
+                                spacing: 8
+                                Text {
+                                    text: tr("sidecar_format_label", "Format:")
+                                    font.family: "Segoe UI, sans-serif"
+                                    font.pixelSize: 12
+                                    color: "#94A3B8"
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+                                StyledComboBox {
+                                    implicitHeight: 28
+                                    implicitWidth: 170
+                                    model: [
+                                        { text: "Universal JSON (.json)", value: "json" },
+                                        { text: "Hydrus & Booru (.txt)", value: "txt" },
+                                        { text: "Both (.json + .txt)", value: "both" }
+                                    ]
+                                    value: root.bridge ? root.bridge.sidecarFormat : "json"
+                                    tooltip: tr("sidecar_format_tip", "JSON is universally readable by Eagle, scripts, and databases. TXT is structured for native tag ingestion in Hydrus Network.")
+                                    onValuePicked: function(v) { if (root.bridge) root.bridge.sidecarFormat = v }
+                                }
+                            }
+
+                            Row {
+                                spacing: 8
+                                Text {
+                                    text: tr("sidecar_scope_label", "Scope:")
+                                    font.family: "Segoe UI, sans-serif"
+                                    font.pixelSize: 12
+                                    color: "#94A3B8"
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+                                StyledComboBox {
+                                    implicitHeight: 28
+                                    implicitWidth: 170
+                                    model: [
+                                        { text: "Per Media File (1:1)", value: "per_file" },
+                                        { text: "Per Post Folder", value: "per_post" }
+                                    ]
+                                    value: root.bridge ? root.bridge.sidecarScope : "per_file"
+                                    tooltip: tr("sidecar_scope_tip", "Per Media File creates companion files with matching names for 1:1 auto-tagging on drag-and-drop. Per Post Folder saves one summary file in the post folder.")
+                                    onValuePicked: function(v) { if (root.bridge) root.bridge.sidecarScope = v }
+                                }
+                            }
+                        }
+
+                        StyledCheckBox {
                             text: tr("opt_download_pawchive_temp", "Download Pawchive temporary oversized files (t1.pawchive.pw)")
                             tooltip: tr("opt_download_pawchive_temp_tip", "Download oversized files that Pawchive keeps in temporary 30-day storage")
                             checked: root.bridge ? root.bridge.downloadPawchiveTemporaryFiles : true

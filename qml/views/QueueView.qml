@@ -81,7 +81,7 @@ Rectangle {
                     variant: "danger"
                     implicitHeight: 28
                     tooltip: root.tr("tip_retry_failed", "Open selective retry dialog to inspect and re-download failed files")
-                    onClicked: retryModal.isOpen = true
+                    onClicked: if (typeof appWindow !== "undefined" && typeof appWindow.openRetryModal === "function") appWindow.openRetryModal()
                 }
 
                 // Quick Action: Clear Queue
@@ -107,7 +107,7 @@ Rectangle {
                     implicitHeight: 26
                     tooltip: root.tr("tip_download_links", "Open dialog to download harvested links via Mega.nz, Google Drive, Dropbox, or GoFile")
                     opacity: (root.bridge && root.bridge.hasHarvestedLinks) ? 1.0 : 0.6
-                    onClicked: cloudModal.isOpen = true
+                    onClicked: if (typeof appWindow !== "undefined" && typeof appWindow.openCloudModal === "function") appWindow.openCloudModal()
                 }
 
                 StyledButton {
@@ -134,7 +134,7 @@ Rectangle {
                     variant: "outline"
                     implicitHeight: 26
                     tooltip: root.tr("tip_import_queue", "Load a saved queue backup file (Merge or Replace)")
-                    onClicked: importModal.isOpen = true
+                    onClicked: if (typeof appWindow !== "undefined" && typeof appWindow.openImportModal === "function") appWindow.openImportModal()
                 }
 
                 // If failedCount is 0, show Retry Failed as ghost button here so it's always accessible
@@ -146,7 +146,7 @@ Rectangle {
                     implicitHeight: 26
                     tooltip: root.tr("tip_retry_failed", "Open selective retry dialog to inspect and re-download failed files")
                     opacity: 0.45
-                    onClicked: retryModal.isOpen = true
+                    onClicked: if (typeof appWindow !== "undefined" && typeof appWindow.openRetryModal === "function") appWindow.openRetryModal()
                 }
             }
         }
@@ -1185,22 +1185,5 @@ Rectangle {
         }
     }
 }
-
-    // Modal popup dialog for selectively retrying failed downloads
-    RetryModal {
-        id: retryModal
-        bridge: root.bridge
-    }
-
-    // Modal popup dialog for downloading harvested external cloud links
-    CloudDownloadModal {
-        id: cloudModal
-        bridge: root.bridge
-    }
-
-    // Modal popup dialog for importing queue state snapshot
-    ImportConfirmModal {
-        id: importModal
-        bridge: root.bridge
-    }
 }
+

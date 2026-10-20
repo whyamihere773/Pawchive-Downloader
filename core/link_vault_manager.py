@@ -682,6 +682,90 @@ class LinkVaultManager:
                         pw_set.add(pw.strip())
             return sorted(list(pw_set))
 
+    def get_all_link_urls(self, creator_key: str = "") -> List[str]:
+        """Returns a list of URLs currently stored in the vault, optionally filtered by creator."""
+        with self._lock:
+            ck = creator_key.lower().strip()
+            urls = []
+            seen = set()
+            for lnk in self.data["links"]:
+                if ck and lnk.get("creator_key", "").lower() != ck:
+                    continue
+                u = lnk.get("url", "")
+                if u and u not in seen:
+                    seen.add(u)
+                    urls.append(u)
+            return urls
+
+    def export_all_to_folder(self, target_dir: str) -> int:
+        """Exports all links in the Link Vault grouped into unique individual text files per creator.
+        Returns the number of creator files written."""
+        from core.text_utils import sanitize_filesystem_name
+        from core.atomic_io import atomic_write_text
+
+        if not target_dir:
+            return 0
+        os.makedirs(target_dir, exist_ok=True)
+
+        with self._lock:
+            creators = dict(self.data.get("creators", {}))
+            posts_by_creator: Dict[str, List[Dict[str, Any]]] = {}
+            for p in self.data.get("posts", {}).values():
+                posts_by_creator.setdefault(p.get("creator_key", ""), []).append(p)
+
+            links_by_post: Dict[tuple, List[Dict[str, Any]]] = {}
+            for lnk in self.data.get("links", []):
+                links_by_post.setdefault((lnk.get("creator_key", ""), lnk.get("post_id", "")), []).append(lnk)
+
+            exported_count = 0
+            for ckey, cinfo in creators.items():
+                c_name = cinfo.get("creator_name", "Unknown")
+                c_svc = cinfo.get("service", "")
+                c_posts = list(posts_by_creator.get(ckey, []))
+                c_posts.sort(key=lambda x: x.get("published", ""), reverse=True)
+
+                total_c_links = sum(len(links_by_post.get((ckey, p.get("post_id", "")), [])) for p in c_posts)
+                if total_c_links == 0:
+                    continue
+
+                safe_title = sanitize_filesystem_name(f"{c_name} [{c_svc}]" if c_svc else c_name)
+                out_path = os.path.join(target_dir, f"{safe_title}.txt")
+
+                lines = [
+                    f"Creator: {c_name} [{c_svc}]",
+                    f"Total Links: {total_c_links}",
+                    f"Exported: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                    "=" * 80,
+                    ""
+                ]
+
+                for post in c_posts:
+                    pid = post.get("post_id", "")
+                    plinks = links_by_post.get((ckey, pid), [])
+                    if not plinks:
+                        continue
+                    p_title = post.get("title") or f"Post {pid}"
+                    p_url = post.get("url", "")
+                    p_date = post.get("published", "")
+
+                    lines.append(f"📌 {p_title}")
+                    if p_url:
+                        lines.append(f"   URL: {p_url}")
+                    if p_date:
+                        lines.append(f"   Date: {p_date}")
+                    lines.append("   Links:")
+                    for lnk in plinks:
+                        u = lnk.get("url", "")
+                        pws = lnk.get("passwords", [])
+                        pw_str = f" (Passwords: {', '.join(pws)})" if pws else ""
+                        lines.append(f"     - {u}{pw_str}")
+                    lines.append("")
+
+                atomic_write_text(out_path, "\n".join(lines))
+                exported_count += 1
+
+            return exported_count
+
     def probe_link_health_single(self, link_item: Dict[str, Any]) -> str:
         """
         Probes a single link using non-blocking HEAD/API checks.

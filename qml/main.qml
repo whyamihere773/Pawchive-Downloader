@@ -90,6 +90,22 @@ ApplicationWindow {
         archiveRebuildModal.isOpen = true;
     }
 
+    function openRetryModal() {
+        mainRetryModal.isOpen = true;
+    }
+
+    function openCloudModal() {
+        mainCloudModal.isOpen = true;
+    }
+
+    function openImportModal() {
+        importConfirmModal.isOpen = true;
+    }
+
+    function openTextContextMenu(item, mouseX, mouseY) {
+        globalTextContextMenu.showAt(item, mouseX, mouseY)
+    }
+
     // Settings and Gallery are built in the background the first time they open, so a request
     // made before they exist is kept here and applied once they're ready (see their onLoaded)
     property int pendingSettingsSubTab: -1
@@ -1596,7 +1612,7 @@ ApplicationWindow {
                             ToolTip.visible: containsMouse
                             ToolTip.delay: 400
                             ToolTip.text: appWindow.tr("tip_retry_failed_dialog", "Open dialog to inspect and retry failed downloads")
-                            onClicked: mainRetryModal.isOpen = true
+                            onClicked: appWindow.openRetryModal()
                         }
                     }
 
@@ -1640,7 +1656,7 @@ ApplicationWindow {
                             ToolTip.visible: containsMouse
                             ToolTip.delay: 400
                             ToolTip.text: appWindow.tr("tip_cloud_download_dialog", "Open dialog to download harvested links via Mega, Google Drive, Dropbox, or GoFile")
-                            onClicked: mainCloudModal.isOpen = true
+                            onClicked: appWindow.openCloudModal()
                         }
                     }
 
@@ -2600,6 +2616,11 @@ ApplicationWindow {
     // Comprehensive In-Depth Tutorial Modal
     TutorialModal {
         id: tutorialModal
+    }
+
+    // Global Right-Click Text Context Menu
+    TextContextMenu {
+        id: globalTextContextMenu
     }
 
     // Unfinished Crash Recovery Modal
