@@ -533,5 +533,81 @@
         "type": "info"
       }
     ]
+  },
+  {
+    "title": "Modo Favoritos e Sincronização",
+    "icon": "⭐",
+    "summary": "Navegar por criadores seguidos, estrela em 1 clique, atualizações incrementais e estrutura de pastas.",
+    "content": [
+      {
+        "heading": "Visão geral e alternância de estrela em 1 clique",
+        "body": "O Modo Favoritos se conecta à sua conta do Pawchive para exibir todos os artistas que você segue. Ative-o pela estrela dourada na barra de endereços ou pela aba Favoritos na Lista de Acompanhamento. Adicione ou remova qualquer criador com apenas um clique na estrela do seu card.",
+        "type": "intro"
+      },
+      {
+        "heading": "Sincronização incremental inteligente e novos posts",
+        "body": "Ao abrir a janela de favoritos, o app verifica a data do último download de cada criador. Criadores com posts novos exibem um selo âmbar com a quantidade exata (ex.: 🔔 4 posts novos desde 2026-10-21). Ao clicar em 'Iniciar sincronização total', apenas posts novos são baixados sem duplicar arquivos existentes.",
+        "type": "info"
+      },
+      {
+        "heading": "Intervalos de páginas e estrutura de subpastas",
+        "body": "Ao baixar favoritos ou um artista específico, você pode definir o intervalo de páginas e a pasta de destino. Na sincronização em lote, cada criador é salvo em sua própria subpasta (<Pasta>/<Nome Artista> [<Serviço>]/). Criadores com pastas personalizadas mantêm seus caminhos.",
+        "type": "tip"
+      },
+      {
+        "heading": "Conta Pawchive e cofre de credenciais",
+        "body": "O Modo Favoritos exige uma conta do Pawchive conectada. Faça login com usuário/senha ou cole o cookie em Configurações → Contas. As credenciais são criptografadas no disco com o Windows DPAPI.",
+        "type": "warning"
+      }
+    ]
+  },
+  {
+    "title": "Galeria de Mídia Integrada e Ferramentas",
+    "icon": "🖼️",
+    "summary": "Explorador de arquivos local, visualizador Lightbox, renomeador em lote com tokens e limpador.",
+    "content": [
+      {
+        "heading": "Explorador de arquivos local e atalhos",
+        "body": "A aba Galeria oferece um explorador de arquivos local para os arquivos baixados. Alterne rapidamente entre pastas de artistas, confira medidores de espaço em disco em tempo real e fixe atalhos para pastas frequentes.",
+        "type": "intro"
+      },
+      {
+        "heading": "Visualizador Lightbox em tela cheia",
+        "body": "Clique em qualquer miniatura para abrir o Lightbox em tela cheia. Oferece zoom em alta resolução, reprodução de GIF/WebP animados, controle de áudio e vídeo e navegação pelo teclado (setas e tecla Esc).",
+        "type": "info"
+      },
+      {
+        "heading": "Renomeador sequencial em lote",
+        "body": "Renomeie centenas de arquivos com pré-visualização em tempo real. Use tokens como {artist}, {title}, {index} e {ext}, configure preenchimento com zeros (ex.: 001) e mova arquivos para pastas de destino sem conflito.",
+        "type": "tip"
+      },
+      {
+        "heading": "Limpeza de arquivos e espaço em disco",
+        "body": "Verifique pastas em busca de arquivos corrompidos de 0 bytes, downloads incompletos (.tmp, .part), subpastas vazias e amostras indesejadas. Limpe tudo com segurança em um clique.",
+        "type": "warning"
+      }
+    ]
+  },
+  {
+    "title": "Compressão de Imagens e Vídeos",
+    "icon": "🗜️",
+    "summary": "Recodificação em H.265/AV1, imagens WebP/AVIF, GIFs animados, integração FFmpeg e diálogo de revisão.",
+    "content": [
+      {
+        "heading": "Compressão sob demanda e pós-extração",
+        "body": "Comprima arquivos grandes para economizar gigabytes de disco. Recodifique vídeos e imagens automaticamente após a extração no Descompressor ou clique com o botão direito em uma pasta na Galeria.",
+        "type": "intro"
+      },
+      {
+        "heading": "Formatos suportados e instalação do FFmpeg",
+        "body": "• Vídeos: H.265 (recomendado, leve e nítido), AV1 (máxima eficiência), H.264 (compatível com tudo) ou MKV (preserva faixas de áudio/legendas).\n• Imagens: WebP (metade do JPEG), AVIF (alta compressão) ou PNG (sem perdas).\n• Animações: Suporte completo a GIF, APNG, WebP animado e AVIF animado.\n• FFmpeg: Baixado automaticamente com 1 clique na janela de compressão caso necessário.",
+        "type": "info"
+      },
+      {
+        "heading": "Segurança e revisão na Lixeira",
+        "body": "Cópias comprimidas são salvas ao lado das originais e mantidas apenas se forem pelo menos 5% menores. Ao terminar, você escolhe se deseja manter os originais ou enviá-los com segurança para a Lixeira.",
+        "type": "tip"
+      }
+    ]
   }
 ]

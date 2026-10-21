@@ -1,30 +1,28 @@
-### 🏷️ Metadata Sidecar Files (Hydrus & Gallery Support)
+### ⭐ Favorite Mode & Watchlist Overhaul
 
-* **Companion metadata files for mass galleries**: Save tags and post details alongside your downloads for easy importing into gallery managers like Hydrus Network, Eagle, or Booru taggers.
-* **Flexible formats and organization**: Choose between universal JSON (`.json`), tag-list text (`.txt`), or both, saved either right beside each downloaded file or once per post folder.
-* **Opt-in in Settings**: Fully customizable under Settings → Storage & File Processing so it only runs if you want it.
-
----
-
-### 📋 Right-Click Context Menu for Text & Search
-
-* **Quick right-click mouse actions**: Right-click on any text box, search bar, or the main address bar to quickly paste URLs, copy text, select all, or clear.
-* **Full mouse navigation**: You no longer have to rely solely on keyboard shortcuts like Ctrl+V to paste download links or search terms.
-
----
-
-### 🗄️ Link Vault Bulk Operations
-
-* **One-click bulk copy**: Copy all saved cloud links across every creator in your Link Vault straight to your clipboard with a single click.
-* **Export to individual text files**: Automatically extract each creator's links, post titles, and passwords into separate, neatly organized text files in any folder you pick.
-* **Per-artist link copying**: Easily copy all links belonging to a single artist right from their card header.
-
+* **cum.st support**: Favorite Mode now fully supports cum.st alongside Pawchive. You can sync, browse, and download followed creators and posts from your connected cum.st account seamlessly.
+* **Artist-first browsing**: Clicking "Browse Favorites…" now presents an interactive grid of your followed creators, with direct options to inspect their posts, download updates, or manage them in your Watchlist.
+* **Platform badges & indicators**: Artist cards clearly display provider badges (cum.st or Pawchive) and hover tooltips showing which platform each creator is favorited on.
+* **New post alerts**: Artist cards and the download window display how many new posts have been published since your last download (e.g. `🔔 4 new posts`), making it easy to spot who has fresh content.
+* **Clear download destination preview**: The download window clearly shows the folder structure where files will be saved, giving each creator their own dedicated folder when syncing all favorites.
+* **Custom page ranges & folder selection**: Downloading an artist or clicking "Sync All Updates" prompts you to pick your desired page range and destination folder before starting.
+* **Accidental dismissal protection**: Clicking outside the favorites browser window no longer closes it unexpectedly, keeping your view intact while browsing.
+* **Smart incremental downloads**: Favorite downloads work like Watchlist updates—downloading everything on your first run, and only fetching new posts on subsequent syncs without redownloading duplicates.
+* **Address bar spotlight**: A bookmark star toggle in the address bar lets you toggle Favorite Mode with a single click and clearly displays when it's active.
 
 ---
 
-### 🛠️ Fixes
+### 📌 Watchlist Integration
 
-* **Retry window visual glitch fixed**: Opening or closing the progress log menu while reviewing failed downloads no longer shifts or covers the retry window.
+* **Dedicated Favorites category**: Easily filter your Watchlist to only your favorited creators with the `⭐ Favorites` tab.
+* **Golden accents and 1-click star toggle**: Favorited creators feature warm golden badges and borders, and any creator can be favorited or unfavorited directly with the card's star button.
+* **Multi-platform auto-sync**: The "Sync Favorites" button in the Watchlist toolbar automatically imports your followed creators from Pawchive and cum.st accounts into your Watchlist.
+
+---
+
+### 🔒 Login & Reliability
+
+* **Account check & quick login**: Favorite Mode checks that you are signed in to your connected platform (Pawchive or cum.st) before downloading and offers a 1-click shortcut to log in if needed.
 
 ---
 

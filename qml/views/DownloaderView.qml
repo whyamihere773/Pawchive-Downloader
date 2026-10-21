@@ -1140,14 +1140,11 @@ SmoothFlickable {
                             label: root.tr("opt_favorite_mode", "Favorite Mode")
                             iconText: "⭐"
                             activeColor: "#FBBF24"
-                            tooltip: root.tr("opt_favorite_mode_tip", "Download posts in your Kemono / Coomer account favorites (or filter creator posts to favorites only)")
+                            tooltip: root.tr("opt_favorite_mode_tip", "Download and incrementally sync followed creators from your account")
                             checked: root.bridge ? root.bridge.favoriteMode : false
                             onClicked: {
                                 if (root.bridge) {
                                     root.bridge.favoriteMode = !root.bridge.favoriteMode
-                                    if (root.bridge.favoriteMode) {
-                                        root.bridge.checkFavoriteModeAuth()
-                                    }
                                 }
                             }
                         }

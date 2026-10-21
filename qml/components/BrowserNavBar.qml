@@ -258,6 +258,65 @@ Rectangle {
                         }
                     }
                 }
+
+                // Favorite Mode Star Spotlight Toggle Button
+                Rectangle {
+                    id: favModeToggle
+                    readonly property bool isFavActive: root.bridge ? root.bridge.favoriteMode : false
+                    Layout.alignment: Qt.AlignVCenter
+                    implicitHeight: 24
+                    implicitWidth: isFavActive ? (favRow.implicitWidth + 14) : 26
+                    radius: isFavActive ? 6 : 12
+                    color: isFavActive ? "#2A2008" : (favMouse.containsMouse ? "#222B3D" : "transparent")
+                    border.color: isFavActive ? "#F59E0B" : (favMouse.containsMouse ? "#475569" : "transparent")
+                    border.width: 1
+
+                    scale: favMouse.pressed ? 0.92 : (favMouse.containsMouse ? 1.05 : 1.0)
+                    Behavior on scale { SpringAnimation { spring: 4.5; damping: 0.35; mass: 0.8 } }
+                    Behavior on color { ColorAnimation { duration: 150 } }
+                    Behavior on border.color { ColorAnimation { duration: 150 } }
+                    Behavior on implicitWidth { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+
+                    Row {
+                        id: favRow
+                        anchors.centerIn: parent
+                        spacing: 4
+
+                        Text {
+                            text: favModeToggle.isFavActive ? "⭐" : "☆"
+                            font.pixelSize: favModeToggle.isFavActive ? 12 : 14
+                            color: favModeToggle.isFavActive ? "#FBBF24" : (favMouse.containsMouse ? "#FCD34D" : "#94A3B8")
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+
+                        Text {
+                            visible: favModeToggle.isFavActive
+                            text: root.tr("lbl_nav_favorites", "Favorites")
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 11
+                            font.weight: 600
+                            color: "#FCD34D"
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+                    }
+
+                    MouseArea {
+                        id: favMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 350
+                        ToolTip.text: favModeToggle.isFavActive
+                            ? root.tr("tip_fav_mode_active", "⭐ Favorite Mode Active — click to disable")
+                            : root.tr("tip_fav_mode_inactive", "Favorite Mode — Download or browse your followed creators")
+                        onClicked: {
+                            if (root.bridge) {
+                                root.bridge.favoriteMode = !root.bridge.favoriteMode
+                            }
+                        }
+                    }
+                }
             }
         }
 

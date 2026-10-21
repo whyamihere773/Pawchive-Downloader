@@ -533,5 +533,81 @@
         "type": "info"
       }
     ]
+  },
+  {
+    "title": "Favoriten-Modus & Watchlist-Synchronisierung",
+    "icon": "⭐",
+    "summary": "Gefolgte Ersteller durchsuchen, 1-Klick-Stern, inkrementelle Updates und Ordnerstruktur.",
+    "content": [
+      {
+        "heading": "Überblick & 1-Klick-Sternumschaltung",
+        "body": "Der Favoriten-Modus verbindet sich direkt mit Ihrem Pawchive-Konto, um alle gefolgten Künstler anzuzeigen. Schalten Sie den Favoriten-Modus über den goldenen Stern in der Adressleiste oder den Favoriten-Reiter in der Watchlist ein oder aus. Jeder Ersteller kann mit einem einzigen Klick auf das Sternsymbol seiner Karte hinzugefügt oder entfernt werden.",
+        "type": "intro"
+      },
+      {
+        "heading": "Intelligente inkrementelle Synchronisierung & Neue Beiträge",
+        "body": "Beim Öffnen des Favoriten-Fensters prüft die App die Ersteller anhand ihres letzten Download-Datums. Ersteller mit neuen Inhalten erhalten ein bernsteinfarbenes Abzeichen mit der genauen Beitragsanzahl (z. B. 🔔 4 neue Beiträge seit 2026-10-21). Ein Klick auf 'Alle synchronisieren' lädt nur neue Beiträge herunter, ohne bereits vorhandene Dateien erneut zu laden.",
+        "type": "info"
+      },
+      {
+        "heading": "Seitenbereiche & Ziel-Unterordnerstruktur",
+        "body": "Beim Herunterladen aller Favoriten oder einzelner Ersteller können Sie Seitenbereiche und ein eigenes Zielverzeichnis festlegen. Bei der Batch-Synchronisierung wird jeder Ersteller in einen eigenen Unterordner (<Verzeichnis>/<Künstlername> [<Dienst>]/) gespeichert. Bestehende Watchlist-Künstler mit benutzerdefinierten Pfaden behalten diese bei.",
+        "type": "tip"
+      },
+      {
+        "heading": "Pawchive-Konto & Passwort-Tresor",
+        "body": "Der Favoriten-Modus erfordert ein angemeldetes Pawchive-Konto. Sie können sich mit Benutzername/Passwort anmelden oder ein Sitzungs-Cookie unter Einstellungen → Konten einfügen. Anmeldedaten werden mit Windows DPAPI verschlüsselt gespeichert.",
+        "type": "warning"
+      }
+    ]
+  },
+  {
+    "title": "Integrierte Mediengalerie & Werkzeuge",
+    "icon": "🖼️",
+    "summary": "Lokaler Datei-Explorer, Medien-Lightbox, Stapel-Umbenenner mit Platzhaltern und Bereinigung.",
+    "content": [
+      {
+        "heading": "Integrierter Datei-Explorer & Lesezeichen",
+        "body": "Der Galerie-Reiter bietet einen schnellen lokalen Datei-Explorer für Ihre heruntergeladenen Künstlerarchive. Wechseln Sie schnell zwischen Künstlerordnern, prüfen Sie Festplattenanzeigen mit freiem Speicherplatz und heften Sie häufig besuchte Ordner mit Lesezeichen an.",
+        "type": "intro"
+      },
+      {
+        "heading": "Vollbild-Medien-Lightbox",
+        "body": "Klicken Sie auf ein Miniaturbild, um die Medien-Lightbox zu öffnen. Sie unterstützt hochauflösendes Zoomen, animierte GIF/WebP-Wiedergabe, Audio-Scrubbing, Videosteuerung und Tastaturnavigation (Pfeiltasten, Esc zum Schließen).",
+        "type": "info"
+      },
+      {
+        "heading": "Sequentieller Stapel-Umbenenner",
+        "body": "Benennen Sie hunderte Dateien nacheinander mit Live-Vorschau um. Nutzen Sie Platzhalter wie {artist}, {title}, {index} und {ext}, konfigurieren Sie führende Nullen (z. B. 001) und verschieben Sie Dateien optional ohne Namenskonflikte in Zielordner.",
+        "type": "tip"
+      },
+      {
+        "heading": "Speicherplatz & Dateibereinigung",
+        "body": "Durchsuchen Sie Ordner nach beschädigten 0-Byte-Dateien, unvollständigen Downloads (.tmp, .part), leeren Unterordnern und unerwünschten Vorschauclips. Bereinigen Sie diese sicher mit einem Klick.",
+        "type": "warning"
+      }
+    ]
+  },
+  {
+    "title": "Bild- & Videokomprimierung",
+    "icon": "🗜️",
+    "summary": "H.265/AV1-Videokodierung, WebP/AVIF-Bilder, animierte GIFs, FFmpeg-Integration und Überprüfungsdialog.",
+    "content": [
+      {
+        "heading": "Bedarfs- & Nach-Extraktions-Komprimierung",
+        "body": "Komprimieren Sie große Downloads, um Gigabytes an Speicherplatz zu sparen. Kodieren Sie Videos und Bilder automatisch nach dem Entpacken im Entpacker neu oder klicken Sie mit der rechten Maustaste in der Galerie auf einen Ordner.",
+        "type": "intro"
+      },
+      {
+        "heading": "Unterstützte Formate & FFmpeg-Einrichtung",
+        "body": "• Videos: H.265 (empfohlen, klein und scharf), AV1 (höchste Effizienz), H.264 (universell) oder MKV (erhält alle Tonspuren/Untertitel).\n• Bilder: WebP (halbe Größe von JPEG), AVIF (extreme Kompression) oder PNG (verlustfrei).\n• Animationen: Volle Unterstützung für GIF, APNG, animiertes WebP und AVIF.\n• FFmpeg: Wird mit 1 Klick automatisch im Komprimierungsfenster heruntergeladen, falls noch nicht vorhanden.",
+        "type": "info"
+      },
+      {
+        "heading": "Sicherheit & Papierkorb-Überprüfung",
+        "body": "Komprimierte Kopien werden neben den Originalen gespeichert und nur behalten, wenn sie mindestens 5 % kleiner sind. Nach Abschluss zeigt ein Dialog den gesparten Speicherplatz und lässt Sie wählen, ob Originale behalten oder in den Papierkorb verschoben werden.",
+        "type": "tip"
+      }
+    ]
   }
 ]

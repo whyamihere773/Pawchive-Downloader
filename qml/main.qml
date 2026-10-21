@@ -2772,6 +2772,22 @@ ApplicationWindow {
     PostSelectionModal {
         id: postSelectionModal
         bridge: appBridge
+        onBackToFavoritesRequested: {
+            if (favoritesBrowserModal.allArtists && favoritesBrowserModal.allArtists.length > 0) {
+                favoritesBrowserModal.isOpen = true
+            } else if (appBridge) {
+                appBridge.fetchFavoriteArtists()
+            }
+        }
+    }
+
+    // ── Pawchive Favorite Artists Browser Modal ────────────────────────────────
+    FavoritesBrowserModal {
+        id: favoritesBrowserModal
+        bridge: appBridge
+        onBrowseArtistPosts: function(userId, service, creatorName) {
+            postSelectionModal.fromFavoritesBrowser = true
+        }
     }
 
     // ── Telegram Authentication Modal ─────────────────────────────────────────
@@ -2828,10 +2844,26 @@ ApplicationWindow {
 
     Connections {
         target: appBridge
+        function onFavoriteArtistsReady(artists) {
+            favoritesBrowserModal.openModal(artists)
+        }
+        function onFavoriteArtistsError(msg) {
+            if (appBridge) {
+                appBridge.lastErrorMessage = msg
+                appBridge.hasError = true
+            }
+        }
         function onPostSelectionReady(posts, creator, totalCount) {
+            if (favoritesBrowserModal.isBrowsingArtist) {
+                favoritesBrowserModal.isBrowsingArtist = false
+                favoritesBrowserModal.closeModal()
+            }
             postSelectionModal.openModal(posts, creator, totalCount)
         }
         function onPostSelectionError(msg) {
+            if (favoritesBrowserModal.isBrowsingArtist) {
+                favoritesBrowserModal.isBrowsingArtist = false
+            }
             if (appBridge) {
                 appBridge.lastErrorMessage = msg
                 appBridge.hasError = true

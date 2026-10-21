@@ -533,5 +533,81 @@
         "type": "info"
       }
     ]
+  },
+  {
+    "title": "Favorite Mode & Watchlist Sync",
+    "icon": "⭐",
+    "summary": "Browsing followed creators, 1-click star toggle, incremental updates, and folder destination breakdown.",
+    "content": [
+      {
+        "heading": "Overview & 1-Click Star Toggle",
+        "body": "Favorite Mode connects directly to your Pawchive account to show all artists you follow. Toggle Favorite Mode on or off using the golden star in the address bar or the Favorites tab in the Watchlist. Any creator can be added or removed from your favorites with a single click on their card's star icon.",
+        "type": "intro"
+      },
+      {
+        "heading": "Smart Incremental Sync & New Post Tracking",
+        "body": "When opening the favorites modal, the app quickly checks creators against their previous download dates. Creators with newly published content display an amber badge showing the exact post count (e.g. 🔔 4 new posts since 2026-10-21). Clicking 'Sync All Updates' downloads only newly published posts without redownloading files you already have.",
+        "type": "info"
+      },
+      {
+        "heading": "Page Ranges & Destination Subfolder Structure",
+        "body": "When downloading all favorites or an individual creator, you can specify page ranges and a custom download directory. In batch sync, each creator is neatly organized into their own dedicated subfolder (<Directory>/<Artist Name> [<Service>]/). Existing Watchlist creators with custom directories will continue saving to their assigned paths.",
+        "type": "tip"
+      },
+      {
+        "heading": "Pawchive Account & Credential Vault",
+        "body": "Favorite Mode strictly requires a connected Pawchive account. You can log in with username/password or paste a session cookie in Settings → Accounts. Credentials are encrypted on disk using Windows DPAPI to prevent unauthorized access or token scraping.",
+        "type": "warning"
+      }
+    ]
+  },
+  {
+    "title": "Integrated Media Gallery & Tools",
+    "icon": "🖼️",
+    "summary": "Local archive file explorer, Media Lightbox visualizer, Batch Renamer with tokens, and cleaner.",
+    "content": [
+      {
+        "heading": "Integrated File Explorer & Bookmarks",
+        "body": "The Gallery tab provides an on-demand local media explorer for your downloaded artist archives. Quickly jump between artist folders, inspect disk usage gauges with live free space meters, and bookmark frequently accessed folders with quick shortcut pins.",
+        "type": "intro"
+      },
+      {
+        "heading": "Fullscreen Media Lightbox",
+        "body": "Click any image or video thumbnail to open the fullscreen Media Lightbox visualizer. It supports high-resolution pan and zoom, animated GIF/WebP playback, audio scrubbing, video playback controls, and keyboard navigation (Left/Right arrows, Esc to close).",
+        "type": "info"
+      },
+      {
+        "heading": "Sequential Batch Renamer",
+        "body": "Rename hundreds of files sequentially with real-time preview. Use dynamic tokens like {artist}, {title}, {index}, and {ext}, configure padding (e.g. 001 vs 01), and optionally move renamed files into a dedicated target folder without name collisions.",
+        "type": "tip"
+      },
+      {
+        "heading": "Disk Space & File Cleaner",
+        "body": "Scan folders for zero-byte corrupted files, partial downloads (.tmp, .part), empty subdirectories, and unwanted sample clips. Safely clean them with one click to recover disk space.",
+        "type": "warning"
+      }
+    ]
+  },
+  {
+    "title": "Picture & Video Compression",
+    "icon": "🗜️",
+    "summary": "H.265/AV1 video re-encoding, WebP/AVIF images, animated GIFs, FFmpeg integration, and review dialog.",
+    "content": [
+      {
+        "heading": "On-Demand & Post-Extraction Compression",
+        "body": "Compress large downloads to save gigabytes of disk space. Re-encode video and images automatically right after extraction in the Bulk Decompressor, or right-click any folder or selection in the Media Gallery to compress on demand.",
+        "type": "intro"
+      },
+      {
+        "heading": "Supported Formats & FFmpeg Setup",
+        "body": "• Videos: H.265 (recommended, small and sharp), AV1 (highest efficiency), H.264 (universal compatibility), or MKV (preserves all audio/subtitle streams).\n• Images: WebP (half the size of JPEG), AVIF (extreme compression), or PNG (lossless optimization).\n• Animated: Full support for GIF, APNG, animated WebP, and animated AVIF.\n• FFmpeg: Downloaded automatically with 1-click in the Compression window if not present.",
+        "type": "info"
+      },
+      {
+        "heading": "Safety & Recycle Bin Review",
+        "body": "Compressed copies are saved next to originals and only kept if they are at least 5% smaller than the original. When finished, a review dialog shows total space saved and lets you choose whether to keep originals or safely move them to the Recycle Bin.",
+        "type": "tip"
+      }
+    ]
   }
 ]

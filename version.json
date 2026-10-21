@@ -1,8 +1,8 @@
 {
-    "version": "1.3.1",
+    "version": "1.3.2",
     "commit": "",
     "short_commit": "",
-    "date": "2026-10-20",
+    "date": "2026-10-21",
     "channel": "release",
     "history": [
         {
@@ -164,6 +164,11 @@
             "version": "1.3.1",
             "date": "2026-10-20",
             "notes": "Added metadata sidecar file generation (.json and .txt) for Hydrus Network and gallery managers, right-click context menu for all text inputs and search bars across the app, bulk operations in Link Vault (one-click copy all links and batch export to individual creator files), and retry failed window stability fix."
+        },
+        {
+            "version": "1.3.2",
+            "date": "2026-10-21",
+            "notes": "Favorite Mode & Watchlist overhaul: multi-platform support for cum.st alongside Pawchive, interactive artist-first browsing grid, new post count alerts, custom page ranges and destination previews, and auto-syncing followed creators into Watchlist."
         }
     ]
 }

@@ -40,6 +40,7 @@ class WatchlistEntry:
     cutoff_day_ids: List[str] = field(default_factory=list)
     last_checked_at: float = 0.0   # when a check last finished for this creator (time.time())
     custom_folder: bool = False    # download_dir was chosen by the user: used as it is, never moved
+    is_favorite: bool = False      # creator is favorited by user (syncs with Pawchive favorites)
 
     def __setattr__(self, name, value):
         object.__setattr__(self, name, value)
@@ -60,6 +61,7 @@ class WatchlistEntry:
             "download_dir": self.download_dir or (dirs[0] if dirs else ""), "download_dirs": dirs,
             "ignored_post_ids": list(self.ignored_post_ids or []),
             "cutoff_day_ids": list(self.cutoff_day_ids or []),
+            "is_favorite": bool(self.is_favorite),
         }
         if self.last_checked_at:
             d["last_checked_at"] = self.last_checked_at
@@ -118,6 +120,7 @@ class WatchlistEntry:
             cutoff_day_ids=[str(x) for x in d.get("cutoff_day_ids", [])] if isinstance(d.get("cutoff_day_ids"), list) else [],
             last_checked_at=float(d.get("last_checked_at") or 0.0),
             custom_folder=bool(d.get("custom_folder", False)),
+            is_favorite=bool(d.get("is_favorite", False)),
         )
 
 
@@ -624,6 +627,7 @@ class WatchlistManager:
         auto_check: bool = True,
         download_dir: str = "",
         options: Optional[Dict[str, Any]] = None,
+        is_favorite: bool = False,
     ) -> bool:
         """
         Add or update a watchlist entry.
@@ -631,10 +635,10 @@ class WatchlistManager:
         """
         with self._lock:
             return self._add_entry_locked(url, creator_name, user_id, service, domain, last_post_id,
-                                          last_post_date, auto_check, download_dir, options)
+                                          last_post_date, auto_check, download_dir, options, is_favorite)
 
     def _add_entry_locked(self, url, creator_name, user_id, service, domain, last_post_id,
-                          last_post_date, auto_check, download_dir, options) -> bool:
+                          last_post_date, auto_check, download_dir, options, is_favorite: bool = False) -> bool:
         existing = self._find(user_id, service)
         if existing:
             # Update last download info but don't touch auto_check preference
@@ -669,6 +673,8 @@ class WatchlistManager:
                 existing.url = url
             if options:
                 existing.options = options
+            if is_favorite:
+                existing.is_favorite = True
             self.save(existing)
             return False
         else:
@@ -687,6 +693,7 @@ class WatchlistManager:
                 ignored_post_ids=[],
                 cached_new_posts=[],
                 cutoff_day_ids=[str(last_post_id)] if last_post_id else [],
+                is_favorite=bool(is_favorite),
             )
             self.entries.insert(0, entry)
             self._adopt(entry, at_head=True)
@@ -696,6 +703,66 @@ class WatchlistManager:
                 category="watchlist"
             )
             return True
+
+    def set_favorite(self, user_id: str, service: str, is_favorite: bool) -> bool:
+        """Sets favorite status for a creator in the watchlist. Returns True if found and updated."""
+        with self._lock:
+            existing = self._find(user_id, service)
+            if existing:
+                if existing.is_favorite != is_favorite:
+                    existing.is_favorite = is_favorite
+                    self.save(existing)
+                return True
+            return False
+
+    def add_or_update_favorite_creator(
+        self,
+        user_id: str,
+        service: str,
+        creator_name: str,
+        domain: str = "pawchive.pw",
+        url: str = "",
+        is_favorite: bool = True,
+    ) -> WatchlistEntry:
+        """Ensures a favorited creator exists in Watchlist and is marked as favorite."""
+        with self._lock:
+            existing = self._find(user_id, service)
+            if existing:
+                existing.is_favorite = is_favorite
+                if domain and ("cum.st" in domain or "cumst" in domain):
+                    existing.domain = "cum.st"
+                if creator_name and (existing.creator_name == user_id or not existing.creator_name):
+                    existing.creator_name = creator_name
+                if url:
+                    existing.url = url
+                elif not existing.url:
+                    if "cum.st" in existing.domain or "cumst" in existing.domain:
+                        existing.url = f"https://cum.st/creators/{service}/{user_id}"
+                    else:
+                        existing.url = f"https://{existing.domain}/{service}/user/{user_id}"
+                self.save(existing)
+                return existing
+            else:
+                if not url:
+                    if "cum.st" in domain or "cumst" in domain:
+                        url = f"https://cum.st/creators/{service}/{user_id}"
+                    else:
+                        url = f"https://{domain}/{service}/user/{user_id}"
+                entry = WatchlistEntry(
+                    url=url,
+                    service=service,
+                    domain=domain,
+                    user_id=user_id,
+                    creator_name=creator_name or user_id,
+                    added_at=datetime.datetime.now().isoformat(timespec="seconds"),
+                    auto_check=True,
+                    is_favorite=is_favorite,
+                )
+                self.entries.insert(0, entry)
+                self._adopt(entry, at_head=True)
+                self.save(entry)
+                logger.info(f"Added favorite creator to watchlist: {creator_name!r} [{service}]", category="watchlist")
+                return entry
 
     def remove_entry(self, user_id: str, service: str) -> bool:
         """Remove entry by (user_id, service). Returns True if removed."""
@@ -957,7 +1024,14 @@ class WatchlistManager:
 
     # ── New-Post Detection ─────────────────────────────────────────────────────
 
-    def get_posts_since(self, entry: WatchlistEntry, api_client, raise_on_error: bool = False) -> List[Dict[str, Any]]:
+    def get_posts_since(
+        self,
+        entry: WatchlistEntry,
+        api_client,
+        raise_on_error: bool = False,
+        page_start: int = 1,
+        page_end: int = 999999
+    ) -> List[Dict[str, Any]]:
         """
         Fetch posts for an entry and return only those published strictly after entry.last_post_date.
         Paginates page-by-page until the cutoff date/id is reached or all posts are fetched,
@@ -1012,10 +1086,14 @@ class WatchlistManager:
                 pass
 
         new_posts: List[Dict[str, Any]] = []
-        current_page = 1
+        if page_start < 1:
+            page_start = 1
+        if page_end < page_start:
+            page_end = page_start
+        current_page = page_start
         page_size = 50
         largest_page = 0
-        max_pages = 100  # Up to 5,000 posts to support deep updates while preventing infinite loops
+        max_pages = min(100, page_end)  # Up to page_end (capped at 100 pages / 5,000 posts)
 
         while current_page <= max_pages:
             try:

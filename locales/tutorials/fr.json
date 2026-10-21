@@ -533,5 +533,81 @@
         "type": "info"
       }
     ]
+  },
+  {
+    "title": "Mode Favoris & Synchronisation",
+    "icon": "⭐",
+    "summary": "Navigation des créateurs suivis, étoile en 1 clic, mises à jour incrémentielles et dossiers de destination.",
+    "content": [
+      {
+        "heading": "Aperçu & Activation de l'étoile en 1 clic",
+        "body": "Le Mode Favoris se connecte à votre compte Pawchive pour afficher tous les artistes suivis. Activez-le avec l'étoile dorée dans la barre d'adresse ou via l'onglet Favoris de la Liste de suivi. Un simple clic sur l'étoile d'une carte ajoute ou retire l'artiste de vos favoris.",
+        "type": "intro"
+      },
+      {
+        "heading": "Synchronisation incrémentielle intelligente & Nouveaux posts",
+        "body": "À l'ouverture de la fenêtre des favoris, l'application compare les publications récentes aux dates des derniers téléchargements. Les créateurs ayant de nouveaux posts affichent un badge ambré (ex. 🔔 4 nouveaux posts depuis le 2026-10-21). Cliquer sur 'Démarrer la synchro totale' ne télécharge que les nouveaux posts sans retélécharger vos fichiers existants.",
+        "type": "info"
+      },
+      {
+        "heading": "Plages de pages & Structure des sous-dossiers",
+        "body": "Lors du téléchargement des favoris, vous pouvez spécifier la plage de pages et le répertoire de destination. En synchronisation par lots, chaque créateur est classé dans son sous-dossier dédié (<Répertoire>/<Nom Artiste> [<Service>]/). Les créateurs de la liste de suivi avec dossier personnalisé conservent leur chemin.",
+        "type": "tip"
+      },
+      {
+        "heading": "Compte Pawchive & Coffre-fort de sécurité",
+        "body": "Le Mode Favoris nécessite un compte Pawchive connecté. Connectez-vous avec vos identifiants ou collez votre cookie dans Paramètres → Comptes. Les identifiants sont chiffrés sur le disque avec Windows DPAPI.",
+        "type": "warning"
+      }
+    ]
+  },
+  {
+    "title": "Galerie Médias Intégrée & Outils",
+    "icon": "🖼️",
+    "summary": "Explorateur de fichiers local, visionneuse Lightbox, renommeur par lots avec variables et nettoyeur.",
+    "content": [
+      {
+        "heading": "Explorateur de fichiers local & Raccourcis",
+        "body": "L'onglet Galerie intègre un explorateur de fichiers local dédié à vos archives d'artistes. Naviguez rapidement entre les dossiers, consultez les jauges d'espace disque en direct et épinglez des raccourcis vers vos dossiers favoris.",
+        "type": "intro"
+      },
+      {
+        "heading": "Visionneuse Lightbox plein écran",
+        "body": "Cliquez sur une vignette pour ouvrir la visionneuse Lightbox plein écran. Elle prend en charge le zoom haute résolution, la lecture des GIF/WebP animés, le défilement audio/vidéo et la navigation au clavier (flèches et Échap).",
+        "type": "info"
+      },
+      {
+        "heading": "Renommage séquentiel par lots",
+        "body": "Renommez des centaines de fichiers avec aperçu en temps réel. Utilisez des variables telles que {artist}, {title}, {index} et {ext}, configurez le nombre de chiffres (ex. 001) et déplacez vos fichiers sans collision de noms.",
+        "type": "tip"
+      },
+      {
+        "heading": "Nettoyeur de fichiers & Espace disque",
+        "body": "Analysez vos dossiers pour détecter les fichiers corrompus de 0 octet, les téléchargements partiels (.tmp, .part), les sous-dossiers vides et les échantillons promotionnels indésirables. Supprimez-les en un clic.",
+        "type": "warning"
+      }
+    ]
+  },
+  {
+    "title": "Compression Photos & Vidéos",
+    "icon": "🗜️",
+    "summary": "Réencodage vidéo H.265/AV1, images WebP/AVIF, GIF animés, intégration FFmpeg et boîte de dialogue.",
+    "content": [
+      {
+        "heading": "Compression à la demande & Post-extraction",
+        "body": "Compressez les téléchargements volumineux pour économiser des gigaoctets. Réencodez automatiquement vidéos et images après extraction dans le Décompresseur ou faites un clic droit sur un dossier dans la Galerie.",
+        "type": "intro"
+      },
+      {
+        "heading": "Formats pris en charge & Installation FFmpeg",
+        "body": "• Vidéos : H.265 (recommandé, compact et net), AV1 (efficacité maximale), H.264 (compatible partout) ou MKV (garde toutes les pistes audio/sous-titres).\n• Images : WebP (moitié du poids d'un JPEG), AVIF (compression extrême) ou PNG (sans perte).\n• Animés : Prise en charge complète des GIF, APNG, WebP animés et AVIF animés.\n• FFmpeg : Téléchargé automatiquement en 1 clic dans la fenêtre de compression si nécessaire.",
+        "type": "info"
+      },
+      {
+        "heading": "Sécurité & Examen de la Corbeille",
+        "body": "Les copies compressées sont enregistrées à côté des originaux et ne sont conservées que si elles sont au moins 5 % plus légères. À la fin, une boîte de dialogue affiche l'espace gagné et vous permet de déplacer les originaux vers la Corbeille en toute sécurité.",
+        "type": "tip"
+      }
+    ]
   }
 ]

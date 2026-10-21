@@ -533,5 +533,81 @@
         "type": "info"
       }
     ]
+  },
+  {
+    "title": "Chế độ Yêu thích & Đồng bộ Watchlist",
+    "icon": "⭐",
+    "summary": "Duyệt tác giả đang theo dõi, bật/tắt sao 1-chạm, cập nhật tăng dần và cấu trúc thư mục lưu.",
+    "content": [
+      {
+        "heading": "Tổng quan & Bật/tắt sao 1-chạm",
+        "body": "Chế độ Yêu thích kết nối trực tiếp với tài khoản Pawchive của bạn để hiển thị tất cả các nghệ sĩ bạn theo dõi. Bật/tắt thông qua biểu tượng ngôi sao vàng trên thanh địa chỉ hoặc tab Yêu thích trong Danh sách theo dõi. Bất kỳ tác giả nào cũng có thể được thêm hoặc gỡ bỏ chỉ bằng một cú nhấp vào biểu tượng sao trên thẻ.",
+        "type": "intro"
+      },
+      {
+        "heading": "Đồng bộ tăng dần thông minh & Theo dõi bài viết mới",
+        "body": "Khi mở cửa sổ yêu thích, ứng dụng sẽ nhanh chóng kiểm tra ngày tải xuống gần nhất của tác giả. Tác giả có nội dung mới sẽ hiển thị huy hiệu màu hổ phách với số lượng bài viết (ví dụ: 🔔 4 bài viết mới kể từ 2026-10-21). Nhấp vào 'Bắt đầu đồng bộ tất cả' chỉ tải các bài viết mới mà không tải lại các tệp đã có.",
+        "type": "info"
+      },
+      {
+        "heading": "Phạm vi trang & Cấu trúc thư mục con đích",
+        "body": "Khi tải tất cả mục yêu thích hoặc một tác giả riêng lẻ, bạn có thể chọn phạm vi trang và thư mục lưu. Khi đồng bộ hàng loạt, mỗi tác giả được sắp xếp vào thư mục con riêng biệt (<Thư mục>/<Tên tác giả> [<Nền tảng>]/). Các tác giả có sẵn thư mục riêng trong Danh sách theo dõi vẫn giữ nguyên đường dẫn.",
+        "type": "tip"
+      },
+      {
+        "heading": "Tài khoản Pawchive & Két lưu trữ bảo mật",
+        "body": "Chế độ Yêu thích yêu cầu đăng nhập tài khoản Pawchive. Bạn có thể đăng nhập bằng tên người dùng/mật khẩu hoặc dán cookie trong Cài đặt → Tài khoản. Thông tin xác thực được mã hóa trên ổ đĩa bằng Windows DPAPI.",
+        "type": "warning"
+      }
+    ]
+  },
+  {
+    "title": "Thư viện Đa phương tiện & Công cụ",
+    "icon": "🖼️",
+    "summary": "Trình duyệt tệp lưu trữ cục bộ, trình xem Lightbox, đổi tên hàng loạt bằng biến và công cụ dọn dẹp.",
+    "content": [
+      {
+        "heading": "Trình duyệt tệp cục bộ & Lối tắt",
+        "body": "Tab Thư viện cung cấp trình khám phá tệp cục bộ cho các kho lưu trữ tác giả đã tải xuống. Chuyển đổi nhanh chóng giữa các thư mục tác giả, kiểm tra dung lượng ổ đĩa trực tiếp và ghim lối tắt cho các thư mục thường dùng.",
+        "type": "intro"
+      },
+      {
+        "heading": "Trình xem Lightbox toàn màn hình",
+        "body": "Nhấp vào bất kỳ hình thu nhỏ nào để mở trình xem Lightbox toàn màn hình. Hỗ trợ thu phóng độ phân giải cao, phát ảnh động GIF/WebP, điều khiển âm thanh và video, cùng các phím điều hướng (phím mũi tên và Esc).",
+        "type": "info"
+      },
+      {
+        "heading": "Đổi tên hàng loạt theo thứ tự",
+        "body": "Đổi tên hàng trăm tệp với bản xem trước theo thời gian thực. Sử dụng các biến động như {artist}, {title}, {index}, {ext}, định dạng chữ số (ví dụ: 001) và di chuyển tệp mà không lo trùng tên.",
+        "type": "tip"
+      },
+      {
+        "heading": "Dọn dẹp tệp & Giải phóng dung lượng",
+        "body": "Quét các thư mục để tìm tệp hỏng 0-byte, tệp tải dở (.tmp, .part), thư mục con trống và video mẫu không mong muốn. Dọn dẹp an toàn chỉ bằng một cú nhấp chuột.",
+        "type": "warning"
+      }
+    ]
+  },
+  {
+    "title": "Nén Hình ảnh & Video",
+    "icon": "🗜️",
+    "summary": "Mã hóa lại video H.265/AV1, ảnh WebP/AVIF, GIF động, tích hợp FFmpeg và hộp thoại xem lại.",
+    "content": [
+      {
+        "heading": "Nén theo yêu cầu & Sau khi giải nén",
+        "body": "Nén các bản tải xuống dung lượng lớn để tiết kiệm hàng gigabyte bộ nhớ. Tự động mã hóa lại video và hình ảnh ngay sau khi giải nén hoặc nhấp chuột phải vào thư mục trong Thư viện.",
+        "type": "intro"
+      },
+      {
+        "heading": "Định dạng hỗ trợ & Cài đặt FFmpeg",
+        "body": "• Video: H.265 (khuyên dùng, nhỏ và sắc nét), AV1 (hiệu quả cao nhất), H.264 (tương thích mọi thiết bị) hoặc MKV (giữ nguyên tất cả luồng âm thanh/phụ đề).\n• Hình ảnh: WebP (nhẹ hơn một nửa so với JPEG), AVIF (nén cực cao) hoặc PNG (không mất dữ liệu).\n• Ảnh động: Hỗ trợ đầy đủ GIF, APNG, WebP động và AVIF động.\n• FFmpeg: Tự động tải xuống bằng 1-chạm trong cửa sổ Nén nếu chưa có.",
+        "type": "info"
+      },
+      {
+        "heading": "An toàn & Kiểm tra Thùng rác",
+        "body": "Các bản nén được lưu bên cạnh bản gốc và chỉ được giữ lại nếu nhỏ hơn ít nhất 5% so với bản gốc. Khi hoàn tất, bảng thông báo sẽ hiển thị dung lượng tiết kiệm được và cho phép bạn chuyển bản gốc vào Thùng rác một cách an toàn.",
+        "type": "tip"
+      }
+    ]
   }
 ]

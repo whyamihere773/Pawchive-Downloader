@@ -8,6 +8,8 @@ Item {
 
     property var bridge: null
     property bool isOpen: false
+    property bool fromFavoritesBrowser: false
+    signal backToFavoritesRequested()
     property string creatorName: ""
     property var allPosts: []
     property var filteredPosts: []
@@ -163,6 +165,7 @@ Item {
         isOpen = false
         inspectedPost = null
         lightboxVisible = false
+        fromFavoritesBrowser = false
     }
 
     function inspectPost(postId) {
@@ -513,6 +516,43 @@ Item {
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: modalRoot.backToPosts()
+                    }
+                }
+
+                // Back to Favorite Artists Button (when opened from Favorites browser)
+                Rectangle {
+                    visible: !modalRoot.isInspecting && modalRoot.fromFavoritesBrowser
+                    height: 32
+                    implicitWidth: backFavRow.implicitWidth + 16
+                    radius: 6
+                    color: backFavMouse.containsMouse ? "#2A2008" : "#1A170C"
+                    border.color: backFavMouse.containsMouse ? "#F59E0B" : "#B45309"
+                    border.width: 1
+
+                    Row {
+                        id: backFavRow
+                        anchors.centerIn: parent
+                        spacing: 6
+                        Text { text: "←"; font.pixelSize: 13; color: "#FCD34D"; anchors.verticalCenter: parent.verticalCenter }
+                        Text {
+                            text: modalRoot.tr("btn_back_to_artists", "Back to Favorite Artists")
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 11
+                            font.weight: 600
+                            color: "#FCD34D"
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+                    }
+
+                    MouseArea {
+                        id: backFavMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            modalRoot.closeModal()
+                            modalRoot.backToFavoritesRequested()
+                        }
                     }
                 }
 

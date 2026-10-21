@@ -384,6 +384,58 @@ Item {
                     }
                 }
 
+                // Sync Pawchive Favorites button
+                Rectangle {
+                    id: syncFavBtn
+                    height: 32
+                    implicitWidth: syncFavRow.implicitWidth + 20
+                    radius: 7
+                    color: syncFavMouse.containsMouse ? "#2A2008" : "#1A170C"
+                    border.color: syncFavMouse.containsMouse ? "#F59E0B" : "#B45309"
+                    border.width: 1
+
+                    Behavior on color { ColorAnimation { duration: 120 } }
+                    Behavior on border.color { ColorAnimation { duration: 120 } }
+                    scale: syncFavMouse.pressed ? 0.94 : (syncFavMouse.containsMouse ? 1.035 : 1.0)
+                    transformOrigin: Item.Center
+                    Behavior on scale { NumberAnimation { duration: 160; easing.type: Easing.OutBack; easing.overshoot: 1.5 } }
+
+                    Row {
+                        id: syncFavRow
+                        anchors.centerIn: parent
+                        spacing: 5
+
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: (root.bridge && root.bridge.favoriteArtistsLoading) ? "⏳" : "⭐"
+                            font.pixelSize: 11
+                        }
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: (root.bridge && root.bridge.favoriteArtistsLoading)
+                                  ? root.tr("watchlist_syncing_favs", "Syncing…")
+                                  : root.tr("watchlist_sync_favorites", "Sync Favorites")
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 11
+                            font.weight: 600
+                            color: "#FCD34D"
+                        }
+                    }
+
+                    MouseArea {
+                        id: syncFavMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 250
+                        ToolTip.text: root.tr("watchlist_sync_favorites_tip", "Import and sync followed creators from your connected accounts into Watchlist")
+                        onClicked: {
+                            if (root.bridge) root.bridge.syncPawchiveFavorites()
+                        }
+                    }
+                }
+
                 // Check All button
                 Rectangle {
                     id: checkAllBtn
@@ -556,6 +608,7 @@ Item {
                             model: [
                                 { id: "all",           label: root.tr("filter_all", "All") },
                                 { id: "updates",       label: "✦ " + root.tr("filter_updates", "Updates") },
+                                { id: "favorites",     label: "⭐ " + root.tr("filter_favorites", "Favorites") },
                                 { id: "patreon",       label: "Patreon" },
                                 { id: "fanbox",        label: "Fanbox" },
                                 { id: "fansly",        label: "Fansly" },
@@ -573,10 +626,10 @@ Item {
                                 radius: 12
                                 readonly property bool isSelected: root.activeServiceFilter === modelData.id
                                 color: isSelected 
-                                       ? (modelData.id === "updates" ? "#0C2D3A" : "#1E1B3D")
+                                       ? (modelData.id === "updates" ? "#0C2D3A" : (modelData.id === "favorites" ? "#2A2008" : "#1E1B3D"))
                                        : (chipMouse.containsMouse ? "#161D2E" : "#0D111A")
                                 border.color: isSelected 
-                                              ? (modelData.id === "updates" ? "#22D3EE" : "#8B5CF6")
+                                              ? (modelData.id === "updates" ? "#22D3EE" : (modelData.id === "favorites" ? "#F59E0B" : "#8B5CF6"))
                                               : (chipMouse.containsMouse ? "#2E3A52" : "#1A2234")
                                 border.width: 1
 
@@ -591,7 +644,7 @@ Item {
                                     font.pixelSize: 10
                                     font.weight: chipRect.isSelected ? Font.Bold : 600
                                     color: chipRect.isSelected
-                                           ? (modelData.id === "updates" ? "#A5F3FC" : "#DDD6FE")
+                                           ? (modelData.id === "updates" ? "#A5F3FC" : (modelData.id === "favorites" ? "#FCD34D" : "#DDD6FE"))
                                            : (chipMouse.containsMouse ? "#94A3B8" : "#64748B")
                                 }
 
@@ -722,10 +775,13 @@ Item {
                     // ── Safe Model Property Accessors (Guards against model being undefined on reset)
                     readonly property var currentModel: (typeof model !== "undefined") ? model : null
                     readonly property bool hasUpdates: !!(currentModel && currentModel.newPostCount > 0)
+                    readonly property bool isFavorite: currentModel ? !!currentModel.isFavorite : false
                     readonly property string artistUserId: currentModel ? (currentModel.userId || "") : ""
                     readonly property string artistService: currentModel ? (currentModel.service || "") : ""
                     readonly property string artistCreatorName: currentModel ? (currentModel.creatorName || "") : ""
                     readonly property string artistUrl: currentModel ? (currentModel.url || "") : ""
+                    readonly property string artistDomain: currentModel ? (currentModel.domain || "") : ""
+                    readonly property string artistProvider: currentModel ? (currentModel.provider || "") : ""
                     readonly property string artistDownloadDir: currentModel ? (currentModel.downloadDir || "") : ""
                     readonly property var artistDownloadDirs: currentModel ? (currentModel.downloadDirs || (currentModel.downloadDir ? [currentModel.downloadDir] : [])) : []
                     readonly property string artistLastPostDate: currentModel ? (currentModel.lastPostDate || "") : ""
@@ -756,42 +812,48 @@ Item {
                         }
                     }
 
-                    // Updated cards get a subtle cyan-tinted dark background
+                    // Updated cards get a subtle cyan-tinted dark background, favorites get a subtle warm amber tint
                     color: hasUpdates 
                            ? (cardMouse.containsMouse ? "#071E26" : "#050F14") 
-                           : (cardMouse.containsMouse ? "#111827" : "#0D1117")
+                           : (isFavorite
+                              ? (cardMouse.containsMouse ? "#18140B" : "#120F08")
+                              : (cardMouse.containsMouse ? "#111827" : "#0D1117"))
 
                     border.color: hasUpdates 
                                   ? (cardMouse.containsMouse ? "#38BDF8" : "#22D3EE") 
-                                  : "#1E2330"
-                    border.width: hasUpdates ? 1.5 : 1
+                                  : (isFavorite
+                                     ? (cardMouse.containsMouse ? "#F59E0B" : "#B45309")
+                                     : "#1E2330")
+                    border.width: (hasUpdates || isFavorite) ? 1.5 : 1
                     clip: true
 
                     Behavior on color { ColorAnimation { duration: 140 } }
                     Behavior on border.color { ColorAnimation { duration: 140 } }
 
-                    // Subtle top accent line on updated cards
+                    // Subtle top accent line on updated cards or favorites
                     Rectangle {
                         anchors.top: parent.top
                         anchors.left: parent.left
                         anchors.right: parent.right
                         height: 2
-                        color: "#22D3EE"
-                        opacity: 0.75
-                        visible: hasUpdates
+                        color: hasUpdates ? "#22D3EE" : "#F59E0B"
+                        opacity: 0.8
+                        visible: hasUpdates || isFavorite
                     }
 
                     // Left accent bar
                     Rectangle {
-                        width: hasUpdates ? 5 : 3
+                        width: (hasUpdates || isFavorite) ? 5 : 3
                         anchors.top: parent.top
                         anchors.bottom: parent.bottom
                         anchors.left: parent.left
                         radius: 3
                         color: hasUpdates 
                                ? "#22D3EE" 
-                               : (isArtistChecking ? "#8B5CF6" : root.serviceColor(entryCard.artistService))
-                        opacity: hasUpdates ? 0.9 : 0.8
+                               : (isFavorite
+                                  ? "#F59E0B"
+                                  : (isArtistChecking ? "#8B5CF6" : root.serviceColor(entryCard.artistService)))
+                        opacity: (hasUpdates || isFavorite) ? 0.95 : 0.8
                     }
 
                     MouseArea {
@@ -810,7 +872,7 @@ Item {
                         anchors.leftMargin: 18
                         spacing: 9
 
-                        // ── Row 1: Name + Profile link + service badge + new badge
+                        // ── Row 1: Name + Profile link + service badge + favorite badge + star toggle + new badge
                         RowLayout {
                             width: parent.width
                             spacing: 8
@@ -820,7 +882,7 @@ Item {
                                 font.family: "Segoe UI, Inter, sans-serif"
                                 font.pixelSize: 14
                                 font.weight: entryCard.hasUpdates ? Font.Bold : 600
-                                color: entryCard.hasUpdates ? "#A5F3FC" : "#E2E8F0"
+                                color: entryCard.hasUpdates ? "#A5F3FC" : (entryCard.isFavorite ? "#FEF08A" : "#E2E8F0")
                                 elide: Text.ElideRight
                                 Layout.fillWidth: true
                             }
@@ -856,27 +918,74 @@ Item {
                                 }
                             }
 
+                            // Provider pill
+                            ProviderBadge {
+                                provider: entryCard.artistProvider
+                                domain: entryCard.artistDomain
+                                badgeHeight: 20
+                            }
+
                             // Service pill
+                            ServiceBadge {
+                                service: entryCard.artistService
+                                badgeHeight: 20
+                            }
+
+                            // Golden Star Favorite Badge
                             Rectangle {
+                                visible: entryCard.isFavorite
                                 height: 20
-                                implicitWidth: svcPillText.implicitWidth + 14
+                                implicitWidth: favBadgeRow.implicitWidth + 12
                                 radius: 10
-                                color: Qt.rgba(
-                                    parseInt(root.serviceColor(entryCard.artistService).substring(1,3),16)/255,
-                                    parseInt(root.serviceColor(entryCard.artistService).substring(3,5),16)/255,
-                                    parseInt(root.serviceColor(entryCard.artistService).substring(5,7),16)/255,
-                                    0.15
-                                )
-                                border.color: root.serviceColor(entryCard.artistService)
+                                color: "#2A2008"
+                                border.color: "#F59E0B"
+                                border.width: 1
+
+                                Row {
+                                    id: favBadgeRow
+                                    anchors.centerIn: parent
+                                    spacing: 3
+                                    Text { text: "⭐"; font.pixelSize: 9; anchors.verticalCenter: parent.verticalCenter }
+                                    Text {
+                                        text: root.tr("lbl_favorite_badge", "Favorite")
+                                        font.family: "Segoe UI, sans-serif"
+                                        font.pixelSize: 9
+                                        font.weight: Font.Bold
+                                        color: "#FCD34D"
+                                        anchors.verticalCenter: parent.verticalCenter
+                                    }
+                                }
+                            }
+
+                            // 1-Click Star Toggle Button
+                            Rectangle {
+                                height: 22
+                                width: 24
+                                radius: 5
+                                color: starToggleMouse.containsMouse ? "#2A2008" : (entryCard.isFavorite ? "#1E1807" : "#0F172A")
+                                border.color: entryCard.isFavorite ? "#F59E0B" : (starToggleMouse.containsMouse ? "#64748B" : "#334155")
                                 border.width: 1
 
                                 Text {
-                                    id: svcPillText
                                     anchors.centerIn: parent
-                                    text: entryCard.artistService.toUpperCase()
-                                    font.pixelSize: 9
-                                    font.weight: Font.Bold
-                                    color: root.serviceColor(entryCard.artistService)
+                                    text: entryCard.isFavorite ? "⭐" : "☆"
+                                    font.pixelSize: entryCard.isFavorite ? 11 : 13
+                                    color: entryCard.isFavorite ? "#FBBF24" : (starToggleMouse.containsMouse ? "#FCD34D" : "#94A3B8")
+                                }
+
+                                MouseArea {
+                                    id: starToggleMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    ToolTip.visible: containsMouse
+                                    ToolTip.delay: 250
+                                    ToolTip.text: entryCard.isFavorite ? root.tr("tip_unfavorite", "Remove from Favorites") : root.tr("tip_favorite", "Mark as Favorite")
+                                    onClicked: {
+                                        if (bridge && bridge.watchlistModel) {
+                                            bridge.watchlistModel.toggleFavorite(entryCard.artistUserId, entryCard.artistService, !entryCard.isFavorite)
+                                        }
+                                    }
                                 }
                             }
 

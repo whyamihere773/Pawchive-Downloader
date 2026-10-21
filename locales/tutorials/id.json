@@ -533,5 +533,81 @@
         "type": "info"
       }
     ]
+  },
+  {
+    "title": "Mode Favorit & Sinkronisasi Watchlist",
+    "icon": "⭐",
+    "summary": "Menjelajahi kreator yang diikuti, toggle bintang 1-klik, pembaruan bertahap, dan struktur folder tujuan.",
+    "content": [
+      {
+        "heading": "Ikhtisar & Toggle Bintang 1-Klik",
+        "body": "Mode Favorit terhubung langsung ke akun Pawchive Anda untuk menampilkan semua artis yang Anda ikuti. Aktifkan Mode Favorit menggunakan bintang emas di bilah alamat atau tab Favorit di Watchlist. Kreator mana pun dapat ditambahkan atau dihapus dengan satu klik pada ikon bintang di kartunya.",
+        "type": "intro"
+      },
+      {
+        "heading": "Sinkronisasi Bertahap Cerdas & Pelacakan Postingan Baru",
+        "body": "Saat membuka jendela favorit, aplikasi memeriksa tanggal unduhan terakhir kreator. Kreator dengan konten baru menampilkan lencana kuning dengan jumlah postingan (mis. 🔔 4 postingan baru sejak 2026-10-21). Mengklik 'Mulai Sinkron Semua' hanya mengunduh postingan baru tanpa mengunduh ulang file yang sudah ada.",
+        "type": "info"
+      },
+      {
+        "heading": "Rentang Halaman & Struktur Subfolder Tujuan",
+        "body": "Saat mengunduh semua favorit atau kreator individual, Anda dapat menentukan rentang halaman dan folder unduhan. Dalam sinkronisasi massal, setiap kreator disimpan di subfoldernya sendiri (<Folder>/<Nama Artis> [<Layanan>]/). Kreator Watchlist dengan folder kustom akan tetap menggunakan foldernya.",
+        "type": "tip"
+      },
+      {
+        "heading": "Akun Pawchive & Brankas Kredensial",
+        "body": "Mode Favorit memerlukan akun Pawchive yang terhubung. Anda dapat masuk dengan nama pengguna/kata sandi atau menempelkan cookie di Pengaturan → Akun. Kredensial dienkripsi di disk menggunakan Windows DPAPI.",
+        "type": "warning"
+      }
+    ]
+  },
+  {
+    "title": "Galeri Media Terintegrasi & Alat",
+    "icon": "🖼️",
+    "summary": "Penjelajah file lokal, penampil Lightbox media, pengubah nama massal dengan token, dan pembersih.",
+    "content": [
+      {
+        "heading": "Penjelajah File Lokal & Pintasan",
+        "body": "Tab Galeri menyediakan penjelajah media lokal untuk arsip artis yang Anda unduh. Berpindah antar folder artis dengan cepat, periksa pengukur ruang disk langsung, dan sematkan folder favorit dengan pin pintasan.",
+        "type": "intro"
+      },
+      {
+        "heading": "Penampil Media Lightbox Layar Penuh",
+        "body": "Klik thumbnail apa saja untuk membuka penampil Lightbox layar penuh. Mendukung zoom resolusi tinggi, pemutaran GIF/WebP animasi, kontrol audio/video, dan navigasi keyboard (panah dan tombol Esc).",
+        "type": "info"
+      },
+      {
+        "heading": "Pengubah Nama Massal Sekuensial",
+        "body": "Ubah nama ratusan file secara berurutan dengan pratinjau langsung. Gunakan token dinamis seperti {artist}, {title}, {index}, dan {ext}, atur digit angka (mis. 001), dan pindahkan file tanpa konflik nama.",
+        "type": "tip"
+      },
+      {
+        "heading": "Pembersih File & Ruang Disk",
+        "body": "Pindai folder untuk file rusak berukuran 0-byte, unduhan tidak lengkap (.tmp, .part), subfolder kosong, dan klip sampel yang tidak diinginkan. Bersihkan dengan aman dalam satu klik.",
+        "type": "warning"
+      }
+    ]
+  },
+  {
+    "title": "Kompresi Gambar & Video",
+    "icon": "🗜️",
+    "summary": "Pengkodean ulang video H.265/AV1, gambar WebP/AVIF, GIF animasi, integrasi FFmpeg, dan dialog peninjauan.",
+    "content": [
+      {
+        "heading": "Kompresi Sesuai Kebutuhan & Pasca-Ekstraksi",
+        "body": "Kompres unduhan besar untuk menghemat gigabyte ruang disk. Kodekan ulang video dan gambar secara otomatis setelah ekstraksi di Dekompresor Massal atau klik kanan folder di Galeri.",
+        "type": "intro"
+      },
+      {
+        "heading": "Format yang Didukung & Pemasangan FFmpeg",
+        "body": "• Video: H.265 (disarankan, kecil dan tajam), AV1 (paling efisien), H.264 (kompatibel luas), atau MKV (mempertahankan semua trek audio/subtitle).\n• Gambar: WebP (setengah ukuran JPEG), AVIF (kompresi tinggi), atau PNG (lossless).\n• Animasi: Dukungan penuh untuk GIF, APNG, WebP animasi, dan AVIF animasi.\n• FFmpeg: Diunduh otomatis dengan 1 klik di jendela kompresi jika belum terpasang.",
+        "type": "info"
+      },
+      {
+        "heading": "Keamanan & Peninjauan Keranjang Sampah",
+        "body": "Salinan terkompresi disimpan di samping file asli dan hanya disimpan jika setidaknya 5% lebih kecil. Saat selesai, dialog tinjauan menampilkan ruang yang dihemat dan memungkinkan Anda memindahkan file asli ke Keranjang Sampah.",
+        "type": "tip"
+      }
+    ]
   }
 ]

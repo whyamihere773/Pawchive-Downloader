@@ -533,5 +533,81 @@
         "type": "info"
       }
     ]
+  },
+  {
+    "title": "Favori Modu ve İzleme Listesi Eşitleme",
+    "icon": "⭐",
+    "summary": "Takip edilen üreticilere göz atma, 1 tıkla yıldız açma/kapama, kademeli güncellemeler ve hedef klasörler.",
+    "content": [
+      {
+        "heading": "Genel Bakış ve 1 Tıkla Yıldız Değiştirme",
+        "body": "Favori Modu, takip ettiğiniz tüm sanatçıları listelemek için doğrudan Pawchive hesabınıza bağlanır. Adres çubuğundaki altın yıldızdan veya İzleme Listesi'ndeki Favoriler sekmesinden açıp kapatabilirsiniz. Kart üzerindeki yıldıza tek bir tıklamayla herhangi bir üretici favorilere eklenebilir veya çıkarılabilir.",
+        "type": "intro"
+      },
+      {
+        "heading": "Akıllı Kademeli Eşitleme ve Yeni Gönderi Takibi",
+        "body": "Favoriler penceresi açıldığında, üreticilerin son indirme tarihleri hızla kontrol edilir. Yeni içeriği olan üreticilerde sarı renkli gönderi sayısı rozeti görüntülenir (ör. 🔔 2026-10-21 tarihinden bu yana 4 yeni gönderi). 'Tümünü Eşitlemeyi Başlat' seçeneği, önceden indirilmiş dosyaları tekrar indirmeden yalnızca yeni gönderileri indirir.",
+        "type": "info"
+      },
+      {
+        "heading": "Sayfa Aralıkları ve Hedef Alt Klasör Yapısı",
+        "body": "Tüm favorileri veya tek bir sanatçıyı indirirken sayfa aralığı ve özel indirme klasörü seçebilirsiniz. Toplu eşitlemede her üretici kendi özel alt klasörüne düzenlenir (<Klasör>/<Sanatçı Adı> [<Hizmet>]/). Özel klasörü olan üreticiler kendi yollarını korur.",
+        "type": "tip"
+      },
+      {
+        "heading": "Pawchive Hesabı ve Kimlik Kasası",
+        "body": "Favori Modu bağlı bir Pawchive hesabı gerektirir. Kullanıcı adı/şifreyle giriş yapabilir veya Ayarlar → Hesaplar bölümüne oturum çerezini yapıştırabilirsiniz. Kimlik bilgileri Windows DPAPI ile diskte şifrelenir.",
+        "type": "warning"
+      }
+    ]
+  },
+  {
+    "title": "Entegre Medya Galerisi ve Araçlar",
+    "icon": "🖼️",
+    "summary": "Yerel arşiv dosya gezgini, Medya Lightbox önizleyici, tokenli toplu yeniden adlandırıcı ve temizleyici.",
+    "content": [
+      {
+        "heading": "Yerel Dosya Gezgini ve Kısayollar",
+        "body": "Galeri sekmesi, indirdiğiniz arşivler için yerel bir medya gezgini sunar. Sanatçı klasörleri arasında hızla geçiş yapın, canlı disk alanı göstergelerini inceleyin ve sık kullanılan klasörleri sabitleyin.",
+        "type": "intro"
+      },
+      {
+        "heading": "Tam Ekran Medya Lightbox",
+        "body": "Tam ekran Lightbox görüntüleyicisini açmak için herhangi bir küçük resme tıklayın. Yüksek çözünürlüklü yakınlaştırma, animasyonlu GIF/WebP oynatma, ses/video kontrolleri ve klavye gezinimini (ok tuşları ve Esc) destekler.",
+        "type": "info"
+      },
+      {
+        "heading": "Sıralı Toplu Yeniden Adlandırıcı",
+        "body": "Yüzlerce dosyayı gerçek zamanlı önizleme ile sırayla yeniden adlandırın. {artist}, {title}, {index} ve {ext} gibi dinamik belirteçleri kullanın, sıfır dolgularını ayarlayın (ör. 001) ve çakışma olmadan hedef klasörlere taşıyın.",
+        "type": "tip"
+      },
+      {
+        "heading": "Disk Alanı ve Dosya Temizleyici",
+        "body": "Klasörleri 0 baytlık bozuk dosyalar, kısmi indirmeler (.tmp, .part), boş alt klasörler ve istenmeyen örnek videolar için tarayın. Tek tıklamayla güvenle temizleyin.",
+        "type": "warning"
+      }
+    ]
+  },
+  {
+    "title": "Resim ve Video Sıkıştırma",
+    "icon": "🗜️",
+    "summary": "H.265/AV1 video yeniden kodlama, WebP/AVIF resimleri, animasyonlu GIF'ler, FFmpeg ve inceleme penceresi.",
+    "content": [
+      {
+        "heading": "İsteğe Bağlı ve Çıkarma Sonrası Sıkıştırma",
+        "body": "Disk alanından gigabaytlarca tasarruf etmek için büyük indirmeleri sıkıştırın. Toplu Ayıklayıcı'da çıkarma işleminden hemen sonra videoları ve resimleri otomatik yeniden kodlayın veya Galeride sağ tıklayın.",
+        "type": "intro"
+      },
+      {
+        "heading": "Desteklenen Formatlar ve FFmpeg Kurulumu",
+        "body": "• Videolar: H.265 (önerilen, küçük ve net), AV1 (en yüksek verim), H.264 (evrensel uyumlu) veya MKV (tüm ses/altyazı parçalarını korur).\n• Resimler: WebP (JPEG'in yarısı), AVIF (yüksek sıkıştırma) veya PNG (kayıpsız).\n• Animasyonlar: GIF, APNG, animasyonlu WebP ve AVIF için tam destek.\n• FFmpeg: Mevcut değilse Sıkıştırma penceresinden 1 tıkla otomatik indirilir.",
+        "type": "info"
+      },
+      {
+        "heading": "Güvenlik ve Geri Dönüşüm Kutusu İncelemesi",
+        "body": "Sıkıştırılmış kopyalar orijinalin yanına kaydedilir ve yalnızca orijinalinden en az %5 daha küçükse saklanır. İşlem bittiğinde tasarruf edilen alan gösterilir ve orijinalleri Geri Dönüşüm Kutusu'na taşıma seçeneği sunulur.",
+        "type": "tip"
+      }
+    ]
   }
 ]

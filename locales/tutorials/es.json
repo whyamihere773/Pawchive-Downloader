@@ -533,5 +533,81 @@
         "type": "info"
       }
     ]
+  },
+  {
+    "title": "Modo Favoritos y Sincronización",
+    "icon": "⭐",
+    "summary": "Explorar creadores seguidos, estrella en 1 clic, actualizaciones incrementales y carpetas de destino.",
+    "content": [
+      {
+        "heading": "Descripción general y estrella en 1 clic",
+        "body": "El Modo Favoritos se conecta a tu cuenta de Pawchive para mostrar todos los artistas que sigues. Actívalo o desactívalo mediante la estrella dorada en la barra de direcciones o la pestaña Favoritos en la Lista de seguimiento. Cualquier creador se puede añadir o quitar con un solo clic en la estrella de su tarjeta.",
+        "type": "intro"
+      },
+      {
+        "heading": "Sincronización incremental y nuevas publicaciones",
+        "body": "Al abrir la ventana de favoritos, la aplicación revisa las fechas de última descarga. Los creadores con contenido nuevo muestran una insignia ámbar con el recuento exacto (ej. 🔔 4 publicaciones nuevas desde 2026-10-21). Al hacer clic en 'Iniciar sincronización total', solo se descargan las publicaciones nuevas sin duplicar archivos.",
+        "type": "info"
+      },
+      {
+        "heading": "Rangos de páginas y subcarpetas de destino",
+        "body": "Al descargar todos los favoritos o un artista individual, puedes definir el rango de páginas y el directorio de destino. En la sincronización por lotes, cada creador se organiza en su propia subcarpeta (<Directorio>/<Nombre Artista> [<Servicio>]/). Los artistas con carpetas personalizadas mantendrán sus rutas.",
+        "type": "tip"
+      },
+      {
+        "heading": "Cuenta de Pawchive y bóveda de credenciales",
+        "body": "El Modo Favoritos requiere una cuenta de Pawchive conectada. Puedes iniciar sesión con usuario/contraseña o pegar una cookie en Configuración → Cuentas. Las credenciales se cifran en disco con Windows DPAPI.",
+        "type": "warning"
+      }
+    ]
+  },
+  {
+    "title": "Galería Multimedia Integrada y Herramientas",
+    "icon": "🖼️",
+    "summary": "Explorador de archivos local, visor Lightbox, renombrador por lotes con tokens y limpiador.",
+    "content": [
+      {
+        "heading": "Explorador de archivos local y accesos directos",
+        "body": "La pestaña Galería ofrece un explorador de archivos local para tus archivos descargados. Navega entre carpetas de artistas, consulta medidores de espacio en disco en tiempo real y fija accesos directos a tus carpetas frecuentes.",
+        "type": "intro"
+      },
+      {
+        "heading": "Visor Lightbox en pantalla completa",
+        "body": "Haz clic en cualquier miniatura para abrir el visor Lightbox. Admite zoom de alta resolución, reproducción de GIF/WebP animados, control de audio y video, y navegación por teclado (flechas y tecla Esc).",
+        "type": "info"
+      },
+      {
+        "heading": "Renombrador secuencial por lotes",
+        "body": "Renombra cientos de archivos en secuencia con vista previa en tiempo real. Utiliza tokens dinámicos como {artist}, {title}, {index} y {ext}, configura ceros a la izquierda y mueve archivos a carpetas destino sin colisiones.",
+        "type": "tip"
+      },
+      {
+        "heading": "Limpiador de archivos y espacio en disco",
+        "body": "Escanea carpetas en busca de archivos dañados de 0 bytes, descargas parciales (.tmp, .part), subcarpetas vacías y muestras no deseadas. Límpialos de forma segura con un solo clic.",
+        "type": "warning"
+      }
+    ]
+  },
+  {
+    "title": "Compresión de Fotos y Videos",
+    "icon": "🗜️",
+    "summary": "Recodificación de video en H.265/AV1, imágenes WebP/AVIF, GIF animados, FFmpeg y diálogo de revisión.",
+    "content": [
+      {
+        "heading": "Compresión bajo demanda y post-extracción",
+        "body": "Comprime descargas grandes para ahorrar gigabytes de espacio. Recodifica videos e imágenes automáticamente tras descomprimir en el Descompresor masivo o haz clic derecho en cualquier carpeta en la Galería.",
+        "type": "intro"
+      },
+      {
+        "heading": "Formatos admitidos y configuración de FFmpeg",
+        "body": "• Videos: H.265 (recomendado, ligero y nítido), AV1 (máxima eficiencia), H.264 (compatible con todo) o MKV (conserva subtítulos/audios).\n• Imágenes: WebP (la mitad de JPEG), AVIF (máxima compresión) o PNG (sin pérdida).\n• Animaciones: Compatible con GIF, APNG, WebP animado y AVIF animado.\n• FFmpeg: Descarga automática con 1 clic en la ventana de compresión si no está instalado.",
+        "type": "info"
+      },
+      {
+        "heading": "Seguridad y revisión en Papelera de reciclaje",
+        "body": "Las copias comprimidas se guardan junto a las originales y solo se conservan si son al menos un 5 % más pequeñas. Al terminar, podrás elegir si conservar las originales o enviarlas de forma segura a la Papelera de reciclaje.",
+        "type": "tip"
+      }
+    ]
   }
 ]

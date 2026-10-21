@@ -143,6 +143,11 @@ class AppBridge(QObject):
     postSelectionLoadingChanged = Signal()
     postSelectionReady = Signal(list, str, int)
     postSelectionError = Signal(str)
+    postSelectionProgress = Signal(int, int, int, str)
+    postSelectionProgressStatusChanged = Signal()
+    postSelectionProgressPageChanged = Signal()
+    postSelectionProgressCountChanged = Signal()
+    postSelectionProgressTotalChanged = Signal()
     proxyUrlChanged = Signal()
     bandwidthLimitEnabledChanged = Signal()
     bandwidthLimitValueChanged = Signal()
@@ -253,6 +258,9 @@ class AppBridge(QObject):
     providerValidationFinished = Signal(str, bool, str)
     providerLoginFinished     = Signal(str, bool, str)
     favoriteAuthRequired      = Signal(str)
+    favoriteArtistsReady      = Signal(list)
+    favoriteArtistsLoadingChanged = Signal()
+    favoriteArtistsError      = Signal(str)
 
     # Task Scheduler signals
     schedulerChanged          = Signal()
@@ -374,6 +382,10 @@ class AppBridge(QObject):
         self._filename_style = saved_settings.get("filename_style", "post_title")
         self._filename_template = saved_settings.get("filename_template", "{title} - {orig_name}")
         self._is_post_selection_loading = False
+        self._post_selection_progress_page = 0
+        self._post_selection_progress_count = 0
+        self._post_selection_progress_total = 0
+        self._post_selection_progress_status = ""
         self._selection_cached_posts = []
         self._selection_parsed = None
         self._selection_creator_name = ""
@@ -508,6 +520,7 @@ class AppBridge(QObject):
         self._files_count_text = ""
         self._has_error = False
         self._last_error_message = ""
+        self._is_favorite_artists_loading = False
 
         # Link Vault state
         self._vault_search = ""
@@ -1146,11 +1159,16 @@ class AppBridge(QObject):
 
     @favoriteMode.setter
     def favoriteMode(self, val: bool):
+        if val:
+            if not self.checkFavoriteModeAuth():
+                return
         if self._favorite_mode != val:
             self._favorite_mode = val
             self.favoriteModeChanged.emit()
-            if self._favorite_mode:
-                self.checkFavoriteModeAuth()
+
+    @Property(bool, notify=favoriteArtistsLoadingChanged)
+    def favoriteArtistsLoading(self) -> bool:
+        return getattr(self, "_is_favorite_artists_loading", False)
 
     def get_provider_for_domain(self, domain_or_url: str) -> str:
         d = (domain_or_url or "").lower()
@@ -1160,39 +1178,24 @@ class AppBridge(QObject):
             return "pawchive"
         if "cum.st" in d or "cumst" in d:
             return "cumst"
-        return "kemono"
+        return "pawchive"
 
     @Slot(result=bool)
     def checkFavoriteModeAuth(self) -> bool:
         """
-        Validates whether the user has a valid account connected for the current URL
-        (or at least one account connected if no URL is entered) when Favorite Mode is active.
-        If not authenticated, emits favoriteAuthRequired with the provider name.
-        Returns True if authenticated, False if auth is required.
+        Validates whether the user has a valid Pawchive or cum.st account connected for Favorite Mode.
+        Favorite Mode requires a connected Pawchive or cum.st account.
+        If not authenticated, emits favoriteAuthRequired("Pawchive or cum.st") and returns False.
         """
-        if not self._favorite_mode:
-            return True
-
         from core.auth_manager import auth_manager
-        url_input = (self._current_url or "").strip()
-        if url_input:
-            from core.parser import KemonoURLParser
-            parsed = KemonoURLParser.parse(url_input)
-            if parsed.is_valid:
-                prov_id = self.get_provider_for_domain(parsed.domain)
-                if not auth_manager.is_logged_in(prov_id):
-                    meta = auth_manager.get_provider_summary(prov_id)
-                    pname = meta.get("name", prov_id.capitalize())
-                    logger.warning(f"⭐ Favorite Mode active but no account connected for {pname}.", category="auth")
-                    self.favoriteAuthRequired.emit(pname)
-                    return False
-                return True
-
-        # No URL or invalid URL: check if ANY provider is logged in
-        from core.providers import is_disabled
-        if not any(auth_manager.is_logged_in(p) for p in ("kemono", "coomer", "pawchive", "cumst") if not is_disabled(p)):
-            logger.warning("⭐ Favorite Mode requires a connected account.", category="auth")
-            self.favoriteAuthRequired.emit("Kemono")
+        pawchive_logged_in = auth_manager.is_logged_in("pawchive")
+        cumst_logged_in = auth_manager.is_logged_in("cumst")
+        if not pawchive_logged_in and not cumst_logged_in:
+            logger.warning("⭐ Favorite Mode requires a connected Pawchive or cum.st account.", category="auth")
+            self.favoriteAuthRequired.emit("Pawchive")
+            if self._favorite_mode:
+                self._favorite_mode = False
+                self.favoriteModeChanged.emit()
             return False
 
         return True
@@ -1388,6 +1391,50 @@ class AppBridge(QObject):
     @Property(bool, notify=postSelectionLoadingChanged)
     def postSelectionLoading(self) -> bool:
         return self._is_post_selection_loading
+
+    @Property(int, notify=postSelectionProgressPageChanged)
+    def postSelectionProgressPage(self) -> int:
+        return self._post_selection_progress_page
+
+    @Property(int, notify=postSelectionProgressCountChanged)
+    def postSelectionProgressCount(self) -> int:
+        return self._post_selection_progress_count
+
+    @Property(int, notify=postSelectionProgressTotalChanged)
+    def postSelectionProgressTotal(self) -> int:
+        return self._post_selection_progress_total
+
+    @Property(str, notify=postSelectionProgressStatusChanged)
+    def postSelectionProgressStatus(self) -> str:
+        return self._post_selection_progress_status
+
+    def _emit_post_selection_progress(self, page: int, count: int, total: int = 0, status: str = ""):
+        # Never reset an already known total back to 0 during an active scan
+        prev_total = getattr(self, "_post_selection_progress_total", 0)
+        new_total = total if (total > 0 or count == 0) else prev_total
+
+        page_changed = (getattr(self, "_post_selection_progress_page", -1) != page)
+        count_changed = (getattr(self, "_post_selection_progress_count", -1) != count)
+        total_changed = (prev_total != new_total)
+        status_changed = (getattr(self, "_post_selection_progress_status", None) != status)
+
+        self._post_selection_progress_page = page
+        self._post_selection_progress_count = count
+        self._post_selection_progress_total = new_total
+        self._post_selection_progress_status = status
+
+        try:
+            if page_changed:
+                self.postSelectionProgressPageChanged.emit()
+            if count_changed:
+                self.postSelectionProgressCountChanged.emit()
+            if total_changed:
+                self.postSelectionProgressTotalChanged.emit()
+            if status_changed:
+                self.postSelectionProgressStatusChanged.emit()
+            self.postSelectionProgress.emit(page, count, new_total, status)
+        except RuntimeError:
+            pass
 
     @Property(str, notify=proxyUrlChanged)
     def proxyUrl(self) -> str:
@@ -2959,6 +3006,236 @@ class AppBridge(QObject):
         )
 
     @Slot()
+    def fetchFavoriteArtists(self):
+        """Fetches favorited creators from connected providers (Pawchive, cum.st) and synchronizes them with Watchlist."""
+        if getattr(self, "_is_favorite_artists_loading", False):
+            return
+        if not self.checkFavoriteModeAuth():
+            return
+        self._is_favorite_artists_loading = True
+        self.favoriteArtistsLoadingChanged.emit()
+
+        def _worker():
+            try:
+                from core.auth_manager import auth_manager
+                providers_to_sync = []
+                if auth_manager.is_logged_in("pawchive"):
+                    providers_to_sync.append(("pawchive.pw", "pawchive"))
+                if auth_manager.is_logged_in("cumst"):
+                    providers_to_sync.append(("cum.st", "cumst"))
+
+                if not providers_to_sync:
+                    self._is_favorite_artists_loading = False
+                    self.favoriteArtistsLoadingChanged.emit()
+                    self.favoriteArtistsReady.emit([])
+                    return
+
+                all_raw_artists = []
+                for p_domain, p_id in providers_to_sync:
+                    if self._scan_cancel_event.is_set():
+                        break
+                    raw = self.api_client.fetch_user_favorites(
+                        domain=p_domain,
+                        fav_type="artist",
+                        cancel_event=self._scan_cancel_event
+                    )
+                    if raw:
+                        for item in raw:
+                            if not item.get("domain"):
+                                item["domain"] = p_domain
+                        all_raw_artists.extend(raw)
+
+                if not all_raw_artists:
+                    self._is_favorite_artists_loading = False
+                    self.favoriteArtistsLoadingChanged.emit()
+                    self.favoriteArtistsReady.emit([])
+                    return
+
+                artist_cards = []
+                cards_dict = {}
+                entries_with_last_post = []
+                for a in all_raw_artists:
+                    uid = str(a.get("id") or "").strip()
+                    svc = str(a.get("service") or "").strip()
+                    name = a.get("name") or uid
+                    avatar = a.get("avatar") or ""
+                    dom = a.get("domain") or "pawchive.pw"
+                    is_c = "cum.st" in dom or "cumst" in dom
+                    url = f"https://cum.st/creators/{svc}/{uid}" if is_c else f"https://{dom}/{svc}/user/{uid}"
+                    entry = self._watchlist_manager.add_or_update_favorite_creator(
+                        user_id=uid,
+                        service=svc,
+                        creator_name=name,
+                        domain=dom,
+                        url=url,
+                        is_favorite=True
+                    )
+                    status_text = "Synced" if (entry and entry.last_post_date) else "Not downloaded"
+                    new_count = int(getattr(entry, "new_post_count", 0) or 0)
+                    card = {
+                        "id": uid,
+                        "userId": uid,
+                        "service": svc,
+                        "name": name,
+                        "avatar": avatar,
+                        "url": url,
+                        "domain": dom,
+                        "provider": "cumst" if is_c else ("pawchive" if "pawchive" in dom else ("kemono" if "kemono" in dom else ("coomer" if "coomer" in dom else "pawchive"))),
+                        "lastPostDate": entry.last_post_date if entry else "",
+                        "status": status_text,
+                        "newPostCount": new_count,
+                        "isFavorite": True
+                    }
+                    if (uid, svc) not in cards_dict:
+                        artist_cards.append(card)
+                        cards_dict[(uid, svc)] = card
+                    if entry and entry.last_post_date:
+                        entries_with_last_post.append(entry)
+
+                self._watchlist_model.refresh()
+                self._watchlist_model.countChanged.emit()
+                self.watchlistChanged.emit()
+
+                self._is_favorite_artists_loading = False
+                self.favoriteArtistsLoadingChanged.emit()
+                self.favoriteArtistsReady.emit(artist_cards)
+
+                # Concurrently check for new posts since last download for downloaded artists
+                if entries_with_last_post and not self._scan_cancel_event.is_set():
+                    def _check_one_entry(ent):
+                        if self._scan_cancel_event.is_set():
+                            return
+                        try:
+                            new_posts = self._watchlist_manager.get_posts_since(
+                                ent,
+                                self.api_client,
+                                page_start=1,
+                                page_end=2
+                            )
+                            ent.new_post_count = len(new_posts)
+                            ent.cached_new_posts = new_posts
+                            c = cards_dict.get((ent.user_id, ent.service))
+                            if c:
+                                c["newPostCount"] = len(new_posts)
+                        except Exception:
+                            pass
+
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+                        list(executor.map(_check_one_entry, entries_with_last_post))
+
+                    self._watchlist_model.update_new_counts()
+                    self._watchlist_model.refresh()
+                    self.watchlistChanged.emit()
+                    self.favoriteArtistsReady.emit(list(cards_dict.values()))
+            except Exception as ex:
+                logger.error(f"Error fetching favorite artists: {ex}", category="api")
+                self._is_favorite_artists_loading = False
+                self.favoriteArtistsLoadingChanged.emit()
+                self.favoriteArtistsError.emit(str(ex))
+
+        threading.Thread(target=_worker, daemon=True, name="FavoriteArtistsWorker").start()
+
+    @Slot(str, str, str, str)
+    @Slot(str, str, str)
+    def fetchArtistPostsForSelection(self, user_id: str, service: str, creator_name: str = "", artist_url: str = ""):
+        """Fetches posts for a specific favorite artist to display in PostSelectionModal."""
+        if not user_id or not service:
+            return
+        if artist_url:
+            self.currentUrl = artist_url
+        else:
+            entry = self._watchlist_manager._find(user_id, service)
+            if entry and entry.url:
+                artist_url = entry.url
+            elif entry and entry.domain and ("cum.st" in entry.domain or "cumst" in entry.domain):
+                artist_url = f"https://cum.st/creators/{service}/{user_id}"
+            else:
+                domain = entry.domain if (entry and entry.domain) else "pawchive.pw"
+                if "cum.st" in domain or "cumst" in domain:
+                    artist_url = f"https://cum.st/creators/{service}/{user_id}"
+                else:
+                    artist_url = f"https://{domain}/{service}/user/{user_id}"
+            self.currentUrl = artist_url
+        self.fetchPostsForSelection()
+
+    @Slot(str, str, result=str)
+    def getArtistDownloadDir(self, user_id: str, service: str) -> str:
+        """Returns the configured or default download directory for an artist."""
+        entry = self._watchlist_manager._find(user_id, service)
+        if entry and entry.download_dir:
+            return entry.download_dir
+        if entry:
+            return self.resolve_artist_download_dir(entry)
+        return self._download_dir
+
+    @Slot(str, str, int, int, str)
+    @Slot(str, str, int, int)
+    @Slot(str, str)
+    def downloadFavoriteArtist(
+        self,
+        user_id: str,
+        service: str,
+        page_start: int = 1,
+        page_end: int = 999999,
+        download_dir: str = ""
+    ):
+        """Incrementally downloads updates or full backlog for an individual favorited artist."""
+        if not user_id or not service:
+            return
+        if not self.checkFavoriteModeAuth():
+            return
+        entry = self._watchlist_manager._find(user_id, service)
+        if not entry:
+            entry = self._watchlist_manager.add_or_update_favorite_creator(
+                user_id=user_id,
+                service=service,
+                creator_name=user_id,
+                is_favorite=True
+            )
+        if download_dir:
+            entry.download_dir = download_dir
+            if hasattr(entry, "download_dirs") and isinstance(entry.download_dirs, list):
+                if download_dir not in entry.download_dirs:
+                    entry.download_dirs.insert(0, download_dir)
+            self._watchlist_manager.save(entry)
+
+        def _run():
+            try:
+                self._process_watchlist_entry_download(
+                    entry,
+                    page_start=page_start,
+                    page_end=page_end,
+                    custom_dir=download_dir
+                )
+            except Exception as e:
+                logger.error(f"Error downloading favorite artist {user_id}: {e}", category="downloader")
+        threading.Thread(target=_run, daemon=True, name="FavoriteArtistSingleWorker").start()
+
+    @Slot(int, int, str)
+    @Slot(int, int)
+    @Slot()
+    def downloadAllFavoriteArtists(
+        self,
+        page_start: int = 1,
+        page_end: int = 999999,
+        download_dir: str = ""
+    ):
+        """Incrementally syncs all favorited artists."""
+        if not self.checkFavoriteModeAuth():
+            return
+        self._start_favorites_download_worker(
+            page_start=page_start,
+            page_end=page_end,
+            download_dir=download_dir
+        )
+
+    @Slot()
+    def syncPawchiveFavorites(self):
+        """Shortcut to fetch and sync Pawchive favorites."""
+        self.fetchFavoriteArtists()
+
+    @Slot()
     def fetchPostsForSelection(self):
         """
         Fetches creator profile and posts in a background worker for the interactive
@@ -2971,9 +3248,9 @@ class AppBridge(QObject):
         if not url_input:
             if self._favorite_mode:
                 if not self.checkFavoriteModeAuth():
-                    self.postSelectionError.emit("Favorite Mode requires an account login in Settings → Accounts.")
+                    self.postSelectionError.emit("Favorite Mode requires a Pawchive login in Settings → Accounts.")
                     return
-                self._start_favorites_post_selection_worker()
+                self.fetchFavoriteArtists()
                 return
             self.postSelectionError.emit("Please enter a creator or post URL first.")
             return
@@ -2993,8 +3270,10 @@ class AppBridge(QObject):
                 self.postSelectionError.emit(f"Favorite Mode requires an account login for {prov_id.capitalize()} in Settings → Accounts.")
                 return
 
+        self._scan_cancel_event.clear()
         self._is_post_selection_loading = True
         self.postSelectionLoadingChanged.emit()
+        self._emit_post_selection_progress(0, 0, 0, "Looking up creator profile…")
 
         def _worker():
             try:
@@ -3004,16 +3283,22 @@ class AppBridge(QObject):
                 if parsed.is_external_provider:
                     creator_name = parsed.domain
                     if parsed.provider == "bunkr":
+                        self._emit_post_selection_progress(1, 0, 0, "Resolving Bunkr album files…")
                         album_title, files = fetch_bunkr_album(parsed.raw_url, resolve_files=True)
                         creator_name = clean_text(album_title) or "Bunkr Album"
+                        self._emit_post_selection_progress(1, len(files), len(files), f"Found {len(files)} files in album")
                         posts = [{"id": f["url"], "title": f.get("filename", "File"), "published": "", "file": {"path": f["url"], "name": f.get("filename", "")}, "attachments": []} for f in files]
                     elif parsed.provider == "erome":
+                        self._emit_post_selection_progress(1, 0, 0, "Resolving Erome album media…")
                         album_title, files = fetch_erome_album(parsed.raw_url)
                         creator_name = clean_text(album_title) or "Erome Album"
+                        self._emit_post_selection_progress(1, len(files), len(files), f"Found {len(files)} files in album")
                         posts = [{"id": f["url"], "title": f.get("filename", "File"), "published": "", "file": {"path": f["url"], "name": f.get("filename", "")}, "attachments": []} for f in files]
                     elif parsed.provider == "nhentai":
+                        self._emit_post_selection_progress(1, 0, 0, "Resolving gallery pages…")
                         gallery_title, files = fetch_nhentai_gallery(parsed.post_id or parsed.raw_url)
                         creator_name = clean_text(gallery_title) or f"Gallery {parsed.post_id}"
+                        self._emit_post_selection_progress(1, len(files), len(files), f"Found {len(files)} pages in gallery")
                         posts = [{"id": f["url"], "title": f.get("filename", "File"), "published": "", "file": {"path": f["url"], "name": f.get("filename", "")}, "attachments": []} for f in files]
                     elif parsed.provider == "telegram":
                         self._telegram_pending_action = "select"
@@ -3024,6 +3309,7 @@ class AppBridge(QObject):
                             return
 
                         if parsed.is_single_post:
+                            self._emit_post_selection_progress(1, 0, 1, "Loading Telegram message…")
                             post = TelegramService.instance().fetch_single_post(parsed.user_id, int(parsed.post_id))
                             if post:
                                 creator_name = clean_text(post.get("channel_title", parsed.user_id))
@@ -3049,29 +3335,65 @@ class AppBridge(QObject):
                             )
                             return
                 else:
+                    self._emit_post_selection_progress(0, 0, 0, f"Connecting to {parsed.domain or 'server'}…")
                     profile = self.api_client.fetch_creator_profile(parsed)
                     creator_name = clean_text(profile.get("name", parsed.user_id) or parsed.user_id)
                     if parsed.is_single_post:
+                        self._emit_post_selection_progress(1, 0, 1, "Fetching single post…")
                         single = self.api_client.fetch_single_post(parsed)
                         posts = [single] if single else []
+                        if posts:
+                            self._emit_post_selection_progress(1, 1, 1, "Post loaded")
                     else:
                         effective_page_end = self._page_end
                         if self._date_auto_scan_pages and (self._date_after or self._date_before):
                             effective_page_end = 999999
+
+                        known_total_holder = [0]
+
+                        def _on_posts_progress(page: int, count: int, total: Optional[int] = None):
+                            if total is not None:
+                                try:
+                                    t_val = int(total)
+                                    if t_val > 0:
+                                        known_total_holder[0] = t_val
+                                except (ValueError, TypeError):
+                                    pass
+                            tot = known_total_holder[0]
+                            if tot > 0:
+                                pct = int((count / tot) * 100) if tot else 0
+                                msg = f"Page {page} • {count} / {tot} posts ({pct}%)"
+                            elif count > 0:
+                                msg = f"Page {page} • {count} posts discovered so far"
+                            else:
+                                msg = f"Fetching page {page}…"
+                            self._emit_post_selection_progress(page, count, tot, msg)
+
+                        self._emit_post_selection_progress(1, 0, 0, f"Fetching page 1 for {creator_name}…")
                         posts = self.api_client.fetch_user_posts(
                             parsed=parsed,
                             page_start=self._page_start,
                             page_end=effective_page_end,
                             date_after=self._date_after,
                             date_before=self._date_before,
+                            progress_callback=_on_posts_progress,
                             cancel_event=self._scan_cancel_event
                         )
 
                 if not posts:
                     self._is_post_selection_loading = False
+                    self._emit_post_selection_progress(0, 0, 0, f"No posts found for {creator_name or 'URL'}.")
                     self.postSelectionLoadingChanged.emit()
                     self.postSelectionError.emit(f"No posts found for {creator_name or 'URL'}.")
                     return
+
+                total_posts_found = len(posts)
+                self._emit_post_selection_progress(
+                    0,
+                    total_posts_found,
+                    total_posts_found,
+                    f"Formatting {total_posts_found} posts for preview…"
+                )
 
                 self._selection_cached_posts = list(posts)
                 self._selection_parsed = parsed
@@ -3080,7 +3402,16 @@ class AppBridge(QObject):
                 # Build cards list for UI
                 cards = []
                 domain = parsed.domain or "pawchive.pw"
-                for p in posts:
+                for idx, p in enumerate(posts, 1):
+                    if self._scan_cancel_event.is_set():
+                        break
+                    if idx % 100 == 0 or idx == total_posts_found:
+                        self._emit_post_selection_progress(
+                            0,
+                            idx,
+                            total_posts_found,
+                            f"Preparing previews ({idx}/{total_posts_found})…"
+                        )
                     pid = str(p.get("id", ""))
                     raw_title = p.get("title") or p.get("caption") or "Untitled Post"
                     title = re.sub(r'<[^>]+>', '', str(raw_title)).strip() or "Untitled Post"
@@ -3200,6 +3531,14 @@ class AppBridge(QObject):
                 self.postSelectionError.emit(str(ex))
 
         threading.Thread(target=_worker, daemon=True).start()
+
+    @Slot()
+    def cancelPostSelection(self):
+        """Cancels an active creator post selection fetch."""
+        self._scan_cancel_event.set()
+        self._is_post_selection_loading = False
+        self._emit_post_selection_progress(0, 0, 0, "Cancelled")
+        self.postSelectionLoadingChanged.emit()
 
     def _start_favorites_post_selection_worker(self):
         """Fetches account favorites for display in the interactive post selector modal."""
@@ -3998,43 +4337,43 @@ class AppBridge(QObject):
         self._status_text = f"Fetching favorites: Page {page} ({count} posts)..."
         self.statusTextChanged.emit()
 
-    def _start_favorites_download_worker(self):
-        """Worker thread to fetch all user favorites from Kemono/Coomer/Pawchive and build tasks."""
+    def _start_favorites_download_worker(self, page_start: int = 1, page_end: int = 999999, download_dir: str = ""):
+        """Worker thread to incrementally sync all favorited artists from connected providers."""
         self._scan_cancel_event.clear()
         self._has_error = False
         self.hasErrorChanged.emit()
         self._is_downloading = True
         self.isDownloadingChanged.emit()
         self.isPausedChanged.emit()
-        self._status_text = "Fetching account favorites..."
+        self._status_text = "Fetching favorited artists..."
         self.statusTextChanged.emit()
 
         def _worker():
             try:
                 from core.auth_manager import auth_manager
-                from core.providers import is_disabled
-                # The first site with a login that isn't switched off (Kemono / Coomer are off for now)
-                domain, prov_id = "pawchive.pw", "pawchive"
-                for _dom, _prov in (("kemono.cr", "kemono"), ("coomer.st", "coomer"),
-                                    ("pawchive.pw", "pawchive"), ("cum.st", "cumst")):
-                    if not is_disabled(_prov) and auth_manager.is_logged_in(_prov):
-                        domain, prov_id = _dom, _prov
-                        break
+                providers_to_sync = []
+                if auth_manager.is_logged_in("pawchive"):
+                    providers_to_sync.append(("pawchive.pw", "pawchive"))
+                if auth_manager.is_logged_in("cumst"):
+                    providers_to_sync.append(("cum.st", "cumst"))
 
-                saved_cookie = auth_manager.get_credential(prov_id, "cookie")
-                if saved_cookie:
-                    self._cookie_string = saved_cookie
-                    self.api_client.set_cookie(saved_cookie)
-
-                self._creator_name = "Account Favorites"
+                self._creator_name = "Favorite Artists"
                 self.creatorNameChanged.emit()
 
-                fav_posts = self.api_client.fetch_user_favorites(
-                    domain=domain,
-                    fav_type="post",
-                    cancel_event=self._scan_cancel_event,
-                    progress_callback=self._on_scan_progress
-                )
+                fav_artists = []
+                for p_domain, p_id in providers_to_sync:
+                    if self._scan_cancel_event.is_set():
+                        break
+                    p_res = self.api_client.fetch_user_favorites(
+                        domain=p_domain,
+                        fav_type="artist",
+                        cancel_event=self._scan_cancel_event,
+                    )
+                    if p_res:
+                        for item in p_res:
+                            if not item.get("domain"):
+                                item["domain"] = p_domain
+                        fav_artists.extend(p_res)
 
                 if self._scan_cancel_event.is_set():
                     self._is_downloading = False
@@ -4043,42 +4382,64 @@ class AppBridge(QObject):
                     self.statusTextChanged.emit()
                     return
 
-                if not fav_posts:
+                if not fav_artists:
                     self._is_downloading = False
-                    self._status_text = "Progress: Idle (0 favorites found)"
+                    self._status_text = "Progress: Idle (0 favorite artists found)"
                     self.isDownloadingChanged.emit()
                     self.statusTextChanged.emit()
-                    logger.warning("No favorited posts found on your account.", category="api")
+                    logger.warning("No favorited artists found on connected accounts.", category="api")
                     return
 
-                options = self._get_filter_options()
-                batch_id = "favorites_sync"
-                tasks = self.downloader.build_tasks_from_posts(
-                    posts=fav_posts,
-                    creator_name="Favorites",
-                    service="favorites",
-                    domain=domain,
-                    base_dir=self._download_dir,
-                    options=options,
-                    batch_id=batch_id
-                )
+                logger.info(f"⭐ Favorite Mode: Found {len(fav_artists)} favorited creator(s). Starting incremental sync...", category="downloader")
+                entries_to_process = []
+                for a in fav_artists:
+                    uid = str(a.get("id") or "").strip()
+                    svc = str(a.get("service") or "").strip()
+                    name = a.get("name") or uid
+                    dom = a.get("domain") or "pawchive.pw"
+                    is_c = "cum.st" in dom or "cumst" in dom
+                    url = f"https://cum.st/creators/{svc}/{uid}" if is_c else f"https://{dom}/{svc}/user/{uid}"
+                    entry = self._watchlist_manager.add_or_update_favorite_creator(
+                        user_id=uid,
+                        service=svc,
+                        creator_name=name,
+                        domain=dom,
+                        url=url,
+                        is_favorite=True
+                    )
+                    entries_to_process.append(entry)
 
-                if not tasks:
+                self._watchlist_model.refresh()
+                self._watchlist_model.countChanged.emit()
+                self.watchlistChanged.emit()
+
+                total_entries = len(entries_to_process)
+                for idx, entry in enumerate(entries_to_process, 1):
+                    if self._scan_cancel_event.is_set():
+                        break
+                    self._status_text = f"Syncing favorites ({idx}/{total_entries}): {entry.creator_name}..."
+                    self.statusTextChanged.emit()
+                    try:
+                        self._process_watchlist_entry_download(
+                            entry,
+                            page_start=page_start,
+                            page_end=page_end,
+                            custom_dir=download_dir
+                        )
+                    except Exception as err:
+                        logger.error(f"Error syncing favorite artist {entry.creator_name!r}: {err}", category="downloader")
+
+                if not self.downloader.tasks and not self._queue_model.rowCount():
                     self._is_downloading = False
-                    self._status_text = "Progress: Idle (All favorites filtered out)"
+                    self._status_text = "Favorites: All artists are up to date"
                     self.isDownloadingChanged.emit()
                     self.statusTextChanged.emit()
-                    return
+                else:
+                    self._status_text = "Queued updates for favorite artists. Downloading..."
+                    self.statusTextChanged.emit()
 
-                self._setTasksSignal.emit(tasks)      # models change on the GUI thread only
-                self.downloader.tasks = list(tasks)
-                self.downloader.start_download_queue(
-                    tasks=self.downloader.tasks,
-                    options=options,
-                    cookie_str=self._cookie_string
-                )
             except Exception as e:
-                logger.error(f"Favorites download failed: {e}", category="downloader")
+                logger.error(f"Favorites sync failed: {e}", category="downloader")
                 self._is_downloading = False
                 self._status_text = f"Error: {e}"
                 self.isDownloadingChanged.emit()
@@ -6431,13 +6792,25 @@ class AppBridge(QObject):
         p_str = str(pub)
         return p_str.split("T")[0] if "T" in p_str else p_str[:10]
 
-    def _process_watchlist_entry_download(self, entry, postIds: Optional[list] = None):
+    def _process_watchlist_entry_download(
+        self,
+        entry,
+        postIds: Optional[list] = None,
+        page_start: int = 1,
+        page_end: int = 999999,
+        custom_dir: str = ""
+    ):
         """Worker logic to fetch, structure, and append download tasks for a single watchlist entry."""
         from core.providers import is_disabled
         if is_disabled(entry.url or entry.domain):
             logger.warning(f"Watchlist: {entry.creator_name!r} is on a switched-off site; skipped.", category="watchlist")
             return
-        new_posts = self._watchlist_manager.get_posts_since(entry, self.api_client)
+        new_posts = self._watchlist_manager.get_posts_since(
+            entry,
+            self.api_client,
+            page_start=page_start,
+            page_end=page_end
+        )
         if not new_posts:
             logger.info(f"No new posts found for {entry.creator_name!r}.", category="watchlist")
             if entry.new_post_count > 0:
@@ -6476,12 +6849,23 @@ class AppBridge(QObject):
             latest_pdate = p_str.split("T")[0] if "T" in p_str else (p_str[:10] if p_str else "")
 
         options = self._get_effective_watchlist_options(entry)
+        if page_start > 1 or page_end < 999999:
+            options.page_start = page_start
+            options.page_end = page_end
         if self._scheduled_sweep_retry:
             options.auto_retry_at_end = True     # Scheduler → "Sweep auto-retry pass"
 
-        artist_folder = self.resolve_artist_download_dir(entry)
+        if custom_dir:
+            artist_folder = self.resolve_artist_download_dir_for_folder(
+                custom_dir,
+                entry.creator_name or entry.user_id,
+                entry.service
+            )
+        else:
+            artist_folder = self.resolve_artist_download_dir(entry)
+
         # Ensure the entry knows its download_dir and download_dirs
-        if not entry.download_dir:
+        if not entry.download_dir or custom_dir:
             entry.download_dir = artist_folder
         if hasattr(entry, "download_dirs") and isinstance(entry.download_dirs, list):
             if artist_folder not in entry.download_dirs:
@@ -6490,12 +6874,13 @@ class AppBridge(QObject):
         self._watchlist_model.refresh()
         self.watchlistChanged.emit()
 
+        base_download_dir = os.path.dirname(artist_folder) if os.path.isabs(artist_folder) else (custom_dir or self._download_dir)
         tasks = self.downloader.build_tasks_from_posts(
             posts=new_posts,
             creator_name=entry.creator_name,
             service=entry.service,
             domain=entry.domain,
-            base_dir=self._download_dir,
+            base_dir=base_download_dir,
             options=options,
             batch_id=f"watchlist_{entry.service}_{entry.user_id}",
             artist_dir=artist_folder,

@@ -13,7 +13,7 @@ import threading
 import requests
 import re
 from urllib.parse import unquote
-from typing import Dict, Any, List, Optional, Callable
+from typing import Dict, Any, List, Optional, Callable, Tuple
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -663,6 +663,7 @@ class KemonoApiClient:
         largest_page = 0
         pages_fetched = 0
         cancelled = False
+        known_total: Optional[int] = None
 
         logger.info(
             f"Post enumeration started — {parsed.service}/{parsed.user_id}  "
@@ -684,8 +685,11 @@ class KemonoApiClient:
             else:
                 url = self.posts_list_url(parsed.domain, parsed.service, parsed.user_id, offset)
 
-            if progress_callback:
-                progress_callback(current_page, len(all_posts))
+            if progress_callback and current_page == page_start and len(all_posts) == 0:
+                try:
+                    progress_callback(current_page, 0, known_total)
+                except TypeError:
+                    progress_callback(current_page, 0)
 
             resp = self._get_with_log(url, timeout=25)
 
@@ -777,6 +781,19 @@ class KemonoApiClient:
                 f"(running total: {len(all_posts)})",
                 category="api"
             )
+
+            if isinstance(raw_data, dict):
+                raw_tot = raw_data.get("total")
+                if isinstance(raw_tot, int) and raw_tot > 0:
+                    known_total = raw_tot
+                elif isinstance(raw_tot, str) and raw_tot.strip().isdigit():
+                    known_total = int(raw_tot.strip())
+
+            if progress_callback:
+                try:
+                    progress_callback(current_page, len(all_posts), known_total)
+                except TypeError:
+                    progress_callback(current_page, len(all_posts))
 
             # A page smaller than the biggest one seen is the last one. (Comparing with our own
             # page_size assumed every site serves 50 posts per page.)
@@ -899,6 +916,99 @@ class KemonoApiClient:
         logger.info(f"Fetched {len(result)} tag(s) for {parsed.user_id} [{parsed.service}]", category="api")
         return result
 
+    @staticmethod
+    def _parse_cumst_bookmarks(json_data: dict, fav_type: str = "artist") -> Tuple[List[Dict[str, Any]], Optional[int]]:
+        """
+        Parses SvelteKit devalue serialized JSON from:
+        - https://cum.st/account/bookmarks/creators/__data.json
+        - https://cum.st/account/bookmarks/posts/__data.json
+        """
+        results: List[Dict[str, Any]] = []
+        total_count: Optional[int] = None
+        try:
+            nodes = json_data.get("nodes", [])
+            if len(nodes) < 3:
+                return results, total_count
+            node_data = nodes[2].get("data", [])
+            if not node_data or not isinstance(node_data, list):
+                return results, total_count
+
+            def resolve(val):
+                if isinstance(val, int) and 0 <= val < len(node_data):
+                    return node_data[val]
+                return val
+
+            root = node_data[0]
+            if not isinstance(root, dict):
+                return results, total_count
+
+            tot = root.get("total")
+            if tot is not None:
+                tot_val = resolve(tot)
+                if isinstance(tot_val, int):
+                    total_count = tot_val
+
+            if fav_type == "artist":
+                creators_ref = root.get("creators")
+                if creators_ref is None:
+                    return results, total_count
+                creators_indices = resolve(creators_ref)
+                if not isinstance(creators_indices, list):
+                    return results, total_count
+
+                for c_idx in creators_indices:
+                    c_dict = resolve(c_idx)
+                    if not isinstance(c_dict, dict):
+                        continue
+                    resolved = {k: resolve(v) for k, v in c_dict.items()}
+                    uid = str(resolved.get("id") or "").strip()
+                    svc = str(resolved.get("service") or "").strip().lower()
+                    name = resolved.get("displayName") or resolved.get("name") or uid
+                    avatar = f"https://img.cum.st/creator/{svc}/{uid}/avatar.webp"
+                    if uid and svc:
+                        results.append({
+                            "id": uid,
+                            "service": svc,
+                            "name": name,
+                            "avatar": avatar,
+                            "domain": "cum.st",
+                            "postCount": resolved.get("postCount", 0),
+                            "imageCount": resolved.get("imageCount", 0),
+                            "videoCount": resolved.get("videoCount", 0),
+                        })
+            else:
+                items_ref = root.get("items")
+                if items_ref is None:
+                    return results, total_count
+                items_indices = resolve(items_ref)
+                if not isinstance(items_indices, list):
+                    return results, total_count
+
+                for it_idx in items_indices:
+                    it_dict = resolve(it_idx)
+                    if not isinstance(it_dict, dict):
+                        continue
+                    resolved = {k: resolve(v) for k, v in it_dict.items()}
+                    pid = str(resolved.get("id") or "").strip()
+                    usr = str(resolved.get("user") or resolved.get("creatorId") or "").strip()
+                    svc = str(resolved.get("service") or "").strip().lower()
+                    title = resolved.get("title") or resolved.get("captionHtml") or f"Post {pid}"
+                    if pid:
+                        entry = {
+                            "id": pid,
+                            "user": usr,
+                            "service": svc,
+                            "title": title,
+                            "domain": "cum.st",
+                        }
+                        for k, v in resolved.items():
+                            if k not in entry:
+                                entry[k] = v
+                        results.append(entry)
+        except Exception as ex:
+            logger.error(f"Error parsing cum.st bookmarks: {ex}", category="api")
+        return results, total_count
+
     def fetch_user_favorites(
         self,
         domain: str = "kemono.cr",
@@ -910,7 +1020,7 @@ class KemonoApiClient:
         cancel_event: Optional[threading.Event] = None
     ) -> List[Dict[str, Any]]:
         """
-        Fetches authenticated user favorites (posts or artists) from Kemono/Coomer favorites API.
+        Fetches authenticated user favorites (posts or artists) from Kemono/Coomer/Pawchive/cum.st favorites API.
         Endpoint: https://{domain}/api/v1/favorites?type={fav_type}&o={offset}
         """
         # The account cookie for this site is attached per request (core.providers.cookie_for_url)
@@ -929,13 +1039,17 @@ class KemonoApiClient:
         )
 
         is_pawchive = "pawchive" in domain.lower()
+        is_cumst = "cum.st" in domain.lower() or "cumst" in domain.lower()
 
         while current_page <= page_end:
             if cancel_event and cancel_event.is_set():
                 logger.warning("Favorites enumeration cancelled by user.", category="api")
                 break
 
-            if is_pawchive:
+            if is_cumst:
+                endpoint = "creators" if fav_type == "artist" else "posts"
+                url = f"https://cum.st/account/bookmarks/{endpoint}/__data.json?page={current_page}"
+            elif is_pawchive:
                 url = f"https://{domain}/favorites?type={fav_type}&o={offset}"
             else:
                 url = f"https://{domain}/api/v1/favorites?type={fav_type}&o={offset}"
@@ -971,9 +1085,18 @@ class KemonoApiClient:
                 break
 
             items: List[Dict[str, Any]] = []
+            cumst_total: Optional[int] = None
 
+            # cum.st SvelteKit JSON parsing
+            if is_cumst:
+                try:
+                    raw_data = resp.json()
+                    items, cumst_total = self._parse_cumst_bookmarks(raw_data, fav_type=fav_type)
+                except Exception as e:
+                    logger.error(f"cum.st favorites parse error: {e}", category="api")
+                    break
             # Pawchive HTML parsing
-            if is_pawchive:
+            elif is_pawchive:
                 try:
                     from bs4 import BeautifulSoup
                     soup = BeautifulSoup(resp.text, "html.parser")
@@ -1009,8 +1132,12 @@ class KemonoApiClient:
                             csvc = u_card.get("data-service")
                             cname_el = u_card.find(class_=re.compile(r"user-card__name"))
                             cname = cname_el.get_text(strip=True) if cname_el else ""
+                            cimg_el = u_card.find("img")
+                            cavatar = cimg_el.get("src", "") if cimg_el else ""
+                            if cavatar and not cavatar.startswith("http"):
+                                cavatar = f"https://{domain}{cavatar}"
                             if cid and csvc:
-                                items.append({"id": str(cid), "service": str(csvc), "name": cname})
+                                items.append({"id": str(cid), "service": str(csvc), "name": cname, "avatar": cavatar})
                 except Exception as e:
                     logger.error(f"Pawchive favorites HTML parse error: {e}", category="api")
                     break
@@ -1047,6 +1174,10 @@ class KemonoApiClient:
             batch = len(items)
             all_items.extend(fresh)
             logger.info(f"Page {current_page:3d}  offset {offset:5d}  +{len(fresh)} favorite {fav_type}(s) (total: {len(all_items)})", category="api")
+
+            if is_cumst and cumst_total is not None and len(all_items) >= cumst_total:
+                logger.info(f"Page {current_page}: reached cum.st total ({len(all_items)}/{cumst_total}) — enumeration complete.", category="api")
+                break
 
             # A page smaller than the biggest one seen is the last one (the page size isn't fixed:
             # assuming 50 stopped after the first page on a site that shows fewer)

@@ -45,6 +45,17 @@ def _download_dirs(e) -> list:
     return d_dirs
 
 
+def _provider(e) -> str:
+    dom = (getattr(e, "domain", "") or "").lower()
+    if "cum.st" in dom or "cumst" in dom:
+        return "cumst"
+    if "coomer" in dom:
+        return "coomer"
+    if "kemono" in dom:
+        return "kemono"
+    return "pawchive"
+
+
 class WatchlistModel(QAbstractListModel):
     # Custom roles
     UrlRole          = Qt.UserRole + 1
@@ -61,6 +72,8 @@ class WatchlistModel(QAbstractListModel):
     IgnoredCountRole = Qt.UserRole + 12
     CachedPostsRole  = Qt.UserRole + 13
     DownloadDirsRole = Qt.UserRole + 14
+    IsFavoriteRole   = Qt.UserRole + 15
+    ProviderRole     = Qt.UserRole + 16
 
     # Above this many creators the list is filtered and sorted in the background
     BACKGROUND_REBUILD_AT = 20000
@@ -80,6 +93,8 @@ class WatchlistModel(QAbstractListModel):
         DownloadDirsRole: _download_dirs,
         IgnoredCountRole: lambda e: len(getattr(e, "ignored_post_ids", None) or []),
         CachedPostsRole:  _posts_for_qml,
+        IsFavoriteRole:   lambda e: bool(getattr(e, "is_favorite", False)),
+        ProviderRole:     _provider,
         Qt.DisplayRole:   lambda e: e.creator_name,
     }
 
@@ -153,6 +168,9 @@ class WatchlistModel(QAbstractListModel):
             if sf == "updates":
                 if n <= 0:
                     continue
+            elif sf in ("favorites", "favorite"):
+                if not getattr(e, "is_favorite", False):
+                    continue
             elif sf and sf != "all" and (getattr(e, "service", "") or "").lower() != sf:
                 continue
             keyed.append((0 if n > 0 else 1, (name or uid).lower(), e))
@@ -213,6 +231,11 @@ class WatchlistModel(QAbstractListModel):
         """Total count of new posts across all tracked artists."""
         return self._new_posts
 
+    @Property(int, notify=countChanged)
+    def favoriteCount(self) -> int:
+        """Total count of favorited artists in the watchlist."""
+        return sum(1 for e in getattr(self._manager, "entries", []) if getattr(e, "is_favorite", False))
+
     @Slot(int, result="QVariantMap")
     def get(self, index: int) -> dict:
         if 0 <= index < len(self._display_entries):
@@ -232,8 +255,25 @@ class WatchlistModel(QAbstractListModel):
                 "downloadDirs": _download_dirs(e),
                 "ignoredCount": len(getattr(e, "ignored_post_ids", None) or []),
                 "cachedNewPosts": _posts_for_qml(e),
+                "isFavorite": bool(getattr(e, "is_favorite", False)),
+                "provider": _provider(e),
             }
         return {}
+
+    @Slot(str, str, bool)
+    def toggleFavorite(self, user_id: str, service: str, is_fav: bool):
+        """Toggle favorite status of a creator."""
+        if hasattr(self._manager, "set_favorite") and self._manager.set_favorite(user_id, service, is_fav):
+            uid_norm = (user_id or "").strip().lower()
+            svc_norm = (service or "").strip().lower()
+            for i, e in enumerate(self._display_entries):
+                if (getattr(e, "user_id", "") or "").strip().lower() == uid_norm and (getattr(e, "service", "") or "").strip().lower() == svc_norm:
+                    idx = self.index(i, 0)
+                    self.dataChanged.emit(idx, idx, [self.IsFavoriteRole])
+                    break
+            if self._service_filter in ("favorites", "favorite"):
+                self.refresh()
+            self.countChanged.emit()
 
     # ── QAbstractListModel interface ───────────────────────────────────────────
 
@@ -262,6 +302,8 @@ class WatchlistModel(QAbstractListModel):
             self.DownloadDirsRole: b"downloadDirs",
             self.IgnoredCountRole: b"ignoredCount",
             self.CachedPostsRole:  b"cachedNewPosts",
+            self.IsFavoriteRole:   b"isFavorite",
+            self.ProviderRole:     b"provider",
             Qt.DisplayRole:        b"display",
         }
 
