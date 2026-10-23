@@ -96,6 +96,7 @@ SmoothFlickable {
         if (root.bridge.dateBefore && root.bridge.dateBefore.trim().length > 0) count++
         if (root.bridge.minFileSize && root.bridge.minFileSize.trim().length > 0) count++
         if (root.bridge.maxFileSize && root.bridge.maxFileSize.trim().length > 0) count++
+        if (root.bridge.videoDurationFilterEnabled) count++
         return count
     }
 
@@ -1253,6 +1254,13 @@ SmoothFlickable {
                     }
 
                     StyledCheckBox {
+                        text: root.tr("opt_download_dms", "Download Direct Messages (DMs)")
+                        tooltip: root.tr("opt_download_dms_tip", "Fetch and download creator direct messages alongside posts (cum.st / Pawchive)")
+                        checked: root.bridge ? root.bridge.downloadDms : false
+                        onCheckedChanged: if (root.bridge) root.bridge.downloadDms = checked
+                    }
+
+                    StyledCheckBox {
                         text: root.tr("opt_download_embeds", "Download Embedded Media (yt-dlp)")
                         tooltip: root.tr("opt_download_embeds_tip", "Download embedded video players (Vimeo, YouTube, Streamable, RedGifs, etc.) via standalone yt-dlp")
                         checked: root.bridge ? root.bridge.downloadEmbeds : true
@@ -2061,6 +2069,280 @@ SmoothFlickable {
                                 color: (sizeRangeBadge.hasInvalid || sizeRangeBadge.isInverted) ? "#FCD34D" : "#38BDF8"
                                 elide: Text.ElideRight
                                 Layout.fillWidth: true
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Card 1.4: Video Duration Filter (Length Filtering)
+            CardSection {
+                Layout.fillWidth: true
+                title: root.tr("card_duration_filtering", "Video Duration Filter")
+                iconText: "⏱️"
+                entranceOffsetY: root.tabEntranceOffsetY * 1.75
+                entranceOpacity: root.tabEntranceOpacity
+
+                ColumnLayout {
+                    width: parent.width
+                    spacing: 10
+
+                    // Header row: Switch + Title + Clear button
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 10
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 2
+
+                            Text {
+                                text: root.tr("opt_video_duration_filter_title", "Filter Posts by Video Length")
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 12
+                                font.bold: true
+                                color: "#F1F5F9"
+                            }
+
+                            Text {
+                                text: root.tr("opt_video_duration_filter_desc", "Only download posts containing videos within a specific runtime window.")
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 10
+                                color: "#64748B"
+                                wrapMode: Text.WordWrap
+                                Layout.fillWidth: true
+                            }
+                        }
+
+                        // Clear duration range
+                        Text {
+                            visible: root.bridge && root.bridge.videoDurationFilterEnabled && ((root.bridge.minVideoDuration && root.bridge.minVideoDuration.length > 0) || (root.bridge.maxVideoDuration && root.bridge.maxVideoDuration.length > 0))
+                            text: root.tr("btn_clear_duration_range", "Clear Range ✕")
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 11
+                            font.bold: true
+                            color: durationClearMouse.containsMouse ? "#F87171" : "#94A3B8"
+                            scale: durationClearMouse.pressed ? 0.92 : (durationClearMouse.containsMouse ? 1.06 : 1.0)
+                            Behavior on scale { SpringAnimation { spring: 5.2; damping: 0.32; mass: 0.65; epsilon: 0.005 } }
+                            Behavior on color { ColorAnimation { duration: 140 } }
+
+                            MouseArea {
+                                id: durationClearMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    if (root.bridge) {
+                                        root.bridge.minVideoDuration = ""
+                                        root.bridge.maxVideoDuration = ""
+                                    }
+                                }
+                            }
+                        }
+
+                        StyledSwitch {
+                            checked: root.bridge ? root.bridge.videoDurationFilterEnabled : false
+                            onToggled: function(isChecked) {
+                                if (root.bridge) root.bridge.videoDurationFilterEnabled = isChecked
+                            }
+                        }
+                    }
+
+                    // Expandable config area when switch is ON
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 10
+                        visible: root.bridge && root.bridge.videoDurationFilterEnabled
+
+                        // Warning banner explaining probing overhead in short
+                        Rectangle {
+                            Layout.fillWidth: true
+                            implicitHeight: durationWarningRow.implicitHeight + 16
+                            radius: 6
+                            color: "#181410"
+                            border.color: "#B45309"
+                            border.width: 1
+
+                            Rectangle {
+                                anchors.left: parent.left
+                                anchors.top: parent.top
+                                anchors.bottom: parent.bottom
+                                width: 3
+                                radius: 1
+                                color: "#F59E0B"
+                            }
+
+                            RowLayout {
+                                id: durationWarningRow
+                                anchors.fill: parent
+                                anchors.leftMargin: 12
+                                anchors.rightMargin: 12
+                                anchors.topMargin: 8
+                                anchors.bottomMargin: 8
+                                spacing: 8
+
+                                Text {
+                                    text: "⚠️"
+                                    font.pixelSize: 14
+                                    Layout.alignment: Qt.AlignVCenter
+                                }
+
+                                Text {
+                                    text: root.tr("warn_duration_scanning_overhead", "Probing overhead: Direct video hosts do not store duration in their API metadata. Pawchive will inspect video headers via network requests during scanning, which may slightly increase scan time.")
+                                    font.family: "Segoe UI, sans-serif"
+                                    font.pixelSize: 11
+                                    color: "#FBBF24"
+                                    wrapMode: Text.WordWrap
+                                    Layout.fillWidth: true
+                                }
+                            }
+                        }
+
+                        // Min / Max input fields
+                        GridLayout {
+                            columns: root.width > 540 ? 2 : 1
+                            Layout.fillWidth: true
+                            rowSpacing: 6
+                            columnSpacing: 12
+
+                            // Min Video Duration
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                spacing: 8
+
+                                Text {
+                                    text: root.tr("label_duration_min", "Min:")
+                                    font.family: "Segoe UI, sans-serif"
+                                    font.pixelSize: 11
+                                    color: "#64748B"
+                                }
+
+                                StyledTextField {
+                                    id: minDurationInput
+                                    Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
+                                    placeholderText: root.tr("ph_duration_min", "e.g. 0:30 or 1m")
+                                    tooltip: root.tr("tip_duration_min", "Minimum video runtime. Videos shorter than this will be skipped.")
+                                    text: root.bridge ? root.bridge.minVideoDuration : ""
+                                    onTextChanged: {
+                                        if (root.bridge && root.bridge.minVideoDuration !== text) {
+                                            root.bridge.minVideoDuration = text
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Max Video Duration
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                spacing: 8
+
+                                Text {
+                                    text: root.tr("label_duration_max", "Max:")
+                                    font.family: "Segoe UI, sans-serif"
+                                    font.pixelSize: 11
+                                    color: "#64748B"
+                                }
+
+                                StyledTextField {
+                                    id: maxDurationInput
+                                    Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
+                                    placeholderText: root.tr("ph_duration_max", "e.g. 10:00 or 15m")
+                                    tooltip: root.tr("tip_duration_max", "Maximum video runtime. Videos longer than this will be skipped.")
+                                    text: root.bridge ? root.bridge.maxVideoDuration : ""
+                                    onTextChanged: {
+                                        if (root.bridge && root.bridge.maxVideoDuration !== text) {
+                                            root.bridge.maxVideoDuration = text
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Quick Presets Row
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 6
+
+                            Text {
+                                text: root.tr("label_presets", "Quick Presets:")
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 10
+                                color: "#64748B"
+                            }
+
+                            Repeater {
+                                model: [
+                                    { l: "< 1 min (Clips)", min: "", max: "1:00" },
+                                    { l: "1 – 5 min", min: "1:00", max: "5:00" },
+                                    { l: "5 – 15 min", min: "5:00", max: "15:00" },
+                                    { l: "> 15 min (Full)", min: "15:00", max: "" }
+                                ]
+
+                                Rectangle {
+                                    implicitWidth: durPresetText.implicitWidth + 14
+                                    implicitHeight: 22
+                                    radius: 11
+                                    color: durPresetMouse.containsMouse ? "#1E293B" : "#0F172A"
+                                    border.color: (root.bridge && root.bridge.minVideoDuration === modelData.min && root.bridge.maxVideoDuration === modelData.max) ? "#38BDF8" : "#334155"
+                                    border.width: 1
+
+                                    Text {
+                                        id: durPresetText
+                                        anchors.centerIn: parent
+                                        text: modelData.l
+                                        font.family: "Segoe UI, sans-serif"
+                                        font.pixelSize: 10
+                                        font.bold: (root.bridge && root.bridge.minVideoDuration === modelData.min && root.bridge.maxVideoDuration === modelData.max)
+                                        color: (root.bridge && root.bridge.minVideoDuration === modelData.min && root.bridge.maxVideoDuration === modelData.max) ? "#38BDF8" : "#94A3B8"
+                                    }
+
+                                    MouseArea {
+                                        id: durPresetMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            if (root.bridge) {
+                                                root.bridge.minVideoDuration = modelData.min
+                                                root.bridge.maxVideoDuration = modelData.max
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Live summary badge
+                        Rectangle {
+                            Layout.fillWidth: true
+                            implicitHeight: 24
+                            radius: 5
+                            color: "#0F172A"
+                            border.color: "#1E293B"
+                            border.width: 1
+
+                            RowLayout {
+                                anchors.fill: parent
+                                anchors.leftMargin: 8
+                                anchors.rightMargin: 8
+                                spacing: 6
+
+                                Text {
+                                    text: "⏱️"
+                                    font.pixelSize: 10
+                                }
+                                Text {
+                                    text: root.tr("lbl_active_duration_filter", "Duration filter: ") + (root.bridge ? root.bridge.videoDurationSummary : "Off")
+                                    font.family: "Segoe UI, sans-serif"
+                                    font.pixelSize: 10
+                                    color: "#38BDF8"
+                                    elide: Text.ElideRight
+                                    Layout.fillWidth: true
+                                }
                             }
                         }
                     }
@@ -3173,6 +3455,83 @@ SmoothFlickable {
                     width: parent.width
                     spacing: 12
 
+                    // ── Favorite Mode Active Warning Banner ──
+                    Rectangle {
+                        id: batchFavWarningBanner
+                        visible: root.bridge ? root.bridge.favoriteMode : false
+                        Layout.fillWidth: true
+                        implicitHeight: visible ? batchFavBannerRow.implicitHeight + 20 : 0
+                        radius: 8
+                        color: "#181410"
+                        border.color: "#B45309"
+                        border.width: 1
+                        clip: true
+
+                        Behavior on implicitHeight {
+                            NumberAnimation { duration: 240; easing.type: Easing.OutCubic }
+                        }
+
+                        // Left vertical amber accent strip
+                        Rectangle {
+                            anchors.left: parent.left
+                            anchors.top: parent.top
+                            anchors.bottom: parent.bottom
+                            width: 4
+                            radius: 2
+                            color: "#F59E0B"
+                        }
+
+                        RowLayout {
+                            id: batchFavBannerRow
+                            anchors.fill: parent
+                            anchors.leftMargin: 16
+                            anchors.rightMargin: 14
+                            anchors.topMargin: 10
+                            anchors.bottomMargin: 10
+                            spacing: 12
+
+                            Text {
+                                text: "⚠️"
+                                font.pixelSize: 18
+                                Layout.alignment: Qt.AlignVCenter
+                            }
+
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 2
+
+                                Text {
+                                    text: root.tr("banner_batch_fav_mode_title", "Favorite Mode is active")
+                                    font.family: "Segoe UI, Inter, sans-serif"
+                                    font.pixelSize: 12
+                                    font.weight: Font.DemiBold
+                                    color: "#FDE68A"
+                                }
+
+                                Text {
+                                    text: root.tr("banner_batch_fav_mode_desc", "Batch Importer queues standard URLs directly and does not support Favorite Mode. Turn off Favorite Mode to process these URLs.")
+                                    font.family: "Segoe UI, Inter, sans-serif"
+                                    font.pixelSize: 11
+                                    color: "#FBBF24"
+                                    wrapMode: Text.WordWrap
+                                    Layout.fillWidth: true
+                                }
+                            }
+
+                            StyledButton {
+                                text: root.tr("btn_turn_off_favorite_mode", "Turn Off Favorite Mode")
+                                iconText: "✕"
+                                variant: "outline"
+                                Layout.alignment: Qt.AlignVCenter
+                                onClicked: {
+                                    if (root.bridge) {
+                                        root.bridge.favoriteMode = false
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     Text {
                         text: root.tr("desc_batch_queue", "Paste multiple creator / album URLs below, one per line. Each URL uses its own folder inside the download destination.")
                         font.family: "Segoe UI, sans-serif"
@@ -3215,6 +3574,9 @@ SmoothFlickable {
                             enabled: batchInput.text.trim().length > 0 && root.bridge
                             onClicked: {
                                 if (root.bridge) {
+                                    if (root.bridge.favoriteMode) {
+                                        root.bridge.favoriteMode = false
+                                    }
                                     var count = root.bridge.batchLoadUrls(batchInput.text)
                                     if (count > 0) {
                                         batchInput.text = ""

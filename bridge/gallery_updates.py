@@ -421,7 +421,7 @@ class GalleryUpdates(QObject):
             }}
 
             def brief(p):
-                return {"title": str(p.get("title") or "Untitled post"), "date": _published(p)[:10], "id": str(p.get("id", ""))}
+                return {"title": str(p.get("title") or p.get("captionText") or p.get("caption") or "Untitled post").strip(), "date": _published(p)[:10], "id": str(p.get("id", ""))}
 
             self.checkFinished.emit(token, {
                 "ok": True,

@@ -12,10 +12,15 @@ import random
 import threading
 import requests
 import re
-from urllib.parse import unquote
+from urllib.parse import unquote, urljoin
 from typing import Dict, Any, List, Optional, Callable, Tuple
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+try:
+    from bs4 import BeautifulSoup
+except ImportError:
+    BeautifulSoup = None
 
 if __name__ == "__main__" or "core" not in sys.modules:
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -853,6 +858,255 @@ class KemonoApiClient:
                 category="api"
             )
         return all_posts
+
+    def fetch_user_dms(
+        self,
+        parsed: URLParseResult,
+        page_start: int = 1,
+        page_end: int = 999999,
+        page_size: int = 50,
+        progress_callback: Optional[Callable] = None,
+        cancel_event: Optional[threading.Event] = None,
+        date_after: str = "",
+        date_before: str = "",
+    ) -> List[Dict[str, Any]]:
+        """
+        Paginates through creator direct messages (DMs).
+        Supported on cum.st (via REST API) and Pawchive (via HTML scraping).
+        Emits progress and handles cancellation, backoff, and date filters.
+        """
+        all_dms: List[Dict[str, Any]] = []
+        domain_lower = (parsed.domain or "").lower()
+        if "cum.st" not in domain_lower and "pawchive" not in domain_lower:
+            logger.info(f"Direct messages (DMs) are not supported on {parsed.domain}.", category="api")
+            return []
+
+        logger.info(
+            f"DM enumeration started — {parsed.service}/{parsed.user_id} on {parsed.domain}",
+            category="api"
+        )
+
+        current_page = page_start
+        offset = (page_start - 1) * page_size
+        consecutive_errors = 0
+        MAX_CONSECUTIVE_ERRORS = 3
+        rate_limited = 0
+        MAX_RATE_LIMITED = 6
+        pages_fetched = 0
+        cancelled = False
+        known_total: Optional[int] = None
+
+        norm_after = date_after.strip() if date_after else ""
+        norm_before = date_before.strip() if date_before else ""
+
+        while current_page <= page_end:
+            if cancel_event and cancel_event.is_set():
+                logger.warning("DM enumeration cancelled by user.", category="api")
+                cancelled = True
+                break
+
+            if "cum.st" in domain_lower:
+                url = (
+                    f"https://cum.st/api/v1/{parsed.service}"
+                    f"/user/{parsed.user_id}/dms?o={offset}&n={page_size}"
+                )
+            else:  # pawchive
+                url = f"https://pawchive.pw/{parsed.service}/user/{parsed.user_id}/dms?o={offset}"
+
+            if progress_callback and current_page == page_start and len(all_dms) == 0:
+                try:
+                    progress_callback(current_page, 0, known_total)
+                except TypeError:
+                    progress_callback(current_page, 0)
+
+            resp = self._get_with_log(url, timeout=25)
+
+            if cancel_event and cancel_event.is_set():
+                logger.warning("DM enumeration cancelled by user.", category="api")
+                cancelled = True
+                break
+
+            if resp is None:
+                consecutive_errors += 1
+                logger.warning(
+                    f"DM Page {current_page} request failed "
+                    f"({consecutive_errors}/{MAX_CONSECUTIVE_ERRORS} consecutive errors)",
+                    category="api"
+                )
+                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                    logger.error(
+                        f"Stopping DM enumeration after {MAX_CONSECUTIVE_ERRORS} consecutive failures.",
+                        category="api"
+                    )
+                    break
+                time.sleep(2.0)
+                continue
+
+            consecutive_errors = 0
+
+            if resp.status_code == 429:
+                rate_limited += 1
+                if rate_limited > MAX_RATE_LIMITED:
+                    logger.error(f"DM Page {current_page}: rate limited after {MAX_RATE_LIMITED} waits; stopping.", category="api")
+                    break
+                wait_sec = _retry_after_seconds(resp.headers.get("Retry-After"), default=5.0 * rate_limited)
+                logger.warning(f"DM Page {current_page}: Rate limited (429). Pausing {wait_sec:.0f}s...", category="api")
+                waited = 0.0
+                while waited < wait_sec:
+                    if cancel_event and cancel_event.is_set():
+                        break
+                    time.sleep(min(0.5, wait_sec - waited))
+                    waited += 0.5
+                continue
+            rate_limited = 0
+
+            if resp.status_code in (400, 404):
+                logger.info(f"DM Page {current_page}: no more DMs (HTTP {resp.status_code}).", category="api")
+                break
+            elif resp.status_code != 200:
+                logger.warning(f"DM Page {current_page}: unexpected HTTP {resp.status_code}, stopping.", category="api")
+                break
+
+            page_dms: List[Dict[str, Any]] = []
+
+            if "cum.st" in domain_lower:
+                try:
+                    raw_data = resp.json()
+                except Exception as e:
+                    logger.error(f"DM Page {current_page}: JSON parse error — {e}", category="api")
+                    break
+
+                raw_items = raw_data.get("dms") if isinstance(raw_data, dict) else (raw_data if isinstance(raw_data, list) else [])
+                if isinstance(raw_data, dict):
+                    raw_tot = raw_data.get("total")
+                    if isinstance(raw_tot, (int, str)) and str(raw_tot).isdigit():
+                        known_total = int(raw_tot)
+
+                for item in raw_items:
+                    if not isinstance(item, dict):
+                        continue
+                    p = dict(item)
+                    p["user"] = p.get("user") or parsed.user_id
+                    p["service"] = p.get("service") or parsed.service
+                    p["domain"] = "cum.st"
+                    p["is_dm"] = True
+                    cap = str(p.get("captionText") or p.get("contentText") or "").strip()
+                    p["captionText"] = cap
+                    p["content"] = p.get("content") or cap
+                    first_line = cap.split("\n")[0][:80].strip() if cap else ""
+                    p["title"] = p.get("title") or first_line or "Direct Message"
+                    p["published"] = p.get("published") or p.get("added") or ""
+                    page_dms.append(p)
+
+            else:  # Pawchive HTML parsing
+                if BeautifulSoup is None:
+                    logger.error("BeautifulSoup4 is required to parse Pawchive DMs.", category="api")
+                    break
+                try:
+                    soup = BeautifulSoup(resp.text, "html.parser")
+                    articles = soup.find_all("article", class_="dm-card")
+                except Exception as e:
+                    logger.error(f"DM Page {current_page}: HTML parse error — {e}", category="api")
+                    break
+
+                for idx, art in enumerate(articles, 1):
+                    content_div = art.find(class_="dm-card__content")
+                    content_html = content_div.decode_contents().strip() if content_div else ""
+                    content_text = content_div.get_text(separator="\n", strip=True) if content_div else ""
+
+                    added_div = art.find(class_="dm-card__added")
+                    added_str = ""
+                    if added_div:
+                        m = re.search(r'Added:\s*([0-9-]+)', added_div.get_text())
+                        if m:
+                            added_str = m.group(1)
+
+                    attachments = []
+                    for img in art.find_all("img"):
+                        src = img.get("src")
+                        if src and not src.endswith("logo.png") and not src.endswith("favicon.png"):
+                            fname = src.split("/")[-1].split("?")[0] or "image.jpg"
+                            attachments.append({
+                                "name": fname,
+                                "path": src if src.startswith("/") else f"/{src}",
+                                "originalFilename": fname,
+                            })
+                    for a in art.find_all("a"):
+                        href = a.get("href")
+                        if href and any(ext in href.lower() for ext in [".jpg", ".png", ".mp4", ".zip", ".rar", "/data/"]):
+                            fname = href.split("/")[-1].split("?")[0] or "file.bin"
+                            attachments.append({
+                                "name": fname,
+                                "path": href if href.startswith("/") else f"/{href}",
+                                "originalFilename": fname,
+                            })
+
+                    dm_id = art.get("id") or art.get("data-id") or f"dm_{offset + idx}_{parsed.user_id}"
+                    first_line = content_text.split("\n")[0][:80].strip() if content_text else ""
+
+                    dm_obj = {
+                        "id": dm_id,
+                        "user": parsed.user_id,
+                        "service": parsed.service,
+                        "domain": "pawchive.pw",
+                        "is_dm": True,
+                        "title": first_line or "Direct Message",
+                        "captionText": content_text,
+                        "content": content_html,
+                        "published": added_str,
+                        "attachments": attachments
+                    }
+                    page_dms.append(dm_obj)
+
+            if not page_dms:
+                logger.info(
+                    f"DM Page {current_page} returned 0 DMs — enumeration complete at offset {offset}.",
+                    category="api"
+                )
+                break
+
+            batch = len(page_dms)
+            all_dms.extend(page_dms)
+            pages_fetched += 1
+            logger.info(
+                f"DM Page {current_page:3d}  offset {offset:5d}  +{batch} DMs  "
+                f"(running total: {len(all_dms)})",
+                category="api"
+            )
+
+            if progress_callback:
+                try:
+                    progress_callback(current_page, len(all_dms), known_total)
+                except TypeError:
+                    progress_callback(current_page, len(all_dms))
+
+            # If cum.st total reached, stop
+            if known_total and len(all_dms) >= known_total:
+                logger.info(f"Reached known total of {known_total} DMs.", category="api")
+                break
+
+            # If pawchive returned less than page_size cards, this was the last page
+            if "pawchive" in domain_lower and batch < 50:
+                logger.info(f"Last Pawchive DMs page reached ({batch} cards).", category="api")
+                break
+
+            offset += batch
+            current_page += 1
+            page_delay = random.uniform(0.35, 0.55) if ("pawchive" in domain_lower) else 0.15
+            time.sleep(page_delay)
+
+        page_word = "page" if pages_fetched == 1 else "pages"
+        if cancelled:
+            logger.info(
+                f"DM enumeration stopped: {len(all_dms)} DMs collected from {pages_fetched} {page_word} before cancelling.",
+                category="api"
+            )
+        else:
+            logger.success(
+                f"DM enumeration done: {len(all_dms)} DMs collected across {pages_fetched} {page_word}.",
+                category="api"
+            )
+        return all_dms
 
     def fetch_creator_tags(self, parsed) -> List[str]:
         """

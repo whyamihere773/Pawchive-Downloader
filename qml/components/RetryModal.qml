@@ -50,8 +50,8 @@ Rectangle {
             selectedCount = 0
             failedPageTimer.stop()
             if (!modalRoot.bridge || !modalRoot.bridge.queueModel) return
-            // Built in the background and added a page at a time: big lists froze the window
-            modalRoot._failedRequest = "failed-" + Date.now()
+            modalRoot._failedReqCounter = (modalRoot._failedReqCounter || 0) + 1
+            modalRoot._failedRequest = "failed-" + Date.now() + "-" + modalRoot._failedReqCounter
             modalRoot._failedNext = 0
             modalRoot.bridge.queueModel.prepareFailedTasksAsync(modalRoot._failedRequest)
         }
@@ -118,6 +118,7 @@ Rectangle {
     }
 
     property string _failedRequest: ""
+    property int _failedReqCounter: 0
     property int _failedNext: 0
     property int _failedTotal: 0
 
@@ -326,7 +327,6 @@ Rectangle {
                             if (modalRoot.bridge) {
                                 modalRoot.bridge.skipRetry404 = val
                             }
-                            failedItemsModel.populate()
                         }
                     }
 

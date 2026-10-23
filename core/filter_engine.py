@@ -10,6 +10,7 @@ import unicodedata
 import csv
 import io
 import datetime
+import html
 from typing import List, Dict, Any, Optional, Tuple
 
 
@@ -173,6 +174,7 @@ class FilterOptions:
         skip_archives: bool = False,
         download_thumbnails_only: bool = False,
         scan_content_images: bool = True,
+        download_dms: bool = False,
         compress_to_webp: bool = False,
         keep_duplicates: bool = False,
         favorite_mode: bool = False,
@@ -210,7 +212,10 @@ class FilterOptions:
         webp_quality: str = "balanced",
         write_sidecars: bool = False,
         sidecar_format: str = "json",
-        sidecar_scope: str = "per_file"
+        sidecar_scope: str = "per_file",
+        video_duration_filter_enabled: bool = False,
+        min_video_duration: str = "",
+        max_video_duration: str = ""
     ):
         self.characters = characters
         self.character_scope = character_scope
@@ -222,6 +227,7 @@ class FilterOptions:
         self.skip_archives = skip_archives
         self.download_thumbnails_only = download_thumbnails_only
         self.scan_content_images = scan_content_images
+        self.download_dms = download_dms
         self.compress_to_webp = compress_to_webp
         self.keep_duplicates = keep_duplicates
         self.favorite_mode = favorite_mode
@@ -262,6 +268,9 @@ class FilterOptions:
         self.write_sidecars = bool(write_sidecars)
         self.sidecar_format = str(sidecar_format).lower() if str(sidecar_format).lower() in ("json", "txt", "both") else "json"
         self.sidecar_scope = str(sidecar_scope).lower() if str(sidecar_scope).lower() in ("per_file", "per_post") else "per_file"
+        self.video_duration_filter_enabled = bool(video_duration_filter_enabled)
+        self.min_video_duration = FilterEngine.normalize_duration_str(min_video_duration) if min_video_duration else ""
+        self.max_video_duration = FilterEngine.normalize_duration_str(max_video_duration) if max_video_duration else ""
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize filter options to dictionary for persistence."""
@@ -275,6 +284,7 @@ class FilterOptions:
             "skip_archives": self.skip_archives,
             "download_thumbnails_only": self.download_thumbnails_only,
             "scan_content_images": self.scan_content_images,
+            "download_dms": self.download_dms,
             "compress_to_webp": self.compress_to_webp,
             "keep_duplicates": self.keep_duplicates,
             "favorite_mode": self.favorite_mode,
@@ -313,6 +323,9 @@ class FilterOptions:
             "write_sidecars": self.write_sidecars,
             "sidecar_format": self.sidecar_format,
             "sidecar_scope": self.sidecar_scope,
+            "video_duration_filter_enabled": self.video_duration_filter_enabled,
+            "min_video_duration": self.min_video_duration,
+            "max_video_duration": self.max_video_duration,
         }
 
     @classmethod
@@ -330,6 +343,7 @@ class FilterOptions:
             skip_archives=bool(d.get("skip_archives", False)),
             download_thumbnails_only=bool(d.get("download_thumbnails_only", False)),
             scan_content_images=bool(d.get("scan_content_images", True)),
+            download_dms=bool(d.get("download_dms", False)),
             compress_to_webp=bool(d.get("compress_to_webp", False)),
             keep_duplicates=bool(d.get("keep_duplicates", False)),
             favorite_mode=bool(d.get("favorite_mode", False)),
@@ -368,6 +382,9 @@ class FilterOptions:
             write_sidecars=bool(d.get("write_sidecars", False)),
             sidecar_format=d.get("sidecar_format", "json"),
             sidecar_scope=d.get("sidecar_scope", "per_file"),
+            video_duration_filter_enabled=bool(d.get("video_duration_filter_enabled", False)),
+            min_video_duration=d.get("min_video_duration", ""),
+            max_video_duration=d.get("max_video_duration", ""),
         )
 FILTER_PROFILES = {
     "wip_sketches": {
@@ -663,6 +680,121 @@ class FilterEngine:
 
         return min_size, max_size
 
+    @staticmethod
+    def parse_duration_seconds(raw: str) -> Optional[float]:
+        """
+        Parses a duration string into seconds (float).
+        Supports:
+          - Pure seconds: '45', '45s', '90.5'
+          - Minutes: '5m', '1.5m', '10min'
+          - Hours: '1h', '2.5h'
+          - Colon format: '1:30' (MM:SS), '01:30', '01:15:30' (HH:MM:SS)
+        """
+        if not raw:
+            return None
+        s = str(raw).strip().lower()
+        if not s:
+            return None
+
+        # Colon format: HH:MM:SS or MM:SS
+        if ":" in s:
+            parts = s.split(":")
+            try:
+                if len(parts) == 2:
+                    mins = float(parts[0])
+                    secs = float(parts[1])
+                    return max(0.0, mins * 60.0 + secs)
+                elif len(parts) == 3:
+                    hrs = float(parts[0])
+                    mins = float(parts[1])
+                    secs = float(parts[2])
+                    return max(0.0, hrs * 3600.0 + mins * 60.0 + secs)
+            except ValueError:
+                return None
+
+        # Suffix format: '30s', '5m', '1h', '10min'
+        m = re.match(r"^([\d.]+)\s*(s|sec|secs|m|min|mins|h|hr|hrs)?$", s)
+        if m:
+            val_str, unit = m.groups()
+            try:
+                val = float(val_str)
+            except ValueError:
+                return None
+            if not unit or unit in ("s", "sec", "secs"):
+                return max(0.0, val)
+            if unit in ("m", "min", "mins"):
+                return max(0.0, val * 60.0)
+            if unit in ("h", "hr", "hrs"):
+                return max(0.0, val * 3600.0)
+
+        return None
+
+    @staticmethod
+    def format_duration_str(seconds: Optional[float]) -> str:
+        """
+        Formats seconds into a human-readable duration string:
+        e.g. 45 -> '0:45', 90 -> '1:30', 3665 -> '1:01:05'
+        """
+        if seconds is None or seconds < 0:
+            return ""
+        total_secs = int(round(seconds))
+        hrs = total_secs // 3600
+        mins = (total_secs % 3600) // 60
+        secs = total_secs % 60
+        if hrs > 0:
+            return f"{hrs}:{mins:02d}:{secs:02d}"
+        return f"{mins}:{secs:02d}"
+
+    @classmethod
+    def normalize_duration_str(cls, raw: str) -> str:
+        """Normalizes a raw duration string into standard format (MM:SS or HH:MM:SS)."""
+        sec = cls.parse_duration_seconds(raw)
+        return cls.format_duration_str(sec) if sec is not None else ""
+
+    @classmethod
+    def get_effective_duration_limits(cls, options: Optional[FilterOptions]) -> Tuple[Optional[float], Optional[float]]:
+        """
+        Returns (min_seconds, max_seconds). Auto-corrects inverted ranges.
+        """
+        if not options or not getattr(options, "video_duration_filter_enabled", False):
+            return None, None
+        min_dur = cls.parse_duration_seconds(getattr(options, "min_video_duration", ""))
+        max_dur = cls.parse_duration_seconds(getattr(options, "max_video_duration", ""))
+
+        # Inverted range protection (e.g. Min: 10m, Max: 2m)
+        if min_dur is not None and max_dur is not None and min_dur > max_dur:
+            min_dur, max_dur = max_dur, min_dur
+
+        return min_dur, max_dur
+
+    @classmethod
+    def should_keep_video_duration(cls, duration: Optional[float], options: FilterOptions) -> Tuple[bool, str]:
+        """
+        Evaluates whether a video with the given duration passes the duration filter.
+        """
+        if not getattr(options, "video_duration_filter_enabled", False):
+            return True, "Video duration filter disabled"
+
+        min_dur, max_dur = cls.get_effective_duration_limits(options)
+        if min_dur is None and max_dur is None:
+            return True, "No duration limits specified"
+
+        # If duration is unknown, allow it through with warning so files are not lost
+        if duration is None or duration <= 0:
+            return True, "Video duration could not be determined; passed filter"
+
+        if min_dur is not None and duration < min_dur:
+            cur_s = cls.format_duration_str(duration)
+            min_s = cls.format_duration_str(min_dur)
+            return False, f"Video duration ({cur_s}) is below minimum threshold ({min_s})"
+
+        if max_dur is not None and duration > max_dur:
+            cur_s = cls.format_duration_str(duration)
+            max_s = cls.format_duration_str(max_dur)
+            return False, f"Video duration ({cur_s}) exceeds maximum threshold ({max_s})"
+
+        return True, "Passed video duration filter"
+
     @classmethod
     def should_keep_post(cls, post: Dict[str, Any], options: FilterOptions) -> Tuple[bool, str]:
         title = post.get("title", "") or ""
@@ -740,11 +872,16 @@ class FilterEngine:
         return True, "Passed filter"
 
     @classmethod
-    def should_keep_file(cls, filename: str, options: FilterOptions, file_size: Optional[int] = None) -> Tuple[bool, str]:
+    def should_keep_file(cls, filename: str, options: FilterOptions, file_size: Optional[int] = None, duration: Optional[float] = None) -> Tuple[bool, str]:
         if not filename:
             return False, "Empty filename"
 
         _, ext = os.path.splitext(filename.lower())
+
+        if duration is not None and duration > 0 and getattr(options, "video_duration_filter_enabled", False):
+            keep_dur, dur_reason = cls.should_keep_video_duration(duration, options)
+            if not keep_dur:
+                return False, dur_reason
 
         if file_size is not None and file_size > 0:
             min_size, max_size = cls.get_effective_size_limits(options)
@@ -888,6 +1025,63 @@ class FilterEngine:
         return f"{clean_name}{clean_ext or ext}"
 
     @classmethod
+    def extract_post_title_and_caption(
+        cls,
+        post: Dict[str, Any],
+        max_title_len: int = 100,
+        fallback_title: str = "Untitled"
+    ) -> Tuple[str, str]:
+        """
+        Extract clean post title and caption text from post metadata dictionary.
+        Supports standard kemono/coomer fields, cum.st (caption/captionHtml), and
+        Fansly/OnlyFans (captionText, content, text).
+        If the post has no explicit title (or title is null/empty/generic), falls back
+        to the caption / content text.
+        Returns: (effective_title, clean_caption)
+        """
+        if not isinstance(post, dict):
+            return fallback_title, ""
+
+        raw_title = post.get("title")
+        if raw_title is not None:
+            raw_title = str(raw_title).strip()
+            raw_title = re.sub(r'<br\s*/?>', ' ', raw_title, flags=re.IGNORECASE)
+            raw_title = re.sub(r'<[^>]+>', ' ', raw_title)
+            raw_title = html.unescape(raw_title).strip()
+            if raw_title.lower() in ("null", "none"):
+                raw_title = ""
+        else:
+            raw_title = ""
+
+        raw_caption = (
+            post.get("captionText") or
+            post.get("caption") or
+            post.get("captionHtml") or
+            post.get("content") or
+            post.get("text") or
+            post.get("description") or
+            post.get("body") or
+            ""
+        )
+        clean_caption = ""
+        if raw_caption:
+            raw_caption_str = str(raw_caption).strip()
+            clean_caption = re.sub(r'<br\s*/?>', '\n', raw_caption_str, flags=re.IGNORECASE)
+            clean_caption = re.sub(r'<[^>]+>', '', clean_caption)
+            clean_caption = html.unescape(clean_caption).strip()
+
+        # If title is empty or generic, fall back to caption
+        effective_title = raw_title
+        if not effective_title or effective_title.lower() in ("untitled", "untitled post", "post"):
+            if clean_caption:
+                # Take first line of caption up to max_title_len
+                first_line = clean_caption.split('\n')[0].strip()
+                effective_title = first_line[:max_title_len].strip() if first_line else ""
+
+        effective_title = effective_title or fallback_title
+        return effective_title, clean_caption
+
+    @classmethod
     def format_custom_filename(
         cls,
         original_filename: str,
@@ -900,11 +1094,18 @@ class FilterEngine:
         post_id: str = "",
         artist: str = "",
         service: str = "",
-        user_id: str = ""
+        user_id: str = "",
+        caption: str = ""
     ) -> str:
         clean_orig = cls.sanitize_filename(original_filename, options)
         name_stem, ext = os.path.splitext(clean_orig)
-        clean_title = cls.clean_filesystem_text(post_title, max_len=100, fallback="Post")
+        clean_caption = cls.clean_filesystem_text(caption, max_len=100, fallback="")
+
+        effective_title = post_title
+        if not effective_title or effective_title.strip().lower() in ("", "untitled", "post", "untitled post"):
+            if clean_caption:
+                effective_title = clean_caption
+        clean_title = cls.clean_filesystem_text(effective_title, max_len=100, fallback="Post")
         clean_artist = cls.clean_filesystem_text(artist, max_len=80, fallback="Artist")
         date_str = (post_date or "")[:10]
         year = date_str[:4] if len(date_str) >= 4 else ""
@@ -916,12 +1117,18 @@ class FilterEngine:
 
         if style == FilenameStyles.CUSTOM:
             tpl = getattr(options, "filename_template", "") or "{title} - {orig_name}"
+            # Normalize user writing `.{ext}` or `..{ext}` when {ext} already includes the leading dot
+            tpl = re.sub(r'\.+(\{ext\})', r'\1', tpl)
+            display_caption = clean_caption or clean_title or "Caption"
             replacements = {
                 "{post_id}": str(post_id or ""),
                 "{artist}": clean_artist,
                 "{service}": str(service or ""),
                 "{user_id}": str(user_id or ""),
                 "{title}": clean_title,
+                "{caption}": display_caption,
+                "{captionText}": display_caption,
+                "{caption_text}": display_caption,
                 "{date}": date_str,
                 "{year}": year,
                 "{month}": month,
@@ -943,7 +1150,15 @@ class FilterEngine:
                 if not res.lower().endswith(ext.lower()):
                     res = f"{res}{ext}"
 
+            # Ensure repeated dots before extension are collapsed (e.g. name..mp4 -> name.mp4)
+            if ext:
+                res = re.sub(r'\.+(' + re.escape(ext) + r')$', r'\1', res)
+
             res = cls.clean_filesystem_text(res, max_len=220, fallback=clean_orig)
+            # Re-ensure extension is intact and no trailing dots/spaces before ext
+            if ext and res.lower().endswith(ext.lower()):
+                stem_part = res[:-len(ext)].rstrip(" ._")
+                res = f"{stem_part}{ext}" if stem_part else res
         elif style == FilenameStyles.DATE_POST_TITLE:
             res = f"{date_str} - {clean_title} - {clean_orig}" if date_str else f"{clean_title} - {clean_orig}"
         elif style == FilenameStyles.DATE_BASED:

@@ -1,28 +1,45 @@
-### ⭐ Favorite Mode & Watchlist Overhaul
+### 🛡️ Privacy Shield & PIN Protection
 
-* **cum.st support**: Favorite Mode now fully supports cum.st alongside Pawchive. You can sync, browse, and download followed creators and posts from your connected cum.st account seamlessly.
-* **Artist-first browsing**: Clicking "Browse Favorites…" now presents an interactive grid of your followed creators, with direct options to inspect their posts, download updates, or manage them in your Watchlist.
-* **Platform badges & indicators**: Artist cards clearly display provider badges (cum.st or Pawchive) and hover tooltips showing which platform each creator is favorited on.
-* **New post alerts**: Artist cards and the download window display how many new posts have been published since your last download (e.g. `🔔 4 new posts`), making it easy to spot who has fresh content.
-* **Clear download destination preview**: The download window clearly shows the folder structure where files will be saved, giving each creator their own dedicated folder when syncing all favorites.
-* **Custom page ranges & folder selection**: Downloading an artist or clicking "Sync All Updates" prompts you to pick your desired page range and destination folder before starting.
-* **Accidental dismissal protection**: Clicking outside the favorites browser window no longer closes it unexpectedly, keeping your view intact while browsing.
-* **Smart incremental downloads**: Favorite downloads work like Watchlist updates—downloading everything on your first run, and only fetching new posts on subsequent syncs without redownloading duplicates.
-* **Address bar spotlight**: A bookmark star toggle in the address bar lets you toggle Favorite Mode with a single click and clearly displays when it's active.
-
----
-
-### 📌 Watchlist Integration
-
-* **Dedicated Favorites category**: Easily filter your Watchlist to only your favorited creators with the `⭐ Favorites` tab.
-* **Golden accents and 1-click star toggle**: Favorited creators feature warm golden badges and borders, and any creator can be favorited or unfavorited directly with the card's star button.
-* **Multi-platform auto-sync**: The "Sync Favorites" button in the Watchlist toolbar automatically imports your followed creators from Pawchive and cum.st accounts into your Watchlist.
+* **Instant screen blur**: Click the eye icon in the top bar or press `Ctrl+P` to instantly blur the entire window with smooth animations, hiding URLs, creator names, and previews.
+* **Optional 4-digit PIN**: Protect sensitive content with a custom 4-digit PIN, or leave it off for instant one-click unblur.
+* **Auto-lock when idle**: Automatically engages Privacy Mode after 5 minutes of inactivity (customizable up to 30 minutes in Settings).
+* **Anti-brute-force security**: Entering an incorrect PIN 5 times locks the session to prevent unauthorized access.
+* **Safe Mode on startup**: If a PIN reset is requested, sensitive tabs are quarantined on the next launch until unlocked or reconfigured.
+* **Uninterrupted downloads**: All active downloads and background tasks continue running normally while the screen is blurred or locked.
+* **Disguised window title**: The window title switches to a discrete generic label while blurred.
+> ⚠️ **NOTICE**: PRIVACY SHIELD IS NOT INTENDED AS A FORMAL SECURITY OR DATA ENCRYPTION SYSTEM. IT IS DESIGNED SOLELY AS A CONVENIENT VISUAL PRIVACY LAYER TO PREVENT CASUAL ONLOOKERS FROM VIEWING YOUR SCREEN WHILE YOU ARE TEMPORARILY AWAY FROM YOUR WORKSTATION.
 
 ---
 
-### 🔒 Login & Reliability
+### 💬 Creator Direct Messages (DMs)
 
-* **Account check & quick login**: Favorite Mode checks that you are signed in to your connected platform (Pawchive or cum.st) before downloading and offers a 1-click shortcut to log in if needed.
+* **Direct message downloading**: You can now download creator direct messages and private chat attachments on supported platforms (cum.st and Pawchive).
+* **Automatic DMs with posts**: Enable "Download Direct Messages (DMs)" in the downloader or in Settings to automatically fetch and archive all direct messages alongside an artist's regular posts.
+* **Direct DM links supported**: Pasting a direct message URL (such as links ending in `/dms` or `?tab=dms`) now automatically discovers and downloads the creator's private messages.
+
+---
+
+### ⏱️ Video Duration Filter
+
+* **Filter posts by video length**: Download only posts containing videos within a specific runtime window (e.g. `0:30`, `5m`, `15:00`), complete with one-click quick presets for clips and full-length media.
+* **Scan overhead notice**: Because direct video hosting platforms do not provide duration in their API metadata, Pawchive inspects video headers over the network during post scanning, which may slightly increase scan times when this filter is enabled.
+
+---
+
+### 🏷️ Post Title & Caption Filenames
+
+* **Automatic caption fallback for untitled posts**: Downloads from creators who don't provide explicit post titles (such as on OnlyFans, Fansly, or cum.st) now automatically use their post caption instead of saving as "Untitled" or "Post".
+* **New `{captionText}` template tag**: You can now use `{captionText}` (or `{caption}`) in your custom filename template under Settings → Storage & File Processing, complete with automatic character sanitization and safe length limits.
+
+---
+
+### 🛠️ Fixes & Polish
+
+* **Faster Watchlist checks**: Checking creators for updates now stops immediately on the first page if their newest post is already downloaded, eliminating unnecessary page requests for up-to-date artists.
+* **Accurate platform badges in favorites**: Favorite creator cards from cum.st now correctly display their platform instead of defaulting to Pawchive.
+* **Streamlined mode labels**: Cleaned up the dropdown text by removing redundant platform tags from Favorite Mode.
+* **Duplicate window title fixed**: The title bar no longer repeats the app name twice on Windows.
+* **Batch import mode awareness**: Opening the Batch Importer while Favorite Mode is active now displays a prominent warning with a 1-click button to switch back to standard mode.
 
 ---
 

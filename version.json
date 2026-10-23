@@ -1,8 +1,8 @@
 {
-    "version": "1.3.2",
+    "version": "1.3.3",
     "commit": "",
     "short_commit": "",
-    "date": "2026-10-21",
+    "date": "2026-10-23",
     "channel": "release",
     "history": [
         {
@@ -169,6 +169,11 @@
             "version": "1.3.2",
             "date": "2026-10-21",
             "notes": "Favorite Mode & Watchlist overhaul: multi-platform support for cum.st alongside Pawchive, interactive artist-first browsing grid, new post count alerts, custom page ranges and destination previews, and auto-syncing followed creators into Watchlist."
+        },
+        {
+            "version": "1.3.3",
+            "date": "2026-10-23",
+            "notes": "Added Privacy Shield with PIN protection and auto-lock, creator direct message (DM) downloading, video duration filter with length presets, automatic post caption fallback for untitled posts and {captionText} template tag, faster Watchlist checks, and cumulative UI fixes."
         }
     ]
 }

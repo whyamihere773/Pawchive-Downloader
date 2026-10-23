@@ -22,6 +22,7 @@
   "compress_webp": false,
   "keep_duplicates": false,
   "scan_content_images": true,
+  "download_dms": false,
   "fallback_to_thumbnails": false,
   "redownload_small_files": false,
   "download_delay": 2.0,

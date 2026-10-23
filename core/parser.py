@@ -69,6 +69,10 @@ class URLParseResult:
             return f"{self.api_base_url}/{self.service}/user/{self.user_id}/post/{self.post_id}"
         return None
 
+    @property
+    def is_dms(self) -> bool:
+        return bool(self.extra_data.get("is_dms", False))
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "domain": self.domain,
@@ -77,6 +81,7 @@ class URLParseResult:
             "post_id": self.post_id,
             "provider": self.provider,
             "is_single_post": self.is_single_post,
+            "is_dms": self.is_dms,
             "is_valid": self.is_valid,
             "raw_url": self.raw_url,
             "error_msg": self.error_msg
@@ -85,12 +90,12 @@ class URLParseResult:
 
 class KemonoURLParser:
     KEMONO_PATTERN = re.compile(
-        r"https?://(?:www\.)?([^/]+)/([^/]+)/user/([^/?#]+)(?:/(?:post|dm)/([^/?#]+))?",
+        r"https?://(?:www\.)?([^/]+)/([^/]+)/user/([^/?#]+)(?:/(?:post|posts|dm|dms)(?:/([^/?#]+))?)?",
         re.IGNORECASE
     )
 
     CREATORS_PATTERN = re.compile(
-        r"https?://(?:www\.)?([^/]+)/(?:creators|artists)/([^/]+)/([^/?#]+)(?:/(?:post|posts|dm)/([^/?#]+))?",
+        r"https?://(?:www\.)?([^/]+)/(?:creators|artists)/([^/]+)/([^/?#]+)(?:/(?:post|posts|dm|dms)(?:/([^/?#]+))?)?",
         re.IGNORECASE
     )
 
@@ -342,6 +347,13 @@ class KemonoURLParser:
             user_id = match.group(3)
             post_id = match.group(4) if match.group(4) else None
 
+            clean_path = url.split("?")[0].rstrip("/")
+            is_dms = (not post_id) and (
+                bool(re.search(r'[?&]tab=dms?\b', url, re.IGNORECASE)) or
+                bool(re.search(r'/(?:dms|dm)$', clean_path, re.IGNORECASE))
+            )
+            extra_data = {"is_dms": True} if is_dms else {}
+
             return URLParseResult(
                 domain=domain,
                 service=service,
@@ -349,7 +361,8 @@ class KemonoURLParser:
                 post_id=post_id,
                 raw_url=url,
                 is_valid=True,
-                provider="kemono"
+                provider="kemono",
+                extra_data=extra_data
             )
 
         # Check native platforms (Patreon, Fanbox, Fantia, Boosty, Subscribestar, DLsite)

@@ -805,6 +805,437 @@ SmoothFlickable {
             }
         }
 
+        // Section: Privacy Mode & PIN Protection
+        CardSection {
+            Layout.fillWidth: true
+            interactive: !root.isScrolling
+            title: root.tr("section_privacy_security", "Privacy Mode & PIN Protection")
+            iconText: "👁️"
+            entranceOffsetY: root.tabEntranceOffsetY
+            entranceOpacity: root.tabEntranceOpacity
+
+            ColumnLayout {
+                width: parent.width
+                spacing: 12
+
+                Text {
+                    text: root.tr("privacy_settings_desc", "Instantly blur application content and hide URLs, thumbnails, and creator details (Ctrl+P or the top-bar eye button). Active downloads continue normally. The blur resets automatically on application restart.")
+                    font.family: "Segoe UI, sans-serif"
+                    font.pixelSize: 11
+                    color: "#94A3B8"
+                    wrapMode: Text.WordWrap
+                    Layout.fillWidth: true
+                }
+
+                // Status & Configuration Card
+                Rectangle {
+                    Layout.fillWidth: true
+                    implicitHeight: pinStatusRow.implicitHeight + 20
+                    radius: 8
+                    color: "#131722"
+                    border.color: "#1E2536"
+                    border.width: 1
+
+                    RowLayout {
+                        id: pinStatusRow
+                        anchors.fill: parent
+                        anchors.margins: 10
+                        spacing: 12
+
+                        Rectangle {
+                            width: 32
+                            height: 32
+                            radius: 16
+                            color: "#141824"
+                            border.color: (root.bridge && root.bridge.privacyPinConfigured) ? "#10B981" : "#2E384D"
+                            border.width: 1
+
+                            Image {
+                                anchors.centerIn: parent
+                                width: 16
+                                height: 16
+                                sourceSize: Qt.size(16, 16)
+                                source: (root.bridge && root.bridge.privacyPinConfigured)
+                                        ? "../../assets/icons/eye_closed.svg"
+                                        : "../../assets/icons/eye_open.svg"
+                            }
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            Layout.preferredWidth: 0
+                            Layout.minimumWidth: 100
+                            spacing: 2
+
+                            RowLayout {
+                                spacing: 8
+                                Text {
+                                    text: (root.bridge && root.bridge.privacyPinConfigured)
+                                          ? root.tr("privacy_pin_status_active", "4-Digit PIN Protection Active")
+                                          : root.tr("privacy_pin_status_none", "No PIN Configured (Unlocked with 1 Click)")
+                                    font.family: "Segoe UI, sans-serif"
+                                    font.pixelSize: 12
+                                    font.weight: 600
+                                    color: (root.bridge && root.bridge.privacyPinConfigured) ? "#10B981" : "#F8FAFC"
+                                }
+
+                                Rectangle {
+                                    height: 18
+                                    implicitWidth: pinBadgeText.implicitWidth + 12
+                                    radius: 9
+                                    color: (root.bridge && root.bridge.privacyPinConfigured) ? "#064E3B" : "#1E293B"
+                                    border.color: (root.bridge && root.bridge.privacyPinConfigured) ? "#059669" : "#334155"
+                                    border.width: 1
+
+                                    Text {
+                                        id: pinBadgeText
+                                        anchors.centerIn: parent
+                                        text: (root.bridge && root.bridge.privacyPinConfigured) ? root.tr("badge_pin_enabled", "PIN Enabled") : root.tr("badge_optional", "Optional")
+                                        font.family: "Segoe UI, sans-serif"
+                                        font.pixelSize: 9
+                                        font.weight: Font.DemiBold
+                                        color: (root.bridge && root.bridge.privacyPinConfigured) ? "#6EE7B7" : "#94A3B8"
+                                    }
+                                }
+                            }
+
+                            Text {
+                                text: (root.bridge && root.bridge.privacyPinConfigured)
+                                      ? root.tr("privacy_pin_active_hint", "Entering your 4-digit PIN is required to unblur the app. You can reset or change it at any time.")
+                                      : root.tr("privacy_pin_none_hint", "Clicking the shield or pressing Ctrl+P blurs the app immediately. Anyone can unblur with 1 click unless a PIN is set.")
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 11
+                                color: "#64748B"
+                                wrapMode: Text.WordWrap
+                                Layout.fillWidth: true
+                                Layout.preferredWidth: 0
+                                Layout.minimumWidth: 100
+                            }
+                        }
+
+                        // Action Buttons: Set / Change / Reset PIN
+                        RowLayout {
+                            spacing: 8
+                            Layout.alignment: Qt.AlignVCenter
+                            Layout.fillWidth: false
+
+                            // Set PIN / Change PIN Button
+                            Rectangle {
+                                id: pinActionBtn
+                                height: 26
+                                Layout.preferredHeight: 26
+                                Layout.preferredWidth: pinActionRow.implicitWidth + 16
+                                radius: 5
+                                color: pinActionMouse.containsMouse ? "#0284C7" : "#0369A1"
+                                border.color: "#38BDF8"
+                                border.width: 1
+
+                                Row {
+                                    id: pinActionRow
+                                    anchors.centerIn: parent
+                                    spacing: 5
+                                    Text {
+                                        text: "🔑"
+                                        font.pixelSize: 10
+                                        anchors.verticalCenter: parent.verticalCenter
+                                    }
+                                    Text {
+                                        id: pinActionText
+                                        text: (root.bridge && root.bridge.privacyPinConfigured)
+                                              ? root.tr("btn_change_pin", "Change PIN")
+                                              : root.tr("btn_set_pin", "Set 4-Digit PIN")
+                                        font.family: "Segoe UI, sans-serif"
+                                        font.pixelSize: 11
+                                        font.weight: 600
+                                        color: "#FFFFFF"
+                                        anchors.verticalCenter: parent.verticalCenter
+                                    }
+                                }
+
+                                MouseArea {
+                                    id: pinActionMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        inlinePinBox.editingPin = !inlinePinBox.editingPin
+                                        if (inlinePinBox.editingPin) {
+                                            newPinField.forceActiveFocus()
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Reset PIN Button (visible if PIN configured)
+                            Rectangle {
+                                id: resetPinBtn
+                                visible: root.bridge ? root.bridge.privacyPinConfigured : false
+                                height: 26
+                                Layout.preferredHeight: 26
+                                Layout.preferredWidth: resetPinRow.implicitWidth + 16
+                                radius: 5
+                                color: resetPinMouse.containsMouse ? "#7F1D1D" : "#450A0A"
+                                border.color: "#EF4444"
+                                border.width: 1
+
+                                Row {
+                                    id: resetPinRow
+                                    anchors.centerIn: parent
+                                    spacing: 5
+                                    Text {
+                                        text: "🗑️"
+                                        font.pixelSize: 10
+                                        anchors.verticalCenter: parent.verticalCenter
+                                    }
+                                    Text {
+                                        id: resetPinText
+                                        text: root.tr("btn_reset_pin", "Reset PIN")
+                                        font.family: "Segoe UI, sans-serif"
+                                        font.pixelSize: 11
+                                        font.weight: 600
+                                        color: "#FCA5A5"
+                                        anchors.verticalCenter: parent.verticalCenter
+                                    }
+                                }
+
+                                MouseArea {
+                                    id: resetPinMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    ToolTip.visible: containsMouse
+                                    ToolTip.delay: 300
+                                    ToolTip.text: root.tr("tip_reset_pin", "Clears your PIN. The app can be unblurred without a password at any time.")
+                                    onClicked: {
+                                        if (root.bridge) root.bridge.resetPrivacyPin()
+                                        inlinePinBox.editingPin = false
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Inline PIN Setup Box (unfolds when editing PIN)
+                Rectangle {
+                    id: inlinePinBox
+                    Layout.fillWidth: true
+                    visible: editingPin
+                    implicitHeight: pinEditCol.implicitHeight + 24
+                    radius: 8
+                    color: "#0F131D"
+                    border.color: "#38BDF8"
+                    border.width: 1
+
+                    property bool editingPin: false
+                    property string editError: ""
+
+                    ColumnLayout {
+                        id: pinEditCol
+                        anchors.fill: parent
+                        anchors.margins: 12
+                        spacing: 10
+
+                        Text {
+                            text: root.tr("privacy_set_pin_prompt", "Enter a 4-digit PIN to require a password on unblurring:")
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 12
+                            font.weight: 600
+                            color: "#F8FAFC"
+                        }
+
+                        RowLayout {
+                            spacing: 16
+
+                            ColumnLayout {
+                                spacing: 4
+                                Text {
+                                    text: root.tr("label_new_pin", "New 4-Digit PIN:")
+                                    font.family: "Segoe UI, sans-serif"
+                                    font.pixelSize: 11
+                                    color: "#94A3B8"
+                                }
+                                StyledTextField {
+                                    id: newPinField
+                                    implicitWidth: 140
+                                    implicitHeight: 32
+                                    placeholderText: "••••"
+                                    echoMode: TextInput.Password
+                                    maximumLength: 4
+                                    inputMethodHints: Qt.ImhDigitsOnly
+                                    validator: RegularExpressionValidator { regularExpression: /[0-9]{4}/ }
+                                }
+                            }
+
+                            ColumnLayout {
+                                spacing: 4
+                                Text {
+                                    text: root.tr("label_confirm_pin", "Confirm PIN:")
+                                    font.family: "Segoe UI, sans-serif"
+                                    font.pixelSize: 11
+                                    color: "#94A3B8"
+                                }
+                                StyledTextField {
+                                    id: confirmPinField
+                                    implicitWidth: 140
+                                    implicitHeight: 32
+                                    placeholderText: "••••"
+                                    echoMode: TextInput.Password
+                                    maximumLength: 4
+                                    inputMethodHints: Qt.ImhDigitsOnly
+                                    validator: RegularExpressionValidator { regularExpression: /[0-9]{4}/ }
+                                }
+                            }
+
+                            Row {
+                                spacing: 8
+                                Layout.alignment: Qt.AlignBottom
+
+                                Rectangle {
+                                    height: 26
+                                    implicitWidth: savePinBtnText.implicitWidth + 18
+                                    width: implicitWidth
+                                    radius: 5
+                                    color: savePinMouse.containsMouse ? "#0284C7" : "#0369A1"
+                                    border.color: "#38BDF8"
+                                    border.width: 1
+
+                                    Text {
+                                        id: savePinBtnText
+                                        anchors.centerIn: parent
+                                        text: root.tr("btn_save_pin", "Save PIN")
+                                        font.family: "Segoe UI, sans-serif"
+                                        font.pixelSize: 11
+                                        font.weight: 600
+                                        color: "#FFFFFF"
+                                    }
+
+                                    MouseArea {
+                                        id: savePinMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            var p1 = newPinField.text.trim()
+                                            var p2 = confirmPinField.text.trim()
+                                            if (p1.length !== 4) {
+                                                inlinePinBox.editError = root.tr("err_pin_4_digits", "PIN must be exactly 4 digits.")
+                                                return
+                                            }
+                                            if (p1 !== p2) {
+                                                inlinePinBox.editError = root.tr("err_pin_mismatch", "PINs do not match.")
+                                                return
+                                            }
+                                            if (root.bridge) root.bridge.setPrivacyPin(p1)
+                                            inlinePinBox.editingPin = false
+                                            newPinField.text = ""
+                                            confirmPinField.text = ""
+                                            inlinePinBox.editError = ""
+                                        }
+                                    }
+                                }
+
+                                Rectangle {
+                                    height: 26
+                                    implicitWidth: cancelPinBtnText.implicitWidth + 16
+                                    width: implicitWidth
+                                    radius: 5
+                                    color: cancelPinMouse.containsMouse ? "#1E293B" : "#141A28"
+                                    border.color: "#334155"
+                                    border.width: 1
+
+                                    Text {
+                                        id: cancelPinBtnText
+                                        anchors.centerIn: parent
+                                        text: root.tr("btn_cancel", "Cancel")
+                                        font.family: "Segoe UI, sans-serif"
+                                        font.pixelSize: 11
+                                        color: cancelPinMouse.containsMouse ? "#FFFFFF" : "#94A3B8"
+                                    }
+
+                                    MouseArea {
+                                        id: cancelPinMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            inlinePinBox.editingPin = false
+                                            newPinField.text = ""
+                                            confirmPinField.text = ""
+                                            inlinePinBox.editError = ""
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Text {
+                            visible: inlinePinBox.editError.length > 0
+                            text: inlinePinBox.editError
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 11
+                            color: "#EF4444"
+                        }
+
+                        // ── Inactivity / Auto-Lock Idle Timer ──
+                        Rectangle {
+                            Layout.fillWidth: true
+                            height: 1
+                            color: "#1E293B"
+                            Layout.topMargin: 4
+                            Layout.bottomMargin: 4
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 12
+
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 3
+
+                                Text {
+                                    text: root.tr("privacy_idle_title", "Auto-Lock when Idle")
+                                    font.family: "Segoe UI, sans-serif"
+                                    font.pixelSize: 13
+                                    font.weight: 600
+                                    color: "#F8FAFC"
+                                }
+
+                                Text {
+                                    text: root.tr("privacy_idle_hint", "Automatically engage Privacy Mode when no mouse or keyboard activity is detected.")
+                                    font.family: "Segoe UI, sans-serif"
+                                    font.pixelSize: 11
+                                    color: "#94A3B8"
+                                    wrapMode: Text.Wrap
+                                    Layout.fillWidth: true
+                                }
+                            }
+
+                            StyledComboBox {
+                                id: idleTimeoutCombo
+                                Layout.preferredWidth: 180
+                                model: [
+                                    { text: root.tr("opt_disabled", "Disabled"), value: 0 },
+                                    { text: root.tr("opt_idle_1m", "1 minute"), value: 1 },
+                                    { text: root.tr("opt_idle_2m", "2 minutes"), value: 2 },
+                                    { text: root.tr("opt_idle_3m", "3 minutes"), value: 3 },
+                                    { text: root.tr("opt_idle_5m", "5 minutes (Default)"), value: 5 },
+                                    { text: root.tr("opt_idle_10m", "10 minutes"), value: 10 },
+                                    { text: root.tr("opt_idle_15m", "15 minutes"), value: 15 },
+                                    { text: root.tr("opt_idle_20m", "20 minutes"), value: 20 },
+                                    { text: root.tr("opt_idle_30m", "30 minutes"), value: 30 }
+                                ]
+                                value: root.bridge ? root.bridge.privacyIdleMinutes : 5
+                                onValuePicked: function(val) {
+                                    if (root.bridge) root.bridge.setPrivacyIdleMinutes(val)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         // Section: Accounts & Connected Providers (Hardware-Encrypted Vault)
         CardSection {
@@ -2283,6 +2714,12 @@ SmoothFlickable {
                         }
 
                         StyledCheckBox {
+                            text: tr("opt_download_dms", "Download creator direct messages (DMs) when available (cum.st / Pawchive)")
+                            checked: root.bridge ? root.bridge.downloadDms : false
+                            onCheckedChanged: if (root.bridge) root.bridge.downloadDms = checked
+                        }
+
+                        StyledCheckBox {
                             text: tr("opt_download_embeds", "Download embedded media players (Vimeo, YouTube, Streamable) via yt-dlp")
                             checked: root.bridge ? root.bridge.downloadEmbeds : true
                             onCheckedChanged: if (root.bridge) root.bridge.downloadEmbeds = checked
@@ -2436,6 +2873,27 @@ SmoothFlickable {
                             tooltip: tr("opt_desktop_report_tip", "Automatically save a visual summary report and failure log to your Desktop upon completion")
                             checked: root.bridge ? root.bridge.generateDesktopReport : false
                             onCheckedChanged: if (root.bridge) root.bridge.generateDesktopReport = checked
+                        }
+
+                        StyledCheckBox {
+                            text: tr("opt_video_duration_filter_settings", "Filter posts by video length / duration")
+                            tooltip: tr("opt_video_duration_filter_settings_tip", "Only download posts containing videos within the duration window specified in Filters & Dates")
+                            checked: root.bridge ? root.bridge.videoDurationFilterEnabled : false
+                            onCheckedChanged: if (root.bridge) root.bridge.videoDurationFilterEnabled = checked
+                        }
+
+                        // Warning when enabled in Settings
+                        Row {
+                            visible: root.bridge ? root.bridge.videoDurationFilterEnabled : false
+                            spacing: 8
+                            leftPadding: 28
+
+                            Text {
+                                text: "⚠️ " + tr("warn_duration_scanning_short", "Probing video duration requires checking media headers over the network, which may increase post scan times.")
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 11
+                                color: "#FBBF24"
+                            }
                         }
 
                         StyledCheckBox {
@@ -3113,6 +3571,7 @@ SmoothFlickable {
                                             Repeater {
                                                 model: [
                                                     { tag: "{title}", label: "Title" },
+                                                    { tag: "{captionText}", label: "Caption / Description" },
                                                     { tag: "{post_id}", label: "Post ID" },
                                                     { tag: "{artist}", label: "Artist" },
                                                     { tag: "{date}", label: "Date (YYYY-MM-DD)" },

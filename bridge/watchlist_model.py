@@ -30,7 +30,7 @@ def _posts_for_qml(e) -> list:
     return [
         {
             "id": str(p.get("id", "")),
-            "title": (p.get("title") or "Untitled").strip(),
+            "title": (p.get("title") or p.get("captionText") or p.get("caption") or "Untitled").strip(),
             "published": str(p.get("published") or p.get("added") or "")[:10],
             "fileCount": _file_count(p),
         }

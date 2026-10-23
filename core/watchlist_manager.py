@@ -1030,7 +1030,8 @@ class WatchlistManager:
         api_client,
         raise_on_error: bool = False,
         page_start: int = 1,
-        page_end: int = 999999
+        page_end: int = 999999,
+        cancel_event: Optional[threading.Event] = None
     ) -> List[Dict[str, Any]]:
         """
         Fetch posts for an entry and return only those published strictly after entry.last_post_date.
@@ -1096,7 +1097,14 @@ class WatchlistManager:
         max_pages = min(100, page_end)  # Up to page_end (capped at 100 pages / 5,000 posts)
 
         while current_page <= max_pages:
+            if cancel_event and cancel_event.is_set():
+                break
             try:
+                page_posts = api_client.fetch_user_posts(
+                    parsed, page_start=current_page, page_end=current_page, page_size=page_size,
+                    cancel_event=cancel_event
+                )
+            except TypeError:
                 page_posts = api_client.fetch_user_posts(
                     parsed, page_start=current_page, page_end=current_page, page_size=page_size
                 )
@@ -1117,6 +1125,7 @@ class WatchlistManager:
 
             page_oldest_pub = None
             found_cutoff_id_on_page = False
+            page_new_count_before = len(new_posts)
 
             for p in page_posts:
                 pub = p.get("published") or p.get("added") or ""
@@ -1167,14 +1176,30 @@ class WatchlistManager:
 
             # Stop paginating if:
             # 1. This was the last page (fewer posts than page_size)
-            # 2. The oldest post on this page is already before the cutoff (no need to go deeper)
-            # 3. We found the exact cutoff post id on this page
             largest_page = max(largest_page, len(page_posts))
             if len(page_posts) < largest_page:
                 break
+
+            # 2. We found the exact cutoff post id on this page
+            if found_cutoff_id_on_page:
+                break
+
+            # 3. The oldest post on this page is already before the cutoff (no need to go deeper)
             if cutoff and page_oldest_pub and page_oldest_pub < cutoff:
                 break
-            if found_cutoff_id_on_page:
+
+            # 4. Oldest post on this page is on cutoff date and cutoff_id is empty (cutoff date is already covered)
+            if cutoff and not cutoff_id and page_oldest_pub and page_oldest_pub <= cutoff:
+                break
+
+            # 5. On page 1 (or any page): if no new posts were found on this entire page, the artist
+            #    has not posted anything newer than the cutoff date. Since posts are reverse chronological,
+            #    older pages cannot contain newer posts either. Stop immediately (no further page requests).
+            if cutoff and len(new_posts) == page_new_count_before:
+                logger.debug(
+                    f"Watchlist: {entry.creator_name!r} up to date (no posts newer than {cutoff} on page {current_page}) — stopping check.",
+                    category="watchlist"
+                )
                 break
 
             current_page += 1
@@ -1223,7 +1248,7 @@ class WatchlistManager:
                 "cachedNewPosts": [
                     {
                         "id": str(p.get("id", "")),
-                        "title": (p.get("title") or "Untitled").strip(),
+                        "title": (p.get("title") or p.get("captionText") or p.get("caption") or "Untitled").strip(),
                         "published": str(p.get("published") or p.get("added") or "")[:10],
                         "fileCount": _post_file_count(p),
                     }

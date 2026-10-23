@@ -153,7 +153,6 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("PawchiveDownloader")
     app.setOrganizationName("PawchiveProject")
-    app.setApplicationDisplayName("Pawchive Downloader")
     if hasattr(app, "setDesktopFileName"):
         app.setDesktopFileName("pawchive.desktop")
 

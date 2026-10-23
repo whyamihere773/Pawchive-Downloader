@@ -38,6 +38,7 @@ from core.known_manager import KnownManager
 from core.session_manager import SessionManager
 from core.archive_manager import ArchiveManager
 from core.bandwidth_limiter import bandwidth_limiter
+from core.video_probe import VideoProbe
 
 # Services hosted on Coomer rather than Kemono (used to pick the right mirror for Pawchive files)
 COOMER_SERVICES = {"onlyfans", "fansly", "candfans"}
@@ -704,6 +705,21 @@ class KemonoDownloader:
             rp = f"/{rp}"
         return rp.lower()
 
+    @staticmethod
+    def _resolve_candidate_video_url(fobj: dict, domain: str) -> str:
+        p = fobj.get("path") or fobj.get("storageKey") or ""
+        if not p:
+            return ""
+        if p.startswith("http://") or p.startswith("https://"):
+            return p
+        clean_rel = "/" + p.lstrip("/")
+        if "cum.st" in (domain or ""):
+            return f"https://cum.st/data{clean_rel}"
+        elif "coomer" in (domain or ""):
+            return f"https://c1.coomer.st/data{clean_rel}" if not is_disabled("coomer.st") else f"https://cum.st/data{clean_rel}"
+        else:
+            return f"https://file.pawchive.pw/data{clean_rel}"
+
     def _resolve_pawchive_deferred_attachments(self, post: Dict[str, Any], domain: str = "pawchive.pw") -> int:
         """
         Fetches the post HTML page and resolves signed t1.pawchive.pw temporary download URLs
@@ -794,7 +810,7 @@ class KemonoDownloader:
 
         page_url = f"https://pawchive.pw/{service}/user/{user_id}/post/{post_id}"
         headers = {
-            "User-Agent": "PawchiveDownloader/1.3.2 (https://github.com/whyamihere773/Pawchive-Downloader)",
+            "User-Agent": "PawchiveDownloader/1.3.3 (https://github.com/whyamihere773/Pawchive-Downloader)",
             "Referer": "https://pawchive.pw/",
             "X-Contact": "https://github.com/whyamihere773/Pawchive-Downloader",
         }
@@ -892,13 +908,9 @@ class KemonoDownloader:
                 return []
 
             post_id = str(post.get("id", ""))
-            raw_title = post.get("title") or ""
-            if not raw_title:
-                # cum.st uses captionHtml; strip tags for a plain-text title
-                caption_raw = post.get("caption") or post.get("captionHtml") or ""
-                caption_plain = re.sub(r'<[^>]+>', '', caption_raw).strip()
-                raw_title = caption_plain[:80] if caption_plain else ""
-            post_title = (raw_title or "Untitled").strip()
+            post_title, post_caption = FilterEngine.extract_post_title_and_caption(
+                post, max_title_len=80, fallback_title="Untitled"
+            )
             published = post.get("published", "") or ""
             if isinstance(published, (int, float)):
                 try:
@@ -923,6 +935,53 @@ class KemonoDownloader:
             if not keep_post:
                 logger.debug(f"Skipped post [{post_id}] '{post_title}': {reason}", category="filter")
                 continue
+
+            # Filter posts by video length if enabled
+            if getattr(options, "video_duration_filter_enabled", False):
+                video_candidates = []
+                mf = post.get("file")
+                if isinstance(mf, dict):
+                    mfn = (mf.get("name") or mf.get("originalFilename") or "").lower()
+                    _, ext = os.path.splitext(mfn)
+                    if ext in MediaTypes.VIDEO_EXTS or (mf.get("mimeType") or "").startswith("video/"):
+                        video_candidates.append(mf)
+
+                for att in (post.get("attachments") or []):
+                    if isinstance(att, dict):
+                        atn = (att.get("name") or att.get("originalFilename") or "").lower()
+                        _, ext = os.path.splitext(atn)
+                        if ext in MediaTypes.VIDEO_EXTS or (att.get("mimeType") or "").startswith("video/"):
+                            video_candidates.append(att)
+
+                embed_urls = LinkExtractor.extract_embed_urls(post) if options.download_embeds else []
+
+                if not video_candidates and not embed_urls:
+                    logger.debug(f"Skipped post [{post_id}] '{post_title}': Post contains no videos (Duration filter active)", category="filter")
+                    continue
+
+                has_matching_video = False
+                for vc in video_candidates:
+                    v_url = self._resolve_candidate_video_url(vc, domain or "")
+                    dur = VideoProbe.get_video_duration(v_url, session=self.session)
+                    vc["_probed_duration"] = dur
+                    ok, _ = FilterEngine.should_keep_video_duration(dur, options)
+                    if ok:
+                        has_matching_video = True
+
+                if not has_matching_video and embed_urls:
+                    for eu in embed_urls:
+                        dur = VideoProbe.get_video_duration(eu, session=self.session)
+                        ok, _ = FilterEngine.should_keep_video_duration(dur, options)
+                        if ok:
+                            has_matching_video = True
+                            break
+
+                if not has_matching_video:
+                    min_d, max_d = FilterEngine.get_effective_duration_limits(options)
+                    min_s = FilterEngine.format_duration_str(min_d)
+                    max_s = FilterEngine.format_duration_str(max_d)
+                    logger.info(f"⏭️ Skipped post [{post_id}] '{post_title}': No videos match duration range [{min_s} – {max_s}]", category="filter")
+                    continue
 
             # ── Link extraction in "Only Links" mode ───────────────────────────
             if options.file_type == MediaTypes.LINKS:
@@ -1064,9 +1123,16 @@ class KemonoDownloader:
                 return post_folder
 
             # Smart password extraction (search full caption + comments)
-            caption_text = post.get("content") or post.get("captionHtml") or post.get("caption") or ""
-            caption_clean = re.sub(r'<br\s*/?>', '\n', caption_text, flags=re.IGNORECASE)
-            caption_clean = re.sub(r'<[^>]+>', '', caption_clean).strip()
+            caption_text = (
+                post.get("captionText") or
+                post.get("content") or
+                post.get("captionHtml") or
+                post.get("caption") or
+                post.get("text") or
+                post_caption or
+                ""
+            )
+            caption_clean = post_caption or re.sub(r'<[^>]+>', '', re.sub(r'<br\s*/?>', '\n', str(caption_text), flags=re.IGNORECASE)).strip()
             _pw_search_text = caption_clean
             if post.get("comments_text"):
                 _pw_search_text += "\n" + post.get("comments_text")
@@ -1378,7 +1444,7 @@ class KemonoDownloader:
 
                 # Filter file
                 file_bytes = fobj.get("bytes")
-                keep_file, f_reason = FilterEngine.should_keep_file(raw_name, options, file_size=file_bytes)
+                keep_file, f_reason = FilterEngine.should_keep_file(raw_name, options, file_size=file_bytes, duration=fobj.get("_probed_duration"))
                 if not keep_file:
                     logger.debug(f"Skipped file '{raw_name}': {f_reason}", category="filter", to_file=False)
                     not_queued["filtered out"] += 1
@@ -1483,7 +1549,8 @@ class KemonoDownloader:
                     post_id=post_id,
                     artist=creator_name,
                     service=service,
-                    user_id=str(post.get("user") or "")
+                    user_id=str(post.get("user") or ""),
+                    caption=caption_clean
                 )
                 # Strip trailing punctuation/commas that would corrupt the ?f= CDN query parameter
                 # and trigger ERR_RESPONSE_HEADERS_MULTIPLE_CONTENT_DISPOSITION in browsers.
@@ -3011,6 +3078,19 @@ class KemonoDownloader:
 
         # ── yt-dlp embedded media download execution ─────────────────────────
         if task.is_ytdlp:
+            if options and getattr(options, "video_duration_filter_enabled", False):
+                dur = VideoProbe.get_video_duration(task.url, session=self.session)
+                keep_dur, dur_reason = FilterEngine.should_keep_video_duration(dur, options)
+                if not keep_dur:
+                    logger.info(f"⏭️ Skipping [yt-dlp] {task.url}: {dur_reason}", category="filter")
+                    task.status = "skipped"
+                    task.error_msg = dur_reason
+                    task.progress_pct = 100
+                    task.eta_str = "Skipped"
+                    if self.on_task_status_changed:
+                        self.on_task_status_changed(task)
+                    return True, f"Skipped: {dur_reason}"
+
             logger.info(f"▶ [yt-dlp] Downloading embedded player media: {task.url}", category="ytdlp")
             _prev_ytdlp_bytes = [0]
 
@@ -3276,7 +3356,7 @@ class KemonoDownloader:
                         req_headers["Referer"] = "https://coomer.st/"
                         req_headers["Accept"] = "*/*"
                     elif "pawchive" in u_low:
-                        req_headers["User-Agent"] = "PawchiveDownloader/1.3.2 (https://github.com/whyamihere773/Pawchive-Downloader)"
+                        req_headers["User-Agent"] = "PawchiveDownloader/1.3.3 (https://github.com/whyamihere773/Pawchive-Downloader)"
                         req_headers["Referer"] = "https://pawchive.pw/"
                         req_headers["Accept"] = "*/*"
                     elif "cum.st" in u_low:
@@ -3362,7 +3442,7 @@ class KemonoDownloader:
                             try:
                                 if "pawchive" in attempt_url.lower():
                                     clean_headers = {
-                                        "User-Agent": "PawchiveDownloader/1.3.2 (https://github.com/whyamihere773/Pawchive-Downloader)",
+                                        "User-Agent": "PawchiveDownloader/1.3.3 (https://github.com/whyamihere773/Pawchive-Downloader)",
                                         "Referer": "https://pawchive.pw/",
                                         "Accept": "*/*",
                                         "X-Contact": "https://github.com/whyamihere773/Pawchive-Downloader",

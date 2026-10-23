@@ -111,6 +111,10 @@ class AppBridge(QObject):
     dateAutoScanPagesChanged = Signal()
     minFileSizeChanged = Signal()
     maxFileSizeChanged = Signal()
+    videoDurationFilterEnabledChanged = Signal()
+    minVideoDurationChanged = Signal()
+    maxVideoDurationChanged = Signal()
+    videoDurationSummaryChanged = Signal()
     currentFpsChanged = Signal()
     screenHzChanged = Signal()
     filterTypeChanged = Signal()
@@ -122,6 +126,7 @@ class AppBridge(QObject):
     redownloadSmallFilesChanged = Signal()
     skipPostCoversChanged = Signal()
     scanContentImagesChanged = Signal()
+    downloadDmsChanged = Signal()
     downloadPawchiveTemporaryFilesChanged = Signal()
     compressWebpChanged = Signal()
     webpQualityChanged = Signal()
@@ -249,6 +254,14 @@ class AppBridge(QObject):
     # Storage Pool signals
     storagePoolChanged        = Signal()
 
+    # Privacy Mode & Shield signals
+    privacyModeActiveChanged    = Signal()
+    privacyPinConfiguredChanged = Signal()
+    privacyFailedAttemptsChanged = Signal()
+    privacyLockoutActiveChanged = Signal()
+    safeModeActiveChanged       = Signal()
+    privacyIdleMinutesChanged   = Signal()
+
     # Cookie Watchdog signals
     cookieWatchdogChanged     = Signal()
     cookieImportCompleted     = Signal(bool, str)
@@ -344,6 +357,9 @@ class AppBridge(QObject):
         self._date_auto_scan_pages = bool(saved_settings.get("date_auto_scan_pages", True))
         self._min_file_size = str(saved_settings.get("min_file_size", ""))
         self._max_file_size = str(saved_settings.get("max_file_size", ""))
+        self._video_duration_filter_enabled = bool(saved_settings.get("video_duration_filter_enabled", False))
+        self._min_video_duration = str(saved_settings.get("min_video_duration", ""))
+        self._max_video_duration = str(saved_settings.get("max_video_duration", ""))
         self._filter_type = "all"
         self._exact_extensions = str(saved_settings.get("exact_extensions", "")).strip()
         self._saved_custom_extensions = [
@@ -356,6 +372,7 @@ class AppBridge(QObject):
         self._redownload_small_files = bool(saved_settings.get("redownload_small_files", False))
         self._skip_post_covers = bool(saved_settings.get("skip_post_covers", False))
         self._scan_content_images = saved_settings.get("scan_content_images", True)
+        self._download_dms = bool(saved_settings.get("download_dms", False))
         self._download_pawchive_temporary_files = saved_settings.get("download_pawchive_temporary_files", True)
         self._compress_webp = saved_settings.get("compress_webp", False)
         self._webp_quality = str(saved_settings.get("webp_quality", "balanced"))
@@ -378,6 +395,13 @@ class AppBridge(QObject):
             self._adaptive_threading = False
         self._auto_retry_at_end = saved_settings.get("auto_retry_at_end", False)
         self._skip_retry_404 = bool(saved_settings.get("skip_retry_404", False))
+        self._privacy_pin = str(saved_settings.get("privacy_pin", "") or "")
+        self._privacy_mode_active = False  # NEVER remains active on app restart
+        self._failed_pin_attempts = 0
+        self._privacy_lockout_active = False
+        self._pending_pin_reset = bool(saved_settings.get("pending_pin_reset", False))
+        self._safe_mode_active = self._pending_pin_reset
+        self._privacy_idle_minutes = int(saved_settings.get("privacy_idle_minutes", 5))
         self._manga_mode = saved_settings.get("manga_mode", False)
         self._filename_style = saved_settings.get("filename_style", "post_title")
         self._filename_template = saved_settings.get("filename_template", "{title} - {orig_name}")
@@ -905,6 +929,58 @@ class AppBridge(QObject):
             self.maxFileSizeChanged.emit()
             self.saveSettings()
 
+    @Property(bool, notify=videoDurationFilterEnabledChanged)
+    def videoDurationFilterEnabled(self) -> bool:
+        return self._video_duration_filter_enabled
+
+    @videoDurationFilterEnabled.setter
+    def videoDurationFilterEnabled(self, val: bool):
+        if self._video_duration_filter_enabled != bool(val):
+            self._video_duration_filter_enabled = bool(val)
+            self.videoDurationFilterEnabledChanged.emit()
+            self.videoDurationSummaryChanged.emit()
+            self.saveSettings()
+
+    @Property(str, notify=minVideoDurationChanged)
+    def minVideoDuration(self) -> str:
+        return self._min_video_duration
+
+    @minVideoDuration.setter
+    def minVideoDuration(self, val: str):
+        if self._min_video_duration != val:
+            self._min_video_duration = val
+            self.minVideoDurationChanged.emit()
+            self.videoDurationSummaryChanged.emit()
+            self.saveSettings()
+
+    @Property(str, notify=maxVideoDurationChanged)
+    def maxVideoDuration(self) -> str:
+        return self._max_video_duration
+
+    @maxVideoDuration.setter
+    def maxVideoDuration(self, val: str):
+        if self._max_video_duration != val:
+            self._max_video_duration = val
+            self.maxVideoDurationChanged.emit()
+            self.videoDurationSummaryChanged.emit()
+            self.saveSettings()
+
+    @Property(str, notify=videoDurationSummaryChanged)
+    def videoDurationSummary(self) -> str:
+        if not self._video_duration_filter_enabled:
+            return "Off"
+        min_sec = FilterEngine.parse_duration_seconds(self._min_video_duration)
+        max_sec = FilterEngine.parse_duration_seconds(self._max_video_duration)
+        min_s = FilterEngine.format_duration_str(min_sec) if min_sec is not None else ""
+        max_s = FilterEngine.format_duration_str(max_sec) if max_sec is not None else ""
+        if min_s and max_s:
+            return f"{min_s} – {max_s}"
+        elif min_s:
+            return f"≥ {min_s}"
+        elif max_s:
+            return f"≤ {max_s}"
+        return "Active (No limits)"
+
     @Property(int, notify=currentFpsChanged)
     def currentFps(self) -> int:
         return self._current_fps
@@ -1091,6 +1167,17 @@ class AppBridge(QObject):
         if self._scan_content_images != val:
             self._scan_content_images = val
             self.scanContentImagesChanged.emit()
+            self._settings_save_timer.start()
+
+    @Property(bool, notify=downloadDmsChanged)
+    def downloadDms(self) -> bool:
+        return self._download_dms
+
+    @downloadDms.setter
+    def downloadDms(self, val: bool):
+        if self._download_dms != val:
+            self._download_dms = val
+            self.downloadDmsChanged.emit()
             self._settings_save_timer.start()
 
     @Property(bool, notify=downloadPawchiveTemporaryFilesChanged)
@@ -1817,6 +1904,136 @@ class AppBridge(QObject):
     @Property(int, notify=archiveRecordCountChanged)
     def archiveRecordCount(self) -> int:
         return self.archive_manager.get_total_count()
+
+    # ── Privacy Mode & Shield Protection ────────────────────────────────────
+    @Property(bool, notify=privacyModeActiveChanged)
+    def privacyModeActive(self) -> bool:
+        return self._privacy_mode_active
+
+    @privacyModeActive.setter
+    def privacyModeActive(self, val: bool):
+        val = bool(val)
+        if self._privacy_mode_active != val:
+            self._privacy_mode_active = val
+            self.privacyModeActiveChanged.emit()
+
+    @Property(bool, notify=privacyPinConfiguredChanged)
+    def privacyPinConfigured(self) -> bool:
+        return bool(self._privacy_pin)
+
+    @Property(int, notify=privacyFailedAttemptsChanged)
+    def privacyFailedAttempts(self) -> int:
+        return self._failed_pin_attempts
+
+    @Property(bool, notify=privacyLockoutActiveChanged)
+    def privacyLockoutActive(self) -> bool:
+        return self._privacy_lockout_active
+
+    @Property(bool, notify=safeModeActiveChanged)
+    def safeModeActive(self) -> bool:
+        return self._safe_mode_active
+
+    @Property(int, notify=privacyIdleMinutesChanged)
+    def privacyIdleMinutes(self) -> int:
+        return self._privacy_idle_minutes
+
+    @Slot(result=bool)
+    def togglePrivacyMode(self) -> bool:
+        if not self._privacy_mode_active:
+            self.privacyModeActive = True
+            return True
+        else:
+            if not self._privacy_pin:
+                self.privacyModeActive = False
+                return False
+            return True
+
+    @Slot(str, result=bool)
+    def unlockPrivacyMode(self, pin: str = "") -> bool:
+        if self._privacy_lockout_active:
+            return False
+        entered = str(pin or "").strip()
+        if not self._privacy_pin:
+            self._failed_pin_attempts = 0
+            self.privacyFailedAttemptsChanged.emit()
+            self.privacyModeActive = False
+            return True
+        if entered == self._privacy_pin:
+            self._failed_pin_attempts = 0
+            self.privacyFailedAttemptsChanged.emit()
+            self.privacyModeActive = False
+            return True
+        else:
+            self._failed_pin_attempts += 1
+            self.privacyFailedAttemptsChanged.emit()
+            if self._failed_pin_attempts >= 5:
+                self._privacy_lockout_active = True
+                self._pending_pin_reset = True
+                self.saveSettings()
+                self.privacyLockoutActiveChanged.emit()
+                logger.warning("Privacy PIN failed 5 times; session locked out until restart.", category="session")
+            return False
+
+    @Slot()
+    def requestPinReset(self):
+        """User clicked 'Forgot PIN' or requested reset from locked state."""
+        self._pending_pin_reset = True
+        self._privacy_lockout_active = True
+        self.saveSettings()
+        self.privacyLockoutActiveChanged.emit()
+        logger.info("Privacy PIN reset requested. Application locked until restart.", category="session")
+
+    @Slot(str)
+    def completePinReset(self, new_pin: str = ""):
+        """Called when user sets a new PIN (or clears it) in Safe Mode after restart."""
+        cleaned = str(new_pin or "").strip()
+        self._privacy_pin = cleaned
+        self._pending_pin_reset = False
+        self._safe_mode_active = False
+        self._failed_pin_attempts = 0
+        self._privacy_lockout_active = False
+        self.saveSettings()
+        self.privacyPinConfiguredChanged.emit()
+        self.privacyFailedAttemptsChanged.emit()
+        self.privacyLockoutActiveChanged.emit()
+        self.safeModeActiveChanged.emit()
+        self.privacyModeActive = False
+        logger.info(f"Safe Mode resolved. PIN set: {bool(cleaned)}. All tabs restored.", category="session")
+
+    @Slot(str)
+    def setPrivacyPin(self, new_pin: str):
+        cleaned = str(new_pin or "").strip()
+        self._privacy_pin = cleaned
+        self._failed_pin_attempts = 0
+        self._privacy_lockout_active = False
+        self._pending_pin_reset = False
+        self.saveSettings()
+        self.privacyPinConfiguredChanged.emit()
+        self.privacyFailedAttemptsChanged.emit()
+        self.privacyLockoutActiveChanged.emit()
+        logger.info("Privacy PIN updated successfully.", category="session")
+
+    @Slot()
+    def resetPrivacyPin(self):
+        self._privacy_pin = ""
+        self._failed_pin_attempts = 0
+        self._privacy_lockout_active = False
+        self._pending_pin_reset = False
+        self.saveSettings()
+        self.privacyPinConfiguredChanged.emit()
+        self.privacyFailedAttemptsChanged.emit()
+        self.privacyLockoutActiveChanged.emit()
+        self.privacyModeActive = False
+        logger.info("Privacy PIN removed.", category="session")
+
+    @Slot(int)
+    def setPrivacyIdleMinutes(self, minutes: int):
+        m = max(0, min(30, int(minutes)))
+        if self._privacy_idle_minutes != m:
+            self._privacy_idle_minutes = m
+            self.privacyIdleMinutesChanged.emit()
+            self.saveSettings()
+            logger.info(f"Privacy idle timeout set to {m} minutes.", category="session")
 
     @Slot(str, str, str, str, result="QVariantList")
     def getArchiveHierarchy(self, query: str = "", service: str = "all", fileType: str = "all", sortBy: str = "creator_az"):
@@ -2679,6 +2896,7 @@ class AppBridge(QObject):
             fallback_to_thumbnails=self._fallback_to_thumbnails,
             redownload_small_files=self._redownload_small_files,
             scan_content_images=self._scan_content_images,
+            download_dms=self._download_dms,
             compress_to_webp=self._compress_webp,
             webp_quality=self._webp_quality,
             keep_duplicates=self._keep_duplicates,
@@ -2714,7 +2932,10 @@ class AppBridge(QObject):
             file_order=self._file_order,
             write_sidecars=self._write_sidecars,
             sidecar_format=self._sidecar_format,
-            sidecar_scope=self._sidecar_scope
+            sidecar_scope=self._sidecar_scope,
+            video_duration_filter_enabled=self._video_duration_filter_enabled,
+            min_video_duration=self._min_video_duration,
+            max_video_duration=self._max_video_duration
         )
 
     def _get_link_identity(self, parsed: URLParseResult) -> tuple[str, str, Optional[str], str]:
@@ -3002,7 +3223,8 @@ class AppBridge(QObject):
             post_id="167342511",
             artist="SampleArtist",
             service="patreon",
-            user_id="82901778"
+            user_id="82901778",
+            caption="Excited artwork preview details and description"
         )
 
     @Slot()
@@ -3369,16 +3591,38 @@ class AppBridge(QObject):
                                 msg = f"Fetching page {page}…"
                             self._emit_post_selection_progress(page, count, tot, msg)
 
-                        self._emit_post_selection_progress(1, 0, 0, f"Fetching page 1 for {creator_name}…")
-                        posts = self.api_client.fetch_user_posts(
-                            parsed=parsed,
-                            page_start=self._page_start,
-                            page_end=effective_page_end,
-                            date_after=self._date_after,
-                            date_before=self._date_before,
-                            progress_callback=_on_posts_progress,
-                            cancel_event=self._scan_cancel_event
-                        )
+                        if parsed.is_dms:
+                            posts = self.api_client.fetch_user_dms(
+                                parsed=parsed,
+                                page_start=self._page_start,
+                                page_end=effective_page_end,
+                                date_after=self._date_after,
+                                date_before=self._date_before,
+                                progress_callback=_on_posts_progress,
+                                cancel_event=self._scan_cancel_event
+                            )
+                        else:
+                            posts = self.api_client.fetch_user_posts(
+                                parsed=parsed,
+                                page_start=self._page_start,
+                                page_end=effective_page_end,
+                                date_after=self._date_after,
+                                date_before=self._date_before,
+                                progress_callback=_on_posts_progress,
+                                cancel_event=self._scan_cancel_event
+                            )
+                            if self._download_dms and ("cum.st" in (parsed.domain or "").lower() or "pawchive" in (parsed.domain or "").lower()):
+                                dms = self.api_client.fetch_user_dms(
+                                    parsed=parsed,
+                                    page_start=self._page_start,
+                                    page_end=effective_page_end,
+                                    date_after=self._date_after,
+                                    date_before=self._date_before,
+                                    progress_callback=_on_posts_progress,
+                                    cancel_event=self._scan_cancel_event
+                                )
+                                if dms:
+                                    posts = (posts or []) + dms
 
                 if not posts:
                     self._is_post_selection_loading = False
@@ -3413,8 +3657,7 @@ class AppBridge(QObject):
                             f"Preparing previews ({idx}/{total_posts_found})…"
                         )
                     pid = str(p.get("id", ""))
-                    raw_title = p.get("title") or p.get("caption") or "Untitled Post"
-                    title = re.sub(r'<[^>]+>', '', str(raw_title)).strip() or "Untitled Post"
+                    title, _ = FilterEngine.extract_post_title_and_caption(p, fallback_title="Untitled Post")
                     published = str(p.get("published") or "")[:10]
 
                     image_exts = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".avif")
@@ -3584,8 +3827,7 @@ class AppBridge(QObject):
                 image_exts = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".avif")
                 for p in posts:
                     pid = str(p.get("id", ""))
-                    raw_title = p.get("title") or p.get("caption") or "Untitled Post"
-                    title = re.sub(r'<[^>]+>', '', str(raw_title)).strip() or "Untitled Post"
+                    title, _ = FilterEngine.extract_post_title_and_caption(p, fallback_title="Untitled Post")
                     published = str(p.get("published") or "")[:10]
 
                     thumb_url = ""
@@ -4123,14 +4365,36 @@ class AppBridge(QObject):
                     effective_page_end = self._page_end
                     if self._date_auto_scan_pages and (self._date_after or self._date_before):
                         effective_page_end = 999999
-                    posts = self.api_client.fetch_user_posts(
-                        parsed=parsed,
-                        page_start=self._page_start,
-                        page_end=effective_page_end,
-                        date_after=self._date_after,
-                        date_before=self._date_before,
-                        cancel_event=self._scan_cancel_event
-                    )
+                    if parsed.is_dms:
+                        posts = self.api_client.fetch_user_dms(
+                            parsed=parsed,
+                            page_start=self._page_start,
+                            page_end=effective_page_end,
+                            date_after=self._date_after,
+                            date_before=self._date_before,
+                            cancel_event=self._scan_cancel_event
+                        )
+                    else:
+                        posts = self.api_client.fetch_user_posts(
+                            parsed=parsed,
+                            page_start=self._page_start,
+                            page_end=effective_page_end,
+                            date_after=self._date_after,
+                            date_before=self._date_before,
+                            cancel_event=self._scan_cancel_event
+                        )
+                        if (getattr(options, "download_dms", False) or self._download_dms) and ("cum.st" in (parsed.domain or "").lower() or "pawchive" in (parsed.domain or "").lower()):
+                            logger.info(f"Direct messages enabled: scanning DMs for {creator_name}...", category="downloader")
+                            dms = self.api_client.fetch_user_dms(
+                                parsed=parsed,
+                                page_start=self._page_start,
+                                page_end=effective_page_end,
+                                date_after=self._date_after,
+                                date_before=self._date_before,
+                                cancel_event=self._scan_cancel_event
+                            )
+                            if dms:
+                                posts = (posts or []) + dms
 
                     if options.favorite_mode and posts:
                         from core.auth_manager import auth_manager
@@ -5593,6 +5857,7 @@ class AppBridge(QObject):
             "webp_quality": self._webp_quality,
             "keep_duplicates": self._keep_duplicates,
             "scan_content_images": self._scan_content_images,
+            "download_dms": self._download_dms,
             "download_delay": self._download_delay,
             "save_post_metadata": self._save_post_metadata,
             "write_sidecars": self._write_sidecars,
@@ -5622,6 +5887,9 @@ class AppBridge(QObject):
             "download_pawchive_temporary_files": self._download_pawchive_temporary_files,
             "min_file_size": self._min_file_size,
             "max_file_size": self._max_file_size,
+            "video_duration_filter_enabled": self._video_duration_filter_enabled,
+            "min_video_duration": self._min_video_duration,
+            "max_video_duration": self._max_video_duration,
             "exact_extensions": self._exact_extensions,
             "saved_custom_extensions": self._saved_custom_extensions,
             "gallery_bookmarks": self._gallery_bookmarks,
@@ -5634,7 +5902,10 @@ class AppBridge(QObject):
             "watchlist_apply_global_settings": self._watchlist_apply_global_settings,
             "bandwidth_limit_enabled": self._bandwidth_limit_enabled,
             "bandwidth_limit_value": self._bandwidth_limit_value,
-            "bandwidth_limit_unit": self._bandwidth_limit_unit
+            "bandwidth_limit_unit": self._bandwidth_limit_unit,
+            "privacy_pin": self._privacy_pin,
+            "pending_pin_reset": self._pending_pin_reset,
+            "privacy_idle_minutes": self._privacy_idle_minutes
         }
         self.session_manager.save_settings(settings_dict, silent=True)
 
@@ -7553,7 +7824,9 @@ class AppBridge(QObject):
     def _check_watchlist_entry(self, entry) -> int:
         """Checks one artist for new posts (raises when its post list couldn't be fetched, so the
         updates found earlier are kept and it's tried again next time)."""
-        new = self._watchlist_manager.get_posts_since(entry, self.api_client, raise_on_error=True)
+        checker = getattr(self, "_watchlist_checker", None)
+        cancel = getattr(checker, "cancel_event", None) if checker else None
+        new = self._watchlist_manager.get_posts_since(entry, self.api_client, raise_on_error=True, cancel_event=cancel)
         # Looking for the files on disk / in the archive uses the downloader: one artist at a time
         with self._watchlist_resolve_lock:
             new = self._check_and_resolve_if_already_downloaded(entry, new)
@@ -7785,12 +8058,20 @@ class AppBridge(QObject):
                     single = self.api_client.fetch_single_post(parsed)
                     posts = [single] if single else []
                 else:
-                    posts = self.api_client.fetch_user_posts(
-                        parsed=parsed,
-                        page_start=pageStart,
-                        page_end=pageEnd,
-                        cancel_event=self._vault_harvest_cancel
-                    )
+                    if parsed.is_dms:
+                        posts = self.api_client.fetch_user_dms(
+                            parsed=parsed,
+                            page_start=pageStart,
+                            page_end=pageEnd,
+                            cancel_event=self._vault_harvest_cancel
+                        )
+                    else:
+                        posts = self.api_client.fetch_user_posts(
+                            parsed=parsed,
+                            page_start=pageStart,
+                            page_end=pageEnd,
+                            cancel_event=self._vault_harvest_cancel
+                        )
 
                 if self._vault_harvest_cancel.is_set():
                     logger.warning(f"Link Vault Harvest: Cancelled during post fetch for {creator_name}.", category="vault")

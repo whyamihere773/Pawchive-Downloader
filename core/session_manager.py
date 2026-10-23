@@ -210,6 +210,7 @@ class SessionManager:
             "compress_webp": False,
             "keep_duplicates": False,
             "scan_content_images": True,
+            "download_dms": False,
             "fallback_to_thumbnails": False,
             "redownload_small_files": False,
             "dark_theme": True,
@@ -236,7 +237,10 @@ class SessionManager:
             "gallery_bookmarks": [],
             "bandwidth_limit_enabled": False,
             "bandwidth_limit_value": 10.0,
-            "bandwidth_limit_unit": "MB/s"
+            "bandwidth_limit_unit": "MB/s",
+            "privacy_pin": "",
+            "pending_pin_reset": False,
+            "privacy_idle_minutes": 5
         }
 
         if os.path.exists(self.settings_file):

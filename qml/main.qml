@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Window
+import QtQuick.Effects
 import "components"
 import "views"
 
@@ -12,7 +13,9 @@ ApplicationWindow {
     minimumWidth: 900
     minimumHeight: 600
     visible: true
-    title: "Pawchive Downloader" + ((typeof updaterBridge !== "undefined" && updaterBridge && updaterBridge.currentVersion) ? (" v" + updaterBridge.currentVersion) : "")
+    title: (appBridge && (appBridge.privacyModeActive || appBridge.safeModeActive))
+           ? "Downloads"
+           : ("Pawchive Downloader" + ((typeof updaterBridge !== "undefined" && updaterBridge && updaterBridge.currentVersion) ? (" v" + updaterBridge.currentVersion) : ""))
     color: "#0F1117"
 
     // Stop active downloads and persist session gracefully when user closes the app
@@ -32,6 +35,46 @@ ApplicationWindow {
     property int currentTab: 0 // 0: Downloader, 1: Queue, 2: Watchlist, 3: Decompressor, 4: Link Vault, 5: Scheduler, 6: Gallery, 7: Known, 8: Archive, 9: History, 10: Settings
     // The Gallery has no use for the download controls, so they step aside to give it the room
     readonly property bool hideDownloadChrome: currentTab === 6
+
+    // Safe Mode Tab Vaulting (Tabs 1–9 quarantined after PIN reset or 5 failed attempts)
+    readonly property bool tabsVaulted: appBridge ? appBridge.safeModeActive : false
+    readonly property bool tabPermitted: !tabsVaulted
+    onTabsVaultedChanged: {
+        if (tabsVaulted && currentTab !== 0 && currentTab !== 10) {
+            currentTab = 0
+        }
+    }
+
+    // Inactivity / Auto-lock Idle Timer (5 minutes by default, customizable up to 30 min)
+    Timer {
+        id: privacyIdleTimer
+        interval: 1000
+        repeat: true
+        running: appBridge && appBridge.privacyIdleMinutes > 0 && !appBridge.privacyModeActive && !appBridge.safeModeActive
+        property int elapsedSeconds: 0
+
+        onTriggered: {
+            if (!appBridge || appBridge.privacyIdleMinutes <= 0) return
+            elapsedSeconds += 1
+            if (elapsedSeconds >= appBridge.privacyIdleMinutes * 60) {
+                elapsedSeconds = 0
+                appBridge.privacyModeActive = true
+            }
+        }
+
+        function resetTimer() {
+            elapsedSeconds = 0
+        }
+    }
+
+    HoverHandler {
+        acceptedDevices: PointerDevice.AllDevices
+        onPointChanged: privacyIdleTimer.resetTimer()
+    }
+    WheelHandler {
+        acceptedDevices: PointerDevice.AllDevices
+        onWheel: privacyIdleTimer.resetTimer()
+    }
 
     // They step aside with the same motion as the Progress Log: opening grows the height (320 ms),
     // fades in (260 ms) and slides into place (380 ms, small overshoot), all starting together.
@@ -127,16 +170,47 @@ ApplicationWindow {
 
 
     ColumnLayout {
+        id: rootWindowLayout
         anchors.fill: parent
         spacing: 0
 
-        // 1. Browser Tab Header Strip
-        Rectangle {
+        // Main Application Content Area (blurred when Privacy Shield is active)
+        Item {
+            id: mainAppContentArea
             Layout.fillWidth: true
-            height: 38
-            color: "#0B0D12"
-            border.color: "#1E2330"
-            border.width: 1
+            Layout.fillHeight: true
+
+            property real targetBlur: (appBridge && appBridge.privacyModeActive) ? 2.5 : 0.0
+            property real animatedBlur: 0.0
+            onTargetBlurChanged: animatedBlur = targetBlur
+
+            Behavior on animatedBlur {
+                NumberAnimation {
+                    duration: (appBridge && appBridge.privacyModeActive) ? 300 : 180
+                    easing.type: (appBridge && appBridge.privacyModeActive) ? Easing.OutBack : Easing.OutCubic
+                    easing.overshoot: 1.15
+                }
+            }
+
+            layer.enabled: animatedBlur > 0.02
+            layer.effect: MultiEffect {
+                blurEnabled: true
+                blur: 1.0
+                blurMax: 64
+                blurMultiplier: mainAppContentArea.animatedBlur
+            }
+
+            ColumnLayout {
+                anchors.fill: parent
+                spacing: 0
+
+                // 1. Browser Tab Header Strip
+                Rectangle {
+                    Layout.fillWidth: true
+                    height: 38
+                    color: "#0B0D12"
+                    border.color: "#1E2330"
+                    border.width: 1
 
             // Left tabs scrollable strip
             Flickable {
@@ -244,16 +318,28 @@ ApplicationWindow {
 
                 // Tab: Queue
                 Rectangle {
-                    width: tab1Row.implicitWidth + 18
+                    readonly property bool tabPermitted: !appWindow.tabsVaulted
+                    visible: width > 0.5
+                    clip: true
+                    width: tabPermitted ? (tab1Row.implicitWidth + 18) : 0
+                    opacity: tabPermitted ? 1.0 : 0.0
                     height: 30
                     radius: 6
                     color: appWindow.currentTab === 1 ? "#181B22" : (tab1Mouse.containsMouse ? "#141720" : "transparent")
                     border.color: appWindow.currentTab === 1 ? "#38BDF8" : "transparent"
                     border.width: 1
 
-                    scale: tab1Mouse.pressed ? 0.94 : (tab1Mouse.containsMouse ? 1.035 : 1.0)
+                    scale: tab1Mouse.pressed ? 0.94 : (tab1Mouse.containsMouse ? 1.035 : (tabPermitted ? 1.0 : 0.8))
                     transformOrigin: Item.Center
 
+                    Behavior on width {
+                        NumberAnimation {
+                            duration: tabPermitted ? 280 : 180
+                            easing.type: tabPermitted ? Easing.OutBack : Easing.InQuad
+                            easing.overshoot: 1.3
+                        }
+                    }
+                    Behavior on opacity { NumberAnimation { duration: tabPermitted ? 240 : 140; easing.type: Easing.OutCubic } }
                     Behavior on scale {
                         NumberAnimation { duration: 180; easing.type: Easing.OutBack; easing.overshoot: 1.5 }
                     }
@@ -289,16 +375,28 @@ ApplicationWindow {
                 // Tab: Watchlist (3rd — tracks followed artists)
                 Rectangle {
                     id: watchlistTabCard
-                    width: tab2Row.implicitWidth + 18
+                    readonly property bool tabPermitted: !appWindow.tabsVaulted
+                    visible: width > 0.5
+                    clip: true
+                    width: tabPermitted ? (tab2Row.implicitWidth + 18) : 0
+                    opacity: tabPermitted ? 1.0 : 0.0
                     height: 30
                     radius: 6
                     color: appWindow.currentTab === 2 ? "#181B22" : (tab2Mouse.containsMouse ? "#141720" : "transparent")
                     border.color: appWindow.currentTab === 2 ? "#A78BFA" : "transparent"
                     border.width: 1
 
-                    scale: tab2Mouse.pressed ? 0.94 : (tab2Mouse.containsMouse ? 1.035 : 1.0)
+                    scale: tab2Mouse.pressed ? 0.94 : (tab2Mouse.containsMouse ? 1.035 : (tabPermitted ? 1.0 : 0.8))
                     transformOrigin: Item.Center
 
+                    Behavior on width {
+                        NumberAnimation {
+                            duration: tabPermitted ? 280 : 180
+                            easing.type: tabPermitted ? Easing.OutBack : Easing.InQuad
+                            easing.overshoot: 1.3
+                        }
+                    }
+                    Behavior on opacity { NumberAnimation { duration: tabPermitted ? 240 : 140; easing.type: Easing.OutCubic } }
                     Behavior on scale {
                         NumberAnimation { duration: 180; easing.type: Easing.OutBack; easing.overshoot: 1.5 }
                     }
@@ -361,16 +459,28 @@ ApplicationWindow {
 
                 // Tab: Bulk Decompressor (3rd — after Watchlist)
                 Rectangle {
-                    width: tab3Row.implicitWidth + 18
+                    readonly property bool tabPermitted: !appWindow.tabsVaulted
+                    visible: width > 0.5
+                    clip: true
+                    width: tabPermitted ? (tab3Row.implicitWidth + 18) : 0
+                    opacity: tabPermitted ? 1.0 : 0.0
                     height: 30
                     radius: 6
                     color: appWindow.currentTab === 3 ? "#181B22" : (tab3Mouse.containsMouse ? "#141720" : "transparent")
                     border.color: appWindow.currentTab === 3 ? "#38BDF8" : "transparent"
                     border.width: 1
 
-                    scale: tab3Mouse.pressed ? 0.94 : (tab3Mouse.containsMouse ? 1.035 : 1.0)
+                    scale: tab3Mouse.pressed ? 0.94 : (tab3Mouse.containsMouse ? 1.035 : (tabPermitted ? 1.0 : 0.8))
                     transformOrigin: Item.Center
 
+                    Behavior on width {
+                        NumberAnimation {
+                            duration: tabPermitted ? 280 : 180
+                            easing.type: tabPermitted ? Easing.OutBack : Easing.InQuad
+                            easing.overshoot: 1.3
+                        }
+                    }
+                    Behavior on opacity { NumberAnimation { duration: tabPermitted ? 240 : 140; easing.type: Easing.OutCubic } }
                     Behavior on scale {
                         NumberAnimation { duration: 180; easing.type: Easing.OutBack; easing.overshoot: 1.5 }
                     }
@@ -405,16 +515,28 @@ ApplicationWindow {
 
                 // Tab: Link Vault (4th — permanent link archive & password resolver)
                 Rectangle {
-                    width: tab4Row.implicitWidth + 18
+                    readonly property bool tabPermitted: !appWindow.tabsVaulted
+                    visible: width > 0.5
+                    clip: true
+                    width: tabPermitted ? (tab4Row.implicitWidth + 18) : 0
+                    opacity: tabPermitted ? 1.0 : 0.0
                     height: 30
                     radius: 6
                     color: appWindow.currentTab === 4 ? "#181B22" : (tab4Mouse.containsMouse ? "#141720" : "transparent")
                     border.color: appWindow.currentTab === 4 ? "#F59E0B" : "transparent"
                     border.width: 1
 
-                    scale: tab4Mouse.pressed ? 0.94 : (tab4Mouse.containsMouse ? 1.035 : 1.0)
+                    scale: tab4Mouse.pressed ? 0.94 : (tab4Mouse.containsMouse ? 1.035 : (tabPermitted ? 1.0 : 0.8))
                     transformOrigin: Item.Center
 
+                    Behavior on width {
+                        NumberAnimation {
+                            duration: tabPermitted ? 280 : 180
+                            easing.type: tabPermitted ? Easing.OutBack : Easing.InQuad
+                            easing.overshoot: 1.3
+                        }
+                    }
+                    Behavior on opacity { NumberAnimation { duration: tabPermitted ? 240 : 140; easing.type: Easing.OutCubic } }
                     Behavior on scale {
                         NumberAnimation { duration: 180; easing.type: Easing.OutBack; easing.overshoot: 1.5 }
                     }
@@ -449,16 +571,28 @@ ApplicationWindow {
 
                 // Tab: Task Scheduler (5th — automation hub & night owl)
                 Rectangle {
-                    width: tab5Row.implicitWidth + 18
+                    readonly property bool tabPermitted: !appWindow.tabsVaulted
+                    visible: width > 0.5
+                    clip: true
+                    width: tabPermitted ? (tab5Row.implicitWidth + 18) : 0
+                    opacity: tabPermitted ? 1.0 : 0.0
                     height: 30
                     radius: 6
                     color: appWindow.currentTab === 5 ? "#181B22" : (tab5Mouse.containsMouse ? "#141720" : "transparent")
                     border.color: appWindow.currentTab === 5 ? "#818CF8" : "transparent"
                     border.width: 1
 
-                    scale: tab5Mouse.pressed ? 0.94 : (tab5Mouse.containsMouse ? 1.035 : 1.0)
+                    scale: tab5Mouse.pressed ? 0.94 : (tab5Mouse.containsMouse ? 1.035 : (tabPermitted ? 1.0 : 0.8))
                     transformOrigin: Item.Center
 
+                    Behavior on width {
+                        NumberAnimation {
+                            duration: tabPermitted ? 280 : 180
+                            easing.type: tabPermitted ? Easing.OutBack : Easing.InQuad
+                            easing.overshoot: 1.3
+                        }
+                    }
+                    Behavior on opacity { NumberAnimation { duration: tabPermitted ? 240 : 140; easing.type: Easing.OutCubic } }
                     Behavior on scale {
                         NumberAnimation { duration: 180; easing.type: Easing.OutBack; easing.overshoot: 1.5 }
                     }
@@ -493,16 +627,28 @@ ApplicationWindow {
 
                 // Tab: File Explorer & Media Gallery (6th — after Scheduler)
                 Rectangle {
-                    width: tab6Row.implicitWidth + 18
+                    readonly property bool tabPermitted: !appWindow.tabsVaulted
+                    visible: width > 0.5
+                    clip: true
+                    width: tabPermitted ? (tab6Row.implicitWidth + 18) : 0
+                    opacity: tabPermitted ? 1.0 : 0.0
                     height: 30
                     radius: 6
                     color: appWindow.currentTab === 6 ? "#181B22" : (tab6Mouse.containsMouse ? "#141720" : "transparent")
                     border.color: appWindow.currentTab === 6 ? "#EC4899" : "transparent"
                     border.width: 1
 
-                    scale: tab6Mouse.pressed ? 0.94 : (tab6Mouse.containsMouse ? 1.035 : 1.0)
+                    scale: tab6Mouse.pressed ? 0.94 : (tab6Mouse.containsMouse ? 1.035 : (tabPermitted ? 1.0 : 0.8))
                     transformOrigin: Item.Center
 
+                    Behavior on width {
+                        NumberAnimation {
+                            duration: tabPermitted ? 280 : 180
+                            easing.type: tabPermitted ? Easing.OutBack : Easing.InQuad
+                            easing.overshoot: 1.3
+                        }
+                    }
+                    Behavior on opacity { NumberAnimation { duration: tabPermitted ? 240 : 140; easing.type: Easing.OutCubic } }
                     Behavior on scale {
                         NumberAnimation { duration: 180; easing.type: Easing.OutBack; easing.overshoot: 1.5 }
                     }
@@ -537,16 +683,28 @@ ApplicationWindow {
 
                 // Tab: Known Characters (7th)
                 Rectangle {
-                    width: tab7Row.implicitWidth + 18
+                    readonly property bool tabPermitted: !appWindow.tabsVaulted
+                    visible: width > 0.5
+                    clip: true
+                    width: tabPermitted ? (tab7Row.implicitWidth + 18) : 0
+                    opacity: tabPermitted ? 1.0 : 0.0
                     height: 30
                     radius: 6
                     color: appWindow.currentTab === 7 ? "#181B22" : (tab7Mouse.containsMouse ? "#141720" : "transparent")
                     border.color: appWindow.currentTab === 7 ? "#38BDF8" : "transparent"
                     border.width: 1
 
-                    scale: tab7Mouse.pressed ? 0.94 : (tab7Mouse.containsMouse ? 1.035 : 1.0)
+                    scale: tab7Mouse.pressed ? 0.94 : (tab7Mouse.containsMouse ? 1.035 : (tabPermitted ? 1.0 : 0.8))
                     transformOrigin: Item.Center
 
+                    Behavior on width {
+                        NumberAnimation {
+                            duration: tabPermitted ? 280 : 180
+                            easing.type: tabPermitted ? Easing.OutBack : Easing.InQuad
+                            easing.overshoot: 1.3
+                        }
+                    }
+                    Behavior on opacity { NumberAnimation { duration: tabPermitted ? 240 : 140; easing.type: Easing.OutCubic } }
                     Behavior on scale {
                         NumberAnimation { duration: 180; easing.type: Easing.OutBack; easing.overshoot: 1.5 }
                     }
@@ -581,16 +739,28 @@ ApplicationWindow {
 
                 // Tab: Archive (8th — gallery-dl download archive database)
                 Rectangle {
-                    width: tab8Row.implicitWidth + 18
+                    readonly property bool tabPermitted: !appWindow.tabsVaulted
+                    visible: width > 0.5
+                    clip: true
+                    width: tabPermitted ? (tab8Row.implicitWidth + 18) : 0
+                    opacity: tabPermitted ? 1.0 : 0.0
                     height: 30
                     radius: 6
                     color: appWindow.currentTab === 8 ? "#181B22" : (tab8Mouse.containsMouse ? "#141720" : "transparent")
                     border.color: appWindow.currentTab === 8 ? "#2DD4BF" : "transparent"
                     border.width: 1
 
-                    scale: tab8Mouse.pressed ? 0.94 : (tab8Mouse.containsMouse ? 1.035 : 1.0)
+                    scale: tab8Mouse.pressed ? 0.94 : (tab8Mouse.containsMouse ? 1.035 : (tabPermitted ? 1.0 : 0.8))
                     transformOrigin: Item.Center
 
+                    Behavior on width {
+                        NumberAnimation {
+                            duration: tabPermitted ? 280 : 180
+                            easing.type: tabPermitted ? Easing.OutBack : Easing.InQuad
+                            easing.overshoot: 1.3
+                        }
+                    }
+                    Behavior on opacity { NumberAnimation { duration: tabPermitted ? 240 : 140; easing.type: Easing.OutCubic } }
                     Behavior on scale {
                         NumberAnimation { duration: 180; easing.type: Easing.OutBack; easing.overshoot: 1.5 }
                     }
@@ -625,16 +795,28 @@ ApplicationWindow {
 
                 // Tab: History (9th)
                 Rectangle {
-                    width: tab9Row.implicitWidth + 18
+                    readonly property bool tabPermitted: !appWindow.tabsVaulted
+                    visible: width > 0.5
+                    clip: true
+                    width: tabPermitted ? (tab9Row.implicitWidth + 18) : 0
+                    opacity: tabPermitted ? 1.0 : 0.0
                     height: 30
                     radius: 6
                     color: appWindow.currentTab === 9 ? "#181B22" : (tab9Mouse.containsMouse ? "#141720" : "transparent")
                     border.color: appWindow.currentTab === 9 ? "#38BDF8" : "transparent"
                     border.width: 1
 
-                    scale: tab9Mouse.pressed ? 0.94 : (tab9Mouse.containsMouse ? 1.035 : 1.0)
+                    scale: tab9Mouse.pressed ? 0.94 : (tab9Mouse.containsMouse ? 1.035 : (tabPermitted ? 1.0 : 0.8))
                     transformOrigin: Item.Center
 
+                    Behavior on width {
+                        NumberAnimation {
+                            duration: tabPermitted ? 280 : 180
+                            easing.type: tabPermitted ? Easing.OutBack : Easing.InQuad
+                            easing.overshoot: 1.3
+                        }
+                    }
+                    Behavior on opacity { NumberAnimation { duration: tabPermitted ? 240 : 140; easing.type: Easing.OutCubic } }
                     Behavior on scale {
                         NumberAnimation { duration: 180; easing.type: Easing.OutBack; easing.overshoot: 1.5 }
                     }
@@ -1032,6 +1214,50 @@ ApplicationWindow {
                     }
                 }
 
+                // Privacy Mode toggle button (Eye: open when off, closed when enabled)
+                Rectangle {
+                    width: 32
+                    height: 30
+                    radius: 6
+                    color: (appBridge && appBridge.privacyModeActive) ? "#1E2536" : (privacyBtnMouse.containsMouse ? "#181B22" : "transparent")
+                    border.color: (appBridge && appBridge.privacyModeActive) ? "#38BDF8" : (privacyBtnMouse.containsMouse ? "#38455E" : "#242A38")
+                    border.width: 1
+
+                    scale: privacyBtnMouse.pressed ? 0.90 : (privacyBtnMouse.containsMouse ? 1.08 : 1.0)
+                    transformOrigin: Item.Center
+
+                    Behavior on scale {
+                        NumberAnimation { duration: 180; easing.type: Easing.OutBack; easing.overshoot: 1.5 }
+                    }
+                    Behavior on color { ColorAnimation { duration: 150 } }
+                    Behavior on border.color { ColorAnimation { duration: 150 } }
+
+                    Image {
+                        anchors.centerIn: parent
+                        width: 16
+                        height: 16
+                        sourceSize: Qt.size(16, 16)
+                        source: (appBridge && appBridge.privacyModeActive)
+                                ? "../assets/icons/eye_closed.svg"
+                                : (privacyBtnMouse.containsMouse ? "../assets/icons/eye_open_hover.svg" : "../assets/icons/eye_open.svg")
+                    }
+
+                    MouseArea {
+                        id: privacyBtnMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 400
+                        ToolTip.text: (appBridge && appBridge.privacyModeActive)
+                                      ? appWindow.tr("tip_privacy_mode_on", "Privacy Mode is ON (Ctrl+P to unblur)")
+                                      : appWindow.tr("tip_privacy_mode_off", "Privacy Mode — blur application content (Ctrl+P)")
+                        onClicked: {
+                            if (appBridge) appBridge.togglePrivacyMode()
+                        }
+                    }
+                }
+
                 // Console toggle button
                 Rectangle {
                     width: 32
@@ -1069,6 +1295,12 @@ ApplicationWindow {
                     }
                 }
             }
+        }
+
+        // Safe Mode Action & Reset Banner (shown when previous session requested PIN reset or 5 failed attempts)
+        SafeModeResetBanner {
+            id: safeModeBanner
+            bridge: appBridge
         }
 
         // 2. Omnibox Browser Navigation Bar (the slot shrinks while the bar slides up out of it)
@@ -2438,13 +2670,16 @@ ApplicationWindow {
                             onExportLinksRequested: if (appBridge) appBridge.exportAllLinks()
                             onDownloadLinksRequested: mainCloudModal.isOpen = true
                         }
-                    }
-                }
-            }
-        }
+                    } // ColumnLayout inside consoleContainer
+                } // consoleContainer
+            } // SplitView
+        } // Item 3: Main Split Content Area
+        } // inner ColumnLayout
+        } // mainAppContentArea
 
         // 4. Bottom Status & Progress Footer (the Gallery shows a small download chip instead)
         Item {
+            id: footerProgressArea
             Layout.fillWidth: true
             Layout.preferredHeight: 44 * appWindow.chromeProgress
             visible: appWindow.chromeProgress > 0
@@ -2575,6 +2810,26 @@ ApplicationWindow {
                 }
             }
         }
+    }
+
+    // Keyboard shortcut for instant Privacy Shield toggle
+    Shortcut {
+        sequence: "Ctrl+P"
+        onActivated: {
+            if (appBridge) appBridge.togglePrivacyMode()
+        }
+    }
+
+    // Global Privacy Shield Overlay — covers entire app view above the bottom progress footer
+    PrivacyShieldOverlay {
+        id: privacyShieldOverlay
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: (footerProgressArea.visible && footerProgressArea.height > 0) ? footerProgressArea.height : 0
+        z: 999999
+        bridge: appBridge
     }
 
     // Global Retry Modal — used by the sticky action bar
