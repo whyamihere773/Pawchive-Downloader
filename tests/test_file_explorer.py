@@ -8,6 +8,17 @@ from bridge.app_bridge import AppBridge
 
 
 class TestFileExplorer(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        from services.ytdlp_manager import YtDlpManager
+        cls._orig_ytdlp_check = YtDlpManager.check_for_updates_async
+        YtDlpManager.check_for_updates_async = lambda self, *a, **k: None
+
+    @classmethod
+    def tearDownClass(cls):
+        from services.ytdlp_manager import YtDlpManager
+        YtDlpManager.check_for_updates_async = cls._orig_ytdlp_check
+
     def setUp(self):
         self.temp_dir = tempfile.mkdtemp()
         # Create some test files and folders
