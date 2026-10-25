@@ -248,6 +248,10 @@ class SessionManager:
                 with open(self.settings_file, "r", encoding="utf-8") as f:
                     saved = json.load(f)
                 if isinstance(saved, dict):
+                    raw_dl = saved.get("download_dir")
+                    if isinstance(raw_dl, str) and ("bridge_rebuild_test_" in raw_dl or "pawchive_tests_" in raw_dl or (("temp" in raw_dl.lower() or "tmp" in raw_dl.lower()) and not os.path.exists(raw_dl))):
+                        logger.warning(f"Discarding invalid temporary/test download directory from settings: {raw_dl}", category="session")
+                        saved.pop("download_dir", None)
                     default_settings.update(saved)
                     self._localize_settings(default_settings)
             except Exception as e:

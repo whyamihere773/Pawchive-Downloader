@@ -220,6 +220,73 @@ ColumnLayout {
         }
     }
 
+    // Video Hardware Acceleration (Intel Quick Sync, NVIDIA NVENC, AMD AMF, CPU)
+    Flow {
+        Layout.fillWidth: true
+        Layout.leftMargin: root.embedded ? 0 : 26
+        visible: root.on && root.decompressor && root.decompressor.videoFormat !== "keep" && root.decompressor.ffmpegAvailable
+        spacing: 10
+
+        Text {
+            text: root.tr("compress_hwaccel_label", "Acceleration:")
+            font.family: "Segoe UI, sans-serif"
+            font.pixelSize: 11
+            color: "#94A3B8"
+            width: 80
+            height: 28
+            verticalAlignment: Text.AlignVCenter
+        }
+        StyledComboBox {
+            objectName: "compress_video_hwaccel"
+            implicitHeight: 28
+            implicitWidth: 190
+            model: [
+                {
+                    text: root.decompressor && root.decompressor.detectedHwAccel
+                          ? root.tr("compress_hw_auto_detected", "Auto (%1)").replace("%1",
+                              root.decompressor.detectedHwAccel === "nvenc" ? "NVIDIA NVENC"
+                              : (root.decompressor.detectedHwAccel === "qsv" ? "Intel Quick Sync"
+                              : (root.decompressor.detectedHwAccel === "amf" ? "AMD AMF" : "CPU")))
+                          : root.tr("compress_hw_auto", "Auto (Hardware if available)"),
+                    value: "auto" },
+                { text: root.tr("compress_hw_nvenc", "NVIDIA NVENC"), value: "nvenc" },
+                { text: root.tr("compress_hw_qsv", "Intel Quick Sync (QSV)"), value: "qsv" },
+                { text: root.tr("compress_hw_amf", "AMD AMF"), value: "amf" },
+                { text: root.tr("compress_hw_cpu", "CPU (Software)"), value: "cpu" }
+            ]
+            value: root.decompressor ? root.decompressor.videoHwAccel : "auto"
+            tooltip: root.tr("compress_hw_tip", "Hardware acceleration (NVIDIA NVENC, Intel Quick Sync, AMD AMF) uses your GPU to compress videos much faster. If the chosen hardware encoder isn't available, it automatically falls back to software encoding.")
+            onValuePicked: function(v) { if (root.decompressor) root.decompressor.videoHwAccel = v }
+        }
+        Item {
+            height: 28
+            width: hwBadge.width
+            Rectangle {
+                id: hwBadge
+                height: 24
+                radius: 4
+                anchors.verticalCenter: parent.verticalCenter
+                color: root.decompressor && root.decompressor.detectedHwAccel ? "#064E3B" : "#1E293B"
+                border.color: root.decompressor && root.decompressor.detectedHwAccel ? "#059669" : "#334155"
+                border.width: 1
+                width: hwBadgeText.implicitWidth + 12
+                Text {
+                    id: hwBadgeText
+                    anchors.centerIn: parent
+                    text: root.decompressor && root.decompressor.detectedHwAccel
+                          ? "⚡ " + (root.decompressor.detectedHwAccel === "nvenc" ? "NVENC active"
+                                    : (root.decompressor.detectedHwAccel === "qsv" ? "Quick Sync active"
+                                    : (root.decompressor.detectedHwAccel === "amf" ? "AMF active" : "HW active")))
+                          : "ℹ CPU mode"
+                    font.family: "Segoe UI, sans-serif"
+                    font.pixelSize: 10
+                    font.weight: Font.Medium
+                    color: root.decompressor && root.decompressor.detectedHwAccel ? "#6EE7B7" : "#94A3B8"
+                }
+            }
+        }
+    }
+
     // Animated pictures (GIF, APNG, animated WebP / AVIF): their own setting. They stay animated, in their own
     // format or as another animated one: an animation never becomes a still picture
     Flow {

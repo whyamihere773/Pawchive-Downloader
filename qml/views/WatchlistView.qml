@@ -472,9 +472,20 @@ Item {
                         }
                         Text {
                             anchors.verticalCenter: parent.verticalCenter
-                            text: root.isChecking
-                                  ? root.tr("watchlist_checking", "Checking…") + (root.checkTotal > 0 ? "  " + root.checkDone + " / " + root.checkTotal : "")
-                                  : (root.width < 820 ? root.tr("watchlist_check_artist", "Check") : root.tr("watchlist_check_all", "Check All"))
+                            text: {
+                                if (root.isChecking) {
+                                    return root.tr("watchlist_checking", "Checking…") + (root.checkTotal > 0 ? "  " + root.checkDone + " / " + root.checkTotal : "")
+                                }
+                                var isFiltered = (root.activeServiceFilter !== "all" || root.searchText !== "")
+                                if (root.width < 820) {
+                                    return root.tr("watchlist_check_artist", "Check")
+                                }
+                                if (isFiltered) {
+                                    var count = (bridge && bridge.watchlistModel) ? bridge.watchlistModel.count : 0
+                                    return root.tr("watchlist_check_filtered", "Check Filtered") + " (" + count + ")"
+                                }
+                                return root.tr("watchlist_check_all", "Check All")
+                            }
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 11
                             font.weight: 600
@@ -489,10 +500,21 @@ Item {
                         cursorShape: Qt.PointingHandCursor
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 300
-                        ToolTip.text: root.isChecking
-                                      ? root.tr("watchlist_stop_check_tip", "Stop checking (the next check continues from here)")
-                                      : root.tr("watchlist_check_all_tip", "Check all followed artists for new posts")
-                        onClicked: if (bridge) bridge.checkWatchlist()   // while checking: stops it
+                        ToolTip.text: {
+                            if (root.isChecking) {
+                                return root.tr("watchlist_stop_check_tip", "Stop checking (the next check continues from here)")
+                            }
+                            if (root.activeServiceFilter !== "all" || root.searchText !== "") {
+                                return root.tr("watchlist_check_filtered_tip", "Check visible artists matching the active filter for new posts")
+                            }
+                            return root.tr("watchlist_check_all_tip", "Check all followed artists for new posts")
+                        }
+                        onClicked: {
+                            if (bridge) {
+                                var isFiltered = (root.activeServiceFilter !== "all" || root.searchText !== "")
+                                bridge.checkWatchlist(isFiltered)
+                            }
+                        }
                     }
                 }
             }
@@ -609,6 +631,7 @@ Item {
                                 { id: "all",           label: root.tr("filter_all", "All") },
                                 { id: "updates",       label: "✦ " + root.tr("filter_updates", "Updates") },
                                 { id: "favorites",     label: "⭐ " + root.tr("filter_favorites", "Favorites") },
+                                { id: "synced",        label: "💾 " + root.tr("filter_on_disk", "On Disk") },
                                 { id: "patreon",       label: "Patreon" },
                                 { id: "fanbox",        label: "Fanbox" },
                                 { id: "fansly",        label: "Fansly" },
@@ -626,10 +649,10 @@ Item {
                                 radius: 12
                                 readonly property bool isSelected: root.activeServiceFilter === modelData.id
                                 color: isSelected 
-                                       ? (modelData.id === "updates" ? "#0C2D3A" : (modelData.id === "favorites" ? "#2A2008" : "#1E1B3D"))
+                                       ? (modelData.id === "updates" ? "#0C2D3A" : (modelData.id === "favorites" ? "#2A2008" : (modelData.id === "synced" ? "#064E3B" : "#1E1B3D")))
                                        : (chipMouse.containsMouse ? "#161D2E" : "#0D111A")
                                 border.color: isSelected 
-                                              ? (modelData.id === "updates" ? "#22D3EE" : (modelData.id === "favorites" ? "#F59E0B" : "#8B5CF6"))
+                                              ? (modelData.id === "updates" ? "#22D3EE" : (modelData.id === "favorites" ? "#F59E0B" : (modelData.id === "synced" ? "#10B981" : "#8B5CF6")))
                                               : (chipMouse.containsMouse ? "#2E3A52" : "#1A2234")
                                 border.width: 1
 
@@ -644,7 +667,7 @@ Item {
                                     font.pixelSize: 10
                                     font.weight: chipRect.isSelected ? Font.Bold : 600
                                     color: chipRect.isSelected
-                                           ? (modelData.id === "updates" ? "#A5F3FC" : (modelData.id === "favorites" ? "#FCD34D" : "#DDD6FE"))
+                                           ? (modelData.id === "updates" ? "#A5F3FC" : (modelData.id === "favorites" ? "#FCD34D" : (modelData.id === "synced" ? "#6EE7B7" : "#DDD6FE")))
                                            : (chipMouse.containsMouse ? "#94A3B8" : "#64748B")
                                 }
 

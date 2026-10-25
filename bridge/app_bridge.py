@@ -230,6 +230,7 @@ class AppBridge(QObject):
     watchlistArtistChecking   = Signal(str, str, bool) # (userId, service, isChecking)
     watchlistArtistChecked    = Signal(str, str, int)  # (userId, service, newPostCount)
     watchlistApplyGlobalSettingsChanged = Signal()
+    watchlistCheckOnStartupChanged = Signal()
     # "Change download folder": (userId, service, creator, old folder, new folder, files, size text) when
     # the artist already has files to move or keep; then (userId, service, message) when it's done
     watchlistFolderChangeRequested = Signal(str, str, str, str, str, int, str)
@@ -510,6 +511,7 @@ class AppBridge(QObject):
         self._watchlist_pending_updates: Dict[Tuple[str, str], List[Tuple[str, str]]] = {}
         self._watchlist_result_signal_connected = False
         self._watchlist_apply_global_settings = bool(saved_settings.get("watchlist_apply_global_settings", True))
+        self._watchlist_check_on_startup = bool(saved_settings.get("watchlist_check_on_startup", True))
 
         # Bulk Decompressor
         self._decompressor_bridge = DecompressorBridge(self._watchlist_manager, self, self)
@@ -615,8 +617,8 @@ class AppBridge(QObject):
         self.isDownloadingChanged.connect(self._update_sleep_prevention)
 
         # Auto-check watchlist entries on startup (background, non-blocking): the artists with
-        # auto-check on (it used to check every artist)
-        if any(e.auto_check for e in self._watchlist_manager.entries):
+        # auto-check on (if startup check is enabled)
+        if self._watchlist_check_on_startup and any(e.auto_check for e in self._watchlist_manager.entries):
             threading.Thread(target=lambda: self._async_watchlist_check(automatic=True),
                              name="WatchlistAutoCheck", daemon=True).start()
 
@@ -2614,6 +2616,18 @@ class AppBridge(QObject):
         if self._watchlist_apply_global_settings != b_val:
             self._watchlist_apply_global_settings = b_val
             self.watchlistApplyGlobalSettingsChanged.emit()
+            self.saveSettings()
+
+    @Property(bool, notify=watchlistCheckOnStartupChanged)
+    def watchlistCheckOnStartup(self) -> bool:
+        return self._watchlist_check_on_startup
+
+    @watchlistCheckOnStartup.setter
+    def watchlistCheckOnStartup(self, val: bool):
+        b_val = bool(val)
+        if self._watchlist_check_on_startup != b_val:
+            self._watchlist_check_on_startup = b_val
+            self.watchlistCheckOnStartupChanged.emit()
             self.saveSettings()
 
     @Property(QObject, constant=True)
@@ -5900,6 +5914,7 @@ class AppBridge(QObject):
             "group_file_type": self._group_file_type,
             "file_order": self._file_order,
             "watchlist_apply_global_settings": self._watchlist_apply_global_settings,
+            "watchlist_check_on_startup": self._watchlist_check_on_startup,
             "bandwidth_limit_enabled": self._bandwidth_limit_enabled,
             "bandwidth_limit_value": self._bandwidth_limit_value,
             "bandwidth_limit_unit": self._bandwidth_limit_unit,
@@ -6810,15 +6825,32 @@ class AppBridge(QObject):
         self.watchlistChanged.emit()
 
     @Slot()
-    def checkWatchlist(self):
-        """Asynchronously check all watchlist entries for new posts. While a check runs, this stops
-        it (the next check continues where it stopped)."""
+    @Slot(bool)
+    def checkWatchlist(self, filtered_only: bool = True):
+        """Asynchronously check watchlist entries for new posts. While a check runs, this stops
+        it (the next check continues where it stopped). When filtered_only is True and a filter
+        or search is active on the WatchlistModel, only visible entries are checked."""
         running = getattr(self, "_watchlist_checker", None)
         if running is not None:
             running.cancel()
             logger.info("Watchlist check stopped; the next check continues from here.", category="watchlist")
             return
-        threading.Thread(target=self._async_watchlist_check, name="WatchlistCheck", daemon=True).start()
+
+        entries_to_check = None
+        if filtered_only and getattr(self, "_watchlist_model", None):
+            model = self._watchlist_model
+            if model._service_filter != "all" or model._search_text:
+                entries_to_check = list(model._display_entries)
+                logger.info(
+                    f"Checking {len(entries_to_check)} artist(s) matching active filter.",
+                    category="watchlist"
+                )
+
+        threading.Thread(
+            target=lambda: self._async_watchlist_check(entries_to_check=entries_to_check),
+            name="WatchlistCheck",
+            daemon=True
+        ).start()
 
     def _check_and_resolve_if_already_downloaded(self, entry, new_posts: list) -> list:
         """If all files in new_posts already exist on disk or in the download archive,
@@ -7835,12 +7867,12 @@ class AppBridge(QObject):
             logger.info(f"Watchlist: {entry.creator_name!r} has {len(new)} new post(s).", category="watchlist")
         return len(new)
 
-    def _async_watchlist_check(self, automatic: bool = False, wait_if_running: bool = False):
+    def _async_watchlist_check(self, automatic: bool = False, wait_if_running: bool = False, entries_to_check: Optional[list] = None):
         """
-        Background thread: check the watchlist for new posts (all artists; automatic checks only those
-        with auto-check on). Sites are checked in parallel, results show up as they come in, and a
-        check that was stopped continues where it left off (see WatchlistChecker). Ends with
-        _watchlistResultSignal so the GUI can refresh safely.
+        Background thread: check the watchlist for new posts (all artists or entries_to_check; automatic
+        checks only those with auto-check on). Sites are checked in parallel, results show up as they
+        come in, and a check that was stopped continues where it left off (see WatchlistChecker). Ends
+        with _watchlistResultSignal so the GUI can refresh safely.
         """
         from core.providers import is_disabled, disabled_message
         from core.watchlist_checker import WatchlistChecker
@@ -7870,7 +7902,7 @@ class AppBridge(QObject):
             return
         try:
             self.watchlistCheckStarted.emit()
-            entries = self._watchlist_manager.get_all()
+            entries = entries_to_check if entries_to_check is not None else self._watchlist_manager.get_all()
             skipped_off = [e for e in entries if is_disabled(e.domain) or is_disabled(e.url)]
             if skipped_off:
                 logger.warning(

@@ -4781,6 +4781,75 @@ Click to open the Downloader"
                     }
                 }
 
+                // Media Compression background job: live progress or "done — view"
+                Rectangle {
+                    id: mcBgJobPill
+                    readonly property var mcItem: mediaCompressLoader.item
+                    readonly property bool runningHidden: mcItem && mcItem.stage === "running" && !mcItem.isOpen
+                    readonly property bool unseenResult: mcItem && mcItem.unseenResult
+                    visible: runningHidden || unseenResult
+                    implicitHeight: 20
+                    implicitWidth: Math.min(mcBgJobRow.implicitWidth + 16, root.compact ? 230 : 380)
+                    radius: 10
+                    clip: true
+                    color: mcBgJobMouse.containsMouse ? "#1E293B" : "#121a2b"
+                    border.color: unseenResult ? ((mcItem && mcItem.failedCount > 0) ? "#F59E0B" : "#34D399") : "#0284C7"
+                    border.width: 1
+
+                    // Progress fill behind the text
+                    Rectangle {
+                        visible: mcBgJobPill.runningHidden
+                        anchors.left: parent.left
+                        anchors.top: parent.top
+                        anchors.bottom: parent.bottom
+                        width: parent.width * Math.max(0, Math.min(1, (mcBgJobPill.mcItem ? mcBgJobPill.mcItem.progress : 0) / 100))
+                        radius: 10
+                        color: "#0F3854"
+                        opacity: 0.8
+                    }
+                    Row {
+                        id: mcBgJobRow
+                        anchors.left: parent.left
+                        anchors.leftMargin: 8
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 6
+                        Text {
+                            text: mcBgJobPill.unseenResult ? ((mcBgJobPill.mcItem && mcBgJobPill.mcItem.failedCount > 0) ? "⚠" : "✔") : "🗜"
+                            font.pixelSize: 10
+                            color: "#CBD5E1"
+                        }
+                        Text {
+                            text: {
+                                var it = mcBgJobPill.mcItem
+                                if (mcBgJobPill.unseenResult) {
+                                    var done = it ? it.doneCount : 0
+                                    return (done > 0 ? ("Compressed " + done + (done === 1 ? " file" : " files")) : "Nothing compressed") + " — view"
+                                }
+                                var pct = it ? Math.round(it.progress) : 0
+                                var cur = it ? (it.currentName || "Compressing…") : "Compressing…"
+                                return cur + "  " + pct + "%"
+                            }
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 10
+                            font.weight: 600
+                            color: "#E2E8F0"
+                            elide: Text.ElideMiddle
+                            width: Math.min(implicitWidth, root.compact ? 190 : 340)
+                        }
+                    }
+                    Springy { hover: mcBgJobMouse.containsMouse; pressed: mcBgJobMouse.pressed }
+                    MouseArea {
+                        id: mcBgJobMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: if (mcBgJobPill.mcItem) mcBgJobPill.mcItem.reopen()
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 300
+                        ToolTip.text: mcBgJobPill.runningHidden ? ((mcBgJobPill.mcItem ? mcBgJobPill.mcItem.currentName : "") + "\nClick to show the compression window") : "Click to view results"
+                    }
+                }
+
                 // Result of the last file operation
                 Text {
                     visible: opacity > 0.01
@@ -4999,6 +5068,16 @@ Click to open the Downloader"
             MediaCompressModal {
                 bridge: root.bridge
                 onFinished: root.refreshPreservingScroll()
+                onBackgroundFinished: (headline, ok) => {
+                    root.showToast(headline, !ok)
+                    // Elsewhere in the app: the global toast, which jumps back to the result when clicked
+                    if (typeof appWindow !== "undefined" && appWindow.currentTab !== 6 && appWindow.showToast) {
+                        appWindow.showToast((ok ? "✔ " : "⚠ ") + "Gallery: " + headline + " (click to view)", function() {
+                            appWindow.currentTab = 6
+                            if (mediaCompressLoader.item) mediaCompressLoader.item.reopen()
+                        })
+                    }
+                }
             }
         }
     }

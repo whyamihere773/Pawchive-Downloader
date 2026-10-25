@@ -29,7 +29,7 @@ from core.logger import logger
 from core.path_translation import localize_path
 from services.ffmpeg_manager import FfmpegDownloader, find_ffmpeg
 from services.media_compressor import (CompressResult, CompressSettings, classify, compress_folder, compress_paths,
-                                       media_in)
+                                       detect_available_hwaccels, get_primary_hwaccel, media_in)
 
 
 def _format_bytes(b: int) -> str:
@@ -126,6 +126,7 @@ class DecompressorBridge(QObject):
         self._image_quality = 82
         self._video_format = "h265"
         self._video_quality = 75
+        self._video_hwaccel = "auto"
         self._animated_format = "same"
         self._animated_quality = 82
         self._header_collapsed = False
@@ -181,6 +182,7 @@ class DecompressorBridge(QObject):
             "image_quality": self._image_quality,
             "video_format": self._video_format,
             "video_quality": self._video_quality,
+            "video_hwaccel": self._video_hwaccel,
             "animated_format": self._animated_format,
             "animated_quality": self._animated_quality,
             "header_collapsed": self._header_collapsed,
@@ -204,6 +206,7 @@ class DecompressorBridge(QObject):
             self.imageQuality = d.get("image_quality", self._image_quality)
             self.videoFormat = d.get("video_format", self._video_format)
             self.videoQuality = d.get("video_quality", self._video_quality)
+            self.videoHwAccel = d.get("video_hwaccel", self._video_hwaccel)
             self.animatedFormat = d.get("animated_format", self._animated_format)
             self.animatedQuality = d.get("animated_quality", self._animated_quality)
             self.headerCollapsed = bool(d.get("header_collapsed", False))
@@ -276,6 +279,27 @@ class DecompressorBridge(QObject):
         if v != self._video_quality:
             self._video_quality = v
             self.settingsChanged.emit()
+
+    @Property(str, notify=settingsChanged)
+    def videoHwAccel(self) -> str:
+        return self._video_hwaccel
+
+    @videoHwAccel.setter
+    def videoHwAccel(self, val: str):
+        v = str(val or "").lower()
+        if v in ("auto", "nvenc", "qsv", "amf", "cpu") and v != self._video_hwaccel:
+            self._video_hwaccel = v
+            self.settingsChanged.emit()
+
+    @Property(str, notify=ffmpegChanged)
+    def detectedHwAccel(self) -> str:
+        """Name of the detected hardware encoder (e.g. 'nvenc', 'qsv', 'amf'), or ''."""
+        return get_primary_hwaccel(self._ffmpeg_path) if self.ffmpegAvailable else ""
+
+    @Property("QVariantList", notify=ffmpegChanged)
+    def availableHwAccels(self) -> List[str]:
+        """List of detected hardware acceleration options on this system."""
+        return detect_available_hwaccels(self._ffmpeg_path) if self.ffmpegAvailable else []
 
     @Property(str, notify=settingsChanged)
     def animatedFormat(self) -> str:
@@ -366,6 +390,7 @@ class DecompressorBridge(QObject):
         """The formats and qualities chosen (shared by the Decompressor and the Gallery)."""
         return CompressSettings(image_format=self._image_format, image_quality=self._image_quality,
                                 video_format=self._video_format, video_quality=self._video_quality,
+                                video_hwaccel=self._video_hwaccel,
                                 animated_format=self._animated_format, animated_quality=self._animated_quality,
                                 ffmpeg=self._ffmpeg_path if self.ffmpegAvailable else "")
 

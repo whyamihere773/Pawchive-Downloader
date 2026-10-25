@@ -2910,6 +2910,13 @@ SmoothFlickable {
                             onCheckedChanged: if (root.bridge) root.bridge.watchlistApplyGlobalSettings = checked
                         }
 
+                        StyledCheckBox {
+                            text: tr("opt_watchlist_check_startup", "Auto-check Watchlist on application startup")
+                            tooltip: tr("opt_watchlist_check_startup_tip", "Automatically check tracked artists for newly posted content when Pawchive Downloader starts")
+                            checked: root.bridge ? root.bridge.watchlistCheckOnStartup : true
+                            onCheckedChanged: if (root.bridge) root.bridge.watchlistCheckOnStartup = checked
+                        }
+
                         RowLayout {
                             Layout.fillWidth: true
                             spacing: 10

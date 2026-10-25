@@ -9,6 +9,7 @@ keeps the order updates the rows in place (no reset: the list keeps its scroll p
 creator's check result updates just its row.
 """
 
+import os
 import threading
 from operator import itemgetter
 
@@ -74,6 +75,7 @@ class WatchlistModel(QAbstractListModel):
     DownloadDirsRole = Qt.UserRole + 14
     IsFavoriteRole   = Qt.UserRole + 15
     ProviderRole     = Qt.UserRole + 16
+    IsOnDiskRole     = Qt.UserRole + 17
 
     # Above this many creators the list is filtered and sorted in the background
     BACKGROUND_REBUILD_AT = 20000
@@ -119,9 +121,11 @@ class WatchlistModel(QAbstractListModel):
         self._display_entries = []
         self._row_of = {}                    # id(entry) -> row
         self._n_of = {}                      # id(entry) -> new post count when last counted
+        self._on_disk_of = {}                # id(entry) -> bool
         self._total = 0
         self._updated = 0
         self._new_posts = 0
+        self._on_disk_total = 0
         self._gen = 0
         self._rebuilding = False
         self._again = False
@@ -133,34 +137,90 @@ class WatchlistModel(QAbstractListModel):
 
     # ── Building the list ──────────────────────────────────────────────────────
 
+    def _get_base_dir(self) -> str:
+        parent = self.parent()
+        return getattr(parent, "_download_dir", "") if parent else ""
+
     def _snapshot(self):
         lock = getattr(self._manager, "_lock", None)
+        base_dir = self._get_base_dir()
         if lock is not None:
             with lock:
-                return list(self._manager.entries), self._search_text, self._service_filter
-        return list(self._manager.entries), self._search_text, self._service_filter
+                return list(self._manager.entries), self._search_text, self._service_filter, base_dir
+        return list(self._manager.entries), self._search_text, self._service_filter, base_dir
+
+    @staticmethod
+    def _is_entry_on_disk(e, base_dir: str = "", existing_subdirs: Optional[set] = None) -> bool:
+        # 1. Any explicitly assigned download directory exists on disk
+        dirs = []
+        dl_dir = getattr(e, "download_dir", "")
+        if dl_dir:
+            dirs.append(dl_dir)
+        for d in (getattr(e, "download_dirs", []) or []):
+            if d and d not in dirs:
+                dirs.append(d)
+
+        for d in dirs:
+            try:
+                if os.path.isdir(d):
+                    return True
+            except Exception:
+                pass
+
+        # 2. In base_dir, check if standard creator folder exists
+        if base_dir:
+            from core.folder_naming import creator_folder_names
+            creator_name = getattr(e, "creator_name", "") or getattr(e, "user_id", "")
+            service = getattr(e, "service", "")
+            if existing_subdirs is not None:
+                for name in creator_folder_names(creator_name, service):
+                    if name.lower() in existing_subdirs:
+                        return True
+            else:
+                for name in creator_folder_names(creator_name, service):
+                    try:
+                        if os.path.isdir(os.path.join(base_dir, name)):
+                            return True
+                    except Exception:
+                        pass
+        return False
 
     @staticmethod
     def _compute(snapshot):
         """
         Filters and sorts entries:
         1. Filters by search_text (creator_name or user_id)
-        2. Filters by service_filter ("all", "updates", or specific service)
+        2. Filters by service_filter ("all", "updates", "favorites", "synced"/"on_disk", or specific service)
         3. Creators with new_post_count > 0 at the top, sorted alphabetically by creator name.
         4. Remaining creators below, sorted alphabetically by creator name.
         """
-        entries, search_text, service_filter = snapshot
+        entries, search_text, service_filter, base_dir = snapshot
         st = (search_text or "").strip().lower()
         sf = (service_filter or "all").strip().lower()
-        updated = new_posts = 0
+        updated = new_posts = on_disk_total = 0
         n_of = {}
+        on_disk_of = {}
         keyed = []
+
+        existing_subdirs = None
+        if base_dir and os.path.isdir(base_dir):
+            try:
+                existing_subdirs = {entry.name.lower() for entry in os.scandir(base_dir) if entry.is_dir()}
+            except Exception:
+                existing_subdirs = set()
+
         for e in entries:
             n = getattr(e, "new_post_count", 0) or 0
             n_of[id(e)] = n
             if n > 0:
                 updated += 1
                 new_posts += n
+
+            is_disk = WatchlistModel._is_entry_on_disk(e, base_dir, existing_subdirs)
+            on_disk_of[id(e)] = is_disk
+            if is_disk:
+                on_disk_total += 1
+
             name = getattr(e, "creator_name", "") or ""
             uid = getattr(e, "user_id", "") or ""
             if st and st not in name.lower() and st not in uid.lower():
@@ -171,15 +231,18 @@ class WatchlistModel(QAbstractListModel):
             elif sf in ("favorites", "favorite"):
                 if not getattr(e, "is_favorite", False):
                     continue
+            elif sf in ("synced", "on_disk", "ondisk"):
+                if not is_disk:
+                    continue
             elif sf and sf != "all" and (getattr(e, "service", "") or "").lower() != sf:
                 continue
             keyed.append((0 if n > 0 else 1, (name or uid).lower(), e))
         keyed.sort(key=itemgetter(0, 1))
         display = [k[2] for k in keyed]
-        return display, n_of, (len(entries), updated, new_posts)
+        return display, n_of, on_disk_of, (len(entries), updated, new_posts, on_disk_total)
 
     def _apply(self, built, reset=True):
-        display, n_of, (total, updated, new_posts) = built
+        display, n_of, on_disk_of, (total, updated, new_posts, on_disk_total) = built
         old = self._display_entries
         same_rows = len(old) == len(display) and all(a is b for a, b in zip(old, display))
         if reset and not same_rows:
@@ -187,7 +250,8 @@ class WatchlistModel(QAbstractListModel):
         self._display_entries = display
         self._row_of = {id(e): i for i, e in enumerate(display)}
         self._n_of = n_of
-        self._total, self._updated, self._new_posts = total, updated, new_posts
+        self._on_disk_of = on_disk_of
+        self._total, self._updated, self._new_posts, self._on_disk_total = total, updated, new_posts, on_disk_total
         if reset:
             if same_rows:
                 if display:      # same creators in the same order: refresh the rows in place
@@ -236,6 +300,11 @@ class WatchlistModel(QAbstractListModel):
         """Total count of favorited artists in the watchlist."""
         return sum(1 for e in getattr(self._manager, "entries", []) if getattr(e, "is_favorite", False))
 
+    @Property(int, notify=countChanged)
+    def onDiskCount(self) -> int:
+        """Total count of artists in the watchlist that currently exist on disk."""
+        return getattr(self, "_on_disk_total", 0)
+
     @Slot(int, result="QVariantMap")
     def get(self, index: int) -> dict:
         if 0 <= index < len(self._display_entries):
@@ -257,6 +326,7 @@ class WatchlistModel(QAbstractListModel):
                 "cachedNewPosts": _posts_for_qml(e),
                 "isFavorite": bool(getattr(e, "is_favorite", False)),
                 "provider": _provider(e),
+                "isOnDisk": bool(self._on_disk_of.get(id(e), False)),
             }
         return {}
 
@@ -283,6 +353,8 @@ class WatchlistModel(QAbstractListModel):
     def data(self, index, role=Qt.DisplayRole):
         if not index.isValid() or index.row() >= len(self._display_entries):
             return None
+        if role == self.IsOnDiskRole:
+            return bool(self._on_disk_of.get(id(self._display_entries[index.row()]), False))
         getter = self._ROLE_GETTERS.get(role)
         return getter(self._display_entries[index.row()]) if getter else None
 
@@ -304,6 +376,7 @@ class WatchlistModel(QAbstractListModel):
             self.CachedPostsRole:  b"cachedNewPosts",
             self.IsFavoriteRole:   b"isFavorite",
             self.ProviderRole:     b"provider",
+            self.IsOnDiskRole:     b"isOnDisk",
             Qt.DisplayRole:        b"display",
         }
 
@@ -336,7 +409,7 @@ class WatchlistModel(QAbstractListModel):
             except Exception:
                 built = None
             if built is None:
-                built = (list(self._display_entries), dict(self._n_of), (self._total, self._updated, self._new_posts))
+                built = (list(self._display_entries), dict(self._n_of), dict(getattr(self, "_on_disk_of", {})), (self._total, self._updated, self._new_posts, getattr(self, "_on_disk_total", 0)))
             self._rebuilt.emit(gen, built)
         threading.Thread(target=_work, name="WatchlistRebuild", daemon=True).start()
 

@@ -75,6 +75,40 @@ def _rescue_from_internal() -> None:
                     pass
 
 
+_AUTO_TEST_HOME: Optional[str] = None
+
+
+def _is_test_runner() -> bool:
+    """Check if the current process is running tests (pytest, unittest, etc.)."""
+    if os.environ.get("PYTEST_CURRENT_TEST") or getattr(sys, "_called_from_test", False):
+        return True
+    if "pytest" in sys.modules or "unittest" in sys.modules:
+        return True
+    for arg in sys.argv:
+        base = os.path.basename(arg).lower()
+        if base.startswith(("test_", "pytest")) or base in ("unittest", "pytest.exe"):
+            return True
+        norm = os.path.abspath(arg).replace("\\", "/").lower()
+        if "/tests/" in norm or norm.endswith("/tests"):
+            return True
+    return False
+
+
+def _get_auto_test_dir(env_var: str, sub: str) -> str:
+    """Safe isolated directory for tests executed without PAWCHIVE_CONFIG_DIR / PAWCHIVE_DATA_DIR."""
+    global _AUTO_TEST_HOME
+    import tempfile
+    import shutil
+    import atexit
+    if not _AUTO_TEST_HOME or not os.path.exists(_AUTO_TEST_HOME):
+        _AUTO_TEST_HOME = tempfile.mkdtemp(prefix="pawchive_auto_test_")
+        atexit.register(shutil.rmtree, _AUTO_TEST_HOME, True)
+    path = os.path.join(_AUTO_TEST_HOME, sub)
+    os.makedirs(path, exist_ok=True)
+    os.environ[env_var] = path
+    return path
+
+
 def get_config_dir(custom_dir: Optional[str] = None) -> str:
     """
     Resolve the configuration directory:
@@ -93,6 +127,9 @@ def get_config_dir(custom_dir: Optional[str] = None) -> str:
     if env_dir:
         os.makedirs(env_dir, exist_ok=True)
         return env_dir
+
+    if _is_test_runner():
+        return _get_auto_test_dir("PAWCHIVE_CONFIG_DIR", "config")
 
     if sys.platform == "win32":
         _rescue_from_internal()
@@ -146,6 +183,9 @@ def get_data_dir() -> str:
     if env_dir:
         os.makedirs(env_dir, exist_ok=True)
         return env_dir
+
+    if _is_test_runner():
+        return _get_auto_test_dir("PAWCHIVE_DATA_DIR", "data")
 
     if sys.platform == "win32":
         _rescue_from_internal()

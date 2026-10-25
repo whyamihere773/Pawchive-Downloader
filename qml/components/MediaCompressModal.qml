@@ -35,8 +35,10 @@ Item {
     property int leftCount: 0
     property bool stopped: false
     property string originalsNote: ""
+    property bool unseenResult: false
 
     signal finished()                     // files were written or removed: the Gallery reloads
+    signal backgroundFinished(string headline, bool ok)
 
     anchors.fill: parent
     z: 9500
@@ -67,6 +69,7 @@ Item {
         progress = 0
         currentName = ""
         originalsNote = ""
+        unseenResult = false
         isOpen = true
         recount()
     }
@@ -77,8 +80,22 @@ Item {
     }
 
     function close() {
-        if (stage === "running") return            // Stop first
+        if (stage === "running") {
+            hideToBackground()
+            return
+        }
         isOpen = false
+    }
+
+    function hideToBackground() {
+        if (stage === "running") {
+            isOpen = false
+        }
+    }
+
+    function reopen() {
+        unseenResult = false
+        isOpen = true
     }
 
     function start() {
@@ -111,7 +128,6 @@ Item {
             if (name) root.currentName = name
         }
         function onCompressPathsFinished(count, before, after, failed, left, stopped) {
-            if (root.stage !== "running") return
             root.doneCount = count
             root.bytesBefore = before
             root.bytesAfter = after
@@ -121,6 +137,13 @@ Item {
             root.progress = 100
             root.stage = "result"
             if (count > 0) root.finished()
+            if (!root.isOpen) {
+                root.unseenResult = true
+                var headline = stopped ? root.tr("gc_title_stopped", "Compression stopped")
+                             : (count > 0 ? root.tr("compress_finished_count", "Compressed %1 file(s)").replace("%1", count)
+                                          : root.tr("gc_none_smaller", "Nothing was compressed: no copy came out smaller, so every file was left as it was."))
+                root.backgroundFinished(headline, count > 0 && failed === 0)
+            }
         }
         function onGalleryOriginalsHandled(message) {
             root.originalsNote = message
@@ -379,6 +402,13 @@ Item {
                     }
                     StyledButton {
                         visible: root.stage === "running"
+                        text: root.tr("gc_background", "Run in background")
+                        variant: "primary"
+                        implicitHeight: 32
+                        onClicked: root.hideToBackground()
+                    }
+                    StyledButton {
+                        visible: root.stage === "running"
                         text: root.tr("folder_change_stop", "Stop")
                         variant: "outline"
                         implicitHeight: 32
@@ -390,6 +420,7 @@ Item {
                         variant: "outline"
                         implicitHeight: 32
                         onClicked: {
+                            root.unseenResult = false
                             if (root.dz) root.dz.keepCompressedOriginals()
                             root.isOpen = false
                         }
@@ -399,14 +430,20 @@ Item {
                         text: root.tr("compress_remove_originals", "Move originals to Recycle Bin")
                         variant: "primary"
                         implicitHeight: 32
-                        onClicked: if (root.dz) root.dz.removeCompressedOriginals()
+                        onClicked: {
+                            root.unseenResult = false
+                            if (root.dz) root.dz.removeCompressedOriginals()
+                        }
                     }
                     StyledButton {
                         visible: root.stage === "result" && (root.doneCount === 0 || root.originalsNote.length > 0)
                         text: root.tr("btn_close", "Close")
                         variant: "primary"
                         implicitHeight: 32
-                        onClicked: root.isOpen = false
+                        onClicked: {
+                            root.unseenResult = false
+                            root.isOpen = false
+                        }
                     }
                 }
             }

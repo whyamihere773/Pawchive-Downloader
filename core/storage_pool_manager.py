@@ -74,8 +74,20 @@ class StoragePoolManager:
         self.enabled = bool(data.get("enabled", False))
         self.safety_margin_gb = float(data.get("safety_margin_gb", 10.0))
         from core.path_translation import localize_path      # (saved on the other system: D:\ ↔ /mnt/d)
-        self.primary_dir = localize_path(str(data.get("primary_dir", "")))
-        self.overflow_dirs = [localize_path(str(d)) for d in data.get("overflow_dirs", []) if str(d).strip()]
+        primary = localize_path(str(data.get("primary_dir", "")))
+        if "bridge_rebuild_test_" in primary or "pawchive_tests_" in primary or (("temp" in primary.lower() or "tmp" in primary.lower()) and not os.path.exists(primary)):
+            logger.warning(f"Discarding invalid temporary/test primary storage pool directory: {primary}", category="storage")
+            primary = ""
+        self.primary_dir = primary
+        valid_overflow = []
+        for d in data.get("overflow_dirs", []):
+            loc_d = localize_path(str(d))
+            if not loc_d.strip():
+                continue
+            if "bridge_int_test_" in loc_d or "pawchive_tests_" in loc_d or (("temp" in loc_d.lower() or "tmp" in loc_d.lower()) and not os.path.exists(loc_d)):
+                continue
+            valid_overflow.append(loc_d)
+        self.overflow_dirs = valid_overflow
 
     def save(self):
         """Persists storage pool settings atomically."""

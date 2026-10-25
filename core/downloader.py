@@ -810,7 +810,7 @@ class KemonoDownloader:
 
         page_url = f"https://pawchive.pw/{service}/user/{user_id}/post/{post_id}"
         headers = {
-            "User-Agent": "PawchiveDownloader/1.3.3 (https://github.com/whyamihere773/Pawchive-Downloader)",
+            "User-Agent": "PawchiveDownloader/1.3.4 (https://github.com/whyamihere773/Pawchive-Downloader)",
             "Referer": "https://pawchive.pw/",
             "X-Contact": "https://github.com/whyamihere773/Pawchive-Downloader",
         }
@@ -3356,7 +3356,7 @@ class KemonoDownloader:
                         req_headers["Referer"] = "https://coomer.st/"
                         req_headers["Accept"] = "*/*"
                     elif "pawchive" in u_low:
-                        req_headers["User-Agent"] = "PawchiveDownloader/1.3.3 (https://github.com/whyamihere773/Pawchive-Downloader)"
+                        req_headers["User-Agent"] = "PawchiveDownloader/1.3.4 (https://github.com/whyamihere773/Pawchive-Downloader)"
                         req_headers["Referer"] = "https://pawchive.pw/"
                         req_headers["Accept"] = "*/*"
                     elif "cum.st" in u_low:
@@ -3442,7 +3442,7 @@ class KemonoDownloader:
                             try:
                                 if "pawchive" in attempt_url.lower():
                                     clean_headers = {
-                                        "User-Agent": "PawchiveDownloader/1.3.3 (https://github.com/whyamihere773/Pawchive-Downloader)",
+                                        "User-Agent": "PawchiveDownloader/1.3.4 (https://github.com/whyamihere773/Pawchive-Downloader)",
                                         "Referer": "https://pawchive.pw/",
                                         "Accept": "*/*",
                                         "X-Contact": "https://github.com/whyamihere773/Pawchive-Downloader",

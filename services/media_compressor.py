@@ -63,6 +63,7 @@ class CompressSettings:
     image_quality: int = 82
     video_format: str = "h265"        # h265 | h264 | mkv | av1 | keep
     video_quality: int = 75
+    video_hwaccel: str = "auto"       # auto | nvenc | qsv | amf | cpu
     animated_format: str = "same"     # same | gif | png | webp | avif | keep
     animated_quality: int = 82
     ffmpeg: str = ""
@@ -443,49 +444,157 @@ def probe_video(ffmpeg: str, path: str) -> Tuple[float, str, str]:
     return dur, (v.group(1) if v else ""), (a.group(1) if a else "")
 
 
-def video_command(ffmpeg: str, src: str, dst: str, fmt: str, quality: int, audio_codec: str) -> List[str]:
+_PROBED_ENCODERS: dict = {}
+_PROBE_LOCK = threading.Lock()
+
+
+def is_encoder_supported(ffmpeg: str, encoder: str) -> bool:
+    """Checks whether the specified FFmpeg encoder works on this system (cached)."""
+    if not ffmpeg or not encoder:
+        return False
+    cache_key = f"{ffmpeg}:{encoder}"
+    with _PROBE_LOCK:
+        if cache_key in _PROBED_ENCODERS:
+            return _PROBED_ENCODERS[cache_key]
+
+    # Use 256x256 test pattern: hardware encoders (specifically NVIDIA NVENC) enforce
+    # a minimum resolution (usually >= 144x144) and will reject small sizes like 64x64.
+    cmd = [
+        ffmpeg, "-hide_banner", "-f", "lavfi", "-i", "color=c=black:s=256x256:d=0.04",
+        "-c:v", encoder, "-f", "null", "-"
+    ]
+    try:
+        res = subprocess.run(cmd, capture_output=True, timeout=8, creationflags=_CREATE_NO_WINDOW)
+        supported = (res.returncode == 0)
+    except Exception:
+        supported = False
+
+    with _PROBE_LOCK:
+        _PROBED_ENCODERS[cache_key] = supported
+    return supported
+
+
+def detect_available_hwaccels(ffmpeg: str) -> List[str]:
+    """List of hardware acceleration frameworks available on this machine (e.g. ['nvenc', 'amf', 'qsv']).
+    Discrete GPUs (NVIDIA NVENC, AMD AMF) are prioritized ahead of integrated graphics (Intel QSV)."""
+    if not ffmpeg:
+        return []
+    available = []
+    # Dedicated discrete GPUs (NVIDIA NVENC, AMD AMF) prioritized over integrated (Intel QSV)
+    if (is_encoder_supported(ffmpeg, "hevc_nvenc") or
+            is_encoder_supported(ffmpeg, "h264_nvenc") or
+            is_encoder_supported(ffmpeg, "av1_nvenc")):
+        available.append("nvenc")
+    if (is_encoder_supported(ffmpeg, "hevc_amf") or
+            is_encoder_supported(ffmpeg, "h264_amf") or
+            is_encoder_supported(ffmpeg, "av1_amf")):
+        available.append("amf")
+    if (is_encoder_supported(ffmpeg, "hevc_qsv") or
+            is_encoder_supported(ffmpeg, "h264_qsv") or
+            is_encoder_supported(ffmpeg, "av1_qsv")):
+        available.append("qsv")
+    return available
+
+
+def get_primary_hwaccel(ffmpeg: str) -> str:
+    """Best detected hardware accelerator ('nvenc', 'amf', 'qsv', or '')."""
+    accels = detect_available_hwaccels(ffmpeg)
+    return accels[0] if accels else ""
+
+
+def _hw_encoder_for(fmt: str, accel: str) -> Optional[str]:
+    """Maps video format and hardware framework to encoder name."""
+    if fmt in ("h265", "mkv"):
+        if accel == "nvenc":
+            return "hevc_nvenc"
+        if accel == "amf":
+            return "hevc_amf"
+        if accel == "qsv":
+            return "hevc_qsv"
+    elif fmt == "h264":
+        if accel == "nvenc":
+            return "h264_nvenc"
+        if accel == "amf":
+            return "h264_amf"
+        if accel == "qsv":
+            return "h264_qsv"
+    elif fmt == "av1":
+        if accel == "nvenc":
+            return "av1_nvenc"
+        if accel == "amf":
+            return "av1_amf"
+        if accel == "qsv":
+            return "av1_qsv"
+    return None
+
+
+def select_video_encoder(ffmpeg: str, fmt: str, quality: int,
+                         hw_accel: str = "auto") -> Tuple[str, List[str], str, List[str]]:
+    """Returns (active_encoder_name, active_encoder_args, cpu_encoder_name, cpu_encoder_args).
+    Compatible with NVIDIA NVENC, AMD AMF, and Intel Quick Sync (QSV), falling back to software."""
     crf = str(video_crf(fmt, quality))
+
+    # CPU baseline configurations
+    if fmt in ("h265", "mkv"):
+        cpu_name = "libx265"
+        cpu_args = ["-c:v", "libx265", "-crf", crf, "-preset", "medium", "-x265-params", "log-level=error"]
+    elif fmt == "h264":
+        cpu_name = "libx264"
+        cpu_args = ["-c:v", "libx264", "-crf", crf, "-preset", "slow"]
+    else:  # av1
+        cpu_name = "libsvtav1"
+        cpu_args = ["-c:v", "libsvtav1", "-crf", crf, "-preset", "6"]
+
+    if hw_accel == "cpu" or not ffmpeg:
+        return cpu_name, cpu_args, cpu_name, cpu_args
+
+    candidates = ["nvenc", "amf", "qsv"] if hw_accel == "auto" else [hw_accel]
+    for accel in candidates:
+        enc = _hw_encoder_for(fmt, accel)
+        if enc and is_encoder_supported(ffmpeg, enc):
+            if accel == "nvenc":
+                args = ["-c:v", enc, "-rc:v", "vbr", "-cq:v", crf, "-b:v", "0", "-preset", "p5"]
+            elif accel == "qsv":
+                args = ["-c:v", enc, "-global_quality", crf, "-preset", "medium"]
+            elif accel == "amf":
+                args = ["-c:v", enc, "-rc", "cqp", "-qp_i", crf, "-qp_p", crf, "-quality", "quality"]
+            else:
+                continue
+            return enc, args, cpu_name, cpu_args
+
+    return cpu_name, cpu_args, cpu_name, cpu_args
+
+
+def video_command(ffmpeg: str, src: str, dst: str, fmt: str, quality: int, audio_codec: str,
+                  video_args: Optional[List[str]] = None) -> List[str]:
     head = [ffmpeg, "-hide_banner", "-nostdin", "-y", "-i", src]
     tail = ["-progress", "pipe:1", "-nostats"]
-    x265 = ["-c:v", "libx265", "-crf", crf, "-preset", "medium", "-x265-params", "log-level=error"]
+    if video_args is None:
+        _, video_args, _, _ = select_video_encoder(ffmpeg, fmt, quality, hw_accel="auto")
+
     if fmt == "mkv":
         # Matroska holds any audio, subtitles and attached fonts: all kept as they are
         return [*head, "-map", "0:v:0", "-map", "0:a?", "-map", "0:s?", "-map", "0:t?", "-map_metadata", "0",
-                *x265, "-pix_fmt", "yuv420p", "-c:a", "copy", "-c:s", "copy", "-c:t", "copy", *tail,
+                *video_args, "-pix_fmt", "yuv420p", "-c:a", "copy", "-c:s", "copy", "-c:t", "copy", *tail,
                 "-f", "matroska", dst]
-    if fmt == "h264":
-        video = ["-c:v", "libx264", "-crf", crf, "-preset", "slow"]
-    elif fmt == "av1":
-        video = ["-c:v", "libsvtav1", "-crf", crf, "-preset", "6"]
-    else:
-        video = [*x265, "-tag:v", "hvc1"]
+
+    tag = ["-tag:v", "hvc1"] if fmt in ("h265", "mkv") else []
     audio = ["-c:a", "copy"] if audio_codec in ("aac", "mp3") else ["-c:a", "aac", "-b:a", "192k"]
-    return [*head, "-map", "0:v:0", "-map", "0:a?", "-sn", "-dn", "-map_metadata", "0", *video,
-            "-pix_fmt", "yuv420p", *audio, "-movflags", "+faststart", *tail, "-f", "mp4", dst]
+    return [*head, "-map", "0:v:0", "-map", "0:a?", "-sn", "-dn", "-map_metadata", "0", *video_args,
+            *tag, "-pix_fmt", "yuv420p", *audio, "-movflags", "+faststart", *tail, "-f", "mp4", dst]
 
 
-@_releases_names
-def compress_video(ffmpeg: str, path: str, fmt: str, quality: int, result: CompressResult,
-                   cancel: Optional[threading.Event] = None,
-                   on_progress: Optional[Callable[[float], None]] = None,
-                   procs: Optional[set] = None) -> None:
-    duration, vcodec, acodec = probe_video(ffmpeg, path)
-    if not vcodec or vcodec == VIDEO_FORMATS[fmt]:
-        result.skipped += 1                    # not a video ffmpeg can read, or already in that codec
-        return
-    folder, name = os.path.split(path)
-    out_ext = VIDEO_EXTS_OUT[fmt]
-    final = _free_name(folder, os.path.splitext(name)[0], out_ext, path)
-    if os.path.normcase(final) == os.path.normcase(path):
-        final = _free_name(folder, os.path.splitext(name)[0] + " (compressed)", out_ext, path)
-    tmp = final + ".pawtmp"
+def _run_ffmpeg_encode(cmd: List[str], tmp: str, duration: float,
+                       cancel: Optional[threading.Event],
+                       on_progress: Optional[Callable[[float], None]],
+                       procs: Optional[set]) -> Tuple[int, List[str]]:
+    """Runs FFmpeg process and monitors progress lines. Returns (returncode, err_tail)."""
     try:
-        proc = subprocess.Popen(video_command(ffmpeg, path, tmp, fmt, quality, acodec), stdout=subprocess.PIPE,
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, text=True, encoding="utf-8",
                                 errors="replace", creationflags=_CREATE_NO_WINDOW)
     except OSError as e:
-        result.failed.append(f"{name}: {e}")
-        return
+        return -1, [str(e)]
     if procs is not None:
         procs.add(proc)
     err_tail: List[str] = []
@@ -506,15 +615,58 @@ def compress_video(ffmpeg: str, path: str, fmt: str, quality: int, result: Compr
     finally:
         if procs is not None:
             procs.discard(proc)
-    if (cancel is not None and cancel.is_set()) or proc.returncode != 0 or not os.path.exists(tmp):
+    return proc.returncode, err_tail
+
+
+@_releases_names
+def compress_video(ffmpeg: str, path: str, fmt: str, quality: int, result: CompressResult,
+                   cancel: Optional[threading.Event] = None,
+                   on_progress: Optional[Callable[[float], None]] = None,
+                   procs: Optional[set] = None,
+                   hw_accel: str = "auto") -> None:
+    duration, vcodec, acodec = probe_video(ffmpeg, path)
+    if not vcodec or vcodec == VIDEO_FORMATS[fmt]:
+        result.skipped += 1                    # not a video ffmpeg can read, or already in that codec
+        return
+    folder, name = os.path.split(path)
+    out_ext = VIDEO_EXTS_OUT[fmt]
+    final = _free_name(folder, os.path.splitext(name)[0], out_ext, path)
+    if os.path.normcase(final) == os.path.normcase(path):
+        final = _free_name(folder, os.path.splitext(name)[0] + " (compressed)", out_ext, path)
+    tmp = final + ".pawtmp"
+
+    enc_name, enc_args, cpu_name, cpu_args = select_video_encoder(ffmpeg, fmt, quality, hw_accel)
+    cmd = video_command(ffmpeg, path, tmp, fmt, quality, acodec, enc_args)
+    returncode, err_tail = _run_ffmpeg_encode(cmd, tmp, duration, cancel, on_progress, procs)
+
+    # If hardware encoding fails at runtime, automatically fallback to software CPU encoder
+    if returncode != 0 and enc_name != cpu_name and not (cancel is not None and cancel.is_set()):
+        logger.warning(f"Hardware encode ({enc_name}) failed for {name}; retrying with CPU ({cpu_name})",
+                       category="decompressor")
         if os.path.exists(tmp):
-            os.remove(tmp)
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+        cmd_cpu = video_command(ffmpeg, path, tmp, fmt, quality, acodec, cpu_args)
+        returncode, err_tail = _run_ffmpeg_encode(cmd_cpu, tmp, duration, cancel, on_progress, procs)
+
+    if (cancel is not None and cancel.is_set()) or returncode != 0 or not os.path.exists(tmp):
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
         if not (cancel is not None and cancel.is_set()):
-            result.failed.append(f"{name}: {' '.join(err_tail)[-200:] or f'ffmpeg exited with {proc.returncode}'}")
+            result.failed.append(f"{name}: {' '.join(err_tail)[-200:] or f'ffmpeg exited with {returncode}'}")
         return
     new_dur, new_codec, _ = probe_video(ffmpeg, tmp)
     if not new_codec or (duration > 0 and abs(new_dur - duration) > max(1.0, duration * 0.02)):
-        os.remove(tmp)                              # incomplete: never keep a cut-off video
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
         result.failed.append(f"{name}: the compressed video came out incomplete")
         return
     _keep_if_smaller(path, tmp, final, result)
@@ -634,6 +786,6 @@ def compress_paths(paths: List[str], settings: CompressSettings, cancel: Optiona
 
         def part(pct, base=base, v=v):
             report((base + sizes[v] * pct / 100) / total * 100, os.path.basename(v))
-        compress_video(settings.ffmpeg, v, settings.video_format, settings.video_quality, result, cancel, part, procs)
+        compress_video(settings.ffmpeg, v, settings.video_format, settings.video_quality, result, cancel, part, procs, settings.video_hwaccel)
         finished(v)
     return result
