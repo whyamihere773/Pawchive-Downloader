@@ -9,9 +9,12 @@ keeps the order updates the rows in place (no reset: the list keeps its scroll p
 creator's check result updates just its row.
 """
 
+from __future__ import annotations
+
 import os
 import threading
 from operator import itemgetter
+from typing import Dict, List, Optional, Set, Tuple
 
 from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt, Signal, Slot, Property, QThread, QTimer
 
@@ -150,7 +153,10 @@ class WatchlistModel(QAbstractListModel):
         return list(self._manager.entries), self._search_text, self._service_filter, base_dir
 
     @staticmethod
-    def _is_entry_on_disk(e, base_dir: str = "", existing_subdirs: Optional[set] = None) -> bool:
+    def _is_entry_on_disk(e, base_dir: str = "", existing_subdirs: Optional[set] = None, dir_cache: Optional[dict] = None) -> bool:
+        if dir_cache is None:
+            dir_cache = {}
+
         # 1. Any explicitly assigned download directory exists on disk
         dirs = []
         dl_dir = getattr(e, "download_dir", "")
@@ -161,11 +167,13 @@ class WatchlistModel(QAbstractListModel):
                 dirs.append(d)
 
         for d in dirs:
-            try:
-                if os.path.isdir(d):
-                    return True
-            except Exception:
-                pass
+            if d not in dir_cache:
+                try:
+                    dir_cache[d] = os.path.isdir(d)
+                except Exception:
+                    dir_cache[d] = False
+            if dir_cache[d]:
+                return True
 
         # 2. In base_dir, check if standard creator folder exists
         if base_dir:
@@ -178,11 +186,14 @@ class WatchlistModel(QAbstractListModel):
                         return True
             else:
                 for name in creator_folder_names(creator_name, service):
-                    try:
-                        if os.path.isdir(os.path.join(base_dir, name)):
-                            return True
-                    except Exception:
-                        pass
+                    key = (base_dir, name)
+                    if key not in dir_cache:
+                        try:
+                            dir_cache[key] = os.path.isdir(os.path.join(base_dir, name))
+                        except Exception:
+                            dir_cache[key] = False
+                    if dir_cache[key]:
+                        return True
         return False
 
     @staticmethod
@@ -197,13 +208,15 @@ class WatchlistModel(QAbstractListModel):
         entries, search_text, service_filter, base_dir = snapshot
         st = (search_text or "").strip().lower()
         sf = (service_filter or "all").strip().lower()
+        filter_disk = sf in ("synced", "on_disk", "ondisk")
         updated = new_posts = on_disk_total = 0
         n_of = {}
         on_disk_of = {}
+        dir_cache = {}
         keyed = []
 
         existing_subdirs = None
-        if base_dir and os.path.isdir(base_dir):
+        if filter_disk and base_dir and os.path.isdir(base_dir):
             try:
                 existing_subdirs = {entry.name.lower() for entry in os.scandir(base_dir) if entry.is_dir()}
             except Exception:
@@ -216,10 +229,11 @@ class WatchlistModel(QAbstractListModel):
                 updated += 1
                 new_posts += n
 
-            is_disk = WatchlistModel._is_entry_on_disk(e, base_dir, existing_subdirs)
-            on_disk_of[id(e)] = is_disk
-            if is_disk:
-                on_disk_total += 1
+            if filter_disk:
+                is_disk = WatchlistModel._is_entry_on_disk(e, base_dir, existing_subdirs, dir_cache)
+                on_disk_of[id(e)] = is_disk
+                if is_disk:
+                    on_disk_total += 1
 
             name = getattr(e, "creator_name", "") or ""
             uid = getattr(e, "user_id", "") or ""
@@ -231,7 +245,7 @@ class WatchlistModel(QAbstractListModel):
             elif sf in ("favorites", "favorite"):
                 if not getattr(e, "is_favorite", False):
                     continue
-            elif sf in ("synced", "on_disk", "ondisk"):
+            elif filter_disk:
                 if not is_disk:
                     continue
             elif sf and sf != "all" and (getattr(e, "service", "") or "").lower() != sf:
@@ -303,7 +317,20 @@ class WatchlistModel(QAbstractListModel):
     @Property(int, notify=countChanged)
     def onDiskCount(self) -> int:
         """Total count of artists in the watchlist that currently exist on disk."""
-        return getattr(self, "_on_disk_total", 0)
+        cached = getattr(self, "_cached_on_disk_total", None)
+        if cached is not None:
+            return cached
+        base_dir = self._get_base_dir()
+        existing_subdirs = None
+        if base_dir and os.path.isdir(base_dir):
+            try:
+                existing_subdirs = {entry.name.lower() for entry in os.scandir(base_dir) if entry.is_dir()}
+            except Exception:
+                existing_subdirs = set()
+        dir_cache = {}
+        count = sum(1 for e in getattr(self._manager, "entries", []) if self._is_entry_on_disk(e, base_dir, existing_subdirs, dir_cache))
+        self._cached_on_disk_total = count
+        return count
 
     @Slot(int, result="QVariantMap")
     def get(self, index: int) -> dict:
@@ -326,7 +353,7 @@ class WatchlistModel(QAbstractListModel):
                 "cachedNewPosts": _posts_for_qml(e),
                 "isFavorite": bool(getattr(e, "is_favorite", False)),
                 "provider": _provider(e),
-                "isOnDisk": bool(self._on_disk_of.get(id(e), False)),
+                "isOnDisk": bool(self._on_disk_of.get(id(e), False) if id(e) in self._on_disk_of else self._is_entry_on_disk(e, self._get_base_dir())),
             }
         return {}
 
@@ -354,7 +381,11 @@ class WatchlistModel(QAbstractListModel):
         if not index.isValid() or index.row() >= len(self._display_entries):
             return None
         if role == self.IsOnDiskRole:
-            return bool(self._on_disk_of.get(id(self._display_entries[index.row()]), False))
+            e = self._display_entries[index.row()]
+            eid = id(e)
+            if eid not in self._on_disk_of:
+                self._on_disk_of[eid] = self._is_entry_on_disk(e, self._get_base_dir())
+            return bool(self._on_disk_of[eid])
         getter = self._ROLE_GETTERS.get(role)
         return getter(self._display_entries[index.row()]) if getter else None
 

@@ -1180,6 +1180,10 @@ class KemonoApiClient:
         results: List[Dict[str, Any]] = []
         total_count: Optional[int] = None
         try:
+            if isinstance(json_data, list):
+                return json_data, None
+            if not isinstance(json_data, dict):
+                return results, total_count
             nodes = json_data.get("nodes", [])
             if len(nodes) < 3:
                 return results, total_count
