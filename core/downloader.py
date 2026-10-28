@@ -124,25 +124,57 @@ def is_preview_url(url: str) -> bool:
     return False
 
 
+def _get_media_candidate_paths(file_path: str) -> List[str]:
+    """Return possible on-disk variants of a media path (e.g. .webp/.avif for images, .mp4/.mkv/.webm for videos)."""
+    if not file_path:
+        return []
+    stem, ext = os.path.splitext(file_path)
+    ext_lower = ext.lower()
+    variants = [file_path]
+    if ext_lower in MediaTypes.VIDEO_EXTS:
+        for v_ext in (".mp4", ".mkv", ".webm"):
+            if v_ext != ext_lower:
+                variants.append(stem + v_ext)
+    elif ext_lower in MediaTypes.IMAGE_EXTS or ext_lower in (".webp", ".avif"):
+        for i_ext in (".webp", ".avif"):
+            if i_ext != ext_lower:
+                variants.append(stem + i_ext)
+    return variants
+
+
 def needs_full_size_upgrade(existing_size: int, server_size: int, target_path: str, options,
                             existing_path: str = "") -> bool:
     """An existing file is a small / preview copy that should be replaced by the full-size one.
 
     When the server tells the file's size, that decides: a copy as big as the original is never
     downloaded again. Small originals (an image under 150 KB) used to count as previews and were
-    "upgraded" on every run (#28). A .webp the app made with "Compress to WebP" is the user's own
-    smaller copy, not a preview, so it isn't replaced either (it was re-downloaded every run)."""
+    "upgraded" on every run (#28). A .webp or .avif the app made with compression is the user's own
+    smaller copy, not a preview, so it isn't replaced either (#28, #39). Videos are never preview
+    thumbnails; compressed or transcoded videos on disk (which are smaller than server size) must
+    never be re-downloaded (#39)."""
     if options is None or getattr(options, "download_thumbnails_only", False):
         return False
-    if existing_path and existing_path.lower().endswith(".webp") and not (target_path or "").lower().endswith(".webp"):
+
+    target_ext = os.path.splitext((target_path or "").lower())[1]
+    exist_ext = os.path.splitext((existing_path or "").lower())[1] if existing_path else ""
+
+    # Videos are never low-resolution preview thumbnails; compressed or transcoded videos
+    # on disk (which are smaller than server size) must never be re-downloaded (#39).
+    if target_ext in MediaTypes.VIDEO_EXTS or exist_ext in MediaTypes.VIDEO_EXTS:
         return False
+
+    # Locally compressed WebP or AVIF images are smaller by design and should not be replaced
+    if exist_ext in (".webp", ".avif") and target_ext not in (".webp", ".avif"):
+        return False
+
     if server_size and server_size > 0:
         return existing_size < server_size * 0.75
+
     if getattr(options, "redownload_small_files", False):
         min_lim, _ = FilterEngine.get_effective_size_limits(options)
         threshold = min_lim if min_lim else (150 * 1024)
-        ext = os.path.splitext((target_path or "").lower())[1]
-        return existing_size < threshold and (ext in MediaTypes.IMAGE_EXTS or ext == ".webp")
+        return existing_size < threshold and (target_ext in MediaTypes.IMAGE_EXTS or target_ext in (".webp", ".avif"))
+
     return False
 
 
@@ -1823,14 +1855,22 @@ class KemonoDownloader:
                 # regardless of whether an index prefix changes their target filename.
                 _batch_rel_paths[target_dest_dir].add(norm_key)
 
-                webp_path = os.path.splitext(target_path)[0] + ".webp"
                 raw_dest_dir = _get_dest_folder(raw_name)
                 raw_path = os.path.join(raw_dest_dir, raw_name)
-                raw_webp = os.path.splitext(raw_path)[0] + ".webp"
                 # Also check for the prefixed variant on disk (e.g. "001_filename.jpg") so that
                 # re-runs with index prefix enabled don't re-download already-saved files.
                 prefixed_raw = os.path.join(raw_dest_dir, f"{seq_idx:03d}_{raw_name}")
-                prefixed_webp = os.path.splitext(prefixed_raw)[0] + ".webp"
+
+                # Candidate paths on disk (target name, raw name, prefixed variants, plus .webp/.avif and .mp4/.mkv/.webm)
+                candidate_disk_paths = []
+                for _base_p in (target_path, raw_path, prefixed_raw):
+                    candidate_disk_paths.extend(_get_media_candidate_paths(_base_p))
+                _seen_cands = set()
+                disk_candidates = []
+                for _cp in candidate_disk_paths:
+                    if _cp and _cp not in _seen_cands:
+                        _seen_cands.add(_cp)
+                        disk_candidates.append(_cp)
 
                 expected_sha = str(fobj.get("sha256") or fobj.get("hash") or "")
 
@@ -1838,7 +1878,7 @@ class KemonoDownloader:
                 # copy still on disk is a small / preview one that should be upgraded to full size
                 if self.archive_manager and self.archive_manager.is_enabled:
                     if self.archive_manager.is_archived(service=service, post_id=post_id, file_id=file_id, file_hash=expected_sha):
-                        on_disk = next((cp for cp in (target_path, webp_path, raw_path, raw_webp, prefixed_raw, prefixed_webp)
+                        on_disk = next((cp for cp in disk_candidates
                                         if os.path.exists(cp) and os.path.getsize(cp) > 0), None)
                         if not (on_disk and needs_full_size_upgrade(os.path.getsize(on_disk), int(file_bytes or 0), target_path, options, on_disk)):
                             logger.info(f"📦 Skipping archived file: '{os.path.basename(target_path)}' (present in download archive)",
@@ -1848,11 +1888,8 @@ class KemonoDownloader:
 
                 # Skip if already exists on disk at target_path, webp path, or raw name path
                 if not options.keep_duplicates:
-                    existing_disk_path = None
-                    for candidate_path in (target_path, webp_path, raw_path, raw_webp, prefixed_raw, prefixed_webp):
-                        if os.path.exists(candidate_path) and os.path.getsize(candidate_path) > 0:
-                            existing_disk_path = candidate_path
-                            break
+                    existing_disk_path = next((cp for cp in disk_candidates
+                                               if os.path.exists(cp) and os.path.getsize(cp) > 0), None)
 
                     if existing_disk_path:
                         existing_sz = os.path.getsize(existing_disk_path)
@@ -3047,9 +3084,9 @@ class KemonoDownloader:
         # Check if file is already recorded in download archive database — unless the copy on disk is a
         # small / preview one that should be replaced by the full-size file (planning allowed that,
         # but this second check used to mark those files "already archived" anyway)
+        _disk_cands = _get_media_candidate_paths(task.target_path)
         if self.archive_manager and self.archive_manager.is_enabled:
-            _webp = os.path.splitext(task.target_path)[0] + ".webp"
-            _on_disk = next((p for p in (task.target_path, _webp) if os.path.exists(p) and os.path.getsize(p) > 0), None)
+            _on_disk = next((p for p in _disk_cands if os.path.exists(p) and os.path.getsize(p) > 0), None)
             _upgrade = bool(_on_disk) and needs_full_size_upgrade(os.path.getsize(_on_disk), task.file_size, task.target_path, options, _on_disk)
             if not _upgrade and self.archive_manager.is_archived(service=task.service, post_id=task.post_id, file_id=task.file_id, file_hash=task.expected_sha256):
                 task.status = "completed"
@@ -3063,14 +3100,13 @@ class KemonoDownloader:
                     self._already_there["in the download archive"] += 1
                 return True, "Already archived"
 
-        # Check if file already exists completely on disk (including webp converted version)
-        webp_path = os.path.splitext(task.target_path)[0] + ".webp"
+        # Check if file already exists completely on disk (including webp/avif and transcoded video versions)
         found_existing_path = None
         if not options.keep_duplicates:
-            if os.path.exists(task.target_path) and os.path.getsize(task.target_path) > 0:
-                found_existing_path = task.target_path
-            elif os.path.exists(webp_path) and os.path.getsize(webp_path) > 0:
-                found_existing_path = webp_path
+            for cand in _disk_cands:
+                if os.path.exists(cand) and os.path.getsize(cand) > 0:
+                    found_existing_path = cand
+                    break
 
         is_upgrade_download = False
         if found_existing_path:

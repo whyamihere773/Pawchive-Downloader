@@ -85,7 +85,8 @@ from services.cloud_downloader import (
     download_gofile_link
 )
 from core.text_utils import clean_text, sanitize_filesystem_name, safe_file_name
-from core.path_utils import unique_name_in_batch
+from core.path_utils import unique_name_in_batch, post_info_for_file, post_info_files
+from core.post_metadata_index import parse_post_info_content
 from core.archive_manager import ArchiveManager
 from core.archive_rebuilder import ArchiveRebuilder, ArchiveRebuildOptions
 from services.model_manager import ModelManager, MODEL_CATALOG
@@ -9022,7 +9023,7 @@ class AppBridge(QObject):
     ) -> list:
         """
         Preview batch renaming results for files with metadata variable interpolation.
-        Supports variables: {name}, {ext}, {artist}, {title}, {post_id}, {date}, {index}, {0index}, {00index}, {000index}.
+        Supports variables: {name}, {ext}, {artist}, {title}, {captionText}, {caption}, {post_id}, {date}, {index}, {0index}, {00index}, {000index}.
         Supports custom start index, cross-folder continuous numbering, and moving/flattening to folder.
         """
         if not folder_path or not os.path.exists(folder_path):
@@ -9067,6 +9068,7 @@ class AppBridge(QObject):
         dest_dir = destination_folder.strip() if (destination_folder and destination_folder.strip()) else folder_path
         results = []
         new_names_seen = {}
+        info_records_cache = {}
 
         try:
             start_idx = max(0, int(start_index))
@@ -9090,6 +9092,10 @@ class AppBridge(QObject):
 
             # Metadata extraction
             artist_match = re.search(r'\[([^\]]+)\]', base_name)
+            if not artist_match:
+                artist_match = re.search(r'\[([^\]]+)\]', item_folder_name)
+            if not artist_match:
+                artist_match = re.search(r'\[([^\]]+)\]', folder_name)
             artist = artist_match.group(1).strip() if artist_match else (item_folder_name if item_folder_name else (folder_name if folder_name else parent_folder_name))
 
             post_id_match = re.search(r'\b(\d{5,10})\b', base_name)
@@ -9112,6 +9118,50 @@ class AppBridge(QObject):
                 cleaned_title = re.sub(rf'\b{post_id}\b', '', cleaned_title)
             cleaned_title = cleaned_title.strip(" -_") or base_name
 
+            # Caption extraction for {captionText} / {caption} tokens
+            clean_caption = ""
+            info_file = post_info_for_file(item_dir, filename, post_id)
+            if not info_file and folder_path and folder_path != item_dir:
+                info_file = post_info_for_file(folder_path, filename, post_id)
+            if not info_file:
+                for candidate_dir in (item_dir, folder_path):
+                    if candidate_dir and os.path.isdir(candidate_dir):
+                        candidates = post_info_files(candidate_dir, limit=5)
+                        if candidates:
+                            info_file = candidates[0]
+                            break
+
+            if info_file:
+                if info_file not in info_records_cache:
+                    try:
+                        with open(info_file, "r", encoding="utf-8", errors="replace") as f:
+                            info_records_cache[info_file] = parse_post_info_content(f.read())
+                    except Exception:
+                        info_records_cache[info_file] = []
+                records = info_records_cache.get(info_file, [])
+                matched_record = None
+                if post_id:
+                    matched_record = next((r for r in records if r.post_id == post_id), None)
+                if not matched_record:
+                    fn_low = filename.lower()
+                    matched_record = next((r for r in records if any(att.lower() == fn_low for att in r.attached_files)), None)
+                if not matched_record and len(records) == 1:
+                    matched_record = records[0]
+
+                if matched_record:
+                    raw_caption = matched_record.content or matched_record.title
+                    if raw_caption:
+                        raw_caption = re.sub(r'<br\s*/?>', ' ', raw_caption, flags=re.IGNORECASE)
+                        raw_caption = re.sub(r'<[^>]+>', ' ', raw_caption)
+                        import html as _html
+                        raw_caption = _html.unescape(raw_caption)
+                        raw_caption = re.sub(r'[\r\n\t]+', ' ', raw_caption)
+                        raw_caption = re.sub(r'\s+', ' ', raw_caption).strip()
+                        clean_caption = FilterEngine.clean_filesystem_text(raw_caption, max_len=100, fallback="")
+
+            if not clean_caption:
+                clean_caption = cleaned_title
+
             working_pattern = pattern if pattern else "{name}.{ext}"
             if not raw_ext:
                 working_pattern = working_pattern.replace(".{ext}", "").replace("{ext}", "")
@@ -9121,6 +9171,9 @@ class AppBridge(QObject):
             new_name = new_name.replace("{ext}", raw_ext)
             new_name = new_name.replace("{artist}", artist)
             new_name = new_name.replace("{title}", cleaned_title)
+            new_name = new_name.replace("{captionText}", clean_caption)
+            new_name = new_name.replace("{caption_text}", clean_caption)
+            new_name = new_name.replace("{caption}", clean_caption)
             new_name = new_name.replace("{post_id}", post_id)
             new_name = new_name.replace("{date}", date_str)
             new_name = new_name.replace("{index}", str(idx))

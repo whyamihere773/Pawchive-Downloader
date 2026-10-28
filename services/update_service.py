@@ -236,15 +236,23 @@ def version_display(version: str, short_commit: str = "") -> str:
 
 
 # ── GitHub ──────────────────────────────────────────────────────────────────
+def _github_headers(accept: str = "application/vnd.github+json") -> Dict[str, str]:
+    headers = {"User-Agent": USER_AGENT, "Accept": accept}
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token.strip()}"
+    return headers
+
+
 def _get_json(url: str, timeout: float) -> Any:
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/vnd.github+json"})
+    req = urllib.request.Request(url, headers=_github_headers())
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
 def _http_error_text(e: Exception) -> str:
     if isinstance(e, urllib.error.HTTPError):
-        if e.code == 403:
+        if e.code in (403, 429):
             return "GitHub is limiting requests right now. Try again in a few minutes."
         if e.code == 404:
             return "Not found on GitHub."
@@ -327,83 +335,247 @@ def check_for_updates(timeout: float = 8) -> Dict[str, Any]:
         return res
 
 
-def _check_release(res: Dict[str, Any], local: Dict[str, Any], base: str, timeout: float) -> Dict[str, Any]:
-    data = _get_json(f"{base}/releases/latest", timeout)
-    tag = str(data.get("tag_name", "")).strip()
+def _check_release_html(res: Dict[str, Any], local: Dict[str, Any], timeout: float) -> Dict[str, Any]:
+    """Fallback when api.github.com is rate limited or unreachable.
+    Discovers release tag via redirect and downloads assets without consuming REST quota."""
+    tag_url = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
+    req = urllib.request.Request(tag_url, headers=_github_headers("text/html,application/xhtml+xml"))
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        final_url = resp.geturl()
+
+    tag = final_url.rstrip("/").split("/")[-1].strip()
+    if not tag or not tag.lower().startswith("v"):
+        raise ValueError(f"Could not resolve release tag from {final_url}")
+
+    clean_ver = tag.lstrip("vV")
     res.update({
-        "remote_version": tag.lstrip("vV"),
-        "remote_display": tag.lstrip("vV"),
-        "notes": data.get("body", "") or "",
-        "published_at": data.get("published_at", "") or "",
-        "release_url": data.get("html_url", "") or "",
+        "remote_version": clean_ver,
+        "remote_display": clean_ver,
+        "release_url": f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/tag/{tag}",
     })
+
     if not is_newer(tag, local["version"]):
         res["message"] = "You're running the latest version."
         return res
-    asset = find_matching_release_asset(data.get("assets", []))
+
+    # Extract assets from expanded_assets fragment (served on github.com web, no REST API limit)
+    assets = []
+    try:
+        assets_url = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/expanded_assets/{tag}"
+        req_assets = urllib.request.Request(assets_url, headers=_github_headers("text/html"))
+        with urllib.request.urlopen(req_assets, timeout=timeout) as resp:
+            html = resp.read().decode("utf-8", errors="ignore")
+
+        for block in re.findall(r'<li[^>]*>(.*?)</li>', html, re.DOTALL):
+            link_m = re.search(r'href="([^"]+/releases/download/[^"]+/([^"]+))"', block)
+            if not link_m:
+                continue
+            url_path, filename = link_m.group(1), link_m.group(2)
+            digest_m = re.search(r'sha256:([0-9a-fA-F]{64})', block)
+            digest = f"sha256:{digest_m.group(1)}" if digest_m else ""
+            assets.append({
+                "name": filename,
+                "browser_download_url": f"https://github.com{url_path}" if url_path.startswith("/") else url_path,
+                "digest": digest,
+                "size": 0,
+            })
+    except Exception:
+        pass
+
+    # Safety convention fallback if expanded_assets didn't parse
+    if not assets:
+        plat = platform_key()
+        conv_name = f"Pawchive-Downloader-{tag}-Windows.zip" if plat == "windows" else f"Pawchive-Downloader-{tag}-Linux-x86_64.tar.gz"
+        assets.append({
+            "name": conv_name,
+            "browser_download_url": f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/download/{tag}/{conv_name}",
+            "digest": "",
+            "size": 0,
+        })
+
+    asset = find_matching_release_asset(assets)
     if not asset:
-        # Announcing an update with nothing to install would just close the app (#report: no Linux build)
         res["message"] = f"Version {res['remote_version']} is out, but it has no download for this system yet."
         return res
-    res.update({"update_available": True, "download_url": asset["url"], "sha256": asset["sha256"], "size": asset["size"]})
+
+    # Retrieve notes & release date from version.json on raw.githubusercontent.com (Fastly CDN, zero API quota)
+    try:
+        raw_url = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/main/version.json"
+        raw_req = urllib.request.Request(raw_url, headers=_github_headers("application/json"))
+        with urllib.request.urlopen(raw_req, timeout=timeout) as raw_resp:
+            raw_data = json.loads(raw_resp.read().decode("utf-8"))
+        for entry in raw_data.get("history", []):
+            if str(entry.get("version", "")).strip() == clean_ver:
+                res["notes"] = entry.get("notes", "")
+                res["published_at"] = entry.get("date", "")
+                break
+        if not res["published_at"] and str(raw_data.get("version", "")).strip() == clean_ver:
+            res["published_at"] = raw_data.get("date", "")
+    except Exception:
+        pass
+
+    res.update({
+        "update_available": True,
+        "download_url": asset["url"],
+        "sha256": asset["sha256"],
+        "size": asset["size"],
+    })
     return res
 
 
-def _check_source(res: Dict[str, Any], local: Dict[str, Any], base: str, timeout: float) -> Dict[str, Any]:
-    head = _get_json(f"{base}/commits/{GITHUB_BRANCH}", timeout)
-    remote_sha = str(head.get("sha", ""))
-    res["commit"] = remote_sha
-    res["published_at"] = head.get("commit", {}).get("committer", {}).get("date", "") or ""
-    res["release_url"] = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/commits/{GITHUB_BRANCH}"
+def _check_release(res: Dict[str, Any], local: Dict[str, Any], base: str, timeout: float) -> Dict[str, Any]:
     try:
-        remote_ver = str(_get_json(f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/{remote_sha}/version.json", timeout).get("version", ""))
-    except Exception:
-        remote_ver = ""
-    res["remote_version"] = remote_ver or local["version"]
-    res["download_url"] = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/archive/{remote_sha}.zip"
+        data = _get_json(f"{base}/releases/latest", timeout)
+        tag = str(data.get("tag_name", "")).strip()
+        res.update({
+            "remote_version": tag.lstrip("vV"),
+            "remote_display": tag.lstrip("vV"),
+            "notes": data.get("body", "") or "",
+            "published_at": data.get("published_at", "") or "",
+            "release_url": data.get("html_url", "") or "",
+        })
+        if not is_newer(tag, local["version"]):
+            res["message"] = "You're running the latest version."
+            return res
+        asset = find_matching_release_asset(data.get("assets", []))
+        if not asset:
+            # Announcing an update with nothing to install would just close the app (#report: no Linux build)
+            res["message"] = f"Version {res['remote_version']} is out, but it has no download for this system yet."
+            return res
+        res.update({"update_available": True, "download_url": asset["url"], "sha256": asset["sha256"], "size": asset["size"]})
+        return res
+    except Exception as e:
+        # Fallback to HTML release discovery if REST API is rate limited or unreachable
+        try:
+            return _check_release_html(res, local, timeout)
+        except Exception:
+            raise e
 
-    local_sha = local["commit"]
-    if local_sha and local_sha == remote_sha:
+
+def _check_source_fallback(res: Dict[str, Any], local: Dict[str, Any], timeout: float) -> Dict[str, Any]:
+    """Fallback for source installs when api.github.com is rate limited or unreachable."""
+    app_dir = get_app_dir()
+    remote_sha = ""
+    if shutil.which("git"):
+        try:
+            ls_res = subprocess.run(
+                git_command(app_dir, "ls-remote", f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}.git", f"refs/heads/{GITHUB_BRANCH}"),
+                cwd=app_dir, capture_output=True, text=True, timeout=timeout, creationflags=NO_WINDOW
+            )
+            if ls_res.returncode == 0 and ls_res.stdout.strip():
+                remote_sha = ls_res.stdout.strip().split()[0]
+        except Exception:
+            pass
+
+    raw_url = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/{GITHUB_BRANCH}/version.json"
+    raw_ver, notes, published_at = "", "", ""
+    try:
+        raw_req = urllib.request.Request(raw_url, headers=_github_headers("application/json"))
+        with urllib.request.urlopen(raw_req, timeout=timeout) as raw_resp:
+            raw_data = json.loads(raw_resp.read().decode("utf-8"))
+        raw_ver = str(raw_data.get("version", "")).strip()
+        published_at = str(raw_data.get("date", "")).strip()
+        for entry in raw_data.get("history", []):
+            if entry.get("version") == raw_ver:
+                notes = entry.get("notes", "")
+                break
+    except Exception:
+        pass
+
+    if remote_sha:
+        res["commit"] = remote_sha
+        res["download_url"] = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/archive/{remote_sha}.zip"
+    else:
+        res["download_url"] = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/archive/refs/heads/{GITHUB_BRANCH}.zip"
+
+    res["remote_version"] = raw_ver or local["version"]
+    res["published_at"] = published_at
+    res["notes"] = notes
+    res["release_url"] = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/commits/{GITHUB_BRANCH}"
+
+    local_sha = local.get("commit", "")
+    if local_sha and remote_sha and local_sha == remote_sha:
         res["message"] = "You're running the latest version."
         res["remote_display"] = version_display(res["remote_version"], remote_sha[:7])
         return res
 
-    behind = None
-    if local_sha:
-        try:
-            cmp = _get_json(f"{base}/compare/{local_sha}...{GITHUB_BRANCH}", timeout)
-            status = cmp.get("status")
-            if status == "ahead":          # main has commits this install doesn't
-                behind = int(cmp.get("ahead_by") or 0)
-                msgs = [c.get("commit", {}).get("message", "").splitlines()[0] for c in (cmp.get("commits") or [])]
-                res["notes"] = "\n".join(f"• {m}" for m in reversed(msgs[-12:]) if m)
-            elif status in ("identical", "behind"):
-                behind = 0                 # same, or this install has extra commits
-            else:                          # "diverged": local work on top of an older base
-                res["message"] = "Your copy has its own changes on top of an older version; update it with git."
-                return res
-        except urllib.error.HTTPError as e:
-            if e.code != 404:              # 404: a local-only commit GitHub doesn't know
-                raise
-    if behind is None:
-        behind = 1 if is_newer(remote_ver, local["version"]) else 0
-
-    if behind <= 0:
+    newer = is_newer(res["remote_version"], local["version"])
+    if not newer and local_sha and remote_sha and local_sha == remote_sha:
         res["message"] = "You're running the latest version."
         return res
-    if local["is_git"] and local.get("branch") not in ("", GITHUB_BRANCH):
-        res["message"] = f"You're on the '{local['branch']}' branch; switch to '{GITHUB_BRANCH}' or update with git."
+
+    if newer or (local_sha and remote_sha and local_sha != remote_sha):
+        res["update_available"] = True
+        res["commits_behind"] = 1
+        res["remote_display"] = res["remote_version"] if newer else f"{res['remote_version']} (new commits)"
         return res
 
-    res["update_available"] = True
-    res["commits_behind"] = behind
-    if is_newer(res["remote_version"], local["version"]):
-        res["remote_display"] = res["remote_version"]
-    else:
-        res["remote_display"] = f"{res['remote_version']} + {behind} new change{'s' if behind != 1 else ''}"
-    if not res["notes"]:
-        res["notes"] = head.get("commit", {}).get("message", "") or ""
+    res["message"] = "You're running the latest version."
     return res
+
+
+def _check_source(res: Dict[str, Any], local: Dict[str, Any], base: str, timeout: float) -> Dict[str, Any]:
+    try:
+        head = _get_json(f"{base}/commits/{GITHUB_BRANCH}", timeout)
+        remote_sha = str(head.get("sha", ""))
+        res["commit"] = remote_sha
+        res["published_at"] = head.get("commit", {}).get("committer", {}).get("date", "") or ""
+        res["release_url"] = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/commits/{GITHUB_BRANCH}"
+        try:
+            remote_ver = str(_get_json(f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/{remote_sha}/version.json", timeout).get("version", ""))
+        except Exception:
+            remote_ver = ""
+        res["remote_version"] = remote_ver or local["version"]
+        res["download_url"] = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/archive/{remote_sha}.zip"
+
+        local_sha = local["commit"]
+        if local_sha and local_sha == remote_sha:
+            res["message"] = "You're running the latest version."
+            res["remote_display"] = version_display(res["remote_version"], remote_sha[:7])
+            return res
+
+        behind = None
+        if local_sha:
+            try:
+                cmp = _get_json(f"{base}/compare/{local_sha}...{GITHUB_BRANCH}", timeout)
+                status = cmp.get("status")
+                if status == "ahead":          # main has commits this install doesn't
+                    behind = int(cmp.get("ahead_by") or 0)
+                    msgs = [c.get("commit", {}).get("message", "").splitlines()[0] for c in (cmp.get("commits") or [])]
+                    res["notes"] = "\n".join(f"• {m}" for m in reversed(msgs[-12:]) if m)
+                elif status in ("identical", "behind"):
+                    behind = 0                 # same, or this install has extra commits
+                else:                          # "diverged": local work on top of an older base
+                    res["message"] = "Your copy has its own changes on top of an older version; update it with git."
+                    return res
+            except urllib.error.HTTPError as e:
+                if e.code != 404:              # 404: a local-only commit GitHub doesn't know
+                    raise
+        if behind is None:
+            behind = 1 if is_newer(remote_ver, local["version"]) else 0
+
+        if behind <= 0:
+            res["message"] = "You're running the latest version."
+            return res
+        if local["is_git"] and local.get("branch") not in ("", GITHUB_BRANCH):
+            res["message"] = f"You're on the '{local['branch']}' branch; switch to '{GITHUB_BRANCH}' or update with git."
+            return res
+
+        res["update_available"] = True
+        res["commits_behind"] = behind
+        if is_newer(res["remote_version"], local["version"]):
+            res["remote_display"] = res["remote_version"]
+        else:
+            res["remote_display"] = f"{res['remote_version']} + {behind} new change{'s' if behind != 1 else ''}"
+        if not res["notes"]:
+            res["notes"] = head.get("commit", {}).get("message", "") or ""
+        return res
+    except Exception as e:
+        try:
+            return _check_source_fallback(res, local, timeout)
+        except Exception:
+            raise e
+
 
 
 # ── Archives ────────────────────────────────────────────────────────────────

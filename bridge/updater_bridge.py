@@ -3,14 +3,46 @@ QML bridge for app updates: checks GitHub in the background, shows the result, a
 over to the updater (which installs the update after the app has closed normally).
 """
 
+import json
 import os
+import tempfile
 import threading
+import time
+from typing import Any, Dict, Optional
 
 from PySide6.QtCore import Property, QCoreApplication, QObject, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 
 from core.logger import logger
 from services import update_service as us
+
+_CACHE_TTL_SECONDS = 7200  # 2 hours
+
+
+def _read_update_cache(local_ver: str) -> Optional[Dict[str, Any]]:
+    path = os.path.join(tempfile.gettempdir(), ".pawchive_update_cache.json")
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if time.time() - data.get("timestamp", 0) < _CACHE_TTL_SECONDS:
+                res = data.get("result")
+                if isinstance(res, dict) and not res.get("error") and res.get("local_version") == local_ver:
+                    return res
+    except Exception:
+        pass
+    return None
+
+
+def _write_update_cache(res: Dict[str, Any]) -> None:
+    if not isinstance(res, dict) or res.get("error"):
+        return
+    path = os.path.join(tempfile.gettempdir(), ".pawchive_update_cache.json")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"timestamp": time.time(), "result": res}, f)
+    except Exception:
+        pass
 
 
 class UpdaterBridge(QObject):
@@ -111,6 +143,14 @@ class UpdaterBridge(QObject):
         """Check GitHub in the background."""
         if self._is_checking or self._launching:
             return
+
+        # Silent startup checks use cached results if fresh (< 2 hours) to avoid hitting GitHub rate limits
+        if silent:
+            cached = _read_update_cache(self._current_version)
+            if cached:
+                self._apply_update_result(cached, silent=True)
+                return
+
         self._is_checking = True
         self.isCheckingChanged.emit()
         if not silent:
@@ -119,25 +159,30 @@ class UpdaterBridge(QObject):
 
         def _worker():
             res = us.check_for_updates(timeout=10)
-            self._info = res
-            self._update_available = bool(res.get("update_available"))
-            self._checked_once = True
-            if self._update_available:
-                self._status_message = f"Version {self.latestVersion} is ready to install."
-                logger.info(f"Update available: {res.get('local_display')} -> {self.latestVersion}", category="system")
-            elif res.get("error"):
-                self._status_message = "Couldn't check for updates: " + res["error"]
-                if not silent:
-                    logger.warning(self._status_message, category="system")
-            else:
-                self._status_message = res.get("message") or "You're running the latest version."
-            self._is_checking = False
-            self.isCheckingChanged.emit()
-            self.updateAvailableChanged.emit()
-            self.infoChanged.emit()
-            self.statusChanged.emit()
+            if not res.get("error"):
+                _write_update_cache(res)
+            self._apply_update_result(res, silent=silent)
 
         threading.Thread(target=_worker, daemon=True, name="UpdateCheck").start()
+
+    def _apply_update_result(self, res: Dict[str, Any], silent: bool = False):
+        self._info = res
+        self._update_available = bool(res.get("update_available"))
+        self._checked_once = True
+        if self._update_available:
+            self._status_message = f"Version {self.latestVersion} is ready to install."
+            logger.info(f"Update available: {res.get('local_display')} -> {self.latestVersion}", category="system")
+        elif res.get("error"):
+            self._status_message = "Couldn't check for updates: " + res["error"]
+            if not silent:
+                logger.warning(self._status_message, category="system")
+        else:
+            self._status_message = res.get("message") or "You're running the latest version."
+        self._is_checking = False
+        self.isCheckingChanged.emit()
+        self.updateAvailableChanged.emit()
+        self.infoChanged.emit()
+        self.statusChanged.emit()
 
     @Slot()
     def startUpdate(self):

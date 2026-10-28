@@ -1,5 +1,5 @@
 {
-    "version": "1.3.5",
+    "version": "1.3.6",
     "commit": "",
     "short_commit": "",
     "date": "2026-10-28",
@@ -184,6 +184,11 @@
             "version": "1.3.5",
             "date": "2026-10-28",
             "notes": "Fix Pawchive creator direct message infinite scan loop, resolve Pawchive temporary oversized downloads (t1.pawchive.pw), and fix Python 3.11 Watchlist startup compatibility."
+        },
+        {
+            "version": "1.3.6",
+            "date": "2026-10-28",
+            "notes": "GitHub API rate limit fallback for in-app updater, Smart Batch Renamer {captionText} support, and compressed/converted video re-download deduplication fix."
         }
     ]
 }

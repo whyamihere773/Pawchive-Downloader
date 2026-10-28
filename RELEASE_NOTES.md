@@ -1,8 +1,21 @@
-### 🛠️ Fixes
+### 🔧 Updater Reliability & Rate Limit Fix
 
-* **Creator DM infinite scanning fixed**: Downloading or scanning direct messages from Pawchive creators no longer gets trapped in an endless scan loop, collecting all messages cleanly in a single fast pass.
-* **Pawchive oversized files download properly**: Posts that serve large files through Pawchive's temporary storage no longer fail with thumbnail errors and now download in full resolution as intended.
-* **Python 3.11 compatibility**: Fixed a startup error on systems running Python 3.11 when opening the Watchlist.
+* **In-app updates rate limit fix**: Resolved the "GitHub is limiting requests right now" error that prevented updates on VPNs, proxies, and shared connections by adding an automatic fallback that doesn't consume API limits.
+* **Smarter update checks**: Background startup checks are now cached so restarting or opening the app multiple times no longer gets you temporarily blocked by GitHub.
+
+---
+
+### 🏷️ Smart Batch Renamer Enhancements
+
+* **Post caption renaming token**: Added `{captionText}` to the Batch Renamer so you can rename downloaded media with each post's caption or description.
+* **Automatic caption detection**: Works seamlessly across posts and creator folders by extracting captions directly from local post information files.
+
+---
+
+### 🛠️ Download & Compression Fixes
+
+* **Compressed videos no longer re-download**: Files you compressed with Pawchive or external tools are no longer mistakenly treated as low-resolution thumbnails on subsequent downloads.
+* **Format conversion detection**: Converted videos (such as MP4 converted to MKV or WebM) and compressed images (such as AVIF or WebP) are properly recognized as already saved.
 
 ---
 

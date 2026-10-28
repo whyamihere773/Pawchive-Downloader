@@ -3,7 +3,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 
 // ── Smart Batch Renamer Modal ──────────────────────────────────────────────
-// Rule-based bulk file renaming using metadata variables ({artist}, {post_id}, {title}, {date}).
+// Rule-based bulk file renaming using metadata variables ({artist}, {title}, {captionText}, {post_id}, {date}).
 Item {
     id: root
 
@@ -223,7 +223,7 @@ Item {
                         color: "#F8FAFC"
                     }
                     Text {
-                        text: "Rule-based bulk file renaming using metadata variables ({artist}, {post_id}, {title}, {date})"
+                        text: "Rule-based bulk file renaming using metadata variables ({artist}, {title}, {captionText}, {date})"
                         font.family: "Segoe UI, sans-serif"
                         font.pixelSize: 11
                         color: "#94A3B8"
@@ -521,6 +521,7 @@ Item {
                         { label: "{ext}", tip: "File extension without dot (e.g. 'jpg', 'png', 'mp4')" },
                         { label: "{artist}", tip: "Creator/artist name extracted from [Artist] tag or parent folder" },
                         { label: "{title}", tip: "Clean post or file title with IDs and brackets removed" },
+                        { label: "{captionText}", tip: "Post caption or description text from post_info.txt or metadata" },
                         { label: "{post_id}", tip: "Numeric post ID (5-10 digits) if found in name or folder" },
                         { label: "{date}", tip: "File modification date formatted as YYYY-MM-DD" },
                         { label: "{index}", tip: "Sequential number starting from Start # (e.g. 1, 2, ..., 101)" },
