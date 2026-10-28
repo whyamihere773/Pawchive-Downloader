@@ -720,28 +720,73 @@ class KemonoDownloader:
         else:
             return f"https://file.pawchive.pw/data{clean_rel}"
 
+    @staticmethod
+    def _is_pawchive_temp_expired(fobj: Dict[str, Any]) -> bool:
+        """Returns True if the temporary Pawchive URL or temp_expires has expired."""
+        if not isinstance(fobj, dict):
+            return False
+        temp_u = fobj.get("temp_url") or (fobj.get("path") if isinstance(fobj.get("path"), str) and "t1.pawchive.pw" in fobj.get("path") else "")
+        if temp_u and "?e=" in temp_u:
+            try:
+                m = re.search(r'[?&]e=(\d+)', temp_u)
+                if m:
+                    exp_ts = float(m.group(1))
+                    if time.time() > exp_ts:
+                        return True
+            except Exception:
+                pass
+        temp_expires = fobj.get("temp_expires")
+        if temp_expires:
+            try:
+                from datetime import datetime, timezone
+                exp_dt = datetime.fromisoformat(str(temp_expires).replace("Z", "+00:00"))
+                if datetime.now(timezone.utc) > exp_dt:
+                    return True
+            except Exception:
+                pass
+        return False
+
     def _resolve_pawchive_deferred_attachments(self, post: Dict[str, Any], domain: str = "pawchive.pw") -> int:
         """
-        Fetches the post HTML page and resolves signed t1.pawchive.pw temporary download URLs
-        for attachments flagged with 'deferred: True' (oversized files in Pawchive's 30-day temporary storage).
+        Resolves signed t1.pawchive.pw temporary download URLs for Pawchive attachments
+        (either via direct 'temp_url' in API JSON or scraping post HTML for legacy 'deferred: True' items).
         """
         if not isinstance(post, dict):
             return 0
         attachments = post.get("attachments", [])
         if not isinstance(attachments, list):
-            return 0
+            attachments = []
+
+        resolved_count = 0
+        targets = []
+        main_f = post.get("file")
+        if isinstance(main_f, dict):
+            targets.append(main_f)
+        for a in attachments:
+            if isinstance(a, dict):
+                targets.append(a)
+
+        # 1. Resolve direct temp_url fields provided in the API JSON for file and attachments
+        for target in targets:
+            temp_u = target.get("temp_url")
+            if temp_u and not self._is_pawchive_temp_expired(target):
+                target["path"] = temp_u
+                target["is_temporary"] = True
+                target["preview_only"] = False
+                resolved_count += 1
+
         deferred_items = [
             a for a in attachments
-            if isinstance(a, dict) and a.get("deferred") and not a.get("path")
+            if isinstance(a, dict) and (a.get("deferred") or a.get("preview_only")) and not a.get("is_temporary") and (not a.get("path") or not str(a.get("path", "")).startswith("http"))
         ]
         if not deferred_items:
-            return 0
+            return resolved_count
 
         post_id = str(post.get("id") or "")
         service = post.get("service") or ""
         user_id = str(post.get("user") or "")
         if not post_id or not service or not user_id:
-            return 0
+            return resolved_count
 
         eff_domain = domain if "pawchive" in (domain or "") else "pawchive.pw"
         page_url = f"https://{eff_domain}/{service}/user/{user_id}/post/{post_id}"
@@ -762,7 +807,7 @@ class KemonoDownloader:
             resp = session.get(page_url, timeout=20)
             if resp.status_code != 200 or not resp.text:
                 logger.warning(f"Could not fetch HTML for post {post_id} (HTTP {resp.status_code}) to resolve temporary files", category="downloader")
-                return 0
+                return resolved_count
 
             matches = re.findall(r'(?:href|src)=["\'](https://t1\.pawchive\.pw/f/[^"\']+)["\']', resp.text)
             temp_map: Dict[str, str] = {}
@@ -775,9 +820,9 @@ class KemonoDownloader:
 
             if not temp_map:
                 logger.info(f"Post {post_id} has {len(deferred_items)} deferred attachment(s), but temporary links are expired or unavailable", category="downloader")
-                return 0
+                return resolved_count
 
-            resolved_count = 0
+            html_resolved = 0
             lower_map = {k.lower(): v for k, v in temp_map.items()}
             for att in deferred_items:
                 att_name = att.get("name") or ""
@@ -785,14 +830,25 @@ class KemonoDownloader:
                 if matched_url:
                     att["path"] = matched_url
                     att["is_temporary"] = True
-                    resolved_count += 1
+                    att["preview_only"] = False
+                    html_resolved += 1
 
-            if resolved_count > 0:
-                logger.info(f"✨ Resolved {resolved_count}/{len(deferred_items)} temporary oversized file(s) from t1.pawchive.pw for post {post_id}", category="downloader")
+            if isinstance(main_f, dict) and (main_f.get("deferred") or main_f.get("preview_only")) and not main_f.get("is_temporary"):
+                mf_name = main_f.get("name") or ""
+                matched_mf_url = temp_map.get(mf_name) or lower_map.get(mf_name.lower())
+                if matched_mf_url:
+                    main_f["path"] = matched_mf_url
+                    main_f["is_temporary"] = True
+                    main_f["preview_only"] = False
+                    html_resolved += 1
+
+            resolved_count += html_resolved
+            if html_resolved > 0:
+                logger.info(f"✨ Resolved {html_resolved}/{len(deferred_items)} temporary oversized file(s) from t1.pawchive.pw for post {post_id}", category="downloader")
             return resolved_count
         except Exception as e:
             logger.warning(f"Failed resolving temporary attachments for post {post_id}: {e}", category="downloader")
-            return 0
+            return resolved_count
         finally:
             try:
                 session.close()
@@ -810,7 +866,7 @@ class KemonoDownloader:
 
         page_url = f"https://pawchive.pw/{service}/user/{user_id}/post/{post_id}"
         headers = {
-            "User-Agent": "PawchiveDownloader/1.3.4 (https://github.com/whyamihere773/Pawchive-Downloader)",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             "Referer": "https://pawchive.pw/",
             "X-Contact": "https://github.com/whyamihere773/Pawchive-Downloader",
         }
@@ -1303,15 +1359,12 @@ class KemonoDownloader:
             main_file = post.get("file")
             attachments = post.get("attachments", []) or []
 
-            # If Pawchive post has deferred temporary attachments, resolve signed download URLs from post HTML
+            # If Pawchive post has temporary or deferred attachments, resolve signed download URLs
             if getattr(options, "download_pawchive_temporary_files", True):
-                has_deferred = any(
-                    isinstance(a, dict) and a.get("deferred") and not a.get("path")
-                    for a in attachments
-                )
-                if has_deferred and ("pawchive" in (domain or "") or "pawchive" in str(post.get("origin", "")) or "pawchive" in str(post.get("domain", ""))):
+                if ("pawchive" in (domain or "") or "pawchive" in str(post.get("origin", "")) or "pawchive" in str(post.get("domain", "")) or "pawchive" in str(post.get("service", ""))):
                     self._resolve_pawchive_deferred_attachments(post, domain=domain or "pawchive.pw")
                     attachments = post.get("attachments", []) or []
+                    main_file = post.get("file")
 
             # Check if post contains attachments or inline content images
             has_valid_attachments = any(
@@ -1337,10 +1390,11 @@ class KemonoDownloader:
                         skip_main_cover = True
             elif has_other_files and not allow_thumbnails and main_file and isinstance(main_file, dict):
                 # When all thumbnail settings are disabled and other attachments exist,
-                # skip cover pictures that are thumbnails/previews
+                # skip cover pictures that are thumbnails/previews (but keep full-size temporary files)
                 mf_name = (main_file.get("name") or main_file.get("originalFilename") or "").lower()
                 mf_path = str(main_file.get("path") or main_file.get("storageKey") or "").lower()
-                if (
+                is_mf_temp = bool(main_file.get("is_temporary")) or "t1.pawchive.pw" in mf_path
+                if not is_mf_temp and (
                     is_preview_url(mf_path) or
                     bool(main_file.get("preview_only")) or
                     mf_name.startswith(("cover.", "cover_", "preview.", "thumb.", "thumbnail.")) or
@@ -1361,7 +1415,8 @@ class KemonoDownloader:
                         if (options.skip_post_covers or (has_other_files and not allow_thumbnails)) and (has_other_files or len(attachments) > 1):
                             att_name = (att.get("name") or att.get("originalFilename") or "").lower()
                             att_path = str(att.get("path") or att.get("storageKey") or "").lower()
-                            if (
+                            is_att_temp = bool(att.get("is_temporary")) or "t1.pawchive.pw" in att_path
+                            if not is_att_temp and (
                                 att_name.startswith(("cover.", "cover_", "preview.", "thumb.", "thumbnail.")) or
                                 is_preview_url(att_path) or
                                 bool(re.search(r'(_low|_thumb|\.thumb)\.[a-z0-9]+$', att_name))
@@ -1569,7 +1624,11 @@ class KemonoDownloader:
                     elif "kemono" in orig_host:
                         effective_domain = "kemono.cr"
 
-                is_preview_only = bool(fobj.get("preview_only"))
+                is_preview_only = (
+                    bool(fobj.get("preview_only")) and
+                    not bool(fobj.get("is_temporary")) and
+                    "t1.pawchive.pw" not in str(original_url or norm_path or fobj.get("path") or "")
+                )
                 allow_thumb_fallback = getattr(options, "fallback_to_thumbnails", False)
                 allow_thumbnails = getattr(options, "download_thumbnails_only", False) or allow_thumb_fallback
 
@@ -3356,7 +3415,7 @@ class KemonoDownloader:
                         req_headers["Referer"] = "https://coomer.st/"
                         req_headers["Accept"] = "*/*"
                     elif "pawchive" in u_low:
-                        req_headers["User-Agent"] = "PawchiveDownloader/1.3.4 (https://github.com/whyamihere773/Pawchive-Downloader)"
+                        req_headers["User-Agent"] = "PawchiveDownloader/1.3.5 (https://github.com/whyamihere773/Pawchive-Downloader)"
                         req_headers["Referer"] = "https://pawchive.pw/"
                         req_headers["Accept"] = "*/*"
                     elif "cum.st" in u_low:
@@ -3442,7 +3501,7 @@ class KemonoDownloader:
                             try:
                                 if "pawchive" in attempt_url.lower():
                                     clean_headers = {
-                                        "User-Agent": "PawchiveDownloader/1.3.4 (https://github.com/whyamihere773/Pawchive-Downloader)",
+                                        "User-Agent": "PawchiveDownloader/1.3.5 (https://github.com/whyamihere773/Pawchive-Downloader)",
                                         "Referer": "https://pawchive.pw/",
                                         "Accept": "*/*",
                                         "X-Contact": "https://github.com/whyamihere773/Pawchive-Downloader",

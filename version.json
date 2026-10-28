@@ -1,8 +1,8 @@
 {
-    "version": "1.3.4",
+    "version": "1.3.5",
     "commit": "",
     "short_commit": "",
-    "date": "2026-10-25",
+    "date": "2026-10-28",
     "channel": "release",
     "history": [
         {
@@ -179,6 +179,11 @@
             "version": "1.3.4",
             "date": "2026-10-25",
             "notes": "Added Watchlist 'On Disk' filter with dynamic filtered update checks, startup Watchlist check toggle, GPU hardware-accelerated video compression (NVENC, Quick Sync, AMF), background media compression in Gallery, and unexpected download directory fixes."
+        },
+        {
+            "version": "1.3.5",
+            "date": "2026-10-28",
+            "notes": "Fix Pawchive creator direct message infinite scan loop, resolve Pawchive temporary oversized downloads (t1.pawchive.pw), and fix Python 3.11 Watchlist startup compatibility."
         }
     ]
 }

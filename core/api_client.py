@@ -12,8 +12,9 @@ import random
 import threading
 import requests
 import re
+import hashlib
 from urllib.parse import unquote, urljoin
-from typing import Dict, Any, List, Optional, Callable, Tuple
+from typing import Dict, Any, List, Optional, Callable, Tuple, Set
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -531,11 +532,36 @@ class KemonoApiClient:
                 mapping[name] = u
         return mapping
 
+    @staticmethod
+    def is_pawchive_temp_expired(fobj: Dict[str, Any]) -> bool:
+        """Returns True if the temporary Pawchive URL or temp_expires has expired."""
+        if not isinstance(fobj, dict):
+            return False
+        temp_u = fobj.get("temp_url") or (fobj.get("path") if isinstance(fobj.get("path"), str) and "t1.pawchive.pw" in fobj.get("path") else "")
+        if temp_u and "?e=" in temp_u:
+            try:
+                m = re.search(r'[?&]e=(\d+)', temp_u)
+                if m:
+                    exp_ts = float(m.group(1))
+                    if time.time() > exp_ts:
+                        return True
+            except Exception:
+                pass
+        temp_expires = fobj.get("temp_expires")
+        if temp_expires:
+            try:
+                from datetime import datetime, timezone
+                exp_dt = datetime.fromisoformat(str(temp_expires).replace("Z", "+00:00"))
+                if datetime.now(timezone.utc) > exp_dt:
+                    return True
+            except Exception:
+                pass
+        return False
+
     def resolve_pawchive_deferred_attachments(self, post: Dict[str, Any], domain: str = "pawchive.pw") -> int:
         """
-        Detects any attachments marked with 'deferred: True' (oversized temporary storage on Pawchive).
-        Fetches the post HTML page, extracts signed t1.pawchive.pw temporary download URLs,
-        and assigns them to the attachments' 'path' and 'is_temporary'.
+        Resolves signed t1.pawchive.pw temporary download URLs for Pawchive attachments
+        (either via direct 'temp_url' in API JSON or scraping post HTML for legacy 'deferred: True' items).
         Returns the number of resolved attachments.
         """
         if not isinstance(post, dict):
@@ -543,21 +569,39 @@ class KemonoApiClient:
 
         attachments = post.get("attachments", [])
         if not isinstance(attachments, list):
-            return 0
+            attachments = []
+
+        resolved_count = 0
+        targets = []
+        main_f = post.get("file")
+        if isinstance(main_f, dict):
+            targets.append(main_f)
+        for a in attachments:
+            if isinstance(a, dict):
+                targets.append(a)
+
+        # 1. Resolve direct temp_url fields provided in the API JSON for file and attachments
+        for target in targets:
+            temp_u = target.get("temp_url")
+            if temp_u and not self.is_pawchive_temp_expired(target):
+                target["path"] = temp_u
+                target["is_temporary"] = True
+                target["preview_only"] = False
+                resolved_count += 1
 
         deferred_items = [
             a for a in attachments
-            if isinstance(a, dict) and a.get("deferred") and not a.get("path")
+            if isinstance(a, dict) and (a.get("deferred") or a.get("preview_only")) and not a.get("is_temporary") and (not a.get("path") or not str(a.get("path", "")).startswith("http"))
         ]
         if not deferred_items:
-            return 0
+            return resolved_count
 
         post_id = str(post.get("id") or "")
         service = post.get("service") or ""
         user_id = str(post.get("user") or "")
 
         if not post_id or not service or not user_id:
-            return 0
+            return resolved_count
 
         eff_domain = domain if "pawchive" in (domain or "") else "pawchive.pw"
         page_url = f"https://{eff_domain}/{service}/user/{user_id}/post/{post_id}"
@@ -566,14 +610,14 @@ class KemonoApiClient:
         resp = self._get_with_log(page_url, timeout=20)
         if not resp or resp.status_code != 200 or not resp.text:
             logger.warning(f"Could not fetch HTML for post {post_id} to resolve temporary files", category="api")
-            return 0
+            return resolved_count
 
         temp_map = self.extract_pawchive_temporary_attachments(resp.text)
         if not temp_map:
             logger.info(f"Post {post_id} has {len(deferred_items)} deferred attachment(s), but temporary links are expired or unavailable", category="api")
-            return 0
+            return resolved_count
 
-        resolved_count = 0
+        html_resolved = 0
         lower_map = {k.lower(): v for k, v in temp_map.items()}
         for att in deferred_items:
             att_name = att.get("name") or ""
@@ -581,10 +625,21 @@ class KemonoApiClient:
             if matched_url:
                 att["path"] = matched_url
                 att["is_temporary"] = True
-                resolved_count += 1
+                att["preview_only"] = False
+                html_resolved += 1
 
-        if resolved_count > 0:
-            logger.info(f"✨ Resolved {resolved_count}/{len(deferred_items)} temporary oversized file(s) from t1.pawchive.pw for post {post_id}", category="api")
+        if isinstance(main_f, dict) and (main_f.get("deferred") or main_f.get("preview_only")) and not main_f.get("is_temporary"):
+            mf_name = main_f.get("name") or ""
+            matched_mf_url = temp_map.get(mf_name) or lower_map.get(mf_name.lower())
+            if matched_mf_url:
+                main_f["path"] = matched_mf_url
+                main_f["is_temporary"] = True
+                main_f["preview_only"] = False
+                html_resolved += 1
+
+        resolved_count += html_resolved
+        if html_resolved > 0:
+            logger.info(f"✨ Resolved {html_resolved}/{len(deferred_items)} temporary oversized file(s) from t1.pawchive.pw for post {post_id}", category="api")
 
         return resolved_count
 
@@ -895,6 +950,7 @@ class KemonoApiClient:
         pages_fetched = 0
         cancelled = False
         known_total: Optional[int] = None
+        seen_ids: Set[str] = set()
 
         norm_after = date_after.strip() if date_after else ""
         norm_before = date_before.strip() if date_before else ""
@@ -968,6 +1024,7 @@ class KemonoApiClient:
                 break
 
             page_dms: List[Dict[str, Any]] = []
+            has_next_page = True
 
             if "cum.st" in domain_lower:
                 try:
@@ -1009,6 +1066,23 @@ class KemonoApiClient:
                     logger.error(f"DM Page {current_page}: HTML parse error — {e}", category="api")
                     break
 
+                if "pawchive" in domain_lower and known_total is None:
+                    m_tot = re.search(r'DMs\s*\(([0-9,]+)\)', resp.text)
+                    if m_tot:
+                        try:
+                            known_total = int(m_tot.group(1).replace(",", ""))
+                        except (ValueError, TypeError):
+                            pass
+
+                has_next_page = False
+                for a in soup.find_all("a", href=True):
+                    href = a.get("href", "")
+                    if (f"/user/{parsed.user_id}/dms" in href or href.startswith("?o=") or href.startswith("&o=")) and re.search(r'[?&]o=\d+', href):
+                        m_o = re.search(r'[?&]o=(\d+)', href)
+                        if m_o and int(m_o.group(1)) > offset:
+                            has_next_page = True
+                            break
+
                 for idx, art in enumerate(articles, 1):
                     content_div = art.find(class_="dm-card__content")
                     content_html = content_div.decode_contents().strip() if content_div else ""
@@ -1026,22 +1100,42 @@ class KemonoApiClient:
                         src = img.get("src")
                         if src and not src.endswith("logo.png") and not src.endswith("favicon.png"):
                             fname = src.split("/")[-1].split("?")[0] or "image.jpg"
+                            if src.startswith(("http://", "https://")):
+                                img_path = src
+                            elif src.startswith("//"):
+                                img_path = f"https:{src}"
+                            elif src.startswith("/"):
+                                img_path = src
+                            else:
+                                img_path = f"/{src}"
                             attachments.append({
                                 "name": fname,
-                                "path": src if src.startswith("/") else f"/{src}",
+                                "path": img_path,
                                 "originalFilename": fname,
                             })
                     for a in art.find_all("a"):
                         href = a.get("href")
                         if href and any(ext in href.lower() for ext in [".jpg", ".png", ".mp4", ".zip", ".rar", "/data/"]):
                             fname = href.split("/")[-1].split("?")[0] or "file.bin"
+                            if href.startswith(("http://", "https://")):
+                                link_path = href
+                            elif href.startswith("//"):
+                                link_path = f"https:{href}"
+                            elif href.startswith("/"):
+                                link_path = href
+                            else:
+                                link_path = f"/{href}"
                             attachments.append({
                                 "name": fname,
-                                "path": href if href.startswith("/") else f"/{href}",
+                                "path": link_path,
                                 "originalFilename": fname,
                             })
 
-                    dm_id = art.get("id") or art.get("data-id") or f"dm_{offset + idx}_{parsed.user_id}"
+                    dm_id = art.get("id") or art.get("data-id")
+                    if not dm_id:
+                        att_str = ",".join(a.get("path", "") for a in attachments)
+                        fingerprint = f"{parsed.service}:{parsed.user_id}:{added_str}:{content_text}:{att_str}"
+                        dm_id = f"dm_{hashlib.sha256(fingerprint.encode('utf-8', errors='ignore')).hexdigest()[:16]}"
                     first_line = content_text.split("\n")[0][:80].strip() if content_text else ""
 
                     dm_obj = {
@@ -1065,8 +1159,24 @@ class KemonoApiClient:
                 )
                 break
 
-            batch = len(page_dms)
-            all_dms.extend(page_dms)
+            unique_page_dms: List[Dict[str, Any]] = []
+            for dm_obj in page_dms:
+                d_id = dm_obj.get("id")
+                if d_id:
+                    if d_id in seen_ids:
+                        continue
+                    seen_ids.add(d_id)
+                unique_page_dms.append(dm_obj)
+
+            if not unique_page_dms:
+                logger.info(
+                    f"DM Page {current_page}: no new DMs found (all {len(page_dms)} cards were already seen) — pagination complete.",
+                    category="api"
+                )
+                break
+
+            batch = len(unique_page_dms)
+            all_dms.extend(unique_page_dms)
             pages_fetched += 1
             logger.info(
                 f"DM Page {current_page:3d}  offset {offset:5d}  +{batch} DMs  "
@@ -1080,17 +1190,24 @@ class KemonoApiClient:
                 except TypeError:
                     progress_callback(current_page, len(all_dms))
 
-            # If cum.st total reached, stop
+            # If total reached, stop
             if known_total and len(all_dms) >= known_total:
                 logger.info(f"Reached known total of {known_total} DMs.", category="api")
                 break
 
-            # If pawchive returned less than page_size cards, this was the last page
-            if "pawchive" in domain_lower and batch < 50:
-                logger.info(f"Last Pawchive DMs page reached ({batch} cards).", category="api")
-                break
+            # If pawchive returned less than page_size cards or has no subsequent page links, stop
+            if "pawchive" in domain_lower:
+                if not has_next_page:
+                    logger.info(
+                        f"Last Pawchive DMs page reached ({batch} cards, no subsequent pagination links).",
+                        category="api"
+                    )
+                    break
+                if batch < 50:
+                    logger.info(f"Last Pawchive DMs page reached ({batch} cards).", category="api")
+                    break
 
-            offset += batch
+            offset += len(page_dms)
             current_page += 1
             page_delay = random.uniform(0.35, 0.55) if ("pawchive" in domain_lower) else 0.15
             time.sleep(page_delay)

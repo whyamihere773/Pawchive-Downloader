@@ -1,32 +1,8 @@
-### 👁️ Watchlist Upgrades
-
-* **"On Disk" filter**: You can now filter the Watchlist to show only creators you have already downloaded to your storage drives.
-* **Smart filtered update checks**: The "Check All" button now dynamically updates to check only the creators visible in your active filter instead of scanning your entire library.
-
----
-
-### ⚡ Hardware-Accelerated Video Compression
-
-* **Faster video compression with your GPU**: Video compression now supports hardware acceleration using NVIDIA NVENC, Intel Quick Sync, and AMD AMF for significantly faster encoding.
-* **Automatic dedicated GPU detection**: Systems with multiple graphics cards (such as an Intel processor paired with an NVIDIA GeForce card) automatically prioritize your high-performance dedicated graphics card.
-
----
-
-### 🖼️ Gallery Improvements
-
-* **Background compression**: Compressing videos and pictures from the Gallery now runs quietly in the background with a discreet progress badge, allowing you to keep browsing freely.
-
----
-
-### ⚙️ New Setting
-
-* **Startup watchlist check toggle**: You can now choose whether the app automatically scans your watchlist on startup in Settings → Watchlist & Follows.
-
----
-
 ### 🛠️ Fixes
 
-* **Unexpected download folders fixed**: Resolved an issue where temporary paths could corrupt your saved download folder and cause downloads to fall back into your Downloads folder.
+* **Creator DM infinite scanning fixed**: Downloading or scanning direct messages from Pawchive creators no longer gets trapped in an endless scan loop, collecting all messages cleanly in a single fast pass.
+* **Pawchive oversized files download properly**: Posts that serve large files through Pawchive's temporary storage no longer fail with thumbnail errors and now download in full resolution as intended.
+* **Python 3.11 compatibility**: Fixed a startup error on systems running Python 3.11 when opening the Watchlist.
 
 ---
 
