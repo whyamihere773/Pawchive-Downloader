@@ -39,7 +39,16 @@ Item {
     property string _previewRequest: ""
     property string _indexRequest: ""
     property string _renameRequest: ""
+    property string _metaRequest: ""
+    property bool isFetchingMetadata: false
     function _newRequest(kind) { _requestSeq += 1; return "rename-" + kind + "-" + _requestSeq }
+
+    function fetchMetadata() {
+        if (!bridge || !bridge.refreshPostMetadataAsync) return
+        isFetchingMetadata = true
+        _metaRequest = _newRequest("metadata")
+        bridge.refreshPostMetadataAsync(_metaRequest, folderPath, targetFiles, false)
+    }
 
     Timer {
         id: previewDebounce
@@ -71,6 +80,10 @@ Item {
                 } else {
                     root.updatePreview()      // show what's left / updated statuses
                 }
+            } else if (requestId === root._metaRequest) {
+                root._metaRequest = ""
+                root.isFetchingMetadata = false
+                root.updatePreview()
             }
         }
     }
@@ -561,6 +574,41 @@ Item {
                 }
 
                 Item { Layout.fillWidth: true }
+
+                Rectangle {
+                    implicitHeight: 20
+                    implicitWidth: fetchMetaRow.implicitWidth + 12
+                    radius: 4
+                    color: fetchMetaMouse.containsMouse ? "#1E2A40" : "#131A26"
+                    border.color: fetchMetaMouse.containsMouse ? "#38BDF8" : "#2B3852"
+                    border.width: 1
+
+                    RowLayout {
+                        id: fetchMetaRow
+                        anchors.centerIn: parent
+                        spacing: 4
+                        Text { text: "🔄"; font.pixelSize: 9 }
+                        Text {
+                            text: root.isFetchingMetadata ? "Fetching…" : "Fetch Metadata"
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 10
+                            font.weight: 600
+                            color: root.isFetchingMetadata ? "#F59E0B" : "#38BDF8"
+                        }
+                    }
+
+                    MouseArea {
+                        id: fetchMetaMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        enabled: !root.isFetchingMetadata
+                        onClicked: root.fetchMetadata()
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 300
+                        ToolTip.text: "Fetch post titles & captions from Pawchive/Kemono API\nSaves metadata to disk and populates {captionText}"
+                    }
+                }
             }
 
             // Advanced Options & Move-to-Folder Bar

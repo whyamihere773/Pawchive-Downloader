@@ -1,21 +1,22 @@
-### 🔧 Updater Reliability & Rate Limit Fix
+### 🏷️ Post Metadata & Caption Renaming
 
-* **In-app updates rate limit fix**: Resolved the "GitHub is limiting requests right now" error that prevented updates on VPNs, proxies, and shared connections by adding an automatic fallback that doesn't consume API limits.
-* **Smarter update checks**: Background startup checks are now cached so restarting or opening the app multiple times no longer gets you temporarily blocked by GitHub.
-
----
-
-### 🏷️ Smart Batch Renamer Enhancements
-
-* **Post caption renaming token**: Added `{captionText}` to the Batch Renamer so you can rename downloaded media with each post's caption or description.
-* **Automatic caption detection**: Works seamlessly across posts and creator folders by extracting captions directly from local post information files.
+* **Fetch missing post metadata**: A new "Fetch Metadata" button in the Batch Renamer and Gallery lets you fetch and update post details directly from the web for posts and files already on your computer.
+* **Captions in batch renaming**: The `{captionText}` naming tag now seamlessly reads captions from saved post info and metadata files, including files stored in Documents subfolders.
 
 ---
 
-### 🛠️ Download & Compression Fixes
+### 🎬 Video Fingerprinting & Recognition
 
-* **Compressed videos no longer re-download**: Files you compressed with Pawchive or external tools are no longer mistakenly treated as low-resolution thumbnails on subsequent downloads.
-* **Format conversion detection**: Converted videos (such as MP4 converted to MKV or WebM) and compressed images (such as AVIF or WebP) are properly recognized as already saved.
+* **Scan existing video libraries**: A new "Fingerprint Videos" tool in the Archive tab lets you index videos already saved on your drive directly into your archive history.
+* **Smart duplicate prevention**: Indexed videos are automatically recognized during future download runs so you never download the same video twice, even if it was moved or renamed.
+
+---
+
+### 🔧 Retry Failed Window Overhaul
+
+* **Adaptive dialog layout**: The "Retry Failed" window now dynamically stretches to fit translated text across all languages (Russian, Indonesian, German, etc.) and automatically stays centered on your screen.
+* **Error badge text overflow fixed**: The red failure counter in the window's header now expands properly so text like "0 Errors / Failed" no longer spills out of the badge.
+* **Responsive button wrapping**: Action buttons at the bottom now wrap cleanly onto a second line if the window is resized down, preventing buttons from getting squished or cut off.
 
 ---
 

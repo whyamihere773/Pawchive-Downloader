@@ -522,6 +522,15 @@ Rectangle {
                     }
 
                     StyledButton {
+                        text: root.width < 640 ? "" : root.tr("btn_fingerprint_videos", "Fingerprint Videos")
+                        iconText: "🎬"
+                        variant: "outline"
+                        implicitHeight: 30
+                        tooltip: root.tr("btn_fingerprint_videos_tip", "Scan a folder to calculate SHA-256 fingerprints for existing videos and index them into the archive database")
+                        onClicked: fingerprintFolderDialog.open()
+                    }
+
+                    StyledButton {
                         text: root.width < 640 ? "" : root.tr("btn_import_archive", "Import")
                         iconText: "📥"
                         variant: "outline"
@@ -2755,6 +2764,33 @@ Rectangle {
     }
 
     // ── Dialogs & Modals ───────────────────────────────────────────────
+    // Fingerprint Videos Folder Dialog
+    FolderDialog {
+        id: fingerprintFolderDialog
+        title: root.tr("dialog_fingerprint_videos", "Select Folder to Fingerprint Existing Videos")
+        onAccepted: {
+            var raw = selectedFolder.toString()
+            var path = raw.replace(/^(file:\/{3}|file:\/{2}|file:\/)/i, "")
+            if (Qt.platform.os === "windows") path = path.replace(/^\/+/g, "")
+            if (path && root.bridge && root.bridge.fingerprintVideosAsync) {
+                root.showToast(root.tr("toast_fingerprinting_videos", "Fingerprinting existing videos…"))
+                root.archiveJob(function(id) { root.bridge.fingerprintVideosAsync(id, path, true) }, function(res) {
+                    if (res && res.success) {
+                        var msg = root.tr("toast_fingerprinted_result", "Indexed %1 new video(s) (%2 already in archive).")
+                            .replace("%1", res.newly_indexed || 0)
+                            .replace("%2", res.already_archived || 0)
+                        root.showToast(msg)
+                        root.refreshArchive()
+                    } else if (res && res.errors && res.errors.length) {
+                        root.showToast("Fingerprinting finished: " + res.errors[0])
+                    } else {
+                        root.showToast(root.archiveErrorText())
+                    }
+                })
+            }
+        }
+    }
+
     // Import File Dialog
     FileDialog {
         id: importFileDialog

@@ -180,9 +180,25 @@ Rectangle {
     // Centered Dialog Window with Newtonian Spring Entrance
     Rectangle {
         id: dialogBox
-        width: Math.min(modalRoot.width - 40, 720)
-        height: Math.min(modalRoot.height - 40, 560)
+
+        property int dynamicWidth: {
+            var _ = Lang ? Lang.activeLanguage : ""
+            var bottomNeeded = (typeof bottomLeftActions !== "undefined" && typeof bottomRightActions !== "undefined")
+                ? (bottomLeftActions.implicitWidth + bottomRightActions.implicitWidth + 56)
+                : 760
+            var toolbarNeeded = (typeof selectButtonsRow !== "undefined" && typeof retryOptionsRow !== "undefined")
+                ? (selectButtonsRow.implicitWidth + retryOptionsRow.implicitWidth + 56)
+                : 720
+            var needed = Math.max(740, bottomNeeded, toolbarNeeded)
+            return Math.min(modalRoot.width - 32, Math.max(720, needed))
+        }
+
+        width: dynamicWidth
+        height: Math.min(modalRoot.height - 40, (typeof bottomActionToolbar !== "undefined" && bottomActionToolbar.columns === 1) ? 610 : 570)
         anchors.centerIn: parent
+        Behavior on width {
+            NumberAnimation { duration: 160; easing.type: Easing.OutCubic }
+        }
         radius: 10
         color: "#131722"
         border.color: "#2A3346"
@@ -215,11 +231,16 @@ Rectangle {
                     font.pixelSize: 16
                     font.weight: Font.Bold
                     color: "#F8FAFC"
+                    Layout.maximumWidth: Math.max(180, dialogBox.width - failedBadgeBox.implicitWidth - 80)
+                    elide: Text.ElideRight
                 }
 
                 Rectangle {
-                    height: 22
-                    width: Math.max(24, failedCntBadge.implicitWidth + 12)
+                    id: failedBadgeBox
+                    implicitHeight: 22
+                    implicitWidth: Math.max(28, failedCntBadge.implicitWidth + 18)
+                    Layout.preferredHeight: implicitHeight
+                    Layout.preferredWidth: implicitWidth
                     radius: 11
                     color: "#3B181E"
                     border.color: "#EF4444"
@@ -239,7 +260,11 @@ Rectangle {
 
                 // Close X button
                 Rectangle {
-                    width: 24; height: 24; radius: 12
+                    implicitWidth: 24
+                    implicitHeight: 24
+                    Layout.preferredWidth: 24
+                    Layout.preferredHeight: 24
+                    radius: 12
                     color: closeMouse.containsMouse ? "#374151" : "#1E2430"
                     Text { anchors.centerIn: parent; text: "×"; font.pixelSize: 14; font.bold: true; color: "#94A3B8" }
                     MouseArea {
@@ -405,8 +430,10 @@ Rectangle {
 
                                 // Service Pill
                                 Rectangle {
-                                    width: Math.max(50, svcLabelText.implicitWidth + 8)
-                                    height: 18
+                                    implicitWidth: Math.max(50, svcLabelText.implicitWidth + 10)
+                                    implicitHeight: 18
+                                    Layout.preferredWidth: implicitWidth
+                                    Layout.preferredHeight: implicitHeight
                                     radius: 3
                                     color: "#242A38"
                                     Text {
@@ -422,8 +449,10 @@ Rectangle {
                                 // Retry Count / Capped Pill
                                 Rectangle {
                                     visible: model.retryCount > 0
-                                    width: Math.max(56, retryBadgeText.implicitWidth + 10)
-                                    height: 18
+                                    implicitWidth: Math.max(56, retryBadgeText.implicitWidth + 12)
+                                    implicitHeight: 18
+                                    Layout.preferredWidth: implicitWidth
+                                    Layout.preferredHeight: implicitHeight
                                     radius: 3
                                     color: model.retryCapped ? "#451A03" : "#3B181E"
                                     border.color: model.retryCapped ? "#F59E0B" : "#EF4444"
@@ -475,8 +504,10 @@ Rectangle {
                                 // Clickable Post Link badge
                                 Rectangle {
                                     visible: model.postUrl && model.postUrl.length > 0
-                                    height: 18
+                                    implicitHeight: 18
                                     implicitWidth: postLinkText.implicitWidth + 12
+                                    Layout.preferredHeight: implicitHeight
+                                    Layout.preferredWidth: implicitWidth
                                     radius: 3
                                     color: postLinkMouse.containsMouse ? "#1E293B" : "#0F172A"
                                     border.color: "#38BDF8"
@@ -508,8 +539,10 @@ Rectangle {
                                 // Clickable Direct Download Link badge
                                 Rectangle {
                                     visible: model.url && model.url.length > 0
-                                    height: 18
+                                    implicitHeight: 18
                                     implicitWidth: dlLinkText.implicitWidth + 12
+                                    Layout.preferredHeight: implicitHeight
+                                    Layout.preferredWidth: implicitWidth
                                     radius: 3
                                     color: dlLinkMouse.containsMouse ? "#1E293B" : "#0F172A"
                                     border.color: "#64748B"
@@ -581,84 +614,99 @@ Rectangle {
             }
 
             // Bottom Settings & Action Row
-            RowLayout {
+            GridLayout {
+                id: bottomActionToolbar
                 Layout.fillWidth: true
-                spacing: 12
+                columnSpacing: 10
+                rowSpacing: 8
+                columns: (bottomLeftActions.implicitWidth + bottomRightActions.implicitWidth + 24 <= width) ? 2 : 1
 
-                // Physical "Auto retry at the end" Toggle Button
-                StyledButton {
-                    text: modalRoot.bridge && modalRoot.bridge.autoRetryAtEnd ? modalRoot.tr("opt_auto_retry_end_on", "Auto-Retry at End: ON") : modalRoot.tr("opt_auto_retry_end_off", "Auto-Retry at End: OFF")
-                    iconText: "🔄"
-                    variant: modalRoot.bridge && modalRoot.bridge.autoRetryAtEnd ? "success" : "outline"
-                    implicitHeight: 32
-                    onClicked: {
-                        if (modalRoot.bridge) modalRoot.bridge.autoRetryAtEnd = !modalRoot.bridge.autoRetryAtEnd
-                    }
-                }
+                RowLayout {
+                    id: bottomLeftActions
+                    spacing: 8
+                    Layout.fillWidth: bottomActionToolbar.columns === 1
 
-                // Export Failed Links Button
-                StyledButton {
-                    text: modalRoot.tr("btn_export_failed", "Export Links...")
-                    iconText: "📤"
-                    variant: "outline"
-                    implicitHeight: 32
-                    tooltip: modalRoot.tr("btn_export_failed_tip", "Export direct download links, post links, and file details to a text file for manual testing")
-                    enabled: failedItemsModel.count > 0
-                    onClicked: {
-                        var selected = failedItemsModel.getSelectedIds()
-                        if (modalRoot.bridge) {
-                            modalRoot.bridge.exportFailedTasks(selected)
+                    // Physical "Auto retry at the end" Toggle Button
+                    StyledButton {
+                        text: modalRoot.bridge && modalRoot.bridge.autoRetryAtEnd ? modalRoot.tr("opt_auto_retry_end_on", "Auto-Retry at End: ON") : modalRoot.tr("opt_auto_retry_end_off", "Auto-Retry at End: OFF")
+                        iconText: "🔄"
+                        variant: modalRoot.bridge && modalRoot.bridge.autoRetryAtEnd ? "success" : "outline"
+                        implicitHeight: 32
+                        onClicked: {
+                            if (modalRoot.bridge) modalRoot.bridge.autoRetryAtEnd = !modalRoot.bridge.autoRetryAtEnd
                         }
                     }
-                }
 
-                // Clear Failed Tasks Button
-                StyledButton {
-                    text: failedItemsModel.selectedCount > 0 ? (modalRoot.tr("btn_clear_selected", "Clear Selected") + " (" + failedItemsModel.selectedCount + ")") : modalRoot.tr("btn_clear_all_failed", "Clear All Failed")
-                    iconText: "🗑"
-                    variant: "ghost"
-                    implicitHeight: 32
-                    tooltip: modalRoot.tr("tip_clear_failed_tasks", "Remove failed downloads permanently from the queue")
-                    enabled: failedItemsModel.count > 0
-                    onClicked: {
-                        var selected = failedItemsModel.getSelectedIds()
-                        var clearsAll = selected.length === 0 || selected.length >= failedItemsModel.count
-                        if (modalRoot.bridge) {
-                            if (selected.length > 0) {
-                                modalRoot.bridge.clearFailedTasks(selected)
-                            } else {
-                                modalRoot.bridge.clearFailedTasks()
+                    // Export Failed Links Button
+                    StyledButton {
+                        text: modalRoot.tr("btn_export_failed", "Export Links...")
+                        iconText: "📤"
+                        variant: "outline"
+                        implicitHeight: 32
+                        tooltip: modalRoot.tr("btn_export_failed_tip", "Export direct download links, post links, and file details to a text file for manual testing")
+                        enabled: failedItemsModel.count > 0
+                        onClicked: {
+                            var selected = failedItemsModel.getSelectedIds()
+                            if (modalRoot.bridge) {
+                                modalRoot.bridge.exportFailedTasks(selected)
                             }
                         }
-                        if (clearsAll)
-                            modalRoot.isOpen = false
-                        else
-                            failedItemsModel.populate()
+                    }
+
+                    // Clear Failed Tasks Button
+                    StyledButton {
+                        text: failedItemsModel.selectedCount > 0 ? (modalRoot.tr("btn_clear_selected", "Clear Selected") + " (" + failedItemsModel.selectedCount + ")") : modalRoot.tr("btn_clear_all_failed", "Clear All Failed")
+                        iconText: "🗑"
+                        variant: "ghost"
+                        implicitHeight: 32
+                        tooltip: modalRoot.tr("tip_clear_failed_tasks", "Remove failed downloads permanently from the queue")
+                        enabled: failedItemsModel.count > 0
+                        onClicked: {
+                            var selected = failedItemsModel.getSelectedIds()
+                            var clearsAll = selected.length === 0 || selected.length >= failedItemsModel.count
+                            if (modalRoot.bridge) {
+                                if (selected.length > 0) {
+                                    modalRoot.bridge.clearFailedTasks(selected)
+                                } else {
+                                    modalRoot.bridge.clearFailedTasks()
+                                }
+                            }
+                            if (clearsAll)
+                                modalRoot.isOpen = false
+                            else
+                                failedItemsModel.populate()
+                        }
                     }
                 }
 
-                Item { Layout.fillWidth: true }
+                RowLayout {
+                    id: bottomRightActions
+                    Layout.fillWidth: true
+                    spacing: 8
 
-                StyledButton {
-                    text: modalRoot.tr("btn_cancel", "Cancel")
-                    variant: "ghost"
-                    implicitHeight: 32
-                    onClicked: modalRoot.isOpen = false
-                }
+                    Item { Layout.fillWidth: true }
 
-                StyledButton {
-                    id: retrySubmitBtn
-                    text: modalRoot.tr("btn_retry", "Retry") + " (" + failedItemsModel.selectedCount + ")"
-                    iconText: "🔁"
-                    variant: "danger"
-                    implicitHeight: 32
-                    enabled: failedItemsModel.selectedCount > 0
-                    onClicked: {
-                        var ids = failedItemsModel.getSelectedIds()
-                        if (modalRoot.bridge && ids.length > 0) {
-                            modalRoot.bridge.retrySelectedTasks(ids)
+                    StyledButton {
+                        text: modalRoot.tr("btn_cancel", "Cancel")
+                        variant: "ghost"
+                        implicitHeight: 32
+                        onClicked: modalRoot.isOpen = false
+                    }
+
+                    StyledButton {
+                        id: retrySubmitBtn
+                        text: modalRoot.tr("btn_retry", "Retry") + " (" + failedItemsModel.selectedCount + ")"
+                        iconText: "🔁"
+                        variant: "danger"
+                        implicitHeight: 32
+                        enabled: failedItemsModel.selectedCount > 0
+                        onClicked: {
+                            var ids = failedItemsModel.getSelectedIds()
+                            if (modalRoot.bridge && ids.length > 0) {
+                                modalRoot.bridge.retrySelectedTasks(ids)
+                            }
+                            modalRoot.isOpen = false
                         }
-                        modalRoot.isOpen = false
                     }
                 }
             }

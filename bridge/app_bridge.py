@@ -9098,11 +9098,11 @@ class AppBridge(QObject):
                 artist_match = re.search(r'\[([^\]]+)\]', folder_name)
             artist = artist_match.group(1).strip() if artist_match else (item_folder_name if item_folder_name else (folder_name if folder_name else parent_folder_name))
 
-            post_id_match = re.search(r'\b(\d{5,10})\b', base_name)
+            post_id_match = re.search(r'(?<!\d)(\d{5,10})(?!\d)', base_name)
             if not post_id_match:
-                post_id_match = re.search(r'\b(\d{5,10})\b', item_folder_name)
+                post_id_match = re.search(r'(?<!\d)(\d{5,10})(?!\d)', item_folder_name)
             if not post_id_match:
-                post_id_match = re.search(r'\b(\d{5,10})\b', folder_name)
+                post_id_match = re.search(r'(?<!\d)(\d{5,10})(?!\d)', folder_name)
             post_id = post_id_match.group(1) if post_id_match else ""
 
             try:
@@ -9158,6 +9158,34 @@ class AppBridge(QObject):
                         raw_caption = re.sub(r'[\r\n\t]+', ' ', raw_caption)
                         raw_caption = re.sub(r'\s+', ' ', raw_caption).strip()
                         clean_caption = FilterEngine.clean_filesystem_text(raw_caption, max_len=100, fallback="")
+
+            # If info_file not found or caption empty, check JSON metadata sidecars
+            if not clean_caption:
+                json_candidates = []
+                for c_dir in (item_dir, folder_path, os.path.join(item_dir, "Documents"), os.path.join(folder_path, "Documents")):
+                    if c_dir and os.path.isdir(c_dir):
+                        if post_id:
+                            json_candidates.append(os.path.join(c_dir, f"post_{post_id}.json"))
+                        json_candidates.append(os.path.join(c_dir, "post_metadata.json"))
+                        json_candidates.append(os.path.join(c_dir, f"{base_name}.json"))
+                for jc in json_candidates:
+                    if os.path.isfile(jc):
+                        try:
+                            with open(jc, "r", encoding="utf-8", errors="replace") as jf:
+                                jdata = json.load(jf)
+                                raw_c = jdata.get("captionText") or jdata.get("caption") or jdata.get("raw_content") or jdata.get("content")
+                                if raw_c:
+                                    raw_c = re.sub(r'<br\s*/?>', ' ', str(raw_c), flags=re.IGNORECASE)
+                                    raw_c = re.sub(r'<[^>]+>', ' ', raw_c)
+                                    import html as _html
+                                    raw_c = _html.unescape(raw_c)
+                                    raw_c = re.sub(r'[\r\n\t]+', ' ', raw_c)
+                                    raw_c = re.sub(r'\s+', ' ', raw_c).strip()
+                                    clean_caption = FilterEngine.clean_filesystem_text(raw_c, max_len=100, fallback="")
+                                    if clean_caption:
+                                        break
+                        except Exception:
+                            pass
 
             if not clean_caption:
                 clean_caption = cleaned_title
@@ -10120,6 +10148,49 @@ class AppBridge(QObject):
     @Slot(str, 'QVariantList')
     def executeBatchRenameAsync(self, request_id: str, plan: list):
         self._run_async(request_id, self.executeBatchRename, list(plan or []))
+
+    @Slot(str, result='QVariantMap')
+    @Slot(str, 'QVariantList', result='QVariantMap')
+    @Slot(str, 'QVariantList', bool, result='QVariantMap')
+    def refreshPostMetadata(self, folder_path: str, file_paths: list = None, save_to_documents: bool = False) -> dict:
+        """
+        Discovers post IDs for files in folder_path, fetches their full post metadata (captions,
+        descriptions, tags, published dates) from Pawchive / Kemono APIs, and writes post_info.txt
+        and post_metadata.json to disk.
+        """
+        from core.post_metadata_fetcher import PostMetadataFetcher
+        fetcher = PostMetadataFetcher(api_client=self.api_client, archive_manager=self.archive_manager)
+        flist = [f.get("path", f.get("name", str(f))) if isinstance(f, dict) else str(f) for f in (file_paths or [])]
+        return fetcher.fetch_and_save_metadata(
+            folder_path=folder_path,
+            file_paths=flist if flist else None,
+            save_json=True,
+            save_txt=True,
+            save_to_documents_subfolder=save_to_documents
+        )
+
+    @Slot(str, str)
+    @Slot(str, str, 'QVariantList')
+    @Slot(str, str, 'QVariantList', bool)
+    def refreshPostMetadataAsync(self, request_id: str, folder_path: str, file_paths: list = None, save_to_documents: bool = False):
+        self._run_async(request_id, self.refreshPostMetadata, folder_path, list(file_paths or []), save_to_documents)
+
+    @Slot(str, result='QVariantMap')
+    @Slot(str, bool, result='QVariantMap')
+    def fingerprintVideos(self, folder_path: str, recursive: bool = True) -> dict:
+        """
+        Scans a directory for existing video files, computes their SHA-256 hashes and media
+        signatures, and indexes them into Pawchive's ArchiveManager database to enable file
+        recognition and prevent duplicate downloads.
+        """
+        from core.video_fingerprinter import VideoFingerprinter
+        fingerprinter = VideoFingerprinter(archive_manager=self.archive_manager)
+        return fingerprinter.fingerprint_and_index(folder_path, recursive=recursive)
+
+    @Slot(str, str)
+    @Slot(str, str, bool)
+    def fingerprintVideosAsync(self, request_id: str, folder_path: str, recursive: bool = True):
+        self._run_async(request_id, self.fingerprintVideos, folder_path, recursive)
 
     @staticmethod
     def _flatten_log_path(folder_path: str) -> str:

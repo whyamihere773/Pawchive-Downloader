@@ -1525,6 +1525,23 @@ Item {
         }
     }
 
+    Connections {
+        target: root.bridge
+        ignoreUnknownSignals: true
+        function onAsyncResultReady(requestId, res) {
+            if (requestId && requestId.indexOf("gallery-meta-") === 0) {
+                if (res && res.posts_fetched > 0) {
+                    root.showToast("Metadata refreshed: " + res.posts_fetched + " post(s) saved.")
+                    root.refreshPreservingScroll()
+                } else if (res && res.errors && res.errors.length) {
+                    root.showToast("Metadata fetch: " + res.errors[0])
+                } else {
+                    root.showToast("No posts found to refresh.")
+                }
+            }
+        }
+    }
+
     function copyItemsToFolder(items) {
         if (!root.bridge || !items.length || !root.archiver || jobBusy()) return
         root.requestSafeAction("Copy", function() {
@@ -2570,6 +2587,49 @@ Item {
                             (root.isCurrentPathOtherRoot ?
                                 ("⚠️ Root Drive Selected (" + (root.currentPathSafety ? root.currentPathSafety.drive_letter : "") + "\\)\nClean & Organize on root drives requires double-confirmation.") :
                                 "Clean & Organize\nFind 0-byte broken files, detect duplicate downloads by SHA-256 hash, and auto-sort media into folders")
+                    }
+                }
+
+                // Action: Refresh Post Metadata
+                Rectangle {
+                    implicitHeight: 26
+                    implicitWidth: refreshMetaBtnRow.implicitWidth + 12
+                    radius: 5
+                    color: root.isCurrentPathBlocked ? "#161922" : (refreshMetaBtnMouse.containsMouse ? "#1E293D" : "#141720")
+                    border.color: root.isCurrentPathBlocked ? "#283042" : (refreshMetaBtnMouse.containsMouse ? "#38BDF8" : "#2E384D")
+                    border.width: 1
+                    opacity: root.isCurrentPathBlocked ? 0.38 : 1.0
+
+                    Row {
+                        id: refreshMetaBtnRow
+                        anchors.centerIn: parent
+                        spacing: 4
+                        Text { text: "🔄"; font.pixelSize: 11 }
+                        Text {
+                            text: "Refresh Metadata"
+                            visible: root.showActionLabels
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 10
+                            font.weight: 600
+                            color: root.isCurrentPathBlocked ? "#64748B" : "#E2E8F0"
+                        }
+                    }
+                    Springy { hover: refreshMetaBtnMouse.containsMouse; pressed: refreshMetaBtnMouse.pressed }
+                    MouseArea {
+                        id: refreshMetaBtnMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: root.isCurrentPathBlocked ? Qt.ForbiddenCursor : Qt.PointingHandCursor
+                        onClicked: {
+                            if (root.bridge && root.bridge.refreshPostMetadataAsync) {
+                                root.showToast("Fetching post metadata from Pawchive…")
+                                var req = "gallery-meta-" + Date.now()
+                                root.bridge.refreshPostMetadataAsync(req, root.currentPath, root.filteredItems, false)
+                            }
+                        }
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 300
+                        ToolTip.text: "Refresh Post Metadata\nFetch titles, captions, and tags from Pawchive/Kemono API and save locally as JSON and post_info.txt"
                     }
                 }
 
