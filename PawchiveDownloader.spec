@@ -81,6 +81,8 @@ hidden_imports = [
     'core.ai_semantic_matcher',
     'core.ai_reasoner',
     'core.text_utils',
+    'core.post_metadata_fetcher',
+    'core.video_fingerprinter',
     'services',
     'services.cookie_importer',
     'services.cloud_downloader',
