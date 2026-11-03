@@ -415,33 +415,29 @@ ApplicationWindow {
                             font.weight: appWindow.currentTab === 2 ? 600 : Font.Normal
                             color: appWindow.currentTab === 2 ? "#F8FAFC" : "#94A3B8"
                         }
-                    }
 
-                    // Live counter badge — artists that have new posts since last download
-                    Rectangle {
-                        id: watchlistBadge
-                        property int updCount: appBridge && appBridge.watchlistModel ? appBridge.watchlistModel.updatedCount : 0
-                        visible: updCount > 0
-                        width: Math.max(16, badgeText.implicitWidth + 8)
-                        height: 16
-                        radius: 8
-                        color: "#7C3AED"
-                        anchors.top: parent.top
-                        anchors.right: parent.right
-                        anchors.topMargin: -5
-                        anchors.rightMargin: -5
-                        z: 10
+                        // Live counter badge — artists that have new posts since last download
+                        Rectangle {
+                            id: watchlistBadge
+                            property int updCount: appBridge && appBridge.watchlistModel ? appBridge.watchlistModel.updatedCount : 0
+                            visible: updCount > 0
+                            width: Math.max(16, badgeText.implicitWidth + 8)
+                            height: 16
+                            radius: 8
+                            color: "#7C3AED"
+                            anchors.verticalCenter: parent.verticalCenter
 
-                        Behavior on width { NumberAnimation { duration: 160; easing.type: Easing.OutBack } }
+                            Behavior on width { NumberAnimation { duration: 160; easing.type: Easing.OutBack } }
 
-                        Text {
-                            id: badgeText
-                            anchors.centerIn: parent
-                            text: watchlistBadge.updCount
-                            font.family: "Segoe UI, sans-serif"
-                            font.pixelSize: 9
-                            font.weight: Font.Bold
-                            color: "#FFFFFF"
+                            Text {
+                                id: badgeText
+                                anchors.centerIn: parent
+                                text: watchlistBadge.updCount
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 9
+                                font.weight: Font.Bold
+                                color: "#FFFFFF"
+                            }
                         }
                     }
 

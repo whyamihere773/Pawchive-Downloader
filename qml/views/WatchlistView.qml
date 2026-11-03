@@ -104,7 +104,7 @@ Item {
         Rectangle {
             id: headerRect
             Layout.fillWidth: true
-            readonly property bool isCompact: root.width < 900
+            readonly property bool isCompact: root.width < 960
             height: isCompact ? 86 : 52
             color: "#0C0F18"
             border.color: "#1A2035"
@@ -140,7 +140,7 @@ Item {
                 // Row 1: Title + Subtitle + Badge + (Wide action holder)
                 RowLayout {
                     Layout.fillWidth: true
-                    spacing: 10
+                    spacing: 8
 
                     // Icon + Title
                     Text { text: "\uD83D\uDCCC"; font.pixelSize: 18; Layout.alignment: Qt.AlignVCenter }
@@ -165,7 +165,7 @@ Item {
                                 base = c + " of " + tot + " " + root.tr("watchlist_artists", "artist(s)")
                             }
                             if (u > 0) {
-                                return base + "  •  " + u + " updated"
+                                return base + " • " + u + " updated"
                             }
                             return base
                         }
@@ -175,26 +175,21 @@ Item {
                         color: (bridge && bridge.watchlistModel && bridge.watchlistModel.updatedCount > 0) ? "#22D3EE" : "#4B5563"
                         Layout.alignment: Qt.AlignVCenter
                         elide: Text.ElideRight
-                        Layout.maximumWidth: root.width < 860 ? 110 : (root.width < 1000 ? 180 : 300)
                     }
 
-                    Item {
-                        Layout.fillWidth: true
-                        Layout.minimumWidth: 4
-                    }
-
-                    // High-visibility update counter badge
+                    // High-visibility update counter badge (cleanly placed next to subtitle)
                     Rectangle {
                         id: resultBadge
                         readonly property int updArtists: bridge && bridge.watchlistModel ? bridge.watchlistModel.updatedCount : 0
                         readonly property int totalNew: bridge && bridge.watchlistModel ? bridge.watchlistModel.totalNewPosts : (root.lastNewCount > 0 ? root.lastNewCount : 0)
                         visible: updArtists > 0 || root.lastNewCount > 0
-                        height: 28
-                        implicitWidth: resultBadgeRow.implicitWidth + 20
-                        radius: 14
+                        height: 24
+                        implicitWidth: resultBadgeRow.implicitWidth + 14
+                        radius: 12
                         color: "#071E26"
                         border.color: "#22D3EE"
-                        border.width: 1.5
+                        border.width: 1.2
+                        Layout.alignment: Qt.AlignVCenter
 
                         scale: resultBadgeMouse.containsMouse ? 1.04 : 1.0
                         Behavior on scale { NumberAnimation { duration: 150; easing.type: Easing.OutBack } }
@@ -202,12 +197,12 @@ Item {
                         Row {
                             id: resultBadgeRow
                             anchors.centerIn: parent
-                            spacing: 6
+                            spacing: 5
 
                             Text {
                                 anchors.verticalCenter: parent.verticalCenter
                                 text: "✦"
-                                font.pixelSize: 11
+                                font.pixelSize: 10
                                 color: "#22D3EE"
                             }
                             Text {
@@ -216,11 +211,8 @@ Item {
                                     var count = resultBadge.totalNew > 0 ? resultBadge.totalNew : root.lastNewCount
                                     var art = resultBadge.updArtists
                                     if (count <= 0 && root.lastNewCount > 0) count = root.lastNewCount
-                                    if (headerRect.isCompact && root.width < 550) {
+                                    if (root.width < 900) {
                                         return count + " new"
-                                    }
-                                    if (root.width < 860) {
-                                        return art > 1 ? (count + " new · " + art) : (count + " new")
                                     }
                                     if (art > 1) {
                                         return count + " new " + (count === 1 ? "post" : "posts") + " · " + art + " creators"
@@ -249,28 +241,41 @@ Item {
                         }
                     }
 
-                    // On wide screens (>= 760), action buttons dock here
+                    Item {
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: 4
+                    }
+
+                    // On wide screens (>= 960), action buttons dock here
                     Item {
                         id: wideActionHolder
                         visible: !headerRect.isCompact
-                        Layout.preferredWidth: actionButtonsRow.implicitWidth
-                        Layout.preferredHeight: 32
+                        Layout.preferredWidth: visible ? actionButtonsRow.implicitWidth : 0
+                        Layout.preferredHeight: visible ? 32 : 0
                     }
                 }
 
-                // Row 2: (Only visible when compact < 760)
+                // Row 2: (Only visible when compact < 960)
                 RowLayout {
                     id: compactRow
                     visible: headerRect.isCompact
                     Layout.fillWidth: true
-                    spacing: 8
+                    Layout.preferredHeight: 32
+                    spacing: 0
 
-                    Item { Layout.fillWidth: true }
-
-                    Item {
-                        id: compactActionHolder
-                        Layout.preferredWidth: actionButtonsRow.implicitWidth
+                    Flickable {
+                        id: compactFlickable
+                        Layout.fillWidth: true
                         Layout.preferredHeight: 32
+                        contentWidth: actionButtonsRow.implicitWidth
+                        clip: true
+                        boundsBehavior: Flickable.StopAtBounds
+
+                        Item {
+                            id: compactActionHolder
+                            width: actionButtonsRow.implicitWidth
+                            height: 32
+                        }
                     }
                 }
             }
@@ -279,7 +284,7 @@ Item {
             Row {
                 id: actionButtonsRow
                 parent: headerRect.isCompact ? compactActionHolder : wideActionHolder
-                spacing: 8
+                spacing: 6
                 anchors.verticalCenter: parent ? parent.verticalCenter : undefined
 
                 // Download All Updates button
@@ -288,7 +293,7 @@ Item {
                     readonly property int totalNew: bridge && bridge.watchlistModel ? bridge.watchlistModel.totalNewPosts : 0
                     visible: totalNew > 0
                     height: 32
-                    implicitWidth: downloadAllRow.implicitWidth + 22
+                    implicitWidth: downloadAllRow.implicitWidth + 14
                     radius: 7
                     color: downloadAllMouse.pressed ? "#072019" : (downloadAllMouse.containsMouse ? "#0F382E" : "#07241C")
                     border.color: downloadAllMouse.containsMouse ? "#34D399" : "#10B981"
@@ -303,7 +308,7 @@ Item {
                     Row {
                         id: downloadAllRow
                         anchors.centerIn: parent
-                        spacing: 6
+                        spacing: 5
 
                         Text {
                             anchors.verticalCenter: parent.verticalCenter
@@ -314,7 +319,7 @@ Item {
                         }
                         Text {
                             anchors.verticalCenter: parent.verticalCenter
-                            text: root.width < 920
+                            text: headerRect.isCompact
                                   ? ("Updates (" + downloadAllBtn.totalNew + ")")
                                   : (root.tr("watchlist_download_all_btn", "Download All Updates") + " (" + downloadAllBtn.totalNew + ")")
                             font.family: "Segoe UI, sans-serif"
@@ -340,7 +345,7 @@ Item {
                 Rectangle {
                     id: addArtistBtn
                     height: 32
-                    implicitWidth: addArtistRow.implicitWidth + 20
+                    implicitWidth: addArtistRow.implicitWidth + 14
                     radius: 7
                     color: addArtistMouse.pressed ? "#16122C" : (addArtistMouse.containsMouse ? "#201840" : "#141026")
                     border.color: addArtistMouse.containsMouse ? "#A78BFA" : "#7C3AED"
@@ -364,7 +369,9 @@ Item {
                         }
                         Text {
                             anchors.verticalCenter: parent.verticalCenter
-                            text: root.tr("watchlist_add_artist_btn", "Add Artist")
+                            text: headerRect.isCompact
+                                  ? root.tr("watchlist_add_artist_short", "Add")
+                                  : root.tr("watchlist_add_artist_btn", "Add Artist")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 11
                             font.weight: 600
@@ -388,7 +395,7 @@ Item {
                 Rectangle {
                     id: syncFavBtn
                     height: 32
-                    implicitWidth: syncFavRow.implicitWidth + 20
+                    implicitWidth: syncFavRow.implicitWidth + 14
                     radius: 7
                     color: syncFavMouse.containsMouse ? "#2A2008" : "#1A170C"
                     border.color: syncFavMouse.containsMouse ? "#F59E0B" : "#B45309"
@@ -414,7 +421,9 @@ Item {
                             anchors.verticalCenter: parent.verticalCenter
                             text: (root.bridge && root.bridge.favoriteArtistsLoading)
                                   ? root.tr("watchlist_syncing_favs", "Syncing…")
-                                  : root.tr("watchlist_sync_favorites", "Sync Favorites")
+                                  : (headerRect.isCompact
+                                     ? root.tr("watchlist_sync_favs_short", "Favorites")
+                                     : root.tr("watchlist_sync_favorites", "Sync Favorites"))
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 11
                             font.weight: 600
@@ -444,7 +453,7 @@ Item {
                     readonly property bool anyAutoCheckEnabled: autoCheckArtists > 0
                     visible: totalArtists > 0
                     height: 32
-                    implicitWidth: autoCheckAllRow.implicitWidth + 20
+                    implicitWidth: autoCheckAllRow.implicitWidth + 14
                     radius: 7
                     color: autoCheckMouse.pressed
                            ? (anyAutoCheckEnabled ? "#2A1418" : "#0E2417")
@@ -476,12 +485,12 @@ Item {
                             anchors.verticalCenter: parent.verticalCenter
                             text: {
                                 if (autoCheckAllBtn.anyAutoCheckEnabled) {
-                                    return root.width < 960
-                                           ? root.tr("watchlist_disable_autocheck_short", "Disable Auto-Check")
+                                    return headerRect.isCompact
+                                           ? root.tr("watchlist_disable_autocheck_short", "No Auto-Check")
                                            : root.tr("watchlist_disable_autocheck", "Disable Auto-Check (All)")
                                 } else {
-                                    return root.width < 960
-                                           ? root.tr("watchlist_enable_autocheck_short", "Enable Auto-Check")
+                                    return headerRect.isCompact
+                                           ? root.tr("watchlist_enable_autocheck_short", "Auto-Check")
                                            : root.tr("watchlist_enable_autocheck", "Enable Auto-Check (All)")
                                 }
                             }
@@ -518,7 +527,7 @@ Item {
                 Rectangle {
                     id: checkAllBtn
                     height: 32
-                    implicitWidth: checkAllRow.implicitWidth + 20
+                    implicitWidth: checkAllRow.implicitWidth + 14
                     radius: 7
                     color: checkAllMouse.containsMouse ? "#1E1B3D" : "#141228"
                     border.color: root.isChecking ? "#6D28D9" : "#4C1D95"
@@ -533,7 +542,7 @@ Item {
                     Row {
                         id: checkAllRow
                         anchors.centerIn: parent
-                        spacing: 6
+                        spacing: 5
 
                         Text {
                             anchors.verticalCenter: parent.verticalCenter
@@ -554,10 +563,10 @@ Item {
                                 if (root.isChecking) {
                                     return root.tr("watchlist_checking", "Checking…") + (root.checkTotal > 0 ? "  " + root.checkDone + " / " + root.checkTotal : "")
                                 }
-                                var isFiltered = (root.activeServiceFilter !== "all" || root.searchText !== "")
-                                if (root.width < 820) {
+                                if (headerRect.isCompact) {
                                     return root.tr("watchlist_check_artist", "Check")
                                 }
+                                var isFiltered = (root.activeServiceFilter !== "all" || root.searchText !== "")
                                 if (isFiltered) {
                                     var count = (bridge && bridge.watchlistModel) ? bridge.watchlistModel.count : 0
                                     return root.tr("watchlist_check_filtered", "Check Filtered") + " (" + count + ")"
