@@ -1,8 +1,8 @@
 {
-    "version": "1.3.7",
+    "version": "1.3.8",
     "commit": "",
     "short_commit": "",
-    "date": "2026-11-01",
+    "date": "2026-11-03",
     "channel": "release",
     "history": [
         {
@@ -194,6 +194,11 @@
             "version": "1.3.7",
             "date": "2026-11-01",
             "notes": "Post metadata fetcher with caption renaming support, video library fingerprinting and duplicate recognition, and Retry Failed window layout and badge fixes."
+        },
+        {
+            "version": "1.3.8",
+            "date": "2026-11-03",
+            "notes": "Fix cum.st downloads and previews following server migration, add one-click bulk startup check toggle to Watchlist, and add VPN and proxy auto-detection to the updater with instant cancellation."
         }
     ]
 }

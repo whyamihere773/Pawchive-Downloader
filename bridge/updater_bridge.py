@@ -60,6 +60,9 @@ class UpdaterBridge(QObject):
         self._checked_once = False
         self._status_message = ""
         self._info = {}
+        self._proxy_url = us.resolve_proxy()
+        if self._proxy_url:
+            us.apply_proxy(self._proxy_url)
 
         # Quick version from version.json now; the commit (git) is filled in off the UI thread
         data = us._read_version_file(us.get_app_dir())
@@ -78,6 +81,11 @@ class UpdaterBridge(QObject):
             self.infoChanged.emit()
         except Exception as e:
             logger.debug(f"Couldn't read the local version: {e}", category="system")
+
+    def set_proxy(self, proxy_url: str):
+        self._proxy_url = (proxy_url or "").strip()
+        if self._proxy_url:
+            us.apply_proxy(self._proxy_url)
 
     # ── Properties ────────────────────────────────────────────────────────────
     @Property(bool, notify=isCheckingChanged)
@@ -158,7 +166,10 @@ class UpdaterBridge(QObject):
             self.statusChanged.emit()
 
         def _worker():
-            res = us.check_for_updates(timeout=10)
+            proxy = self._proxy_url or us.resolve_proxy()
+            if proxy:
+                us.apply_proxy(proxy)
+            res = us.check_for_updates(timeout=10, proxy_url=proxy)
             if not res.get("error"):
                 _write_update_cache(res)
             self._apply_update_result(res, silent=silent)
@@ -190,6 +201,7 @@ class UpdaterBridge(QObject):
         if self._launching or not self._update_available:
             return
         try:
+            self._info["proxy_url"] = self._proxy_url or us.resolve_proxy()
             plan_path = us.launch_updater(self._info)
         except Exception as e:
             self._status_message = f"The updater couldn't start: {e}"

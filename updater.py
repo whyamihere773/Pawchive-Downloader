@@ -164,6 +164,9 @@ class ConsoleReporter(ui.Reporter):
 
 
 def run_console(plan: Dict[str, Any], log: ui.UpdateLog) -> int:
+    proxy = plan.get("proxy_url") or us.resolve_proxy(plan.get("target_dir"), plan)
+    if proxy:
+        us.apply_proxy(proxy)
     if plan.get("_manual"):
         plan = plan_from_check(plan)
         if plan.get("_uptodate"):
@@ -217,6 +220,9 @@ def find_icon(target_dir: str) -> str:
 
 
 def run_gui(plan: Dict[str, Any], log: ui.UpdateLog) -> int:
+    proxy = plan.get("proxy_url") or us.resolve_proxy(plan.get("target_dir"), plan)
+    if proxy:
+        us.apply_proxy(proxy)
     from PySide6.QtCore import Property, QObject, QTimer, QUrl, Signal, Slot
     from PySide6.QtGui import QDesktopServices, QGuiApplication, QIcon
     from PySide6.QtQml import QQmlApplicationEngine
@@ -299,11 +305,15 @@ def run_gui(plan: Dict[str, Any], log: ui.UpdateLog) -> int:
             self._can_cancel, self._installing = True, False
             self._cancel.clear()
             self.changed.emit()
-            self._worker = threading.Thread(target=self._work, daemon=False)
+            self._worker = threading.Thread(target=self._work, daemon=True)
             self._worker.start()
 
         def _check_worker(self):
-            self._event.emit("checked", plan_from_check(self.plan))
+            checked = plan_from_check(self.plan)
+            if self._cancel.is_set():
+                self._event.emit("result", {"ok": False, "code": "cancelled", "message": "The update check was cancelled."})
+                return
+            self._event.emit("checked", checked)
 
         def _work(self):
             ctrl = self
@@ -350,6 +360,8 @@ def run_gui(plan: Dict[str, Any], log: ui.UpdateLog) -> int:
             self.changed.emit()
 
         def _finish(self, r):
+            if self._phase != "running":
+                return
             self._code = r.get("code", "")
             if r.get("ok"):
                 self._phase = "success"
@@ -381,8 +393,11 @@ def run_gui(plan: Dict[str, Any], log: ui.UpdateLog) -> int:
         def cancel(self):
             if self._phase == "running" and self._can_cancel:
                 self._cancel.set()
-                self._detail = "Cancelling…"
-                self.changed.emit()
+                if not self._installing:
+                    self._finish({"ok": False, "code": "cancelled", "message": "The update was cancelled."})
+                else:
+                    self._detail = "Cancelling…"
+                    self.changed.emit()
 
         @Slot()
         def nudge(self):
@@ -422,13 +437,19 @@ def run_gui(plan: Dict[str, Any], log: ui.UpdateLog) -> int:
 
         @Slot(result=bool)
         def canClose(self):
-            return not self._installing or self._phase != "running"
+            return not self._installing
 
         @Slot()
         def windowClosing(self):
-            if self._phase == "running" and self._can_cancel:
-                self.cancel()
-            elif self._phase != "running":
+            if self._phase == "running":
+                if self._can_cancel and not self._installing:
+                    self._cancel.set()
+                    if self.plan.get("pid") and not self.plan.get("_manual"):
+                        ui.relaunch(self.plan, log)
+                    self._quit()
+                elif self._can_cancel:
+                    self.cancel()
+            else:
                 self._quit()
 
         def _quit(self):
@@ -445,7 +466,8 @@ def run_gui(plan: Dict[str, Any], log: ui.UpdateLog) -> int:
     ctrl.start()
     rc = app.exec()
     if ctrl._worker and ctrl._worker.is_alive():
-        ctrl._worker.join(timeout=600)       # never leave mid-install
+        if ctrl._installing:
+            ctrl._worker.join(timeout=600)       # only wait if actively writing files
     return rc
 
 
@@ -489,7 +511,6 @@ Window {
 
     onClosing: (close) => {
         if (!upd.canClose()) { close.accepted = false; upd.nudge(); return }
-        if (running) { close.accepted = false; upd.windowClosing(); return }
         upd.windowClosing()
     }
 

@@ -844,6 +844,18 @@ class WatchlistManager:
             existing.auto_check = enabled
             self.save(existing)
 
+    def set_all_auto_check(self, enabled: bool) -> int:
+        """Set the auto_check flag for all entries."""
+        with self._lock:
+            changed = []
+            for entry in self.entries:
+                if getattr(entry, "auto_check", True) != enabled:
+                    entry.auto_check = enabled
+                    changed.append(entry)
+            if changed:
+                self.save(*changed)
+            return len(changed)
+
     def set_download_dir(self, user_id: str, service: str, download_dir: str) -> bool:
         """Set or update the custom download directory for an entry."""
         existing = self._find(user_id, service)

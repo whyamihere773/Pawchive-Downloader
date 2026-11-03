@@ -209,12 +209,16 @@ def _fmt_mb(n: float) -> str:
 def download(url: str, dest: str, expected_sha256: str, expected_size: int, rep: Reporter, log: UpdateLog) -> None:
     last_err: Optional[Exception] = None
     for attempt in range(1, 4):
+        if rep.cancelled():
+            raise UpdateError("cancelled", "The update was cancelled.")
         try:
             _download_once(url, dest, expected_sha256, expected_size, rep)
             return
         except UpdateError:
             raise
         except Exception as e:  # network trouble: retry a couple of times
+            if rep.cancelled():
+                raise UpdateError("cancelled", "The update was cancelled.")
             last_err = e
             log.write(f"download attempt {attempt} failed: {e!r}")
             if attempt < 3:
@@ -228,10 +232,12 @@ def download(url: str, dest: str, expected_sha256: str, expected_size: int, rep:
 
 
 def _download_once(url: str, dest: str, expected_sha256: str, expected_size: int, rep: Reporter) -> None:
+    if rep.cancelled():
+        raise UpdateError("cancelled", "The update was cancelled.")
     req = urllib.request.Request(url, headers={"User-Agent": us.USER_AGENT})
     sha = hashlib.sha256()
     done = 0
-    with urllib.request.urlopen(req, timeout=30) as resp, open(dest, "wb") as out:
+    with urllib.request.urlopen(req, timeout=20) as resp, open(dest, "wb") as out:
         total = int(resp.headers.get("Content-Length") or 0) or expected_size
         start = last = time.time()
         while True:
@@ -612,6 +618,7 @@ def relaunch(plan: Dict[str, Any], log: UpdateLog) -> bool:
 def run_update(plan: Dict[str, Any], rep: Reporter, log: UpdateLog, wait_timeout: float = 90) -> Dict[str, Any]:
     """Install the update described by plan. Returns {"ok", "code", "message", "details", "warning"}."""
     target = plan["target_dir"]
+    us.apply_proxy(plan.get("proxy_url") or us.resolve_proxy(target, plan))
     work_dir = ""
     step = "wait"
     try:

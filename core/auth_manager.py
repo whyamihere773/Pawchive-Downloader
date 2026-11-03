@@ -139,7 +139,7 @@ SUPPORTED_PROVIDERS: Dict[str, Dict[str, Any]] = {
         "features": [
             "Favorite Mode account post downloads",
             "Tag-based subfolder routing",
-            "Access to e1.cum.st media streams",
+            "Access to cdn.cum.st media streams",
             "Direct storage key downloads"
         ],
         "supports_browser_import": True,

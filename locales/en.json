@@ -1377,5 +1377,11 @@
   "lbl_active_duration_filter": "Duration filter: ",
   "opt_video_duration_filter_settings": "Filter posts by video length / duration",
   "opt_video_duration_filter_settings_tip": "Only download posts containing videos within the duration window specified in Filters & Dates",
-  "warn_duration_scanning_short": "Probing video duration requires checking media headers over the network, which may increase post scan times."
+  "warn_duration_scanning_short": "Probing video duration requires checking media headers over the network, which may increase post scan times.",
+  "watchlist_disable_autocheck": "Disable Auto-Check (All)",
+  "watchlist_disable_autocheck_short": "Disable Auto-Check",
+  "watchlist_disable_autocheck_tip": "Disable automatic startup check for all artists in the watchlist",
+  "watchlist_enable_autocheck": "Enable Auto-Check (All)",
+  "watchlist_enable_autocheck_short": "Enable Auto-Check",
+  "watchlist_enable_autocheck_tip": "Enable automatic startup check for all artists in the watchlist"
 }

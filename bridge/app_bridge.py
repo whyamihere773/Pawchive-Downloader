@@ -1535,6 +1535,8 @@ class AppBridge(QObject):
         if self._proxy_url != val:
             self._proxy_url = val
             self.api_client.set_proxy(val)
+            from services import update_service as us
+            us.apply_proxy(val)
             self.proxyUrlChanged.emit()
             self.saveSettings()
 
@@ -3718,6 +3720,10 @@ class AppBridge(QObject):
                             if clean_p.startswith("/data/"):
                                 clean_p = clean_p[5:]
                             mf_thumb = f"https://img.{domain}/thumbnail/data{clean_p}"
+                        elif f.get("storageKey") and ("cum.st" in domain or "cumst" in domain) and (_is_image(mf_name) or (f.get("mimeType") or "").startswith("image/")):
+                            sk = f.get("storageKey")
+                            ext = os.path.splitext(mf_name)[1].lower() or ".jpg"
+                            mf_thumb = f"https://cdn.cum.st/media/{sk}/original{ext}"
                         post_files.append({
                             "name": mf_name,
                             "path": mf_path,
@@ -3748,6 +3754,10 @@ class AppBridge(QObject):
                                 if clean_p.startswith("/data/"):
                                     clean_p = clean_p[5:]
                                 att_thumb = f"https://img.{domain}/thumbnail/data{clean_p}"
+                            elif att.get("storageKey") and ("cum.st" in domain or "cumst" in domain) and (_is_image(att_name) or (att.get("mimeType") or "").startswith("image/")):
+                                sk = att.get("storageKey")
+                                ext = os.path.splitext(att_name)[1].lower() or ".jpg"
+                                att_thumb = f"https://cdn.cum.st/media/{sk}/original{ext}"
                             post_files.append({
                                 "name": att_name,
                                 "path": att_path,
@@ -7478,6 +7488,18 @@ class AppBridge(QObject):
         self._watchlist_manager.set_auto_check(userId, service, enabled)
         self._watchlist_model.refresh()
         self.watchlistChanged.emit()
+
+    @Slot(bool)
+    def setAllWatchlistAutoCheck(self, enabled: bool):
+        """Enable or disable auto-check on startup for all artists in the watchlist."""
+        self._watchlist_manager.set_all_auto_check(enabled)
+        self._watchlist_model.refresh()
+        self.watchlistChanged.emit()
+
+    @Slot()
+    def disableAllWatchlistAutoCheck(self):
+        """Disable auto-check on startup for all artists in the watchlist."""
+        self.setAllWatchlistAutoCheck(False)
 
     @Slot(str, str, str)
     def setWatchlistDownloadDir(self, userId: str, service: str, download_dir: str):

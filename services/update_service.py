@@ -57,6 +57,90 @@ INSTALL_MANIFEST = ".install_manifest.json"          # files the last update ins
 BACKUP_DIR = ".update_backup"                        # old files kept until an update is confirmed
 
 
+
+
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def resolve_proxy(app_dir: Optional[str] = None, plan: Optional[Dict[str, Any]] = None) -> str:
+    """Finds configured proxy from plan, settings.json, environment, git, or Windows system proxy."""
+    if plan and plan.get("proxy_url"):
+        return str(plan["proxy_url"]).strip()
+
+    target = app_dir or get_app_dir()
+    try:
+        settings_path = os.path.join(target, "config", "settings.json")
+        if os.path.isfile(settings_path):
+            with open(settings_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            p = str(data.get("proxy_url") or "").strip()
+            if p:
+                return p
+    except Exception:
+        pass
+
+    for env_var in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+        val = os.environ.get(env_var, "").strip()
+        if val:
+            return val
+
+    if shutil.which("git"):
+        try:
+            res = subprocess.run(
+                ["git", "config", "--get", "http.proxy"],
+                capture_output=True, text=True, timeout=2, creationflags=NO_WINDOW
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                return res.stdout.strip()
+        except Exception:
+            pass
+
+    if sys.platform == "win32":
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Internet Settings") as key:
+                enabled, _ = winreg.QueryValueEx(key, "ProxyEnable")
+                if enabled:
+                    server, _ = winreg.QueryValueEx(key, "ProxyServer")
+                    if server:
+                        server_str = str(server).strip()
+                        if "=" in server_str:
+                            for part in server_str.split(";"):
+                                part = part.strip()
+                                if part.startswith("https="):
+                                    v = part[6:].strip()
+                                    return f"http://{v}" if not v.startswith("http") else v
+                                if part.startswith("http="):
+                                    v = part[5:].strip()
+                                    return f"http://{v}" if not v.startswith("http") else v
+                        elif server_str:
+                            return f"http://{server_str}" if not server_str.startswith("http") else server_str
+        except Exception:
+            pass
+
+    return ""
+
+
+def apply_proxy(proxy_url: str) -> None:
+    """Configures environment variables and urllib opener for proxy support."""
+    p = (proxy_url or "").strip()
+    if not p:
+        return
+    if "://" not in p:
+        p = f"http://{p}"
+
+    for env_name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+        os.environ[env_name] = p
+
+    try:
+        handler = urllib.request.ProxyHandler({"http": p, "https": p})
+        opener = urllib.request.build_opener(handler)
+        urllib.request.install_opener(opener)
+    except Exception:
+        pass
+
+
+
 # ── Paths & platform ────────────────────────────────────────────────────────
 def is_compiled() -> bool:
     """True when running as a packaged build (PyInstaller) rather than from source."""
@@ -296,7 +380,8 @@ def find_matching_release_asset(assets: list, platform: Optional[str] = None) ->
     return best
 
 
-def check_for_updates(timeout: float = 8) -> Dict[str, Any]:
+def check_for_updates(timeout: float = 8, proxy_url: str = "") -> Dict[str, Any]:
+    apply_proxy(proxy_url or resolve_proxy())
     """Ask GitHub whether this install can be updated. Never raises.
 
     Result keys: update_available, kind ("release" | "source-git" | "source-archive"),
@@ -323,6 +408,7 @@ def check_for_updates(timeout: float = 8) -> Dict[str, Any]:
         "release_url": "",
         "message": "",
         "error": "",
+        "proxy_url": proxy_url or resolve_proxy(),
         "kind": "release" if not local["is_source"] else ("source-git" if local["is_git"] else "source-archive"),
     }
     base = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
@@ -627,6 +713,7 @@ def build_update_plan(info: Dict[str, Any]) -> Dict[str, Any]:
         "version": 2,
         "target_dir": app_dir,
         "pid": os.getpid(),
+        "proxy_url": info.get("proxy_url") or resolve_proxy(app_dir),
         "kind": info.get("kind", "release"),
         "is_source": not is_compiled(),
         "download_url": info.get("download_url", ""),
@@ -670,7 +757,6 @@ def gui_python(python_exe: str) -> str:
 
 
 # Console tools (git, pip) started from the window app: no console window flashing up on Windows
-NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 def detached_popen_kwargs() -> Dict[str, Any]:

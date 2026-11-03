@@ -104,7 +104,7 @@ Item {
         Rectangle {
             id: headerRect
             Layout.fillWidth: true
-            readonly property bool isCompact: root.width < 740
+            readonly property bool isCompact: root.width < 900
             height: isCompact ? 86 : 52
             color: "#0C0F18"
             border.color: "#1A2035"
@@ -432,6 +432,84 @@ Item {
                         ToolTip.text: root.tr("watchlist_sync_favorites_tip", "Import and sync followed creators from your connected accounts into Watchlist")
                         onClicked: {
                             if (root.bridge) root.bridge.syncPawchiveFavorites()
+                        }
+                    }
+                }
+
+                // Disable / Enable Auto-Check for all artists
+                Rectangle {
+                    id: autoCheckAllBtn
+                    readonly property int totalArtists: bridge && bridge.watchlistModel ? bridge.watchlistModel.totalCount : 0
+                    readonly property int autoCheckArtists: bridge && bridge.watchlistModel ? bridge.watchlistModel.autoCheckCount : 0
+                    readonly property bool anyAutoCheckEnabled: autoCheckArtists > 0
+                    visible: totalArtists > 0
+                    height: 32
+                    implicitWidth: autoCheckAllRow.implicitWidth + 20
+                    radius: 7
+                    color: autoCheckMouse.pressed
+                           ? (anyAutoCheckEnabled ? "#2A1418" : "#0E2417")
+                           : (autoCheckMouse.containsMouse
+                              ? (anyAutoCheckEnabled ? "#221115" : "#0C1F14")
+                              : (anyAutoCheckEnabled ? "#180C10" : "#08160E"))
+                    border.color: autoCheckMouse.containsMouse
+                                  ? (anyAutoCheckEnabled ? "#F87171" : "#34D399")
+                                  : (anyAutoCheckEnabled ? "#991B1B" : "#065F46")
+                    border.width: 1
+
+                    Behavior on color { ColorAnimation { duration: 120 } }
+                    Behavior on border.color { ColorAnimation { duration: 120 } }
+                    scale: autoCheckMouse.pressed ? 0.94 : (autoCheckMouse.containsMouse ? 1.035 : 1.0)
+                    transformOrigin: Item.Center
+                    Behavior on scale { NumberAnimation { duration: 160; easing.type: Easing.OutBack; easing.overshoot: 1.5 } }
+
+                    Row {
+                        id: autoCheckAllRow
+                        anchors.centerIn: parent
+                        spacing: 5
+
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: autoCheckAllBtn.anyAutoCheckEnabled ? "🔕" : "🔔"
+                            font.pixelSize: 11
+                        }
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: {
+                                if (autoCheckAllBtn.anyAutoCheckEnabled) {
+                                    return root.width < 960
+                                           ? root.tr("watchlist_disable_autocheck_short", "Disable Auto-Check")
+                                           : root.tr("watchlist_disable_autocheck", "Disable Auto-Check (All)")
+                                } else {
+                                    return root.width < 960
+                                           ? root.tr("watchlist_enable_autocheck_short", "Enable Auto-Check")
+                                           : root.tr("watchlist_enable_autocheck", "Enable Auto-Check (All)")
+                                }
+                            }
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 11
+                            font.weight: 600
+                            color: autoCheckAllBtn.anyAutoCheckEnabled ? "#FCA5A5" : "#6EE7B7"
+                        }
+                    }
+
+                    MouseArea {
+                        id: autoCheckMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 250
+                        ToolTip.text: {
+                            if (autoCheckAllBtn.anyAutoCheckEnabled) {
+                                return root.tr("watchlist_disable_autocheck_tip", "Disable automatic startup check for all artists in the watchlist (" + autoCheckAllBtn.autoCheckArtists + " currently enabled)")
+                            } else {
+                                return root.tr("watchlist_enable_autocheck_tip", "Enable automatic startup check for all artists in the watchlist")
+                            }
+                        }
+                        onClicked: {
+                            if (root.bridge) {
+                                root.bridge.setAllWatchlistAutoCheck(!autoCheckAllBtn.anyAutoCheckEnabled)
+                            }
                         }
                     }
                 }

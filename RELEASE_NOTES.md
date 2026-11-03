@@ -1,22 +1,20 @@
-### 🏷️ Post Metadata & Caption Renaming
+### 🔧 Download Fixes
 
-* **Fetch missing post metadata**: A new "Fetch Metadata" button in the Batch Renamer and Gallery lets you fetch and update post details directly from the web for posts and files already on your computer.
-* **Captions in batch renaming**: The `{captionText}` naming tag now seamlessly reads captions from saved post info and metadata files, including files stored in Documents subfolders.
-
----
-
-### 🎬 Video Fingerprinting & Recognition
-
-* **Scan existing video libraries**: A new "Fingerprint Videos" tool in the Archive tab lets you index videos already saved on your drive directly into your archive history.
-* **Smart duplicate prevention**: Indexed videos are automatically recognized during future download runs so you never download the same video twice, even if it was moved or renamed.
+* **cum.st downloads restored**: Fixed an issue where media downloads and previews failed following recent server changes on the site. All post files, images, and thumbnails now download and display normally.
 
 ---
 
-### 🔧 Retry Failed Window Overhaul
+### 📋 Watchlist Enhancements
 
-* **Adaptive dialog layout**: The "Retry Failed" window now dynamically stretches to fit translated text across all languages (Russian, Indonesian, German, etc.) and automatically stays centered on your screen.
-* **Error badge text overflow fixed**: The red failure counter in the window's header now expands properly so text like "0 Errors / Failed" no longer spills out of the badge.
-* **Responsive button wrapping**: Action buttons at the bottom now wrap cleanly onto a second line if the window is resized down, preventing buttons from getting squished or cut off.
+* **Disable startup checks for all artists**: A new button in the Watchlist header lets you toggle automatic startup checks off or on for all tracked creators at once with a single click.
+
+---
+
+### 🚀 Updater Improvements
+
+* **VPN & proxy support**: The updater now automatically recognises your system proxy, VPN proxy, and Git settings so update checks and downloads work smoothly across all regions.
+* **Instant cancellation**: Clicking "Cancel" during an update check or download now stops immediately instead of hanging on a loading screen.
+* **Clean window exit**: You can now close the updater window directly with the close button without the app freezing or needing Windows Task Manager to exit.
 
 ---
 

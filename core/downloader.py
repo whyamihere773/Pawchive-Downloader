@@ -743,9 +743,21 @@ class KemonoDownloader:
         if not p:
             return ""
         if p.startswith("http://") or p.startswith("https://"):
-            return p
+            return p.replace("e1.cum.st", "cdn.cum.st")
         clean_rel = "/" + p.lstrip("/")
-        if "cum.st" in (domain or ""):
+        if "cum.st" in (domain or "") or re.match(r'^[0-9a-f]{16,}$', p):
+            if re.match(r'^[0-9a-f]{16,}$', p):
+                variants = fobj.get("variants") or []
+                vname = "original.mp4"
+                if isinstance(variants, list) and variants:
+                    for v in variants:
+                        if isinstance(v, dict) and "original" in (v.get("name") or "").lower():
+                            vname = v.get("name")
+                            break
+                    else:
+                        if isinstance(variants[0], dict) and variants[0].get("name"):
+                            vname = variants[0].get("name")
+                return f"https://cdn.cum.st/media/{p}/{vname}"
             return f"https://cum.st/data{clean_rel}"
         elif "coomer" in (domain or ""):
             return f"https://c1.coomer.st/data{clean_rel}" if not is_disabled("coomer.st") else f"https://cum.st/data{clean_rel}"
@@ -1571,7 +1583,7 @@ class KemonoDownloader:
                     if not primary_variant:
                         primary_variant = f"original.{ext}"
 
-                    original_url = f"https://e1.cum.st/media/{norm_path}/{primary_variant}"
+                    original_url = f"https://cdn.cum.st/media/{norm_path}/{primary_variant}"
                     norm_path = f"/{norm_path[:2]}/{norm_path[2:4]}/{norm_path}.{ext}"  # legacy fallback path
                 elif norm_path.startswith("http://") or norm_path.startswith("https://"):
                     is_pawchive_temp = "t1.pawchive.pw" in norm_path or bool(fobj.get("is_temporary"))
@@ -1586,7 +1598,9 @@ class KemonoDownloader:
                     else:
                         # Preserve the original CDN URL as the first candidate
                         original_url = norm_path.split("?")[0]  # strip existing query params
-                        # Check for e1.cum.st/media/ pattern — keep as-is, extract a norm_path for fallbacks
+                        if "e1.cum.st" in original_url:
+                            original_url = original_url.replace("e1.cum.st", "cdn.cum.st")
+                        # Check for cum.st/media/ pattern (e1.cum.st or cdn.cum.st) — keep as-is, extract a norm_path for fallbacks
                         m_cumst = re.match(r'https?://[^/]*cum\.st/media/([0-9a-f]{64})/([^?#]+)', norm_path)
                         if m_cumst:
                             storage_key = m_cumst.group(1)
@@ -1719,7 +1733,7 @@ class KemonoDownloader:
                             # Append any secondary variants (e.g. 720p.mp4, 240p.mp4) from the API as immediate fallbacks
                             if is_storage_key:
                                 for ev in extra_cum_variants:
-                                    u_ev = f"https://e1.cum.st/media/{rel_path}/{ev}"
+                                    u_ev = f"https://cdn.cum.st/media/{rel_path}/{ev}"
                                     if u_ev not in candidate_urls:
                                         candidate_urls.append(u_ev)
                             elif not original_url or is_thumbnail_url:
@@ -3381,7 +3395,16 @@ class KemonoDownloader:
         resumed = existing_size > 0
 
         # Switched-off sites (Kemono / Coomer) are skipped, also for files queued before
-        all_urls = [u for u in [task.url] + list(task.fallback_urls) if not is_disabled(u)]
+        # Automatically migrate any legacy e1.cum.st URLs to the modern cdn.cum.st endpoint
+        raw_urls = [task.url] + list(task.fallback_urls)
+        all_urls = [
+            u.replace("e1.cum.st", "cdn.cum.st")
+            for u in raw_urls
+            if not is_disabled(u)
+        ]
+        if task.url and "e1.cum.st" in task.url:
+            task.url = task.url.replace("e1.cum.st", "cdn.cum.st")
+        task.fallback_urls = [u.replace("e1.cum.st", "cdn.cum.st") for u in task.fallback_urls]
         if not all_urls:
             msg = disabled_message(task.url) or "This file's server is turned off"
             logger.warning(f"  ✖ {task.filename}: {msg}", category="file")
@@ -4201,7 +4224,7 @@ class KemonoDownloader:
         # media stream differs from the upstream ingest storageKey.
         _, ext = os.path.splitext(task.target_path.lower())
         is_video = ext in (".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi")
-        is_storage_key_url = "cum.st/media/" in task.url or "e1.cum.st" in task.url
+        is_storage_key_url = "cum.st/media/" in task.url or "e1.cum.st" in task.url or "cdn.cum.st" in task.url
         if is_storage_key_url and is_video:
             if file_size > 0:
                 logger.success(

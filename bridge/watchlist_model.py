@@ -310,6 +310,11 @@ class WatchlistModel(QAbstractListModel):
         return self._new_posts
 
     @Property(int, notify=countChanged)
+    def autoCheckCount(self) -> int:
+        """Total count of artists with auto-check enabled on startup."""
+        return sum(1 for e in getattr(self._manager, "entries", []) if getattr(e, "auto_check", True))
+
+    @Property(int, notify=countChanged)
     def favoriteCount(self) -> int:
         """Total count of favorited artists in the watchlist."""
         return sum(1 for e in getattr(self._manager, "entries", []) if getattr(e, "is_favorite", False))
