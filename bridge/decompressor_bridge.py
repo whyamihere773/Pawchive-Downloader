@@ -29,7 +29,7 @@ from core.logger import logger
 from core.path_translation import localize_path
 from services.ffmpeg_manager import FfmpegDownloader, find_ffmpeg
 from services.media_compressor import (CompressResult, CompressSettings, classify, compress_folder, compress_paths,
-                                       detect_available_hwaccels, get_primary_hwaccel, media_in)
+                                       detect_available_hwaccels, get_primary_hwaccel, media_in, validate_ffmpeg_settings)
 
 
 def _format_bytes(b: int) -> str:
@@ -127,10 +127,16 @@ class DecompressorBridge(QObject):
         self._video_format = "h265"
         self._video_quality = 75
         self._video_hwaccel = "auto"
+        self._video_preset = "auto"
+        self._audio_codec = "auto"
+        self._custom_video_args = ""
         self._animated_format = "same"
         self._animated_quality = 82
         self._header_collapsed = False
         self._ffmpeg_path = find_ffmpeg()
+        self._detected_hwaccel = ""
+        self._available_hwaccels: List[str] = []
+        self._probing_hwaccel = False
         self._ffmpeg_downloader = FfmpegDownloader()
         self._ffmpeg_downloading = False
         self._ffmpeg_progress = 0.0
@@ -167,6 +173,23 @@ class DecompressorBridge(QObject):
         self.selectedStatsChanged.connect(self.passwordBankChanged)
         self.isExtractingChanged.connect(self.passwordBankChanged)
 
+    def _start_async_hwaccel_probe(self):
+        if getattr(self, "_probing_hwaccel", False) or not self._ffmpeg_path:
+            return
+        self._probing_hwaccel = True
+        def _worker():
+            try:
+                accels = detect_available_hwaccels(self._ffmpeg_path)
+                primary = accels[0] if accels else ""
+                self._available_hwaccels = accels
+                self._detected_hwaccel = primary
+                self.ffmpegChanged.emit()
+            except Exception as e:
+                logger.debug(f"Hardware probe error: {e}", category="decompressor")
+            finally:
+                self._probing_hwaccel = False
+        threading.Thread(target=_worker, daemon=True, name="HwAccelProbe").start()
+
     # ── Saved settings ─────────────────────────────────────────────────────────
 
     def settings_dict(self) -> Dict[str, Any]:
@@ -183,6 +206,9 @@ class DecompressorBridge(QObject):
             "video_format": self._video_format,
             "video_quality": self._video_quality,
             "video_hwaccel": self._video_hwaccel,
+            "video_preset": self._video_preset,
+            "audio_codec": self._audio_codec,
+            "custom_video_args": self._custom_video_args,
             "animated_format": self._animated_format,
             "animated_quality": self._animated_quality,
             "header_collapsed": self._header_collapsed,
@@ -207,6 +233,9 @@ class DecompressorBridge(QObject):
             self.videoFormat = d.get("video_format", self._video_format)
             self.videoQuality = d.get("video_quality", self._video_quality)
             self.videoHwAccel = d.get("video_hwaccel", self._video_hwaccel)
+            self.videoPreset = d.get("video_preset", self._video_preset)
+            self.audioCodec = d.get("audio_codec", self._audio_codec)
+            self.customVideoArgs = d.get("custom_video_args", self._custom_video_args)
             self.animatedFormat = d.get("animated_format", self._animated_format)
             self.animatedQuality = d.get("animated_quality", self._animated_quality)
             self.headerCollapsed = bool(d.get("header_collapsed", False))
@@ -294,12 +323,58 @@ class DecompressorBridge(QObject):
     @Property(str, notify=ffmpegChanged)
     def detectedHwAccel(self) -> str:
         """Name of the detected hardware encoder (e.g. 'nvenc', 'qsv', 'amf'), or ''."""
-        return get_primary_hwaccel(self._ffmpeg_path) if self.ffmpegAvailable else ""
+        if not self._detected_hwaccel and self.ffmpegAvailable and not getattr(self, "_probing_hwaccel", False):
+            self._start_async_hwaccel_probe()
+        return self._detected_hwaccel
 
     @Property("QVariantList", notify=ffmpegChanged)
     def availableHwAccels(self) -> List[str]:
         """List of detected hardware acceleration options on this system."""
-        return detect_available_hwaccels(self._ffmpeg_path) if self.ffmpegAvailable else []
+        if not self._available_hwaccels and self.ffmpegAvailable and not getattr(self, "_probing_hwaccel", False):
+            self._start_async_hwaccel_probe()
+        return self._available_hwaccels
+
+    @Property(str, notify=settingsChanged)
+    def videoPreset(self) -> str:
+        return self._video_preset
+
+    @videoPreset.setter
+    def videoPreset(self, val: str):
+        v = str(val or "auto").strip()
+        if v != self._video_preset:
+            self._video_preset = v
+            self.settingsChanged.emit()
+
+    @Property(str, notify=settingsChanged)
+    def audioCodec(self) -> str:
+        return self._audio_codec
+
+    @audioCodec.setter
+    def audioCodec(self, val: str):
+        v = str(val or "auto").strip().lower()
+        if v in ("auto", "copy", "aac", "opus") and v != self._audio_codec:
+            self._audio_codec = v
+            self.settingsChanged.emit()
+
+    @Property(str, notify=settingsChanged)
+    def customVideoArgs(self) -> str:
+        return self._custom_video_args
+
+    @customVideoArgs.setter
+    def customVideoArgs(self, val: str):
+        v = str(val or "").strip()
+        if v != self._custom_video_args:
+            self._custom_video_args = v
+            self.settingsChanged.emit()
+
+    @Slot(result="QVariantMap")
+    def testCompressionPreset(self) -> Dict[str, Any]:
+        """Validates current encoder, preset, audio codec, and parameters on a mini test video frame."""
+        s = self._media_settings()
+        if not s.ffmpeg:
+            return {"success": False, "message": "FFmpeg is not installed or detected."}
+        ok, msg = validate_ffmpeg_settings(s.ffmpeg, s)
+        return {"success": ok, "message": msg}
 
     @Property(str, notify=settingsChanged)
     def animatedFormat(self) -> str:
@@ -751,7 +826,7 @@ class DecompressorBridge(QObject):
 
     def _groups_later(self, *args):
         if not self._groups_timer.isActive():
-            self._groups_timer.start(200)
+            self._groups_timer.start(400)
 
     def _build_groups(self) -> List[Dict[str, Any]]:
         q = self._search
@@ -1145,7 +1220,7 @@ class DecompressorBridge(QObject):
             def _update_progress(item: ArchiveItem, pct: float):
                 item.progress = pct
                 now = time.time()
-                if pct < 100.0 and (now - last_progress_emit[0] < 0.1):
+                if pct < 100.0 and (now - last_progress_emit[0] < 0.2):
                     return
                 last_progress_emit[0] = now
 

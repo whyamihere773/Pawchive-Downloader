@@ -104,7 +104,7 @@ def _setup_memory_management(app, win, app_bridge, memory_collector):
             last["t"] = _time.monotonic()
             # On the window thread: a Qt object freed by the collector must be destroyed on it
             # (from another thread that crashes the app); minimized, the short pause isn't seen
-            QTimer.singleShot(0, lambda: memory_collector.collect(reason="window minimized", deep=True))
+            QTimer.singleShot(0, lambda: memory_collector.collect(reason="window minimized"))
 
     win.visibilityChanged.connect(_on_visibility)
 
@@ -115,10 +115,12 @@ def _setup_memory_management(app, win, app_bridge, memory_collector):
         now = _time.monotonic()
         if now - last["t"] < 1800:
             return
+        if getattr(getattr(app_bridge, "downloader", None), "_is_running", False):
+            return
         if app.applicationState() == _Qt.ApplicationActive and _seconds_without_input() < 600:
             return
         last["t"] = now
-        memory_collector.collect(reason="app left alone", deep=True)
+        memory_collector.collect(reason="app left alone")
 
     away_timer = QTimer(app)
     away_timer.setInterval(5 * 60 * 1000)

@@ -4127,7 +4127,8 @@ class AppBridge(QObject):
             domain=parsed.domain,
             base_dir=self._download_dir,
             options=options,
-            batch_id=f"{parsed.service}_{parsed.user_id}"
+            batch_id=f"{parsed.service}_{parsed.user_id}",
+            user_id=parsed.user_id if not parsed.is_external_provider else ""
         )
 
         if not tasks:

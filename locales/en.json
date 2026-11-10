@@ -1385,5 +1385,19 @@
   "watchlist_enable_autocheck_short": "Auto-Check",
   "watchlist_enable_autocheck_tip": "Enable automatic startup check for all artists in the watchlist",
   "watchlist_add_artist_short": "Add",
-  "watchlist_sync_favs_short": "Favorites"
+  "watchlist_sync_favs_short": "Favorites",
+  "compress_video_preset_label": "Speed / Preset:",
+  "compress_preset_auto": "Auto (Balanced)",
+  "compress_preset_fast": "Fast (Quicker encode)",
+  "compress_preset_quality": "High Quality (Deeper compression)",
+  "compress_audio_codec_label": "Audio:",
+  "compress_audio_auto": "Auto / Original (Copy)",
+  "compress_audio_opus": "Opus (High efficiency, 64k VBR)",
+  "compress_audio_aac": "AAC (Universal, 128k)",
+  "compress_advanced_toggle": "Advanced FFmpeg parameters",
+  "compress_custom_args_placeholder": "Extra flags (e.g. -maxrate 1500k -bufsize 3000k -pix_fmt yuv420p10le)",
+  "compress_validate_btn": "Validate Configuration",
+  "compress_validate_testing": "Testing preset...",
+  "compress_validate_success": "✓ Validated & working cleanly",
+  "compress_validate_fail": "✗ Test failed: %1"
 }

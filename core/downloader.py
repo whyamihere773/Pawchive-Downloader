@@ -1022,8 +1022,17 @@ class KemonoDownloader:
                 date_str = pub_str.split("T")[0] if "T" in pub_str else (pub_str[:10] if pub_str else "")
 
             # Construct canonical web post link for manual inspection/testing
-            post_user = str(post.get("user") or "")
-            if domain and service and post_user and post_id:
+            post_user = str(post.get("user") or post.get("user_id") or post.get("artist_id") or user_id or "")
+            if domain == "cum.st":
+                is_dm = bool(post.get("is_dms") or post.get("type") == "dm" or post.get("dm"))
+                route = "dm" if is_dm else "post"
+                if service and post_user and post_id:
+                    task_post_url = f"https://cum.st/creators/{service}/{post_user}/{route}/{post_id}"
+                elif service and post_id:
+                    task_post_url = f"https://cum.st/posts/{service}/{post_id}"
+                else:
+                    task_post_url = ""
+            elif domain and service and post_user and post_id:
                 task_post_url = f"https://{domain}/{service}/user/{post_user}/post/{post_id}"
             elif domain and service and post_id:
                 task_post_url = f"https://{domain}/{service}/post/{post_id}"
@@ -1285,8 +1294,15 @@ class KemonoDownloader:
                         tags_str = ", ".join(tags_list)
 
                         # Build creator profile URL
-                        post_user = str(post.get("user") or "")
-                        if domain and service and post_user:
+                        post_user = str(post.get("user") or post.get("user_id") or post.get("artist_id") or user_id or "")
+                        if domain == "cum.st":
+                            if service and post_user:
+                                creator_url = f"https://cum.st/creators/{service}/{post_user}"
+                            elif service:
+                                creator_url = f"https://cum.st/creators/{service}"
+                            else:
+                                creator_url = ""
+                        elif domain and service and post_user:
                             creator_url = f"https://{domain}/{service}/user/{post_user}"
                         elif domain and service:
                             creator_url = f"https://{domain}/{service}"
@@ -3063,9 +3079,12 @@ class KemonoDownloader:
         return found
 
     def _worker_download_task(self, task: DownloadTask, options: FilterOptions):
-        worker_session = self._get_worker_session()
-        task_opts = getattr(task, "options", None) or self.get_batch_options(getattr(task, "batch_id", "")) or options
-        return self._download_single_file(task, worker_session, task_opts)
+        try:
+            worker_session = self._get_worker_session()
+            task_opts = getattr(task, "options", None) or self.get_batch_options(getattr(task, "batch_id", "")) or options
+            return self._download_single_file(task, worker_session, task_opts)
+        except Exception as e:
+            return False, str(e)
 
     def _download_single_file(self, task: DownloadTask, session: Optional[requests.Session] = None, options: Optional[FilterOptions] = None) -> (bool, str):
         if session is None:

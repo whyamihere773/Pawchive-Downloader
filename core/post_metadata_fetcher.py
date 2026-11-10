@@ -290,6 +290,16 @@ class PostMetadataFetcher:
                 if l_fn not in attached_files:
                     attached_files.append(l_fn)
 
+            # Derive creator profile URL and post URL
+            is_cumst = "cum.st" in getattr(self, "default_domain", "") or service in ("onlyfans", "fansly")
+            if is_cumst:
+                creator_url = f"https://cum.st/creators/{service}/{creator_id}" if (service and creator_id) else (f"https://cum.st/creators/{service}" if service else "")
+                post_url = f"https://cum.st/creators/{service}/{creator_id}/post/{post_id}" if (service and creator_id and post_id) else (f"https://cum.st/posts/{service}/{post_id}" if (service and post_id) else "")
+            else:
+                d = getattr(self, "default_domain", "pawchive.pw")
+                creator_url = f"https://{d}/{service}/user/{creator_id}" if (service and creator_id) else (f"https://{d}/{service}" if service else "")
+                post_url = f"https://{d}/{service}/user/{creator_id}/post/{post_id}" if (service and creator_id and post_id) else (f"https://{d}/{service}/post/{post_id}" if (service and post_id) else "")
+
             # ── 1. Write post_metadata.json ───────────────────────────────
             if save_json:
                 json_meta = {
@@ -298,6 +308,8 @@ class PostMetadataFetcher:
                     "creator": creator_name,
                     "service": service,
                     "user_id": creator_id,
+                    "creator_url": creator_url,
+                    "post_url": post_url,
                     "published": published,
                     "tags": tags,
                     "caption": clean_caption,
@@ -320,8 +332,12 @@ class PostMetadataFetcher:
                     f"Title: {title}",
                     f"Post ID: {post_id}",
                     f"Creator: {creator_name} [{service}]" if service else f"Creator: {creator_name}",
-                    f"Published: {published}"
                 ]
+                if creator_url:
+                    txt_lines.append(f"Creator URL: {creator_url}")
+                if post_url:
+                    txt_lines.append(f"Post URL: {post_url}")
+                txt_lines.append(f"Published: {published}")
                 if tags:
                     txt_lines.append(f"Tags: {', '.join(tags)}")
                 txt_lines.append("")

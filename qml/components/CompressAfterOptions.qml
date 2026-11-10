@@ -9,6 +9,10 @@ ColumnLayout {
     property var decompressor: null
     // Inside the Gallery's compress window: just the formats (no on / off option, no extraction note)
     property bool embedded: false
+    property bool showAdvancedVideo: false
+    property string validationStatus: ""
+    property bool validationOk: false
+    property bool isValidating: false
     spacing: 8
 
     function tr(key, fallback) {
@@ -284,6 +288,135 @@ ColumnLayout {
                     color: root.decompressor && root.decompressor.detectedHwAccel ? "#6EE7B7" : "#94A3B8"
                 }
             }
+        }
+    }
+
+    // Video Speed / Preset & Audio Codec
+    Flow {
+        Layout.fillWidth: true
+        Layout.leftMargin: root.embedded ? 0 : 26
+        visible: root.on && root.decompressor && root.decompressor.videoFormat !== "keep" && root.decompressor.ffmpegAvailable
+        spacing: 10
+
+        Text {
+            text: root.tr("compress_video_preset_label", "Speed / Preset:")
+            font.family: "Segoe UI, sans-serif"
+            font.pixelSize: 11
+            color: "#94A3B8"
+            width: 80
+            height: 28
+            verticalAlignment: Text.AlignVCenter
+        }
+        StyledComboBox {
+            objectName: "compress_video_preset"
+            implicitHeight: 28
+            implicitWidth: 190
+            model: [
+                { value: "auto", text: root.tr("compress_preset_auto", "Auto (Balanced)") },
+                { value: "fast", text: root.tr("compress_preset_fast", "Fast (Quicker encode)") },
+                { value: "quality", text: root.tr("compress_preset_quality", "High Quality (Deeper compression)") }
+            ]
+            value: root.decompressor ? root.decompressor.videoPreset : "auto"
+            tooltip: root.tr("compress_preset_tip", "Encoding speed vs compression ratio. 'Fast' finishes sooner with slightly larger output; 'High Quality' compresses deeper but takes longer.")
+            onValuePicked: function(v) { if (root.decompressor) root.decompressor.videoPreset = v }
+        }
+
+        Text {
+            text: root.tr("compress_audio_codec_label", "Audio:")
+            font.family: "Segoe UI, sans-serif"
+            font.pixelSize: 11
+            color: "#94A3B8"
+            width: 45
+            height: 28
+            verticalAlignment: Text.AlignVCenter
+        }
+        StyledComboBox {
+            objectName: "compress_audio_codec"
+            implicitHeight: 28
+            implicitWidth: 170
+            model: [
+                { value: "auto", text: root.tr("compress_audio_auto", "Auto / Original (Copy)") },
+                { value: "opus", text: root.tr("compress_audio_opus", "Opus (High efficiency, 64k VBR)") },
+                { value: "aac", text: root.tr("compress_audio_aac", "AAC (Universal, 128k)") }
+            ]
+            value: root.decompressor ? root.decompressor.audioCodec : "auto"
+            tooltip: root.tr("compress_audio_tip", "Audio stream compression. Opus offers superior quality at very low bitrates; AAC plays on virtually all media players.")
+            onValuePicked: function(v) { if (root.decompressor) root.decompressor.audioCodec = v }
+        }
+    }
+
+    // Advanced parameters toggle & validator
+    ColumnLayout {
+        Layout.fillWidth: true
+        Layout.leftMargin: root.embedded ? 0 : 26
+        visible: root.on && root.decompressor && root.decompressor.videoFormat !== "keep" && root.decompressor.ffmpegAvailable
+        spacing: 6
+
+        RowLayout {
+            spacing: 6
+            MouseArea {
+                implicitWidth: advText.implicitWidth + 4
+                implicitHeight: 20
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.showAdvancedVideo = !root.showAdvancedVideo
+                Text {
+                    id: advText
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: (root.showAdvancedVideo ? "▾ " : "▸ ") + root.tr("compress_advanced_toggle", "Advanced FFmpeg parameters")
+                    font.family: "Segoe UI, sans-serif"
+                    font.pixelSize: 11
+                    color: parent.containsMouse ? "#38BDF8" : "#94A3B8"
+                }
+            }
+        }
+
+        RowLayout {
+            visible: root.showAdvancedVideo
+            Layout.fillWidth: true
+            spacing: 8
+
+            StyledTextField {
+                id: customArgsInput
+                Layout.fillWidth: true
+                implicitHeight: 28
+                customRadius: 4
+                font.pixelSize: 11
+                placeholderText: root.tr("compress_custom_args_placeholder", "Extra flags (e.g. -maxrate 1500k -bufsize 3000k -pix_fmt yuv420p10le)")
+                text: root.decompressor ? root.decompressor.customVideoArgs : ""
+                onEditingFinished: {
+                    if (root.decompressor) root.decompressor.customVideoArgs = text
+                }
+            }
+
+            StyledButton {
+                text: root.isValidating ? root.tr("compress_validate_testing", "Testing...") : root.tr("compress_validate_btn", "Validate Configuration")
+                variant: "outline"
+                implicitHeight: 28
+                enabled: !root.isValidating && root.decompressor
+                onClicked: {
+                    if (!root.decompressor) return
+                    root.isValidating = true
+                    root.validationStatus = ""
+                    // Flush input text first
+                    root.decompressor.customVideoArgs = customArgsInput.text
+                    var res = root.decompressor.testCompressionPreset()
+                    root.isValidating = false
+                    root.validationOk = res && res.success
+                    root.validationStatus = res ? res.message : "Test finished"
+                }
+            }
+        }
+
+        Text {
+            visible: root.showAdvancedVideo && root.validationStatus.length > 0
+            text: root.validationStatus
+            font.family: "Segoe UI, sans-serif"
+            font.pixelSize: 10
+            font.weight: Font.Medium
+            color: root.validationOk ? "#34D399" : "#F87171"
+            wrapMode: Text.WordWrap
+            Layout.fillWidth: true
         }
     }
 
