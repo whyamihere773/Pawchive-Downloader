@@ -1,21 +1,21 @@
-### 🗜️ Video Compression & Stability
+### 🌐 CoomerFans Support
 
-* **Smooth AV1 compression**: AV1 video compression no longer causes application freezes or Windows "Not Responding" pauses. Background encoding is optimized to keep the user interface smooth and responsive throughout the process.
-* **Custom encoding presets**: Choose between Fast, Balanced, and High Quality presets for video compression, or provide custom FFmpeg parameters.
-* **Opus audio support**: Added support for high-efficiency Opus audio compression alongside universal AAC.
-* **Preset verification**: A new "Validate Configuration" button tests your video and audio settings against a mini test clip to confirm compatibility before processing files.
+* **Full coomerfans.com integration**: You can now paste links from coomerfans.com to download full creator profiles and individual posts for OnlyFans and Fansly.
+* **Full image and video extraction**: Galleries and HTML5 videos are resolved automatically and downloaded directly to your computer.
 
 ---
 
-### 🛠️ Fixes
+### 🖥️ Display & Scaling
 
-* **Linux crash after long download sessions fixed**: Resolved an issue where background memory cleanup during active downloads could cause the application to abruptly abort on Linux systems.
+* **UI zoom slider for 4K & high-resolution displays**: You can now scale the entire user interface from 100% up to 250% in Settings → General. Convenient preset buttons (100%, 125%, 150%, 175%, 200%) and a one-click reset let you easily adjust text and buttons to the perfect size for your monitor.
+* **Instant restart prompt**: Changing your interface scale displays an immediate restart banner with a "Restart Now" button to apply your new scale right away.
 
 ---
 
-### 🔗 Link & Metadata Fixes
+### 🛡️ Privacy Shield Enhancements
 
-* **cum.st creator and post links fixed**: Creator profile links and post URLs saved in post info files now use the correct canonical format and open properly in your browser.
+* **Auto-lock without PIN protection**: The idle auto-lock timer is now available for everyone, even if you haven't set up a PIN. The app will automatically blur when idle and can be unblurred with a single click.
+* **Flexible timer options up to 60 minutes**: Choose any timeout from 1 minute up to 60 minutes, or turn auto-lock off completely with the new "Disabled" setting and quick toggle button.
 
 ---
 

@@ -18,6 +18,26 @@ if sys.platform == "win32":
     except Exception:
         pass
 
+# UI scale factor: applied before QApplication initializes so Qt renders properly scaled on 4K/HiDPI screens
+try:
+    from core.path_utils import get_config_dir
+    import json
+    _settings_path = os.path.join(get_config_dir(), "settings.json")
+    if os.path.exists(_settings_path):
+        with open(_settings_path, "r", encoding="utf-8") as _f:
+            _raw_scale = json.load(_f).get("ui_scale")
+        if _raw_scale is not None:
+            _scale_val = float(_raw_scale)
+            if _scale_val > 10.0:
+                _scale_val = _scale_val / 100.0
+            if 0.5 <= _scale_val <= 3.5:
+                if abs(_scale_val - 1.0) < 0.01:
+                    os.environ.pop("QT_SCALE_FACTOR", None)
+                else:
+                    os.environ["QT_SCALE_FACTOR"] = f"{_scale_val:.2f}".rstrip("0").rstrip(".")
+except Exception:
+    pass
+
 from core.logger import logger
 
 # Open this session's log file first, so everything after this (including errors while the app
@@ -283,6 +303,8 @@ def main():
     app.aboutToQuit.connect(memory_collector.stop)
     app.aboutToQuit.connect(TelegramService.instance().stop)
 
+    if "QT_SCALE_FACTOR" in os.environ:
+        logger.info(f"UI Scale Factor active: {os.environ['QT_SCALE_FACTOR']}x", category="system")
     logger.success("Application interface initialized successfully.", category="system")
     sys.exit(app.exec())       # the log's closing line is written once background work has stopped
 

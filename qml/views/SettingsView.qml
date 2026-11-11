@@ -802,6 +802,345 @@ SmoothFlickable {
                         }
                     }
                 }
+
+                // Divider
+                Rectangle {
+                    Layout.fillWidth: true
+                    height: 1
+                    color: "#1E293B"
+                    Layout.topMargin: 4
+                    Layout.bottomMargin: 4
+                }
+
+                // UI Scale (Display Zoom) — Responsive layout
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    // Header row: Label & description
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 2
+
+                        Text {
+                            text: root.tr("label_ui_scale", "UI Scale (Display Zoom):")
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 11
+                            font.weight: 600
+                            color: "#94A3B8"
+                            wrapMode: Text.Wrap
+                            Layout.fillWidth: true
+                        }
+
+                        Text {
+                            text: root.tr("ui_scale_desc", "Scale interface for 4K / High-DPI screens")
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 10
+                            color: "#64748B"
+                            wrapMode: Text.Wrap
+                            Layout.fillWidth: true
+                        }
+                    }
+
+                    // Controls row: Slider, percentage chip, and reset button
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 10
+
+                        Slider {
+                            id: uiScaleSlider
+                            objectName: "uiScaleSlider"
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 100
+                            Layout.maximumWidth: 320
+                            from: 100
+                            to: 250
+                            stepSize: 5
+                            value: root.bridge ? Math.round(root.bridge.uiScale * 100) : 100
+                            implicitHeight: 32
+
+                            Binding {
+                                target: uiScaleSlider
+                                property: "value"
+                                value: root.bridge ? Math.round(root.bridge.uiScale * 100) : 100
+                                when: !uiScaleSlider.pressed
+                            }
+
+                            onMoved: {
+                                if (root.bridge) {
+                                    root.bridge.uiScale = Math.round(value) / 100.0
+                                }
+                            }
+
+                            background: Item {
+                                x: uiScaleSlider.leftPadding
+                                y: uiScaleSlider.topPadding + uiScaleSlider.availableHeight / 2 - height / 2
+                                width: uiScaleSlider.availableWidth
+                                implicitHeight: 6
+                                height: 6
+
+                                Rectangle {
+                                    width: parent.width; height: parent.height
+                                    radius: 3
+                                    color: "#101827"
+                                    border.color: "#1E2D42"
+                                    border.width: 1
+                                }
+                                Rectangle {
+                                    width: Math.max(6, uiScaleSlider.visualPosition * parent.width)
+                                    height: parent.height
+                                    radius: 3
+                                    color: "#38BDF8"
+                                }
+                            }
+
+                            handle: Item {
+                                x: uiScaleSlider.leftPadding + uiScaleSlider.visualPosition * (uiScaleSlider.availableWidth - width)
+                                y: uiScaleSlider.topPadding + uiScaleSlider.availableHeight / 2 - height / 2
+                                width: 28; height: 28
+
+                                scale: uiScaleSlider.pressed ? 1.25 : (uiScaleSlider.hovered ? 1.12 : 1.0)
+                                Behavior on scale { SpringAnimation { spring: 5.2; damping: 0.30; mass: 0.6; epsilon: 0.005 } }
+
+                                Rectangle {
+                                    anchors.centerIn: parent
+                                    width: 28; height: 28; radius: 14
+                                    color: "transparent"
+                                    border.color: "#38BDF8"
+                                    border.width: 1
+                                    opacity: (uiScaleSlider.pressed || uiScaleSlider.hovered) ? 0.5 : 0.0
+                                    Behavior on opacity { NumberAnimation { duration: 160 } }
+                                }
+                                Rectangle {
+                                    anchors.centerIn: parent
+                                    width: 16; height: 16; radius: 8
+                                    color: "#38BDF8"
+                                }
+                            }
+                        }
+
+                        // Value chip
+                        Rectangle {
+                            implicitWidth: Math.max(54, scaleValText.implicitWidth + 18)
+                            height: 26; radius: 13
+                            color: "#0C1828"
+                            border.color: (root.bridge && root.bridge.uiScaleRestartNeeded) ? "#F59E0B" : "#164E63"
+                            border.width: 1
+
+                            Text {
+                                id: scaleValText
+                                anchors.centerIn: parent
+                                text: (root.bridge ? Math.round(root.bridge.uiScale * 100) : Math.round(uiScaleSlider.value)) + "%"
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 11
+                                font.weight: 600
+                                color: (root.bridge && root.bridge.uiScaleRestartNeeded) ? "#FBBF24" : "#38BDF8"
+                            }
+                        }
+
+                        // Reset button (resets to 100%)
+                        Rectangle {
+                            height: 26
+                            implicitWidth: resetScaleRow.implicitWidth + 14
+                            radius: 5
+                            color: resetScaleMouse.containsMouse ? "#1E293B" : "#141A26"
+                            border.color: "#283042"
+                            border.width: 1
+                            visible: root.bridge ? (Math.round(root.bridge.uiScale * 100) !== 100) : false
+
+                            Row {
+                                id: resetScaleRow
+                                anchors.centerIn: parent
+                                spacing: 4
+                                Text {
+                                    text: "↺"
+                                    font.pixelSize: 11
+                                    color: "#94A3B8"
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+                                Text {
+                                    text: "100%"
+                                    font.family: "Segoe UI, sans-serif"
+                                    font.pixelSize: 10
+                                    font.weight: 600
+                                    color: "#CBD5E1"
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+                            }
+
+                            MouseArea {
+                                id: resetScaleMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                ToolTip.visible: containsMouse
+                                ToolTip.delay: 300
+                                ToolTip.text: root.tr("btn_reset_scale", "Reset UI scale to default 100%")
+                                onClicked: {
+                                    if (root.bridge) root.bridge.uiScale = 1.0
+                                }
+                            }
+                        }
+
+                        Item { Layout.fillWidth: true }
+                    }
+                }
+
+                // Quick Preset Pills (wrapping Flow to guarantee no horizontal overflow)
+                Flow {
+                    Layout.fillWidth: true
+                    spacing: 6
+
+                    Text {
+                        text: root.tr("label_presets", "Presets:")
+                        font.family: "Segoe UI, sans-serif"
+                        font.pixelSize: 10
+                        font.weight: 600
+                        color: "#64748B"
+                        height: 22
+                        verticalAlignment: Text.AlignVCenter
+                    }
+
+                    Repeater {
+                        model: [100, 125, 150, 175, 200, 250]
+                        Rectangle {
+                            id: presetPill
+                            readonly property int pct: modelData
+                            readonly property bool isSelected: root.bridge ? (Math.round(root.bridge.uiScale * 100) === pct) : (pct === 100)
+                            implicitWidth: pillText.implicitWidth + 14
+                            height: 22
+                            radius: 11
+                            color: isSelected ? "#0369A1" : (presetMouse.containsMouse ? "#1E293B" : "#141A26")
+                            border.color: isSelected ? "#38BDF8" : (presetMouse.containsMouse ? "#334155" : "#233147")
+                            border.width: 1
+
+                            Text {
+                                id: pillText
+                                anchors.centerIn: parent
+                                text: presetPill.pct + "%"
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 10
+                                font.weight: presetPill.isSelected ? 700 : 500
+                                color: presetPill.isSelected ? "#FFFFFF" : "#94A3B8"
+                            }
+
+                            MouseArea {
+                                id: presetMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    if (root.bridge) {
+                                        root.bridge.uiScale = presetPill.pct / 100.0
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Restart banner when UI Scale changes (responsive column layout with non-overflowing button)
+                Rectangle {
+                    Layout.fillWidth: true
+                    visible: root.bridge ? root.bridge.uiScaleRestartNeeded : false
+                    implicitHeight: restartScaleCol.implicitHeight + 20
+                    radius: 6
+                    color: "#261908"
+                    border.color: "#D97706"
+                    border.width: 1
+
+                    ColumnLayout {
+                        id: restartScaleCol
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: 10
+                        spacing: 8
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 10
+
+                            Text {
+                                text: "⚠️"
+                                font.pixelSize: 15
+                                Layout.alignment: Qt.AlignTop
+                            }
+
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 2
+
+                                Text {
+                                    text: root.tr("ui_scale_restart_notice", "Display scale will take effect after restarting (Active: %1% → New: %2%)")
+                                          .arg(root.bridge ? Math.round(root.bridge.activeUiScale * 100) : 100)
+                                          .arg(root.bridge ? Math.round(root.bridge.uiScale * 100) : 100)
+                                    font.family: "Segoe UI, sans-serif"
+                                    font.pixelSize: 11
+                                    font.weight: 600
+                                    color: "#FDE68A"
+                                    wrapMode: Text.Wrap
+                                    Layout.fillWidth: true
+                                }
+
+                                Text {
+                                    text: root.tr("ui_scale_restart_sub", "Click Restart Now to apply the new interface scale immediately.")
+                                    font.family: "Segoe UI, sans-serif"
+                                    font.pixelSize: 10
+                                    color: "#D97706"
+                                    wrapMode: Text.Wrap
+                                    Layout.fillWidth: true
+                                }
+                            }
+                        }
+
+                        // Action button row: always stays within the card bounds
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Layout.leftMargin: 25
+
+                            Rectangle {
+                                id: restartScaleBtn
+                                objectName: "restartScaleBtn"
+                                Layout.preferredHeight: 28
+                                Layout.preferredWidth: restartScaleBtnText.implicitWidth + 24
+                                radius: 5
+                                color: restartScaleMouse.containsMouse ? "#D97706" : "#B45309"
+                                border.color: "#F59E0B"
+                                border.width: 1
+
+                                Row {
+                                    anchors.centerIn: parent
+                                    spacing: 6
+                                    Text {
+                                        text: "⚡"
+                                        font.pixelSize: 11
+                                        anchors.verticalCenter: parent.verticalCenter
+                                    }
+                                    Text {
+                                        id: restartScaleBtnText
+                                        text: root.tr("btn_restart_now", "Restart Now")
+                                        font.family: "Segoe UI, sans-serif"
+                                        font.pixelSize: 11
+                                        font.weight: 700
+                                        color: "#FFFFFF"
+                                        anchors.verticalCenter: parent.verticalCenter
+                                    }
+                                }
+
+                                MouseArea {
+                                    id: restartScaleMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        if (root.bridge) root.bridge.restartApplication()
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -838,7 +1177,9 @@ SmoothFlickable {
 
                     RowLayout {
                         id: pinStatusRow
-                        anchors.fill: parent
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
                         anchors.margins: 10
                         spacing: 12
 
@@ -849,6 +1190,7 @@ SmoothFlickable {
                             color: "#141824"
                             border.color: (root.bridge && root.bridge.privacyPinConfigured) ? "#10B981" : "#2E384D"
                             border.width: 1
+                            Layout.alignment: Qt.AlignTop
 
                             Image {
                                 anchors.centerIn: parent
@@ -864,10 +1206,11 @@ SmoothFlickable {
                         ColumnLayout {
                             Layout.fillWidth: true
                             Layout.preferredWidth: 0
-                            Layout.minimumWidth: 100
-                            spacing: 2
+                            Layout.minimumWidth: 80
+                            spacing: 4
 
                             RowLayout {
+                                Layout.fillWidth: true
                                 spacing: 8
                                 Text {
                                     text: (root.bridge && root.bridge.privacyPinConfigured)
@@ -877,6 +1220,9 @@ SmoothFlickable {
                                     font.pixelSize: 12
                                     font.weight: 600
                                     color: (root.bridge && root.bridge.privacyPinConfigured) ? "#10B981" : "#F8FAFC"
+                                    wrapMode: Text.Wrap
+                                    Layout.fillWidth: true
+                                    Layout.preferredWidth: 0
                                 }
 
                                 Rectangle {
@@ -909,7 +1255,7 @@ SmoothFlickable {
                                 wrapMode: Text.WordWrap
                                 Layout.fillWidth: true
                                 Layout.preferredWidth: 0
-                                Layout.minimumWidth: 100
+                                Layout.minimumWidth: 80
                             }
                         }
 
@@ -1176,30 +1522,91 @@ SmoothFlickable {
                             font.pixelSize: 11
                             color: "#EF4444"
                         }
+                    }
+                }
 
-                        // ── Inactivity / Auto-Lock Idle Timer ──
-                        Rectangle {
-                            Layout.fillWidth: true
-                            height: 1
-                            color: "#1E293B"
-                            Layout.topMargin: 4
-                            Layout.bottomMargin: 4
-                        }
+                // ── Inactivity / Auto-Lock Idle Timer Card (Always Available) ──
+                Rectangle {
+                    id: idleTimerCard
+                    Layout.fillWidth: true
+                    implicitHeight: idleTimerLayout.implicitHeight + 24
+                    radius: 8
+                    color: "#131722"
+                    border.color: "#1E2536"
+                    border.width: 1
+
+                    readonly property bool isCompact: width < 540
+
+                    GridLayout {
+                        id: idleTimerLayout
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: 12
+                        columns: idleTimerCard.isCompact ? 1 : 2
+                        rowSpacing: 10
+                        columnSpacing: 12
 
                         RowLayout {
                             Layout.fillWidth: true
+                            Layout.preferredWidth: 0
+                            Layout.minimumWidth: 80
                             spacing: 12
+                            Layout.alignment: Qt.AlignVCenter
+
+                            Rectangle {
+                                width: 32
+                                height: 32
+                                radius: 16
+                                color: "#141824"
+                                border.color: (root.bridge && root.bridge.privacyIdleMinutes > 0) ? "#38BDF8" : "#2E384D"
+                                border.width: 1
+                                Layout.alignment: Qt.AlignVCenter
+
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: "⏱️"
+                                    font.pixelSize: 15
+                                }
+                            }
 
                             ColumnLayout {
                                 Layout.fillWidth: true
+                                Layout.preferredWidth: 0
+                                Layout.minimumWidth: 60
                                 spacing: 3
 
-                                Text {
-                                    text: root.tr("privacy_idle_title", "Auto-Lock when Idle")
-                                    font.family: "Segoe UI, sans-serif"
-                                    font.pixelSize: 13
-                                    font.weight: 600
-                                    color: "#F8FAFC"
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 8
+                                    Text {
+                                        text: root.tr("privacy_idle_title", "Auto-Lock when Idle")
+                                        font.family: "Segoe UI, sans-serif"
+                                        font.pixelSize: 12
+                                        font.weight: 600
+                                        color: "#F8FAFC"
+                                    }
+
+                                    Rectangle {
+                                        height: 18
+                                        implicitWidth: idleBadgeText.implicitWidth + 12
+                                        radius: 9
+                                        color: (root.bridge && root.bridge.privacyIdleMinutes > 0) ? "#064E3B" : "#1E293B"
+                                        border.color: (root.bridge && root.bridge.privacyIdleMinutes > 0) ? "#059669" : "#334155"
+                                        border.width: 1
+
+                                        Text {
+                                            id: idleBadgeText
+                                            anchors.centerIn: parent
+                                            text: (root.bridge && root.bridge.privacyIdleMinutes > 0)
+                                                  ? (root.bridge.privacyIdleMinutes + " min")
+                                                  : root.tr("opt_disabled", "Disabled")
+                                            font.family: "Segoe UI, sans-serif"
+                                            font.pixelSize: 9
+                                            font.weight: Font.DemiBold
+                                            color: (root.bridge && root.bridge.privacyIdleMinutes > 0) ? "#6EE7B7" : "#94A3B8"
+                                        }
+                                    }
                                 }
 
                                 Text {
@@ -1207,16 +1614,23 @@ SmoothFlickable {
                                     font.family: "Segoe UI, sans-serif"
                                     font.pixelSize: 11
                                     color: "#94A3B8"
-                                    wrapMode: Text.Wrap
+                                    wrapMode: Text.WordWrap
                                     Layout.fillWidth: true
+                                    Layout.preferredWidth: 0
                                 }
                             }
+                        }
+
+                        RowLayout {
+                            spacing: 8
+                            Layout.alignment: idleTimerCard.isCompact ? Qt.AlignLeft : Qt.AlignRight
+                            Layout.leftMargin: idleTimerCard.isCompact ? 44 : 0
 
                             StyledComboBox {
                                 id: idleTimeoutCombo
-                                Layout.preferredWidth: 180
+                                Layout.preferredWidth: 165
                                 model: [
-                                    { text: root.tr("opt_disabled", "Disabled"), value: 0 },
+                                    { text: root.tr("opt_disabled", "Disabled (Never Auto-Lock)"), value: 0 },
                                     { text: root.tr("opt_idle_1m", "1 minute"), value: 1 },
                                     { text: root.tr("opt_idle_2m", "2 minutes"), value: 2 },
                                     { text: root.tr("opt_idle_3m", "3 minutes"), value: 3 },
@@ -1224,11 +1638,59 @@ SmoothFlickable {
                                     { text: root.tr("opt_idle_10m", "10 minutes"), value: 10 },
                                     { text: root.tr("opt_idle_15m", "15 minutes"), value: 15 },
                                     { text: root.tr("opt_idle_20m", "20 minutes"), value: 20 },
-                                    { text: root.tr("opt_idle_30m", "30 minutes"), value: 30 }
+                                    { text: root.tr("opt_idle_30m", "30 minutes"), value: 30 },
+                                    { text: root.tr("opt_idle_45m", "45 minutes"), value: 45 },
+                                    { text: root.tr("opt_idle_60m", "60 minutes"), value: 60 }
                                 ]
                                 value: root.bridge ? root.bridge.privacyIdleMinutes : 5
                                 onValuePicked: function(val) {
-                                    if (root.bridge) root.bridge.setPrivacyIdleMinutes(val)
+                                    if (root.bridge) root.bridge.setPrivacyIdleMinutes(parseInt(val))
+                                }
+                            }
+
+                            // Quick Toggle / Disable Button
+                            Rectangle {
+                                id: disableIdleBtn
+                                height: 28
+                                Layout.preferredHeight: 28
+                                Layout.preferredWidth: disableIdleBtnText.implicitWidth + 20
+                                radius: 5
+                                color: (root.bridge && root.bridge.privacyIdleMinutes > 0)
+                                       ? (disableIdleMouse.containsMouse ? "#7F1D1D" : "#450A0A")
+                                       : (disableIdleMouse.containsMouse ? "#065F46" : "#064E3B")
+                                border.color: (root.bridge && root.bridge.privacyIdleMinutes > 0) ? "#EF4444" : "#10B981"
+                                border.width: 1
+
+                                Text {
+                                    id: disableIdleBtnText
+                                    anchors.centerIn: parent
+                                    text: (root.bridge && root.bridge.privacyIdleMinutes > 0)
+                                          ? root.tr("btn_disable_idle", "Disable")
+                                          : root.tr("btn_enable_idle", "Enable")
+                                    font.family: "Segoe UI, sans-serif"
+                                    font.pixelSize: 11
+                                    font.weight: 600
+                                    color: (root.bridge && root.bridge.privacyIdleMinutes > 0) ? "#FCA5A5" : "#6EE7B7"
+                                }
+
+                                MouseArea {
+                                    id: disableIdleMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    ToolTip.visible: containsMouse
+                                    ToolTip.delay: 300
+                                    ToolTip.text: (root.bridge && root.bridge.privacyIdleMinutes > 0)
+                                                  ? root.tr("tip_disable_idle", "Completely turn off idle auto-locking")
+                                                  : root.tr("tip_enable_idle", "Turn on idle auto-locking (5 minutes default)")
+                                    onClicked: {
+                                        if (!root.bridge) return
+                                        if (root.bridge.privacyIdleMinutes > 0) {
+                                            root.bridge.setPrivacyIdleMinutes(0)
+                                        } else {
+                                            root.bridge.setPrivacyIdleMinutes(5)
+                                        }
+                                    }
                                 }
                             }
                         }

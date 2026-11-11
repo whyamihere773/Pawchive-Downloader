@@ -1,8 +1,8 @@
 {
-    "version": "1.3.9",
+    "version": "1.4.0",
     "commit": "",
     "short_commit": "",
-    "date": "2026-11-10",
+    "date": "2026-11-11",
     "channel": "release",
     "history": [
         {
@@ -204,6 +204,11 @@
             "version": "1.3.9",
             "date": "2026-11-10",
             "notes": "Optimize video compression with safe thread limits, process priority management, and custom encoding presets, resolve cum.st canonical URL handling, and eliminate periodic memory freeze crashes on Linux systems."
+        },
+        {
+            "version": "1.4.0",
+            "date": "2026-11-11",
+            "notes": "Add CoomerFans (coomerfans.com) provider support with full profile, gallery, and video downloading, high-DPI display UI scaling with preset multipliers, and privacy shield enhancements."
         }
     ]
 }

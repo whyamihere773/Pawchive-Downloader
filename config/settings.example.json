@@ -31,5 +31,6 @@
   "open_folder_on_complete": false,
   "play_completion_sound": false,
   "exact_extensions": "",
-  "saved_custom_extensions": []
+  "saved_custom_extensions": [],
+  "ui_scale": 1.0
 }

@@ -240,7 +240,8 @@ class SessionManager:
             "bandwidth_limit_unit": "MB/s",
             "privacy_pin": "",
             "pending_pin_reset": False,
-            "privacy_idle_minutes": 5
+            "privacy_idle_minutes": 5,
+            "ui_scale": 1.0
         }
 
         if os.path.exists(self.settings_file):

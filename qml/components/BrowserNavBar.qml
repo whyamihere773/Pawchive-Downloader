@@ -223,13 +223,17 @@ Rectangle {
                     }
 
                     Text {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.rightMargin: 4
+                        anchors.verticalCenter: parent.verticalCenter
+                        elide: Text.ElideRight
                         text: (root.bridge && root.bridge.favoriteMode)
                               ? root.tr("ph_nav_favorite_mode", "Enter creator URL (or leave blank to download all Favorites ⭐)...")
                               : root.tr("ph_nav_default", "Enter creator or post URL (Pawchive, cum.st, Telegram, Bunkr, Erome, nHentai)...")
                         color: (root.bridge && root.bridge.favoriteMode) ? "#FBBF24" : "#64748B"
                         font: parent.font
                         visible: !parent.text && !parent.activeFocus
-                        anchors.verticalCenter: parent.verticalCenter
                     }
                 }
 

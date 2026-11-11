@@ -458,6 +458,10 @@ class KemonoApiClient:
 
     def fetch_creator_profile(self, parsed: URLParseResult) -> Dict[str, Any]:
         """Fetch creator profile, trying profile endpoints, cross-domain mirrors, HTML page scraping, and post fallback."""
+        if getattr(parsed, "domain", "") == "coomerfans.com" or getattr(parsed, "provider", "") == "coomerfans":
+            from services.coomerfans_client import fetch_creator_profile as fetch_cf_profile
+            return fetch_cf_profile(parsed)
+
         logger.info(f"Fetching creator profile: {parsed.service}/{parsed.user_id}", category="api")
         uid_str = str(parsed.user_id).strip()
 
@@ -645,6 +649,10 @@ class KemonoApiClient:
 
     def fetch_single_post(self, parsed: URLParseResult) -> Optional[Dict[str, Any]]:
         """Fetch a single post (or DM) by ID."""
+        if getattr(parsed, "domain", "") == "coomerfans.com" or getattr(parsed, "provider", "") == "coomerfans":
+            from services.coomerfans_client import fetch_single_post as fetch_cf_post
+            return fetch_cf_post(parsed)
+
         if not parsed.post_id:
             return None
 
@@ -712,6 +720,18 @@ class KemonoApiClient:
         Paginates through user posts from page_start to page_end.
         Emits detailed per-page console logs including post counts, offsets, and timing.
         """
+        if getattr(parsed, "domain", "") == "coomerfans.com" or getattr(parsed, "provider", "") == "coomerfans":
+            from services.coomerfans_client import fetch_user_posts as fetch_cf_posts
+            return fetch_cf_posts(
+                parsed=parsed,
+                page_start=page_start,
+                page_end=page_end,
+                cancel_event=cancel_event,
+                progress_callback=progress_callback,
+                date_after=date_after,
+                date_before=date_before,
+            )
+
         all_posts: List[Dict[str, Any]] = []
         self._fetch_state.failed = False        # set when the list stops early because of an error
         current_page = page_start

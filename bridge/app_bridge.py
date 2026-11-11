@@ -200,6 +200,7 @@ class AppBridge(QObject):
     aiModelProgressChanged = Signal(str, str, float, str, str)  # (model_key, status, percent, speed_str, error)
     aiHardwareInfoChanged = Signal()
     languageChanged = Signal()
+    uiScaleChanged = Signal()
     postActionCountdownStarted = Signal(str)  # carries human label e.g. "Shutdown"
     exportCompleted = Signal(str, bool)       # (filePath, wasDownloading)
     importCompleted = Signal(int, int)        # (taskCount, creatorCount)
@@ -403,7 +404,7 @@ class AppBridge(QObject):
         self._privacy_lockout_active = False
         self._pending_pin_reset = bool(saved_settings.get("pending_pin_reset", False))
         self._safe_mode_active = self._pending_pin_reset
-        self._privacy_idle_minutes = int(saved_settings.get("privacy_idle_minutes", 5))
+        self._privacy_idle_minutes = max(0, min(60, int(saved_settings.get("privacy_idle_minutes", 5))))
         self._manga_mode = saved_settings.get("manga_mode", False)
         self._filename_style = saved_settings.get("filename_style", "post_title")
         self._filename_template = saved_settings.get("filename_template", "{title} - {orig_name}")
@@ -489,6 +490,21 @@ class AppBridge(QObject):
         self.model_manager.register_callback("deep_reasoner", _on_model_progress)
 
         self._language = str(saved_settings.get("language", "auto"))
+        raw_scale = saved_settings.get("ui_scale", 1.0)
+        try:
+            scale_f = float(raw_scale)
+            if scale_f > 10.0:
+                scale_f = scale_f / 100.0
+            self._ui_scale = max(0.5, min(3.5, round(scale_f, 2)))
+        except Exception:
+            self._ui_scale = 1.0
+        try:
+            act = float(os.environ.get("QT_SCALE_FACTOR", "1.0"))
+            if act > 10.0:
+                act = act / 100.0
+            self._active_ui_scale = max(0.5, min(3.5, round(act, 2)))
+        except Exception:
+            self._active_ui_scale = 1.0
         self._console_width = int(saved_settings.get("console_width", 620))
         self._current_fps = 0
         self._screen_hz = 60
@@ -1766,6 +1782,56 @@ class AppBridge(QObject):
             self.languageChanged.emit()
             self.saveSettings()
 
+    @Property(float, notify=uiScaleChanged)
+    def uiScale(self) -> float:
+        return self._ui_scale
+
+    @uiScale.setter
+    def uiScale(self, val: float):
+        try:
+            val_f = float(val)
+            if val_f > 10.0:
+                val_f = val_f / 100.0
+            val_f = max(0.5, min(3.5, round(val_f, 2)))
+        except Exception:
+            val_f = 1.0
+        if abs(self._ui_scale - val_f) >= 0.005:
+            self._ui_scale = val_f
+            self.uiScaleChanged.emit()
+            self.saveSettings()
+
+    @Property(float, constant=True)
+    def activeUiScale(self) -> float:
+        return self._active_ui_scale
+
+    @Property(bool, notify=uiScaleChanged)
+    def uiScaleRestartNeeded(self) -> bool:
+        return abs(self._ui_scale - self._active_ui_scale) >= 0.04
+
+    @Slot()
+    def restartApplication(self):
+        """Save settings and restart Pawchive Downloader to apply changes (e.g. UI scale)."""
+        self.saveSettings()
+        try:
+            from services.update_service import detached_popen_kwargs
+            if getattr(sys, "frozen", False):
+                cmd = [sys.executable]
+                cwd = os.path.dirname(sys.executable)
+            else:
+                main_py = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "main.py")
+                cmd = [sys.executable, main_py]
+                cwd = os.path.dirname(main_py)
+            env = os.environ.copy()
+            if abs(self._ui_scale - 1.0) >= 0.01:
+                env["QT_SCALE_FACTOR"] = f"{self._ui_scale:.2f}".rstrip("0").rstrip(".")
+            else:
+                env.pop("QT_SCALE_FACTOR", None)
+            subprocess.Popen(cmd, cwd=cwd, env=env, **detached_popen_kwargs())
+            logger.info(f"Relaunching application (UI scale: {self._ui_scale:.2f}x)...", category="system")
+        except Exception as e:
+            logger.error(f"Failed to restart application: {e}", category="system")
+        QTimer.singleShot(150, QCoreApplication.quit)
+
     @Property(float, notify=downloadDelayChanged)
     def downloadDelay(self) -> float:
         return self._download_delay
@@ -2033,7 +2099,7 @@ class AppBridge(QObject):
 
     @Slot(int)
     def setPrivacyIdleMinutes(self, minutes: int):
-        m = max(0, min(30, int(minutes)))
+        m = max(0, min(60, int(minutes)))
         if self._privacy_idle_minutes != m:
             self._privacy_idle_minutes = m
             self.privacyIdleMinutesChanged.emit()
@@ -3683,26 +3749,33 @@ class AppBridge(QObject):
                             return False
                         return p_str.lower().split("?")[0].endswith(image_exts)
 
-                    thumb_url = ""
-                    f = p.get("file")
-                    if f and isinstance(f, dict):
-                        fpath = f.get("path") or ""
-                        fname = f.get("name") or ""
-                        if fpath and (_is_image(fpath) or _is_image(fname)):
-                            clean_p = fpath if fpath.startswith("/") else f"/{fpath}"
-                            if clean_p.startswith("/data/"):
-                                clean_p = clean_p[5:]
-                            thumb_url = f"https://img.{domain}/thumbnail/data{clean_p}"
+                    thumb_url = p.get("thumbnail") or ""
+                    if not thumb_url:
+                        f = p.get("file")
+                        if f and isinstance(f, dict):
+                            fpath = f.get("path") or ""
+                            fname = f.get("name") or ""
+                            if fpath and (_is_image(fpath) or _is_image(fname)):
+                                if fpath.startswith("http://") or fpath.startswith("https://"):
+                                    thumb_url = fpath
+                                else:
+                                    clean_p = fpath if fpath.startswith("/") else f"/{fpath}"
+                                    if clean_p.startswith("/data/"):
+                                        clean_p = clean_p[5:]
+                                    thumb_url = f"https://img.{domain}/thumbnail/data{clean_p}"
                     if not thumb_url:
                         for att in p.get("attachments", []) or []:
                             if isinstance(att, dict) and att.get("path"):
                                 apath = att["path"]
                                 aname = att.get("name") or ""
                                 if _is_image(apath) or _is_image(aname):
-                                    clean_p = apath if apath.startswith("/") else f"/{apath}"
-                                    if clean_p.startswith("/data/"):
-                                        clean_p = clean_p[5:]
-                                    thumb_url = f"https://img.{domain}/thumbnail/data{clean_p}"
+                                    if apath.startswith("http://") or apath.startswith("https://"):
+                                        thumb_url = apath
+                                    else:
+                                        clean_p = apath if apath.startswith("/") else f"/{apath}"
+                                        if clean_p.startswith("/data/"):
+                                            clean_p = clean_p[5:]
+                                        thumb_url = f"https://img.{domain}/thumbnail/data{clean_p}"
                                     break
 
                     post_files = []
@@ -3716,10 +3789,13 @@ class AppBridge(QObject):
                             seen_selection_keys.add(mf_key)
                         mf_thumb = ""
                         if mf_path and (_is_image(mf_path) or _is_image(mf_name)):
-                            clean_p = mf_path if mf_path.startswith("/") else f"/{mf_path}"
-                            if clean_p.startswith("/data/"):
-                                clean_p = clean_p[5:]
-                            mf_thumb = f"https://img.{domain}/thumbnail/data{clean_p}"
+                            if mf_path.startswith("http://") or mf_path.startswith("https://"):
+                                mf_thumb = mf_path
+                            else:
+                                clean_p = mf_path if mf_path.startswith("/") else f"/{mf_path}"
+                                if clean_p.startswith("/data/"):
+                                    clean_p = clean_p[5:]
+                                mf_thumb = f"https://img.{domain}/thumbnail/data{clean_p}"
                         elif f.get("storageKey") and ("cum.st" in domain or "cumst" in domain) and (_is_image(mf_name) or (f.get("mimeType") or "").startswith("image/")):
                             sk = f.get("storageKey")
                             ext = os.path.splitext(mf_name)[1].lower() or ".jpg"
@@ -3750,10 +3826,13 @@ class AppBridge(QObject):
                             att_path = att.get("path") or ""
                             att_thumb = ""
                             if att_path and (_is_image(att_path) or _is_image(att_name)):
-                                clean_p = att_path if att_path.startswith("/") else f"/{att_path}"
-                                if clean_p.startswith("/data/"):
-                                    clean_p = clean_p[5:]
-                                att_thumb = f"https://img.{domain}/thumbnail/data{clean_p}"
+                                if att_path.startswith("http://") or att_path.startswith("https://"):
+                                    att_thumb = att_path
+                                else:
+                                    clean_p = att_path if att_path.startswith("/") else f"/{att_path}"
+                                    if clean_p.startswith("/data/"):
+                                        clean_p = clean_p[5:]
+                                    att_thumb = f"https://img.{domain}/thumbnail/data{clean_p}"
                             elif att.get("storageKey") and ("cum.st" in domain or "cumst" in domain) and (_is_image(att_name) or (att.get("mimeType") or "").startswith("image/")):
                                 sk = att.get("storageKey")
                                 ext = os.path.splitext(att_name)[1].lower() or ".jpg"
@@ -5902,6 +5981,7 @@ class AppBridge(QObject):
             "ai_engine_mode": self._ai_engine_mode,
             "ai_deep_reasoner_variant": self._ai_deep_reasoner_variant,
             "language": self._language,
+            "ui_scale": self._ui_scale,
             "console_width": self._console_width,
             "tag_folder_mode": self._tag_folder_mode,
             "skip_post_covers": self._skip_post_covers,

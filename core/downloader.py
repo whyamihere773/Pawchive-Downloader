@@ -958,6 +958,13 @@ class KemonoDownloader:
             return self._cancel_event.is_set() and self._session_id != build_session_id
 
         creator_clean = FilterEngine.clean_filesystem_text(creator_name, max_len=80, fallback="creator")
+        if (not creator_clean or creator_clean in ("creator", user_id, f"{service}_{user_id}")) and posts:
+            for p in posts:
+                better = p.get("creator_name") or p.get("artist_name") or p.get("username")
+                if better and better not in ("creator", user_id, f"{service}_{user_id}"):
+                    creator_clean = FilterEngine.clean_filesystem_text(better, max_len=80, fallback=creator_clean)
+                    creator_name = better
+                    break
 
         # ── 1. Manga / Comic Mode Sorting ─────────────────────────────────────
         posts_to_process = list(posts)
@@ -986,6 +993,11 @@ class KemonoDownloader:
                 f"{', '.join(new_chars[:6])}{'...' if len(new_chars) > 6 else ''}",
                 category="known"
             )
+
+        # CoomerFans media resolution: resolve full attachments before structuring tasks
+        if domain == "coomerfans.com" or any(p.get("_needs_coomerfans_media") for p in posts_to_process):
+            from services.coomerfans_client import resolve_posts_media
+            resolve_posts_media(posts_to_process, cancel_event=self._cancel_event)
 
         logger.info(f"Structuring download plan for {len(posts_to_process)} posts...", category="downloader")
 
@@ -1018,8 +1030,17 @@ class KemonoDownloader:
                 except Exception:
                     date_str = str(published)
             else:
-                pub_str = str(published)
-                date_str = pub_str.split("T")[0] if "T" in pub_str else (pub_str[:10] if pub_str else "")
+                pub_str = str(published).strip()
+                date_m = re.search(r'^\d{4}-\d{2}-\d{2}', pub_str)
+                if date_m:
+                    date_str = date_m.group(0)
+                elif "T" in pub_str and not pub_str.startswith("T"):
+                    date_str = pub_str.split("T")[0]
+                elif " " in pub_str:
+                    date_str = pub_str.split(" ")[0]
+                else:
+                    date_str = pub_str[:10] if pub_str else ""
+                date_str = FilterEngine.clean_filesystem_text(date_str, max_len=20, fallback="")
 
             # Construct canonical web post link for manual inspection/testing
             post_user = str(post.get("user") or post.get("user_id") or post.get("artist_id") or user_id or "")
@@ -1032,6 +1053,8 @@ class KemonoDownloader:
                     task_post_url = f"https://cum.st/posts/{service}/{post_id}"
                 else:
                     task_post_url = ""
+            elif domain == "coomerfans.com":
+                task_post_url = f"https://coomerfans.com/p/{post_id}/{post_user}/{service}"
             elif domain and service and post_user and post_id:
                 task_post_url = f"https://{domain}/{service}/user/{post_user}/post/{post_id}"
             elif domain and service and post_id:
@@ -1602,7 +1625,7 @@ class KemonoDownloader:
                     original_url = f"https://cdn.cum.st/media/{norm_path}/{primary_variant}"
                     norm_path = f"/{norm_path[:2]}/{norm_path[2:4]}/{norm_path}.{ext}"  # legacy fallback path
                 elif norm_path.startswith("http://") or norm_path.startswith("https://"):
-                    is_pawchive_temp = "t1.pawchive.pw" in norm_path or bool(fobj.get("is_temporary"))
+                    is_pawchive_temp = "t1.pawchive.pw" in norm_path or bool(fobj.get("is_temporary")) or "coomerfans.com" in norm_path
                     if is_pawchive_temp:
                         # Pawchive temporary oversized storage on t1.pawchive.pw uses signed URLs (?e=...&s=...)
                         # Preserve full signed URL with query parameters intact
@@ -1723,7 +1746,10 @@ class KemonoDownloader:
                     if orig_ext in MediaTypes.VIDEO_EXTS:
                         sanitized_name = f"{os.path.splitext(sanitized_name)[0]}.jpg"
                 else:
-                    is_pawchive_temp = bool(original_url and "t1.pawchive.pw" in original_url) or bool(fobj.get("is_temporary"))
+                    is_pawchive_temp = (
+                        bool(original_url and ("t1.pawchive.pw" in original_url or "coomerfans.com" in original_url))
+                        or bool(fobj.get("is_temporary"))
+                    )
                     if is_pawchive_temp and original_url:
                         # Temporary oversized files on t1.pawchive.pw are signed URLs.
                         # Append the signed URL directly as the primary candidate (do not fallback to file.pawchive.pw)
@@ -3487,6 +3513,10 @@ class KemonoDownloader:
                     elif "nhentai" in u_low:
                         req_headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
                         req_headers["Referer"] = "https://nhentai.net/"
+                        req_headers["Accept"] = "*/*"
+                    elif "coomerfans" in u_low:
+                        req_headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                        req_headers["Referer"] = "https://coomerfans.com/"
                         req_headers["Accept"] = "*/*"
                     elif "coomer" in u_low:
                         req_headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"

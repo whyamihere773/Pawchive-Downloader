@@ -5,9 +5,9 @@ import QtQuick.Controls
 ComboBox {
     id: control
 
-    property string value: ""            // the selected item's value
+    property var value: ""            // the selected item's value
     property string tooltip: ""
-    signal valuePicked(string value)
+    signal valuePicked(var value)
 
     textRole: "text"
     valueRole: "value"
@@ -17,7 +17,7 @@ ComboBox {
 
     currentIndex: {
         for (var i = 0; i < (model ? model.length : 0); i++) {
-            if (model[i].value === control.value) return i
+            if (String(model[i].value) === String(control.value)) return i
         }
         return 0
     }

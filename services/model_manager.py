@@ -265,7 +265,7 @@ class ModelManager:
         })
 
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Pawchive/1.3.9 (AI Assistant)",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Pawchive/1.4.0 (AI Assistant)",
             "Accept": "*/*"
         }
 

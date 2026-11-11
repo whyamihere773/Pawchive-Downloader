@@ -13,10 +13,17 @@ KEMONO = "kemono"
 COOMER = "coomer"
 PAWCHIVE = "pawchive"
 CUMST = "cumst"
+COOMERFANS = "coomerfans"
 
-ARCHIVE_PROVIDERS = (KEMONO, COOMER, PAWCHIVE, CUMST)
+ARCHIVE_PROVIDERS = (KEMONO, COOMER, PAWCHIVE, CUMST, COOMERFANS)
 
-PROVIDER_NAMES = {KEMONO: "Kemono", COOMER: "Coomer", PAWCHIVE: "Pawchive", CUMST: "cum.st"}
+PROVIDER_NAMES = {
+    KEMONO: "Kemono",
+    COOMER: "Coomer",
+    PAWCHIVE: "Pawchive",
+    CUMST: "cum.st",
+    COOMERFANS: "Coomer Fans",
+}
 
 # Sites that are switched off, with where to go instead.
 DISABLED_PROVIDERS: Dict[str, Dict[str, str]] = {
@@ -42,11 +49,13 @@ def _host(url_or_host: str) -> str:
 
 
 def provider_for_host(url_or_host: str) -> str:
-    """'kemono' / 'coomer' / 'pawchive' / 'cumst' for that site's pages, APIs and file servers, else ''."""
+    """'kemono' / 'coomer' / 'pawchive' / 'cumst' / 'coomerfans' for that site's pages, APIs and file servers, else ''."""
     h = _host(url_or_host)
     if not h:
         return ""
     labels = h.split(".")
+    if "coomerfans" in labels or h == "coomerfans.com" or h.endswith(".coomerfans.com"):
+        return COOMERFANS
     if "kemono" in labels:
         return KEMONO
     if "coomer" in labels:

@@ -66,7 +66,9 @@ class RecoveryManager:
             return "nHentai"
 
         # Check domain first
-        if "coomer" in dom or "coomer" in u:
+        if "coomerfans" in dom or "coomerfans" in u:
+            platform_base = "CoomerFans"
+        elif "coomer" in dom or "coomer" in u:
             platform_base = "Coomer"
         elif "kemono" in dom or "kemono" in u:
             platform_base = "Kemono"

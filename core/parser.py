@@ -17,8 +17,8 @@ COOMER_DOMAIN = "coomer.st"
 
 def _canonical_archive_domain(domain: str) -> str:
     """The domain to use for an archive site link, or '' if the domain isn't one of them."""
-    from core.providers import provider_for_host, KEMONO, COOMER, PAWCHIVE, CUMST
-    return {KEMONO: KEMONO_DOMAIN, COOMER: COOMER_DOMAIN, PAWCHIVE: "pawchive.pw", CUMST: "cum.st"}.get(
+    from core.providers import provider_for_host, KEMONO, COOMER, PAWCHIVE, CUMST, COOMERFANS
+    return {KEMONO: KEMONO_DOMAIN, COOMER: COOMER_DOMAIN, PAWCHIVE: "pawchive.pw", CUMST: "cum.st", COOMERFANS: "coomerfans.com"}.get(
         provider_for_host(domain), "")
 
 
@@ -53,7 +53,7 @@ class URLParseResult:
 
     @property
     def is_external_provider(self) -> bool:
-        return self.provider != "kemono"
+        return self.provider not in ("kemono", "coomerfans")
 
     @property
     def api_base_url(self) -> str:
@@ -131,6 +131,16 @@ class KemonoURLParser:
 
     SAINT2_PATTERN = re.compile(
         r"https?://(?:www\.)?saint2\.su/([^\s]+)",
+        re.IGNORECASE
+    )
+
+    # CoomerFans patterns
+    COOMERFANS_POST_PATTERN = re.compile(
+        r"https?://(?:www\.)?coomerfans\.com/p/(\d+)/([^/?#]+)/([^/?#]+)",
+        re.IGNORECASE
+    )
+    COOMERFANS_USER_PATTERN = re.compile(
+        r"https?://(?:www\.)?coomerfans\.com/u/([^/?#]+)/([^/?#]+)(?:/([^/?#]+))?",
         re.IGNORECASE
     )
 
@@ -247,6 +257,39 @@ class KemonoURLParser:
                 is_valid=True,
                 provider="telegram",
                 extra_data={"is_private": False, "type": "channel", "channel_name": channel_name}
+            )
+
+        # CoomerFans Single Post: /p/{post_id}/{user_id}/{service}
+        m_cf_post = cls.COOMERFANS_POST_PATTERN.search(url)
+        if m_cf_post:
+            post_id = m_cf_post.group(1)
+            user_id = m_cf_post.group(2)
+            service = m_cf_post.group(3).lower()
+            return URLParseResult(
+                domain="coomerfans.com",
+                service=service,
+                user_id=user_id,
+                post_id=post_id,
+                raw_url=url,
+                is_valid=True,
+                provider="coomerfans"
+            )
+
+        # CoomerFans Creator Profile: /u/{service}/{user_id}/{username}
+        m_cf_user = cls.COOMERFANS_USER_PATTERN.search(url)
+        if m_cf_user:
+            service = m_cf_user.group(1).lower()
+            user_id = m_cf_user.group(2)
+            slug = m_cf_user.group(3) or ""
+            return URLParseResult(
+                domain="coomerfans.com",
+                service=service,
+                user_id=user_id,
+                post_id=None,
+                raw_url=url,
+                is_valid=True,
+                provider="coomerfans",
+                extra_data={"username": slug}
             )
 
         m_nh = cls.NHENTAI_PATTERN.search(url)
@@ -444,5 +487,5 @@ class KemonoURLParser:
             "", "", "",
             raw_url=url,
             is_valid=False,
-            error_msg="URL does not match supported formats (Kemono, Pawchive, Coomer, Cum.st, Bunkr, Erome, nHentai, Patreon, Fanbox)."
+            error_msg="URL does not match supported formats (Kemono, Pawchive, Coomer, Cum.st, CoomerFans, Bunkr, Erome, nHentai, Patreon, Fanbox)."
         )
