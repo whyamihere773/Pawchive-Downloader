@@ -8,6 +8,8 @@ import time
 import threading
 from typing import Optional
 
+from core.statistics_manager import statistics_manager
+
 
 class BandwidthLimiter:
     """
@@ -130,6 +132,8 @@ class BandwidthLimiter:
         """
         if num_bytes <= 0:
             return True
+
+        statistics_manager.record_download(num_bytes, category="media")
 
         with self._lock:
             if not self._enabled or self._bytes_per_sec <= 0:

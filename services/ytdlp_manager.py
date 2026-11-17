@@ -13,6 +13,7 @@ import requests
 from typing import Optional, Callable, Tuple
 from core.logger import logger
 from core.bandwidth_limiter import bandwidth_limiter
+from core.path_utils import subprocess_env_kwargs
 
 # Browsers yt-dlp can read a sign-in from (Settings: "Use browser sign-in" for embedded videos)
 COOKIE_BROWSERS = ("firefox", "chrome", "edge", "brave", "opera", "vivaldi", "chromium", "safari")
@@ -84,11 +85,11 @@ class YtDlpManager:
             return True
         return False
 
-    def download_latest_binary(self) -> bool:
+    def download_latest_binary(self, force: bool = False) -> bool:
         """
-        Downloads the latest official standalone yt-dlp.exe from GitHub releases.
+        Downloads the latest official standalone yt-dlp binary from GitHub releases.
         """
-        if self.is_binary_available():
+        if not force and self.is_binary_available():
             return True
 
         os.makedirs(self.dependencies_dir, exist_ok=True)
@@ -109,7 +110,9 @@ class YtDlpManager:
                 with open(temp_exe, "wb") as f:
                     for chunk in resp.iter_content(chunk_size=128 * 1024):
                         if chunk:
+                            from core.statistics_manager import statistics_manager
                             f.write(chunk)
+                            statistics_manager.record_download(len(chunk), category="media")
                             downloaded += len(chunk)
 
             got = os.path.getsize(temp_exe) if os.path.exists(temp_exe) else 0
@@ -193,24 +196,27 @@ class YtDlpManager:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 creationflags=creationflags,
-                timeout=45
+                timeout=45,
+                **subprocess_env_kwargs(),
             )
 
             output = (proc.stdout or "") + (proc.stderr or "")
             if "up to date" in output.lower():
                 logger.info("yt-dlp is already up to date.", category="ytdlp")
                 return True
-            elif "updated yt-dlp" in output.lower() or proc.returncode == 0:
+            elif ("updated yt-dlp" in output.lower() or proc.returncode == 0) and "symbol lookup error" not in output.lower():
                 logger.success("yt-dlp successfully updated to latest version!", category="ytdlp")
                 return True
             else:
                 logger.debug(f"yt-dlp -U output: {output.strip()}", category="ytdlp")
                 # Fallback to direct github binary download if in-place update fails
-                return self.download_latest_binary()
+                return self.download_latest_binary(force=True)
         except Exception as e:
             logger.debug(f"CLI update failed ({e}), falling back to direct download...", category="ytdlp")
-            return self.download_latest_binary()
+            return self.download_latest_binary(force=True)
 
     def check_for_updates_async(self):
         """
@@ -331,12 +337,14 @@ class YtDlpManager:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                creationflags=creationflags
+                creationflags=creationflags,
+                **subprocess_env_kwargs(),
             )
             with self._proc_lock:
                 self._active_processes.add(proc)
 
             # Read stdout line by line for live progress
+            prev_ytdlp_bytes = 0
             while proc.poll() is None:
                 if cancel_event and cancel_event.is_set():
                     try:
@@ -364,6 +372,10 @@ class YtDlpManager:
                             if len(parts) >= 3:
                                 bytes_part = parts[0].split("/")
                                 done_b = int(float(bytes_part[0])) if bytes_part[0] and bytes_part[0] != "NA" else 0
+                                if done_b > prev_ytdlp_bytes:
+                                    from core.statistics_manager import statistics_manager
+                                    statistics_manager.record_download(done_b - prev_ytdlp_bytes, category="media")
+                                    prev_ytdlp_bytes = done_b
                                 total_b = int(float(bytes_part[1])) if len(bytes_part) > 1 and bytes_part[1] and bytes_part[1] != "NA" else 0
                                 
                                 speed_val = float(parts[1]) if parts[1] and parts[1] != "NA" else 0.0

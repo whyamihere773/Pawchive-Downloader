@@ -23,10 +23,11 @@ from typing import Dict, List, Optional, Set
 from PySide6.QtCore import QObject, Signal, Slot
 
 from core.logger import logger
+from core.parser import KemonoURLParser, canonical_site_url
 from core.path_utils import is_post_info_name, post_info_files
 
 _POST_ID_PREFIX = re.compile(r"^(\d{5,})_")
-_CREATOR_URL = re.compile(r"https?://([^/\s]+)/([^/\s]+)/user/([^/?#\s]+)")
+_CREATOR_URL = re.compile(r"https?://(?:[^/\s]+)/(?:(?:creators|artists)/[^/\s]+/[^/?#\s]+|[^/\s]+/user/[^/?#\s]+)")
 _POST_ID_LINE = re.compile(r"^\s*post id\s*:\s*(\S+)", re.IGNORECASE)
 _SERVICE_TAG = re.compile(r"\[([A-Za-z0-9_-]{2,20})\]\s*$")
 _COOMER_SERVICES = {"onlyfans", "fansly", "candfans"}
@@ -168,7 +169,7 @@ class GalleryUpdates(QObject):
             return None
         return {
             "found": True,
-            "url": f"https://{parsed.domain}/{parsed.service}/user/{parsed.user_id}",
+            "url": canonical_site_url(parsed.domain, parsed.service, parsed.user_id),
             "domain": parsed.domain,
             "service": parsed.service,
             "userId": str(parsed.user_id),

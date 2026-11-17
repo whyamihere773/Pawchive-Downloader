@@ -72,6 +72,11 @@ def is_disabled(provider_or_url: str) -> bool:
     return p in DISABLED_PROVIDERS
 
 
+def enabled_browser_providers() -> tuple:
+    """Returns all registered archive providers that are currently enabled (not in DISABLED_PROVIDERS)."""
+    return tuple(p for p in ARCHIVE_PROVIDERS if p not in DISABLED_PROVIDERS)
+
+
 def disabled_message(provider_or_url: str) -> str:
     p = provider_or_url if provider_or_url in ARCHIVE_PROVIDERS else provider_for_host(provider_or_url)
     return DISABLED_PROVIDERS.get(p, {}).get("message", "")

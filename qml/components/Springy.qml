@@ -14,15 +14,15 @@ Item {
     property bool hover: false
     property bool pressed: false
 
-    // Weight from area: a 26px icon button ≈ 0.55, a 160px card ≈ 2.2 (clamped)
-    readonly property real autoMass: target ? Math.max(0.45, Math.min(2.4, Math.sqrt(Math.max(1, target.width * target.height)) / 48)) : 1.0
+    // Weight from area: tiny chips react immediately, larger controls stay understated
+    readonly property real autoMass: target ? Math.max(0.35, Math.min(1.0, Math.sqrt(Math.max(1, target.width * target.height)) / 64)) : 0.65
     property real mass: autoMass
-    property real hoverScale: 1.0 + 0.055 / Math.max(1.0, mass * 1.4)
-    property real pressScale: 1.0 - 0.07 / Math.max(1.0, mass)
+    property real hoverScale: 1.0 + 0.035 / Math.max(1.0, mass * 1.3)
+    property real pressScale: 1.0 - 0.055 / Math.max(1.0, mass)
 
     property real springValue: pressed ? pressScale : (hover ? hoverScale : 1.0)
     Behavior on springValue {
-        SpringAnimation { spring: 5.0; damping: 0.26; mass: sp.mass; epsilon: 0.0004 }
+        NumberAnimation { duration: 95; easing.type: Easing.OutCubic }
     }
 
     Binding {

@@ -522,11 +522,11 @@ class KemonoApiClient:
     def extract_pawchive_temporary_attachments(html_text: str) -> Dict[str, str]:
         """
         Parses Pawchive post HTML and returns a mapping of:
-        clean_filename -> signed temporary download URL (https://t1.pawchive.pw/f/...).
+        clean_filename -> signed temporary download URL (https://t1-t4.pawchive.pw/(f|d)/...).
         """
         if not html_text:
             return {}
-        matches = re.findall(r'(?:href|src)=["\'](https://t1\.pawchive\.pw/f/[^"\']+)["\']', html_text)
+        matches = re.findall(r'(?:href|src)=["\'](https://t\d+\.pawchive\.pw/(?:f|d)/[^"\']+)["\']', html_text)
         mapping: Dict[str, str] = {}
         for raw_u in matches:
             u = raw_u.replace("&amp;", "&")
@@ -541,7 +541,12 @@ class KemonoApiClient:
         """Returns True if the temporary Pawchive URL or temp_expires has expired."""
         if not isinstance(fobj, dict):
             return False
-        temp_u = fobj.get("temp_url") or (fobj.get("path") if isinstance(fobj.get("path"), str) and "t1.pawchive.pw" in fobj.get("path") else "")
+        raw_path = fobj.get("path") if isinstance(fobj.get("path"), str) else ""
+        temp_u = (
+            fobj.get("temp_download_url")
+            or fobj.get("temp_url")
+            or (raw_path if re.search(r"\bt\d+\.pawchive\.pw\b", raw_path) else "")
+        )
         if temp_u and "?e=" in temp_u:
             try:
                 m = re.search(r'[?&]e=(\d+)', temp_u)
@@ -564,8 +569,8 @@ class KemonoApiClient:
 
     def resolve_pawchive_deferred_attachments(self, post: Dict[str, Any], domain: str = "pawchive.pw") -> int:
         """
-        Resolves signed t1.pawchive.pw temporary download URLs for Pawchive attachments
-        (either via direct 'temp_url' in API JSON or scraping post HTML for legacy 'deferred: True' items).
+        Resolves signed t1-t4.pawchive.pw temporary download URLs for Pawchive attachments
+        (either via direct 'temp_download_url'/'temp_url' in API JSON or scraping post HTML for 'deferred: True' items).
         Returns the number of resolved attachments.
         """
         if not isinstance(post, dict):
@@ -584,10 +589,10 @@ class KemonoApiClient:
             if isinstance(a, dict):
                 targets.append(a)
 
-        # 1. Resolve direct temp_url fields provided in the API JSON for file and attachments
+        # 1. Resolve direct temp_download_url / temp_url fields provided in the API JSON for file and attachments
         for target in targets:
-            temp_u = target.get("temp_url")
-            if temp_u and not self.is_pawchive_temp_expired(target):
+            temp_u = target.get("temp_download_url") or target.get("temp_url")
+            if temp_u and not str(temp_u).split("?")[0].lower().endswith(".m3u8") and not self.is_pawchive_temp_expired(target):
                 target["path"] = temp_u
                 target["is_temporary"] = True
                 target["preview_only"] = False
@@ -663,6 +668,10 @@ class KemonoApiClient:
 
         resp = self._get_with_log(url, timeout=15)
         if resp is None or resp.status_code != 200:
+            if endpoint_type == "dm" and "pawchive" in (parsed.domain or "").lower():
+                for dm_item in self.fetch_user_dms(parsed):
+                    if str(dm_item.get("id") or "") == str(parsed.post_id):
+                        return dm_item
             return None
 
         try:
@@ -678,8 +687,27 @@ class KemonoApiClient:
                 else:
                     post_obj = data
 
-            if post_obj and isinstance(post_obj, dict) and ("pawchive" in (parsed.domain or "") or "pawchive" in str(post_obj.get("origin", ""))):
-                self.resolve_pawchive_deferred_attachments(post_obj, domain=parsed.domain)
+            if post_obj and isinstance(post_obj, dict):
+                if endpoint_type == "dm":
+                    post_obj = dict(post_obj)
+                    post_obj["user"] = post_obj.get("user") or parsed.user_id
+                    post_obj["service"] = post_obj.get("service") or parsed.service
+                    post_obj["domain"] = parsed.domain
+                    post_obj["is_dm"] = True
+                    post_obj["is_dms"] = True
+                    cap = str(
+                        post_obj.get("captionText")
+                        or post_obj.get("contentText")
+                        or post_obj.get("caption")
+                        or ""
+                    ).strip()
+                    if cap:
+                        post_obj["captionText"] = cap
+                    post_obj["content"] = post_obj.get("content") or post_obj.get("captionHtml") or cap
+                    first_line = cap.split("\n")[0][:80].strip() if cap else ""
+                    post_obj["title"] = post_obj.get("title") or first_line or f"DM {parsed.post_id}"
+                if "pawchive" in (parsed.domain or "") or "pawchive" in str(post_obj.get("origin", "")):
+                    self.resolve_pawchive_deferred_attachments(post_obj, domain=parsed.domain)
 
             return post_obj
         except Exception as e:
@@ -1067,110 +1095,38 @@ class KemonoApiClient:
                     p["service"] = p.get("service") or parsed.service
                     p["domain"] = "cum.st"
                     p["is_dm"] = True
-                    cap = str(p.get("captionText") or p.get("contentText") or "").strip()
+                    p["is_dms"] = True
+                    cap = str(
+                        p.get("captionText")
+                        or p.get("contentText")
+                        or p.get("caption")
+                        or ""
+                    ).strip()
                     p["captionText"] = cap
-                    p["content"] = p.get("content") or cap
+                    p["content"] = p.get("content") or p.get("captionHtml") or cap
                     first_line = cap.split("\n")[0][:80].strip() if cap else ""
                     p["title"] = p.get("title") or first_line or "Direct Message"
                     p["published"] = p.get("published") or p.get("added") or ""
                     page_dms.append(p)
 
-            else:  # Pawchive HTML parsing
+            else:  # Pawchive HTML parsing (shared parser)
                 if BeautifulSoup is None:
                     logger.error("BeautifulSoup4 is required to parse Pawchive DMs.", category="api")
                     break
                 try:
-                    soup = BeautifulSoup(resp.text, "html.parser")
-                    articles = soup.find_all("article", class_="dm-card")
+                    from core.browser_providers.base import KemonoStyleCatalogProvider
+                    page_dms, html_total, has_next_page = KemonoStyleCatalogProvider.parse_dms_html_cards(
+                        resp.text,
+                        base_domain="pawchive.pw",
+                        service=parsed.service,
+                        creator_id=parsed.user_id,
+                        current_offset=offset,
+                    )
+                    if known_total is None and html_total is not None:
+                        known_total = html_total
                 except Exception as e:
                     logger.error(f"DM Page {current_page}: HTML parse error — {e}", category="api")
                     break
-
-                if "pawchive" in domain_lower and known_total is None:
-                    m_tot = re.search(r'DMs\s*\(([0-9,]+)\)', resp.text)
-                    if m_tot:
-                        try:
-                            known_total = int(m_tot.group(1).replace(",", ""))
-                        except (ValueError, TypeError):
-                            pass
-
-                has_next_page = False
-                for a in soup.find_all("a", href=True):
-                    href = a.get("href", "")
-                    if (f"/user/{parsed.user_id}/dms" in href or href.startswith("?o=") or href.startswith("&o=")) and re.search(r'[?&]o=\d+', href):
-                        m_o = re.search(r'[?&]o=(\d+)', href)
-                        if m_o and int(m_o.group(1)) > offset:
-                            has_next_page = True
-                            break
-
-                for idx, art in enumerate(articles, 1):
-                    content_div = art.find(class_="dm-card__content")
-                    content_html = content_div.decode_contents().strip() if content_div else ""
-                    content_text = content_div.get_text(separator="\n", strip=True) if content_div else ""
-
-                    added_div = art.find(class_="dm-card__added")
-                    added_str = ""
-                    if added_div:
-                        m = re.search(r'Added:\s*([0-9-]+)', added_div.get_text())
-                        if m:
-                            added_str = m.group(1)
-
-                    attachments = []
-                    for img in art.find_all("img"):
-                        src = img.get("src")
-                        if src and not src.endswith("logo.png") and not src.endswith("favicon.png"):
-                            fname = src.split("/")[-1].split("?")[0] or "image.jpg"
-                            if src.startswith(("http://", "https://")):
-                                img_path = src
-                            elif src.startswith("//"):
-                                img_path = f"https:{src}"
-                            elif src.startswith("/"):
-                                img_path = src
-                            else:
-                                img_path = f"/{src}"
-                            attachments.append({
-                                "name": fname,
-                                "path": img_path,
-                                "originalFilename": fname,
-                            })
-                    for a in art.find_all("a"):
-                        href = a.get("href")
-                        if href and any(ext in href.lower() for ext in [".jpg", ".png", ".mp4", ".zip", ".rar", "/data/"]):
-                            fname = href.split("/")[-1].split("?")[0] or "file.bin"
-                            if href.startswith(("http://", "https://")):
-                                link_path = href
-                            elif href.startswith("//"):
-                                link_path = f"https:{href}"
-                            elif href.startswith("/"):
-                                link_path = href
-                            else:
-                                link_path = f"/{href}"
-                            attachments.append({
-                                "name": fname,
-                                "path": link_path,
-                                "originalFilename": fname,
-                            })
-
-                    dm_id = art.get("id") or art.get("data-id")
-                    if not dm_id:
-                        att_str = ",".join(a.get("path", "") for a in attachments)
-                        fingerprint = f"{parsed.service}:{parsed.user_id}:{added_str}:{content_text}:{att_str}"
-                        dm_id = f"dm_{hashlib.sha256(fingerprint.encode('utf-8', errors='ignore')).hexdigest()[:16]}"
-                    first_line = content_text.split("\n")[0][:80].strip() if content_text else ""
-
-                    dm_obj = {
-                        "id": dm_id,
-                        "user": parsed.user_id,
-                        "service": parsed.service,
-                        "domain": "pawchive.pw",
-                        "is_dm": True,
-                        "title": first_line or "Direct Message",
-                        "captionText": content_text,
-                        "content": content_html,
-                        "published": added_str,
-                        "attachments": attachments
-                    }
-                    page_dms.append(dm_obj)
 
             if not page_dms:
                 logger.info(

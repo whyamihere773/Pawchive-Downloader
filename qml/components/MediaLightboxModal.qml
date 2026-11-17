@@ -10,18 +10,74 @@ Item {
     id: root
 
     property var bridge: null
+    property var browserBridge: null
+    property bool hideExternalActions: false
+    property bool selectionMode: false
+    property bool currentItemSelected: false
     property bool isOpen: false
     property var mediaList: []
     property int currentIndex: 0
 
+    signal downloadItemRequested(var item)
+    signal selectionToggled()
+
+    property string resolvedLocalPath: ""
+    property string streamMediaUrl: ""
+    property bool remoteLoading: false
+    property string remoteError: ""
+
+    function _extractExtFromStr(s) {
+        if (!s) return ""
+        var noHash = s.split("#")[0]
+        var qIdx = noHash.indexOf("?")
+        var pathOnly = qIdx >= 0 ? noHash.substring(0, qIdx) : noHash
+        var dot = pathOnly.lastIndexOf(".")
+        if (dot > 0) {
+            var extCandidate = pathOnly.substring(dot).toLowerCase()
+            if (extCandidate.length <= 6 && extCandidate.indexOf("/") < 0) return extCandidate
+        }
+        if (qIdx >= 0) {
+            var q = noHash.substring(qIdx + 1)
+            var m = q.match(/(?:^|&)f=([^&]+)/)
+            if (m && m[1]) {
+                var fname = decodeURIComponent(m[1])
+                var fd = fname.lastIndexOf(".")
+                if (fd > 0) return fname.substring(fd).toLowerCase()
+            }
+        }
+        return ""
+    }
+
     readonly property var currentItem: (mediaList && currentIndex >= 0 && currentIndex < mediaList.length) ? mediaList[currentIndex] : null
-    readonly property string itemPath: currentItem ? (currentItem.path || "") : ""
+    readonly property string itemPath: currentItem ? (currentItem.path || currentItem.url || "") : ""
     readonly property string itemName: currentItem ? (currentItem.name || "") : ""
-    readonly property string itemExt: currentItem ? ((currentItem.ext || "").toLowerCase()) : ""
-    readonly property bool isImage: [".jpg", ".jpeg", ".jpe", ".jfif", ".pjpeg", ".pjp", ".png", ".apng", ".gif", ".webp", ".avif", ".heic", ".heif", ".jxl", ".bmp", ".dib", ".svg", ".svgz", ".ico", ".cur", ".tif", ".tiff", ".tga", ".psd", ".jp2", ".j2k", ".dds", ".qoi", ".pcx", ".ppm", ".pgm", ".pbm", ".xbm", ".xpm", ".icns", ".wbmp"].indexOf(itemExt) >= 0
-    readonly property bool isVideo: [".mp4", ".m4v", ".mkv", ".webm", ".mov", ".avi", ".flv", ".f4v", ".wmv", ".asf", ".mpg", ".mpeg", ".m2v", ".ts", ".mts", ".m2ts", ".3gp", ".3g2", ".ogv", ".vob", ".divx"].indexOf(itemExt) >= 0
-    readonly property bool isAudio: [".mp3", ".flac", ".wav", ".ogg", ".oga", ".m4a", ".aac", ".opus", ".wma", ".aiff", ".aif", ".alac", ".mka"].indexOf(itemExt) >= 0
+    readonly property string itemType: currentItem ? ((currentItem.media_type || currentItem.mediaType || "").toLowerCase()) : ""
+    readonly property string itemExt: {
+        if (!currentItem) return ""
+        var e = (currentItem.ext || "").toLowerCase()
+        if (e) return e
+        e = _extractExtFromStr(itemName)
+        if (e) return e
+        return _extractExtFromStr(itemPath)
+    }
+    readonly property bool isRemote: itemPath.indexOf("http://") === 0 || itemPath.indexOf("https://") === 0
+    readonly property string itemLinkUrl: {
+        if (!currentItem) return ""
+        if (currentItem.url) return String(currentItem.url)
+        if (isRemote && itemPath) return itemPath
+        if (browserBridge && browserBridge.resolveAttachmentUrl)
+            return browserBridge.resolveAttachmentUrl(currentItem, ({}))
+        if (itemPath) return "file:///" + itemPath.replace(/\\/g, "/").replace(/^\/+/, "")
+        return ""
+    }
+    readonly property string effectiveMediaPath: resolvedLocalPath ? resolvedLocalPath : itemPath
+    readonly property string _extVideoList: ""
+    readonly property bool isVideo: [".mp4", ".m4v", ".mkv", ".webm", ".mov", ".avi", ".flv", ".f4v", ".wmv", ".asf", ".mpg", ".mpeg", ".m2v", ".ts", ".mts", ".m2ts", ".3gp", ".3g2", ".ogv", ".vob", ".divx", ".m3u8"].indexOf(itemExt) >= 0 || (itemExt === "" && itemType === "video")
+    readonly property bool isAudio: [".mp3", ".flac", ".wav", ".ogg", ".oga", ".m4a", ".aac", ".opus", ".wma", ".aiff", ".aif", ".alac", ".mka"].indexOf(itemExt) >= 0 || (itemExt === "" && itemType === "audio")
+    readonly property bool isImage: !isVideo && !isAudio && ([".jpg", ".jpeg", ".jpe", ".jfif", ".pjpeg", ".pjp", ".png", ".apng", ".gif", ".webp", ".avif", ".heic", ".heif", ".jxl", ".bmp", ".dib", ".svg", ".svgz", ".ico", ".cur", ".tif", ".tiff", ".tga", ".psd", ".jp2", ".j2k", ".dds", ".qoi", ".pcx", ".ppm", ".pgm", ".pbm", ".xbm", ".xpm", ".icns", ".wbmp"].indexOf(itemExt) >= 0 || itemType === "image")
     property bool animPaused: false
+    property real animSpeed: 1.0
+    readonly property bool hasAnimBar: isImage && animView.isAnimated && animView.frameCount > 1
 
     // ── Zoom (smooth, toward the cursor, like Photos / Movies & TV) ──────────
     // zoomFactor is where the zoom is heading; zoomShown springs after it. The point under the
@@ -101,17 +157,22 @@ Item {
         return m + ":" + ss
     }
     function togglePlay() {
-        if (!isMedia) return
-        if (mediaEnded) {
-            mediaPlayer.setPosition(0)
-            mediaPlayer.play()
-            osd("↻", "Replay")
-        } else if (mediaPlaying) {
-            mediaPlayer.pause()
-            osd("❚❚", "")
-        } else {
-            mediaPlayer.play()
-            osd("▶", "")
+        if (isMedia) {
+            if (mediaEnded) {
+                mediaPlayer.setPosition(0)
+                mediaPlayer.play()
+                osd("↻", "Replay")
+            } else if (mediaPlaying) {
+                mediaPlayer.pause()
+                osd("❚❚", "")
+            } else {
+                mediaPlayer.play()
+                osd("▶", "")
+            }
+        } else if (hasAnimBar) {
+            animPaused = !animPaused
+            osd(animPaused ? "❚❚" : "▶", "")
+            poke()
         }
     }
     function seekTo(ms) {
@@ -142,21 +203,34 @@ Item {
         osd(volumeIcon(), audioOutput.muted ? "Muted" : Math.round(audioOutput.volume * 100) + "%")
     }
     function setSpeed(r) {
+        if (hasAnimBar && !isMedia) {
+            animSpeed = r
+            osd("⏱", rateLabel(r))
+            poke()
+            return
+        }
         playbackSpeed = r
         osd("⏱", rateLabel(r))
     }
     function changeSpeed(dir) {
+        var cur = (hasAnimBar && !isMedia) ? animSpeed : playbackSpeed
         var i = 0
-        for (var k = 0; k < speedSteps.length; k++) if (Math.abs(speedSteps[k] - playbackSpeed) < 0.001) i = k
+        for (var k = 0; k < speedSteps.length; k++) if (Math.abs(speedSteps[k] - cur) < 0.001) i = k
         setSpeed(speedSteps[Math.max(0, Math.min(speedSteps.length - 1, i + dir))])
     }
     // , and . step one frame while paused (like most players)
     function stepFrame(dir) {
-        if (!isVideo) return
-        if (mediaPlaying) mediaPlayer.pause()
-        var fps = Number(mediaPlayer.metaData.value(MediaMetaData.VideoFrameRate)) || 30
-        seekTo(mediaPlayer.position + dir * 1000 / fps)
-        osd(dir < 0 ? "◂" : "▸", "1 frame")
+        if (isVideo) {
+            if (mediaPlaying) mediaPlayer.pause()
+            var fps = Number(mediaPlayer.metaData.value(MediaMetaData.VideoFrameRate)) || 30
+            seekTo(mediaPlayer.position + dir * 1000 / fps)
+            osd(dir < 0 ? "◂" : "▸", "1 frame")
+        } else if (hasAnimBar) {
+            animPaused = true
+            animView.stepFrame(dir)
+            osd(dir < 0 ? "◂" : "▸", "Frame " + (animView.currentFrame + 1) + " / " + animView.frameCount)
+            poke()
+        }
     }
 
     // ── Full screen (F): the viewer takes over the whole screen ─────────────
@@ -200,7 +274,7 @@ Item {
         poke()
     }
     readonly property bool chromeShown: userActive || showShortcuts
-        || (isVideo ? (!mediaPlaying || mediaControls.busy) : (isAudio || !fullscreen))
+        || (isVideo ? (!mediaPlaying || mediaControls.busy) : (hasAnimBar ? (animPaused || mediaControls.busy) : (isAudio || !fullscreen)))
 
     // ── Centre bubble confirming an action ("+5 s", "🔊 65%", "1.5×", ❚❚ …) ──
     property string osdIcon: ""
@@ -246,22 +320,38 @@ Item {
         rotationSteps = (rotationSteps + dir + 4) % 4
     }
     function copyCurrent() {
-        if (!tools || !itemPath) return
-        flash(tools.copyFileToClipboard(itemPath) ? (isImage ? "Copied picture (paste into chats, or as a file in Explorer)" : "Copied file (paste it in Explorer or a chat)") : "Couldn't copy this file")
+        var copyTarget = effectiveMediaPath
+        if (!tools || !copyTarget || (isRemote && !resolvedLocalPath)) return
+        flash(tools.copyFileToClipboard(copyTarget) ? (isImage ? "Copied picture (paste into chats, or as a file in Explorer)" : "Copied file (paste it in Explorer or a chat)") : "Couldn't copy this file")
+    }
+    function copyLinkText(url, label) {
+        var clean = (url || "").trim()
+        if (!clean) return false
+        if (root.browserBridge && root.browserBridge.copyLabeledLink) {
+            root.browserBridge.copyLabeledLink(clean, label || "Link")
+            root.flash((label || "Link") + " copied to clipboard")
+            return true
+        }
+        if (root.bridge && root.bridge.copyToClipboard) {
+            root.bridge.copyToClipboard(clean)
+            root.flash((label || "Link") + " copied to clipboard")
+            return true
+        }
+        return false
     }
     function toggleFav() {
-        if (!tools || !itemPath) return
+        if (!tools || !itemPath || isRemote) return
         tools.setFavorite([itemPath], !isFav)
         flash(isFav ? "Removed from favourites" : "Added to favourites")
     }
     function rate(n) {
-        if (!tools || !itemPath) return
+        if (!tools || !itemPath || isRemote) return
         var value = (n === rating) ? 0 : n   // same number again clears it
         tools.setRating([itemPath], value)
         flash(value > 0 ? ("Rated " + "★★★★★".substring(0, value)) : "Rating cleared")
     }
     function deleteCurrent() {
-        if (!bridge || !itemPath) return
+        if (!bridge || !itemPath || isRemote) return
         var path = itemPath
         // Let go of the file first: a playing video or animation keeps it open
         releaseMedia()
@@ -302,6 +392,20 @@ Item {
         function onMarksChanged() { root.marks = root.tools.allMarks() }
     }
 
+    Connections {
+        target: root.browserBridge
+        function onRemoteMediaReady(sourceUrl, localPath, errMsg) {
+            if (!root.isOpen || sourceUrl !== root.itemPath) return
+            root.remoteLoading = false
+            if (localPath) {
+                root.resolvedLocalPath = localPath
+                root.remoteError = ""
+            } else {
+                root.remoteError = errMsg || "Failed to load media in-app"
+            }
+        }
+    }
+
     anchors.fill: parent
     z: 9999
     // Fades in / out (weight-based motion); no input while closing
@@ -331,6 +435,9 @@ Item {
 
     function toUrl(path) {
         if (!path) return ""
+        if (path.indexOf("http://") === 0 || path.indexOf("https://") === 0 || path.indexOf("file://") === 0 || path.indexOf("image://") === 0) {
+            return path
+        }
         if (bridge && bridge.pathToUrl) {
             return bridge.pathToUrl(path)
         }
@@ -342,8 +449,10 @@ Item {
         mediaList = allMedia || []
         var idx = 0
         if (item) {
+            var targetPath = item.path || item.url || ""
             for (var i = 0; i < mediaList.length; i++) {
-                if (mediaList[i].path === item.path) {
+                var mPath = mediaList[i].path || mediaList[i].url || ""
+                if (mPath === targetPath) {
                     idx = i
                     break
                 }
@@ -408,14 +517,36 @@ Item {
         rotationSteps = 0
         confirmDelete = false
         animPaused = false
-        if (tools) {
+        animSpeed = 1.0
+        resolvedLocalPath = ""
+        streamMediaUrl = ""
+        remoteLoading = false
+        remoteError = ""
+        sourceUrl = currentItem.postUrl || ""
+        postId = currentItem.postId || ""
+        if (tools && !isRemote) {
             var src = tools.sourcePost(itemPath)
-            sourceUrl = src.url || ""
-            postId = src.postId || ""
+            sourceUrl = src.url || sourceUrl
+            postId = src.postId || postId
         }
-        var url = toUrl(itemPath)
         poke()
-        if (isVideo || isAudio) {
+        if (isImage) {
+            releaseMedia()
+            if (isRemote && browserBridge && browserBridge.prepareRemoteMedia) {
+                var cached = browserBridge.prepareRemoteMedia(itemPath, currentItem.provider_id || "")
+                if (cached) {
+                    resolvedLocalPath = cached
+                } else {
+                    remoteLoading = true
+                }
+            }
+        } else if (isVideo || isAudio) {
+            var playTarget = itemPath
+            if (isRemote && browserBridge && browserBridge.getStreamUrl) {
+                playTarget = browserBridge.getStreamUrl(itemPath, currentItem.provider_id || "", itemExt)
+            }
+            streamMediaUrl = playTarget
+            var url = toUrl(playTarget)
             if (mediaPlayer.source != url) {
                 mediaPlayer.source = url
             }
@@ -462,7 +593,7 @@ Item {
         } else if (k === Qt.Key_I && !ctrl) {
             showInfo = !showInfo
         } else if (k === Qt.Key_Delete) {
-            confirmDelete = true
+            if (!root.isRemote && root.bridge) confirmDelete = true
         } else if (k === Qt.Key_PageUp || ((k === Qt.Key_Left) && (ctrl || !isMedia))) {
             prevItem()
         } else if (k === Qt.Key_PageDown || ((k === Qt.Key_Right) && (ctrl || !isMedia))) {
@@ -486,13 +617,14 @@ Item {
             else if (k >= Qt.Key_0 && k <= Qt.Key_9 && !ctrl) seekFraction((k - Qt.Key_0) / 10)
             else event.accepted = false
         } else {
-            // ── Pictures ──
-            if (k === Qt.Key_Space) {
-                if (isImage && animView.isAnimated) {
-                    animPaused = !animPaused
-                    flash(animPaused ? "Animation paused (Space)" : "Animation playing")
-                }
-            }
+            // ── Pictures (including animated GIF / WebP / APNG) ──
+            if (hasAnimBar && (k === Qt.Key_Space || k === Qt.Key_K || k === Qt.Key_MediaPlay || k === Qt.Key_MediaTogglePlayPause)) togglePlay()
+            else if (hasAnimBar && t === ",") stepFrame(-1)
+            else if (hasAnimBar && t === ".") stepFrame(1)
+            else if (hasAnimBar && t === "<") changeSpeed(-1)
+            else if (hasAnimBar && t === ">") changeSpeed(1)
+            else if (hasAnimBar && k === Qt.Key_Home) { animPaused = true; animView.seekFrame(0); osd("⇤", "Frame 1 / " + animView.frameCount); poke() }
+            else if (hasAnimBar && k === Qt.Key_End) { animPaused = true; animView.seekFrame(animView.frameCount - 1); osd("⇥", "Frame " + animView.frameCount + " / " + animView.frameCount); poke() }
             else if (k >= Qt.Key_1 && k <= Qt.Key_5 && !ctrl) rate(k - Qt.Key_0)
             else if (k === Qt.Key_Plus || k === Qt.Key_Equal) zoomStep(1)
             else if (k === Qt.Key_Minus) zoomStep(-1)
@@ -545,7 +677,7 @@ Item {
         id: mediaPlayer
         audioOutput: audioOutput
         videoOutput: videoOutput
-        loops: root.isLooping ? MediaPlayer.Infinite : 1
+        loops: (root.isLooping || !!(root.currentItem && root.currentItem.is_loop)) ? MediaPlayer.Infinite : 1
         playbackRate: root.playbackSpeed
     }
 
@@ -628,11 +760,12 @@ Item {
                     spacing: 8
 
                     Text {
-                        text: root.isVideo ? "🎬 VIDEO" : (root.isAudio ? "🎵 AUDIO" : "🖼️ IMAGE")
+                        readonly property bool isGifTag: !root.isVideo && !root.isAudio && (root.itemExt === ".gif" || !!(root.currentItem && root.currentItem.is_loop))
+                        text: root.isVideo ? "🎬 VIDEO" : (root.isAudio ? "🎵 AUDIO" : (isGifTag ? "🎞 GIF" : "🖼️ IMAGE"))
                         font.family: "Segoe UI, sans-serif"
                         font.pixelSize: 10
                         font.weight: 700
-                        color: root.isVideo ? "#8B5CF6" : (root.isAudio ? "#10B981" : "#EC4899")
+                        color: root.isVideo ? "#8B5CF6" : (root.isAudio ? "#10B981" : (isGifTag ? "#C084FC" : "#EC4899"))
                     }
 
                     Text {
@@ -650,6 +783,16 @@ Item {
                     ToolTip.delay: 250
                     ToolTip.text: "Media item " + (root.currentIndex + 1) + " of " + root.mediaList.length + " in this folder"
                 }
+            }
+
+            UnimportedTriangleBadge {
+                objectName: "lightboxUnimportedBadge"
+                visible: !!(root.currentItem && root.currentItem.is_unimported)
+                Layout.preferredWidth: 24
+                Layout.preferredHeight: 24
+                width: 24
+                height: 24
+                tooltipText: "Haven't archived this post yet (previews only)"
             }
 
             // Filename
@@ -782,12 +925,12 @@ Item {
                 LbButton { visible: root.isImage || root.isVideo; glyph: "⟳"; tip: "Rotate right (R)"; onClicked: root.rotate(1) }
                 LbButton { glyph: "⛶"; tip: "Full screen (F)"; onClicked: root.toggleFullscreen() }
                 LbButton { glyph: "⌨"; active: root.showShortcuts; tip: "Keyboard shortcuts (?)"; onClicked: root.showShortcuts = !root.showShortcuts }
-                LbButton { glyph: "⧉"; tip: root.isImage ? "Copy picture (Ctrl+C): paste into chats, or as a file in Explorer" : "Copy file (Ctrl+C)"; onClicked: root.copyCurrent() }
-                LbButton { visible: !!root.tools; glyph: root.isFav ? "★" : "☆"; active: root.isFav; activeColor: "#FBBF24"; tip: root.isFav ? "Remove from favourites (Ctrl+D)" : "Add to favourites (Ctrl+D)"; onClicked: root.toggleFav() }
+                LbButton { visible: !!root.tools && (!root.isRemote || !!root.resolvedLocalPath); glyph: "⧉"; tip: root.isImage ? "Copy picture (Ctrl+C): paste into chats, or as a file in Explorer" : "Copy file (Ctrl+C)"; onClicked: root.copyCurrent() }
+                LbButton { visible: !!root.tools && !root.isRemote; glyph: root.isFav ? "★" : "☆"; active: root.isFav; activeColor: "#FBBF24"; tip: root.isFav ? "Remove from favourites (Ctrl+D)" : "Add to favourites (Ctrl+D)"; onClicked: root.toggleFav() }
 
                 // Rating: click a star, click it again to clear (keys 1–5)
                 Rectangle {
-                    visible: !!root.tools
+                    visible: !!root.tools && !root.isRemote
                     width: lbStars.implicitWidth + 12
                     height: 28
                     radius: 5
@@ -819,13 +962,140 @@ Item {
                     }
                 }
 
-                LbButton { visible: root.sourceUrl.length > 0; glyph: "🌐"; tip: "View the source post in your browser"; onClicked: Qt.openUrlExternally(root.sourceUrl) }
+                LbButton { visible: !root.hideExternalActions && root.sourceUrl.length > 0; glyph: "🌐"; tip: "View the source post in your browser"; onClicked: Qt.openUrlExternally(root.sourceUrl) }
+                LbButton { objectName: "lightboxCopyFileLinkBtn"; visible: root.itemLinkUrl.length > 0 && (!!root.browserBridge || !!root.bridge); glyph: "🔗"; tip: "Copy link to this file"; onClicked: root.copyLinkText(root.itemLinkUrl, "File link") }
                 LbButton { glyph: "ⓘ"; active: root.showInfo; tip: "File info (I)"; onClicked: root.showInfo = !root.showInfo }
-                LbButton { glyph: "🗑"; danger: true; tip: "Move to the Recycle Bin (Del)"; onClicked: root.confirmDelete = true }
+                LbButton { visible: !root.isRemote && !!root.bridge; glyph: "🗑"; danger: true; tip: "Move to the Recycle Bin (Del)"; onClicked: root.confirmDelete = true }
             }
 
-            // Open Externally Button
+            // Copy Post Link Button (when source post URL differs from current file link)
             Rectangle {
+                objectName: "lightboxCopyPostLinkBtn"
+                visible: root.sourceUrl.length > 0 && root.sourceUrl !== root.itemLinkUrl && (!!root.browserBridge || !!root.bridge)
+                implicitHeight: 28
+                implicitWidth: lbCopyPostRow.implicitWidth + 14
+                radius: 6
+                color: lbCopyPostMouse.containsMouse ? "#1E273A" : "#141A28"
+                border.color: lbCopyPostMouse.containsMouse ? "#38BDF8" : "#2A364E"
+                border.width: 1
+
+                Row {
+                    id: lbCopyPostRow
+                    anchors.centerIn: parent
+                    spacing: 5
+                    Text { text: "🔗"; font.pixelSize: 11; color: "#7DD3FC" }
+                    Text { text: "Post Link"; font.family: "Segoe UI, sans-serif"; font.pixelSize: 10; font.weight: 600; color: "#E2E8F0" }
+                }
+                Springy { hover: lbCopyPostMouse.containsMouse; pressed: lbCopyPostMouse.pressed }
+                MouseArea {
+                    id: lbCopyPostMouse
+                    objectName: "lightboxCopyPostLinkMouse"
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.copyLinkText(root.sourceUrl, "Post link")
+                    ToolTip.visible: containsMouse
+                    ToolTip.delay: 250
+                    ToolTip.text: "Copy link to the source post"
+                }
+            }
+
+            // Selection Toggle Pill (shown when opened from PostSelectionModal)
+            Rectangle {
+                id: lbSelRect
+                objectName: "lbSelRect"
+                visible: root.selectionMode
+                implicitHeight: 28
+                implicitWidth: lbSelRow.implicitWidth + 16
+                radius: 6
+                color: root.currentItemSelected ? "#0C2A3D" : "#141A28"
+                border.color: root.currentItemSelected ? "#38BDF8" : "#475569"
+                border.width: 1
+
+                Row {
+                    id: lbSelRow
+                    anchors.centerIn: parent
+                    spacing: 6
+                    Rectangle {
+                        width: 14
+                        height: 14
+                        radius: 3
+                        color: root.currentItemSelected ? "#38BDF8" : "transparent"
+                        border.color: root.currentItemSelected ? "#38BDF8" : "#64748B"
+                        anchors.verticalCenter: parent.verticalCenter
+                        Text {
+                            anchors.centerIn: parent
+                            text: "✓"
+                            font.pixelSize: 10
+                            font.weight: Font.Bold
+                            color: "#0A0E17"
+                            visible: root.currentItemSelected
+                        }
+                    }
+                    Text {
+                        text: root.currentItemSelected ? "Selected for Download" : "Excluded from Download"
+                        font.family: "Segoe UI, sans-serif"
+                        font.pixelSize: 10
+                        font.weight: 600
+                        color: root.currentItemSelected ? "#38BDF8" : "#94A3B8"
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+                }
+                Springy { hover: lbSelMouse.containsMouse; pressed: lbSelMouse.pressed }
+                MouseArea {
+                    id: lbSelMouse
+                    objectName: "lbSelMouse"
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.selectionToggled()
+                    ToolTip.visible: containsMouse
+                    ToolTip.delay: 250
+                    ToolTip.text: root.currentItemSelected
+                        ? "Exclude this file from download"
+                        : "Include this file in download"
+                }
+            }
+
+            // In-App Download button (shown for online/remote Browser items outside selection mode)
+            Rectangle {
+                visible: root.isRemote && !!root.browserBridge && !root.selectionMode
+                implicitHeight: 28
+                implicitWidth: dlBtnRow.implicitWidth + 14
+                radius: 6
+                color: dlBtnMouse.containsMouse ? "#047857" : "#065F46"
+                border.color: "#10B981"
+                border.width: 1
+
+                Row {
+                    id: dlBtnRow
+                    anchors.centerIn: parent
+                    spacing: 6
+                    Text { text: "📥"; font.pixelSize: 11; color: "#ECFDF5" }
+                    Text { text: "Download Post"; font.family: "Segoe UI, sans-serif"; font.pixelSize: 10; font.weight: 600; color: "#ECFDF5" }
+                }
+                Springy { hover: dlBtnMouse.containsMouse; pressed: dlBtnMouse.pressed }
+                MouseArea {
+                    id: dlBtnMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                        if (root.currentItem) root.downloadItemRequested(root.currentItem)
+                        if (root.browserBridge && root.sourceUrl) {
+                            root.browserBridge.downloadSingleUrl(root.sourceUrl, true)
+                            root.flash("Queued post in Downloader")
+                        }
+                    }
+                    ToolTip.visible: containsMouse
+                    ToolTip.delay: 250
+                    ToolTip.text: "Download this post cleanly via the Pawchive Downloader"
+                }
+            }
+
+            // Open Externally Button (local files only, hidden when external actions are suppressed)
+            Rectangle {
+                visible: !root.isRemote && !root.hideExternalActions
                 implicitHeight: 28
                 implicitWidth: extRow.implicitWidth + 14
                 radius: 6
@@ -857,8 +1127,9 @@ Item {
                 }
             }
 
-            // Reveal in Folder Button
+            // Reveal in Folder Button (local files only)
             Rectangle {
+                visible: !root.isRemote
                 width: 28; height: 28; radius: 5
                 color: folderMouse.containsMouse ? "#1E273A" : "#141A28"
                 border.color: folderMouse.containsMouse ? "#38BDF8" : "#2A364E"
@@ -928,11 +1199,40 @@ Item {
                     rotation: root.rotationSteps * 90
                     scale: root.zoomShown
 
+                    // Instant low-res thumbnail preview while full remote media streams into local LRU cache
+                    Image {
+                        anchors.fill: parent
+                        readonly property string _rawThumb: (root.currentItem && root.currentItem.thumbUrl) ? String(root.currentItem.thumbUrl) : ""
+                        readonly property string _thumbSrc: {
+                            if (!root.isImage || !root.remoteLoading || !_rawThumb) return ""
+                            if (_rawThumb === root.itemPath) return ""
+                            if (_rawThumb.indexOf("http://") === 0 || _rawThumb.indexOf("https://") === 0) {
+                                return root.browserBridge
+                                       ? ("image://remotethumb/" + encodeURIComponent((root.currentItem && root.currentItem.provider_id) ? root.currentItem.provider_id : "") + "/" + encodeURIComponent(_rawThumb))
+                                       : ""
+                            }
+                            return _rawThumb
+                        }
+                        visible: _thumbSrc !== ""
+                        source: _thumbSrc
+                        fillMode: Image.PreserveAspectFit
+                        asynchronous: true
+                        opacity: 0.55
+                    }
+
                     Image {
                         id: imgViewer
                         anchors.fill: parent
-                        // Decoded by the "full" provider: Qt, then Pillow (AVIF, files with the wrong extension)
-                        source: (root.isImage && root.visible && root.holdFile) ? ("image://full/" + encodeURIComponent(root.itemPath)) : ""
+                        // Decoded by the "full" provider (handles local + cached remote AVIF/WebP/PNG/JPG)
+                        source: {
+                            if (!root.isImage || !root.visible || !root.holdFile) return ""
+                            if (root.isRemote) {
+                                if (root.resolvedLocalPath) return "image://full/" + encodeURIComponent(root.resolvedLocalPath)
+                                if (!root.browserBridge) return root.itemPath
+                                return ""
+                            }
+                            return "image://full/" + encodeURIComponent(root.itemPath)
+                        }
                         // The provider keeps recent pictures for 5 minutes, so Qt doesn't need its own copy
                         cache: false
                         asynchronous: true
@@ -948,9 +1248,10 @@ Item {
                     AnimatedMedia {
                         id: animView
                         anchors.fill: parent
-                        path: root.isImage && root.isOpen && root.holdFile ? root.itemPath : ""
+                        path: (root.isImage && root.isOpen && root.holdFile && (!root.isRemote || root.resolvedLocalPath || !root.browserBridge)) ? root.effectiveMediaPath : ""
                         tools: root.tools
                         playing: !root.animPaused
+                        speed: root.animSpeed
                     }
                 }
 
@@ -989,26 +1290,36 @@ Item {
                 }
             }
 
-            // Animation frame counter / paused hint
+            // Streaming / buffering status pill (remote pictures & online videos/audio)
             Rectangle {
-                visible: root.isImage && animView.isAnimated
-                anchors.left: parent.left
-                anchors.bottom: parent.bottom
-                anchors.leftMargin: 56
-                anchors.bottomMargin: 10
-                width: animTag.implicitWidth + 16
-                height: 22
-                radius: 11
-                color: "#CC0F172A"
-                border.color: root.animPaused ? "#F59E0B" : "#2E3A52"
-                z: 4
-                Text {
-                    id: animTag
+                visible: root.remoteLoading || (root.isImage && imgViewer.status === Image.Loading) || (root.isMedia && (mediaPlayer.mediaStatus === MediaPlayer.LoadingMedia || mediaPlayer.mediaStatus === MediaPlayer.BufferingMedia || mediaPlayer.mediaStatus === MediaPlayer.StalledMedia))
+                anchors.centerIn: parent
+                width: bufRow.implicitWidth + 28
+                height: 40
+                radius: 20
+                color: "#E60B0F18"
+                border.color: "#38BDF8"
+                border.width: 1
+                z: 5
+
+                Row {
+                    id: bufRow
                     anchors.centerIn: parent
-                    text: (root.animPaused ? "⏸ paused" : "▶ animated") + (animView.frameCount > 0 ? "  •  " + animView.frameCount + " frames" : "") + "  •  Space"
-                    font.family: "Segoe UI, sans-serif"
-                    font.pixelSize: 10
-                    color: "#CBD5E1"
+                    spacing: 10
+                    BusyIndicator {
+                        width: 20
+                        height: 20
+                        running: parent.visible
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+                    Text {
+                        text: root.isMedia ? "Buffering stream…" : "Loading media…"
+                        font.family: "Segoe UI, sans-serif"
+                        font.pixelSize: 12
+                        font.weight: 600
+                        color: "#E0F2FE"
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
                 }
             }
 
@@ -1028,32 +1339,56 @@ Item {
                 }
                 Text {
                     anchors.horizontalCenter: parent.horizontalCenter
-                    text: mediaPlayer.errorString + "  •  Try \"Open Externally\""
+                    text: mediaPlayer.errorString + (root.hideExternalActions ? "" : "  •  Try \"Open Externally\"")
                     font.family: "Segoe UI, sans-serif"
                     font.pixelSize: 11
                     color: "#64748B"
                 }
+                Rectangle {
+                    visible: root.isRemote
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    width: retryMediaTxt.implicitWidth + 24
+                    height: 28
+                    radius: 6
+                    color: "#1E293B"
+                    border.color: "#38BDF8"
+                    Text { id: retryMediaTxt; anchors.centerIn: parent; text: "↻ Retry Stream"; font.family: "Segoe UI, sans-serif"; font.pixelSize: 11; font.weight: 600; color: "#7DD3FC" }
+                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.loadCurrentItem() }
+                }
             }
 
-            // Shown when a picture can't be decoded at all
+            // Shown when a picture fails to load remotely or can't be decoded at all
             Column {
                 anchors.centerIn: parent
                 spacing: 8
-                visible: root.isImage && imgViewer.status === Image.Ready && imgViewer.implicitWidth <= 1
+                z: 4
+                visible: root.isImage && (root.remoteError.length > 0 || (imgViewer.status === Image.Ready && imgViewer.implicitWidth <= 1))
                 Text { anchors.horizontalCenter: parent.horizontalCenter; text: "🖼️"; font.pixelSize: 40; opacity: 0.5 }
                 Text {
                     anchors.horizontalCenter: parent.horizontalCenter
-                    text: "This picture can't be displayed (unknown or damaged format)."
+                    text: root.remoteError.length > 0 ? ("Couldn't load image (" + root.remoteError + ")") : "This picture can't be displayed (unknown or damaged format)."
                     font.family: "Segoe UI, sans-serif"
                     font.pixelSize: 13
                     color: "#94A3B8"
                 }
                 Text {
+                    visible: !root.hideExternalActions && root.remoteError.length === 0
                     anchors.horizontalCenter: parent.horizontalCenter
                     text: "Try \"Open Externally\" to use another app."
                     font.family: "Segoe UI, sans-serif"
                     font.pixelSize: 11
                     color: "#64748B"
+                }
+                Rectangle {
+                    visible: root.isRemote
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    width: retryImgTxt.implicitWidth + 24
+                    height: 28
+                    radius: 6
+                    color: "#1E293B"
+                    border.color: "#38BDF8"
+                    Text { id: retryImgTxt; anchors.centerIn: parent; text: "↻ Retry"; font.family: "Segoe UI, sans-serif"; font.pixelSize: 11; font.weight: 600; color: "#7DD3FC" }
+                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.loadCurrentItem() }
                 }
             }
 
@@ -1182,10 +1517,10 @@ Item {
                             if (!root.currentItem) return []
                             var it = root.currentItem
                             var p = root.itemPath
-                            var folder = p.substring(0, Math.max(p.lastIndexOf("\\"), p.lastIndexOf("/")))
+                            var folder = root.isRemote ? (p.replace(/^https?:\/\//, "").split("/")[0] || "Remote CDN") : p.substring(0, Math.max(p.lastIndexOf("\\"), p.lastIndexOf("/")))
                             var rows = [
                                 ["Name", it.name],
-                                ["Folder", folder],
+                                [root.isRemote ? "Source" : "Folder", folder],
                                 ["Type", (root.itemExt || "").replace(".", "").toUpperCase() + (root.isImage ? " image" : (root.isVideo ? " video" : (root.isAudio ? " audio" : "")))]
                             ]
                             if (it.size > 0) rows.push(["Size", root.formatBytes(it.size)])
@@ -1279,17 +1614,18 @@ Item {
                 Text { id: flashLabel; anchors.centerIn: parent; text: root.flashText; font.family: "Segoe UI, sans-serif"; font.pixelSize: 11; font.weight: 600; color: "#E0F2FE" }
             }
 
-            // Floating player controls (video / audio)
+            // Floating player controls (video / audio / animated images)
             MediaControls {
                 id: mediaControls
                 z: 6
-                visible: root.isMedia && opacity > 0.01
+                visible: (root.isMedia || root.hasAnimBar) && opacity > 0.01
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.bottom: parent.bottom
                 lb: root
                 player: mediaPlayer
                 audio: audioOutput
+                anim: animView
                 shown: root.chromeShown
             }
 
@@ -1381,12 +1717,18 @@ Item {
                     [", / .", "Previous / next frame"], ["< / >", "Slower / faster"], ["F  or double-click", "Full screen"],
                     ["Ctrl+← / Ctrl+→", "Previous / next file"], ["Ctrl+D", "Favourite"], ["R / Shift+R", "Rotate"],
                     ["I", "File info"], ["Delete", "Delete"], ["Esc", "Exit full screen / close"]
+                ] : (root.hasAnimBar ? [
+                    ["Space / K", "Play or pause"], ["← / →", "Previous / next"], [", / .", "Previous / next frame"],
+                    ["< / >", "Slower / faster"], ["Home / End", "First / last frame"], ["Scroll", "Zoom in where you point"],
+                    ["+ / − / 0", "Zoom in / out / fit"], ["Drag", "Move around when zoomed"], ["1 – 5", "Rate"],
+                    ["F", "Full screen"], ["R / Shift+R", "Rotate"], ["Ctrl+D / Ctrl+C", "Favourite / copy"],
+                    ["I", "File info"], ["Delete", "Delete"], ["Esc", "Close"]
                 ] : [
                     ["← / →", "Previous / next"], ["Scroll", "Zoom in where you point"], ["+ / − / 0", "Zoom in / out / fit"],
                     ["Drag", "Move around when zoomed"], ["1 – 5", "Rate"], ["Ctrl+D", "Favourite"], ["F", "Full screen"],
                     ["R / Shift+R", "Rotate"], ["Ctrl+C", "Copy picture"], ["Space", "Pause an animation"], ["I", "File info"],
                     ["Delete", "Delete"], ["Esc", "Close"]
-                ]
+                ])
                 Column {
                     id: sheetCol
                     anchors.fill: parent

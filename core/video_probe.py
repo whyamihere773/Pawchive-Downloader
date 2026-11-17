@@ -15,6 +15,7 @@ import threading
 import requests
 from typing import Optional, Dict
 from core.logger import logger
+from core.path_utils import subprocess_env_kwargs
 from services.ffmpeg_manager import find_ffmpeg
 
 # Thread-safe in-memory cache: URL/path -> duration in seconds
@@ -150,7 +151,8 @@ class VideoProbe:
         try:
             cmd = [ffmpeg, "-hide_banner", "-i", target]
             proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                  text=True, errors="replace", timeout=timeout)
+                                  text=True, errors="replace", timeout=timeout,
+                                  **subprocess_env_kwargs())
             return _parse_duration_from_ffmpeg_output(proc.stderr)
         except Exception as e:
             logger.debug(f"FFmpeg probe failed for {target}: {e}", category="video_probe")
@@ -168,7 +170,8 @@ class VideoProbe:
         try:
             cmd = [ytdlp_bin, "--dump-json", "--skip-download", "--no-warnings", url]
             proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                  text=True, errors="replace", timeout=timeout)
+                                  text=True, errors="replace", timeout=timeout,
+                                  **subprocess_env_kwargs())
             if proc.returncode == 0 and proc.stdout:
                 data = json.loads(proc.stdout)
                 dur = data.get("duration")

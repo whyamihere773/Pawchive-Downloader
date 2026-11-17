@@ -27,6 +27,7 @@ from core.archive_password_manager import archive_password_manager
 from bridge.archive_creators_model import RecordListModel
 from core.logger import logger
 from core.path_translation import localize_path
+from core.path_utils import subprocess_env_kwargs
 from services.ffmpeg_manager import FfmpegDownloader, find_ffmpeg
 from services.media_compressor import (CompressResult, CompressSettings, classify, compress_folder, compress_paths,
                                        detect_available_hwaccels, get_primary_hwaccel, media_in, validate_ffmpeg_settings)
@@ -137,6 +138,7 @@ class DecompressorBridge(QObject):
         self._detected_hwaccel = ""
         self._available_hwaccels: List[str] = []
         self._probing_hwaccel = False
+        self._hwaccel_probed_path = ""
         self._ffmpeg_downloader = FfmpegDownloader()
         self._ffmpeg_downloading = False
         self._ffmpeg_progress = 0.0
@@ -173,21 +175,46 @@ class DecompressorBridge(QObject):
         self.selectedStatsChanged.connect(self.passwordBankChanged)
         self.isExtractingChanged.connect(self.passwordBankChanged)
 
+    def _ensure_hwaccel_probed(self) -> None:
+        ffmpeg_path = self._ffmpeg_path
+        if (
+            not ffmpeg_path
+            or self._hwaccel_probed_path == ffmpeg_path
+            or getattr(self, "_probing_hwaccel", False)
+            or not self.ffmpegAvailable
+        ):
+            return
+        self._start_async_hwaccel_probe()
+
     def _start_async_hwaccel_probe(self):
-        if getattr(self, "_probing_hwaccel", False) or not self._ffmpeg_path:
+        ffmpeg_path = self._ffmpeg_path
+        if (
+            getattr(self, "_probing_hwaccel", False)
+            or not ffmpeg_path
+            or self._hwaccel_probed_path == ffmpeg_path
+        ):
             return
         self._probing_hwaccel = True
+
         def _worker():
+            changed = False
             try:
-                accels = detect_available_hwaccels(self._ffmpeg_path)
+                accels = detect_available_hwaccels(ffmpeg_path)
                 primary = accels[0] if accels else ""
-                self._available_hwaccels = accels
-                self._detected_hwaccel = primary
-                self.ffmpegChanged.emit()
+                if self._ffmpeg_path == ffmpeg_path:
+                    changed = (accels != self._available_hwaccels) or (primary != self._detected_hwaccel)
+                    self._available_hwaccels = accels
+                    self._detected_hwaccel = primary
+                    self._hwaccel_probed_path = ffmpeg_path
             except Exception as e:
+                if self._ffmpeg_path == ffmpeg_path:
+                    self._hwaccel_probed_path = ffmpeg_path
                 logger.debug(f"Hardware probe error: {e}", category="decompressor")
             finally:
                 self._probing_hwaccel = False
+            if changed:
+                self.ffmpegChanged.emit()
+
         threading.Thread(target=_worker, daemon=True, name="HwAccelProbe").start()
 
     # ── Saved settings ─────────────────────────────────────────────────────────
@@ -323,15 +350,13 @@ class DecompressorBridge(QObject):
     @Property(str, notify=ffmpegChanged)
     def detectedHwAccel(self) -> str:
         """Name of the detected hardware encoder (e.g. 'nvenc', 'qsv', 'amf'), or ''."""
-        if not self._detected_hwaccel and self.ffmpegAvailable and not getattr(self, "_probing_hwaccel", False):
-            self._start_async_hwaccel_probe()
+        self._ensure_hwaccel_probed()
         return self._detected_hwaccel
 
     @Property("QVariantList", notify=ffmpegChanged)
     def availableHwAccels(self) -> List[str]:
         """List of detected hardware acceleration options on this system."""
-        if not self._available_hwaccels and self.ffmpegAvailable and not getattr(self, "_probing_hwaccel", False):
-            self._start_async_hwaccel_probe()
+        self._ensure_hwaccel_probed()
         return self._available_hwaccels
 
     @Property(str, notify=settingsChanged)
@@ -449,6 +474,9 @@ class DecompressorBridge(QObject):
             if ok:
                 self._ffmpeg_path = msg
                 self._ffmpeg_message = ""
+                self._hwaccel_probed_path = ""
+                self._detected_hwaccel = ""
+                self._available_hwaccels = []
             else:
                 self._ffmpeg_message = "" if msg == "Cancelled" else msg
                 if msg != "Cancelled":
@@ -1793,6 +1821,6 @@ class DecompressorBridge(QObject):
             if sys.platform == "win32":
                 subprocess.Popen(["explorer", os.path.normpath(target)])
             elif sys.platform == "darwin":
-                subprocess.Popen(["open", target])
+                subprocess.Popen(["open", target], **subprocess_env_kwargs())
             else:
-                subprocess.Popen(["xdg-open", target])
+                subprocess.Popen(["xdg-open", target], **subprocess_env_kwargs())

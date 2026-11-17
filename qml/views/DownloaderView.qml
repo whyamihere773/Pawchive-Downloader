@@ -174,6 +174,114 @@ SmoothFlickable {
         width: root.width - (root.verticalScrollBar && root.verticalScrollBar.visible ? 10 : 0)
         spacing: 12
 
+        PendingSettingsBanner {
+            Layout.fillWidth: true
+            bridge: root.bridge
+        }
+
+        // Live Large-Creator Scan Progress Banner
+        Rectangle {
+            id: liveScanBanner
+            readonly property bool scanningActive: Boolean(root.bridge && root.bridge.isScanning)
+            readonly property int progCurrent: (root.bridge && root.bridge.scanProgressCurrent !== undefined) ? root.bridge.scanProgressCurrent : 0
+            readonly property int progTotal: (root.bridge && root.bridge.scanProgressTotal !== undefined) ? root.bridge.scanProgressTotal : 0
+            Layout.fillWidth: true
+            visible: scanningActive
+            implicitHeight: scanningActive ? scanBannerCol.implicitHeight + 18 : 0
+            radius: 10
+            color: "#111A2B"
+            border.color: "#38BDF8"
+            border.width: 1
+
+            ColumnLayout {
+                id: scanBannerCol
+                anchors {
+                    fill: parent
+                    leftMargin: 12
+                    rightMargin: 12
+                    topMargin: 9
+                    bottomMargin: 9
+                }
+                spacing: 6
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    Text {
+                        text: "🔎"
+                        font.pixelSize: 14
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: (root.bridge && root.bridge.scanPhaseText && root.bridge.scanPhaseText.length > 0)
+                            ? root.bridge.scanPhaseText
+                            : root.tr("msg_scanning_creator", "Scanning creator posts...")
+                        font.family: "Segoe UI, Inter, sans-serif"
+                        font.pixelSize: 12
+                        font.bold: true
+                        color: "#E0F2FE"
+                        elide: Text.ElideRight
+                    }
+
+                    Text {
+                        visible: liveScanBanner.progTotal > 0 || liveScanBanner.progCurrent > 0
+                        text: liveScanBanner.progTotal > 0
+                            ? (liveScanBanner.progCurrent + " / " + liveScanBanner.progTotal)
+                            : (liveScanBanner.progCurrent + " fetched")
+                        font.family: "Consolas, monospace"
+                        font.pixelSize: 11
+                        color: "#7DD3FC"
+                    }
+
+                    StyledButton {
+                        text: root.tr("btn_cancel_scan", "Cancel Scan")
+                        variant: "outline"
+                        implicitHeight: 28
+                        onClicked: if (root.bridge && root.bridge.cancelScan) root.bridge.cancelScan()
+                    }
+                }
+
+                // Determinate / Indeterminate Slim Progress Track
+                Rectangle {
+                    id: scanTrack
+                    Layout.fillWidth: true
+                    height: 5
+                    radius: 2.5
+                    color: "#0A101C"
+                    clip: true
+
+                    Rectangle {
+                        id: scanIndetBar
+                        visible: liveScanBanner.progTotal <= 0
+                        height: parent.height
+                        width: parent.width * 0.28
+                        radius: 2.5
+                        color: "#38BDF8"
+
+                        SequentialAnimation on x {
+                            running: liveScanBanner.visible && liveScanBanner.progTotal <= 0
+                            loops: Animation.Infinite
+                            NumberAnimation { from: -scanTrack.width * 0.28; to: scanTrack.width; duration: 1100; easing.type: Easing.InOutQuad }
+                        }
+                    }
+
+                    Rectangle {
+                        visible: liveScanBanner.progTotal > 0
+                        height: parent.height
+                        radius: 2.5
+                        color: "#38BDF8"
+                        width: parent.width * Math.max(0.0, Math.min(1.0, liveScanBanner.progTotal > 0 ? (liveScanBanner.progCurrent / liveScanBanner.progTotal) : 0.0))
+
+                        Behavior on width {
+                            NumberAnimation { duration: 140; easing.type: Easing.OutCubic }
+                        }
+                    }
+                }
+            }
+        }
+
         // ====================================================================
         // ALWAYS VISIBLE: Download Destination Card
         // ====================================================================

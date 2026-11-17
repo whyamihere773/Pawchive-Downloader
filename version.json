@@ -1,8 +1,8 @@
 {
-    "version": "1.4.0",
+    "version": "1.4.1",
     "commit": "",
     "short_commit": "",
-    "date": "2026-11-11",
+    "date": "2026-11-17",
     "channel": "release",
     "history": [
         {
@@ -209,6 +209,11 @@
             "version": "1.4.0",
             "date": "2026-11-11",
             "notes": "Add CoomerFans (coomerfans.com) provider support with full profile, gallery, and video downloading, high-DPI display UI scaling with preset multipliers, and privacy shield enhancements."
+        },
+        {
+            "version": "1.4.1",
+            "date": "2026-11-17",
+            "notes": "Add built-in Creator & Local Library Browser, new Statistics tab, Gallery folder previews & Visual Sorter, Post Selector overhaul, Linux bool_dealloc startup crash fix, no-GPU freeze fix, and Windows updater fixes."
         }
     ]
 }

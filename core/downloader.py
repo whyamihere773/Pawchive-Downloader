@@ -19,6 +19,7 @@ import requests
 import urllib.parse
 from collections import Counter, deque, defaultdict
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Callable, Set, Tuple
 from PIL import Image
 
@@ -38,6 +39,7 @@ from core.known_manager import KnownManager
 from core.session_manager import SessionManager
 from core.archive_manager import ArchiveManager
 from core.bandwidth_limiter import bandwidth_limiter
+from core.statistics_manager import statistics_manager
 from core.video_probe import VideoProbe
 
 # Services hosted on Coomer rather than Kemono (used to pick the right mirror for Pawchive files)
@@ -190,7 +192,7 @@ _CONTACT_HEADERS = {
     ),
 }
 
-_HASH_PATH_RE = re.compile(r"/[0-9a-f]{2}/[0-9a-f]{2}/([0-9a-f]{64})\.[^/?#]+(?:[?#]|$)", re.IGNORECASE)
+_HASH_PATH_RE = re.compile(r"/[0-9a-f]{2,3}/[0-9a-f]{2}/([0-9a-f]{64})\.[^/?#]+(?:[?#]|$)", re.IGNORECASE)
 
 
 def content_hash_from_url(url: str) -> str:
@@ -439,6 +441,79 @@ class DownloadTask:
         return t
 
 
+@dataclass
+class BatchBuildContext:
+    """Bounded snapshot of the inputs used to plan one active download batch so mid-download
+    settings changes can rebuild remaining work without re-scraping already-fetched posts."""
+    batch_id: str
+    parsed: Any
+    creator_name: str
+    service: str
+    user_id: str
+    domain: str
+    base_dir: str
+    artist_dir: Optional[str] = None
+    provider: str = ""
+    post_id: str = ""
+    from_watchlist: bool = False
+    custom_folder: bool = False
+    posts: List[Dict[str, Any]] = field(default_factory=list)
+    external_files: List[Dict[str, Any]] = field(default_factory=list)
+    fetched_dms: bool = False
+    fetched_comments: bool = False
+    fetched_fav_ids: Optional[Set[str]] = None
+    scan_page_start: int = 1
+    scan_page_end: int = 999999
+    scan_date_after: str = ""
+    scan_date_before: str = ""
+    applied_options: Optional[FilterOptions] = None
+    applied_download_dir: str = ""
+    applied_site_in_folder_name: bool = False
+    applied_known_mode: str = "filename_only"
+    applied_ai_enabled: bool = False
+    applied_ai_engine: str = "fast"
+    link_identity: str = ""
+    force_redownload: bool = False
+
+
+def atomic_move_part(src_part: str, dst_part: str) -> bool:
+    """Moves an interrupted .part resume file to a new destination path safely across drives."""
+    if not src_part or not dst_part:
+        return False
+    try:
+        src_abs = os.path.abspath(src_part)
+        dst_norm = fit_path_for_windows(dst_part)
+        dst_abs = os.path.abspath(dst_norm)
+        if os.path.normcase(src_abs) == os.path.normcase(dst_abs):
+            return os.path.isfile(src_abs)
+        if not os.path.isfile(src_abs):
+            return False
+        src_size = os.path.getsize(src_abs)
+        os.makedirs(os.path.dirname(dst_abs), exist_ok=True)
+        if os.path.isfile(dst_abs):
+            dst_size = os.path.getsize(dst_abs)
+            if dst_size >= src_size:
+                _remove_quietly(src_abs)
+                return True
+        try:
+            os.replace(src_abs, dst_abs)
+            return True
+        except OSError:
+            tmp_dst = dst_abs + ".moving"
+            try:
+                shutil.copyfile(src_abs, tmp_dst)
+                with open(tmp_dst, "r+b") as _tf:
+                    os.fsync(_tf.fileno())
+                os.replace(tmp_dst, dst_abs)
+                _remove_quietly(src_abs)
+                return True
+            except OSError:
+                _remove_quietly(tmp_dst)
+                return False
+    except OSError:
+        return False
+
+
 class KemonoDownloader:
     """
     Multi-threaded, resumable download engine with progress telemetry,
@@ -460,11 +535,16 @@ class KemonoDownloader:
 
         self.tasks: List[DownloadTask] = []
         self._lock = threading.Lock()
+        self._mutation_lock = threading.RLock()
+        self._workers_drained_cond = threading.Condition(self._mutation_lock)
         self._rate_limit_lock = threading.Lock()
         self._rate_limit_cooldown_until = 0.0
         self._cancel_event = threading.Event()
         self._pause_event = threading.Event()
         self._paused_batches: set = set()
+        self._cancelled_batches: Set[str] = set()
+        self._pending_rebuild_batches: Set[str] = set()
+        self._active_batch_workers: Dict[str, int] = defaultdict(int)
         self._paused_batches_lock = threading.Lock()
         self._is_running = False
         self._session_id: int = 0
@@ -472,13 +552,18 @@ class KemonoDownloader:
         self.current_options: Optional[FilterOptions] = None
         self._batch_options: Dict[str, FilterOptions] = {}
         self._batch_options_lock = threading.Lock()
-        self._active_responses: set = set()
+        self._batch_contexts: Dict[str, BatchBuildContext] = {}
+        self._batch_contexts_lock = threading.Lock()
+        self._active_responses: Dict[Any, str] = {}
         self._active_resp_lock = threading.Lock()
         self._worker_sessions: set = set()
         self._worker_sessions_lock = threading.Lock()
         self._thread_local = threading.local()
+        self._worker_session_epoch: int = 0
+        self._proxy_url: str = ""
         self._clean_cookie: str = ""
-        self._post_info_pending: Dict[str, str] = {}   # post_info.txt path -> text, written after the first file
+        self._post_info_pending: Dict[Any, str] = {}   # post_info.txt path -> text, written after the first file
+        self._post_info_owners: Dict[Tuple[str, str], str] = {}
         self._already_there = Counter()
         self._status_counter = StatusCounter()
         self._counter_sig = None
@@ -530,7 +615,15 @@ class KemonoDownloader:
 
     def _get_worker_session(self, clean_cookie: str = "") -> requests.Session:
         sess = getattr(self._thread_local, "session", None)
-        if sess is None:
+        sess_epoch = getattr(self._thread_local, "session_epoch", -1)
+        if sess is None or sess_epoch != self._worker_session_epoch:
+            if sess is not None:
+                try:
+                    sess.close()
+                except Exception:
+                    pass
+                with self._worker_sessions_lock:
+                    self._worker_sessions.discard(sess)
             sess = requests.Session()
             adapter = requests.adapters.HTTPAdapter(pool_connections=16, pool_maxsize=16, max_retries=1)
             sess.mount("https://", adapter)
@@ -539,12 +632,21 @@ class KemonoDownloader:
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                 "Accept": "*/*"
             })
+            if self._proxy_url:
+                sess.proxies = {"http": self._proxy_url, "https": self._proxy_url}
             # No Cookie here: the login cookie is added per request, only for the site it belongs to
             # (it used to go to every host, Bunkr and other file servers included)
             self._thread_local.session = sess
+            self._thread_local.session_epoch = self._worker_session_epoch
             with self._worker_sessions_lock:
                 self._worker_sessions.add(sess)
         return sess
+
+    def bump_worker_session_epoch(self, proxy_url: Optional[str] = None) -> None:
+        """Applies updated proxy settings cleanly for subsequent requests without breaking in-flight chunks."""
+        if proxy_url is not None:
+            self._proxy_url = str(proxy_url or "").strip()
+        self._worker_session_epoch += 1
 
     def _close_worker_sessions(self):
         with self._worker_sessions_lock:
@@ -593,7 +695,7 @@ class KemonoDownloader:
 
         # 5. Instantly close active single-stream HTTP responses to terminate open network sockets
         with self._active_resp_lock:
-            for resp in list(self._active_responses):
+            for resp in list(self._active_responses.keys()):
                 try:
                     resp.close()
                     if hasattr(resp, "raw") and resp.raw:
@@ -650,6 +752,15 @@ class KemonoDownloader:
         self._pause_event.clear()
         with self._paused_batches_lock:
             self._paused_batches.clear()
+            self._cancelled_batches.clear()
+        with self._mutation_lock:
+            self._pending_rebuild_batches.clear()
+            self._active_batch_workers.clear()
+            self._workers_drained_cond.notify_all()
+        with self._batch_contexts_lock:
+            self._batch_contexts.clear()
+        self._post_info_pending.clear()
+        self._post_info_owners.clear()
         if self.on_pause_changed:
             try:
                 self.on_pause_changed(False)
@@ -683,7 +794,8 @@ class KemonoDownloader:
             self._counter_sig = sig
         return self._status_counter.counts
 
-    def _save_recovery_checkpoint(self, options: Optional[FilterOptions] = None, async_write: bool = False):
+    def _save_recovery_checkpoint(self, options: Optional[FilterOptions] = None, async_write: bool = False,
+                                  force_full: bool = False):
         """Persists current download tasks to the crash-proof recovery journal."""
         try:
             if not self.tasks:
@@ -694,11 +806,12 @@ class KemonoDownloader:
             eff_opts = options or self.current_options
             opts_dict = vars(eff_opts) if eff_opts else {}
             status = "paused" if self.is_paused else ("cancelled" if self._cancel_event.is_set() else "in_progress")
-            # Only tasks whose status changed since the last checkpoint need saving
+            # Only tasks whose status changed since the last checkpoint need saving,
+            # unless tasks/paths were rebuilt (force_full=True bypasses QueueJournal's equal-len fast path).
             self.status_counts()
             changed = self._status_counter.take_changed()
             rec.save_checkpoint(tasks=self.tasks, settings=opts_dict, status=status, async_write=async_write,
-                                changed=changed)
+                                changed=(None if force_full else changed))
         except Exception as e:
             logger.debug(f"Could not persist recovery checkpoint: {e}", category="session")
 
@@ -726,9 +839,9 @@ class KemonoDownloader:
         rp = rp.split("?")[0]
         if re.match(r'^[0-9a-f]{16,}$', rp):
             return rp.lower()
-        m_match = re.search(r'/(?:data|thumbnail/data)?(/[0-9a-f]{2}/[0-9a-f]{2}/[^\s?#]+)', rp, re.IGNORECASE)
+        m_match = re.search(r'/(?:data|thumbnail/data)?/[0-9a-f]?([0-9a-f]{2}/[0-9a-f]{2}/[^\s?#]+)', rp, re.IGNORECASE)
         if m_match:
-            return m_match.group(1).lower()
+            return "/" + m_match.group(1).lower()
         if "://" in rp:
             rp = "/" + rp.split("://")[-1].partition("/")[-1]
         if rp.startswith("/data/"):
@@ -739,12 +852,14 @@ class KemonoDownloader:
 
     @staticmethod
     def _resolve_candidate_video_url(fobj: dict, domain: str) -> str:
-        p = fobj.get("path") or fobj.get("storageKey") or ""
+        p = fobj.get("temp_download_url") or fobj.get("path") or fobj.get("storageKey") or ""
         if not p:
             return ""
         if p.startswith("http://") or p.startswith("https://"):
             return p.replace("e1.cum.st", "cdn.cum.st")
         clean_rel = "/" + p.lstrip("/")
+        if clean_rel.startswith("/data/"):
+            clean_rel = clean_rel[5:]
         if "cum.st" in (domain or "") or re.match(r'^[0-9a-f]{16,}$', p):
             if re.match(r'^[0-9a-f]{16,}$', p):
                 variants = fobj.get("variants") or []
@@ -762,14 +877,24 @@ class KemonoDownloader:
         elif "coomer" in (domain or ""):
             return f"https://c1.coomer.st/data{clean_rel}" if not is_disabled("coomer.st") else f"https://cum.st/data{clean_rel}"
         else:
-            return f"https://file.pawchive.pw/data{clean_rel}"
+            srv = str(fobj.get("server") or "").strip().rstrip("/")
+            if not srv and fobj.get("node") is not None:
+                srv = f"https://n{fobj.get('node')}.pawchive.pw"
+            if srv and not srv.startswith(("http://", "https://")):
+                srv = f"https://{srv}"
+            return f"{srv or 'https://file.pawchive.pw'}/data{clean_rel}"
 
     @staticmethod
     def _is_pawchive_temp_expired(fobj: Dict[str, Any]) -> bool:
         """Returns True if the temporary Pawchive URL or temp_expires has expired."""
         if not isinstance(fobj, dict):
             return False
-        temp_u = fobj.get("temp_url") or (fobj.get("path") if isinstance(fobj.get("path"), str) and "t1.pawchive.pw" in fobj.get("path") else "")
+        raw_p = fobj.get("path") if isinstance(fobj.get("path"), str) else ""
+        temp_u = (
+            fobj.get("temp_download_url")
+            or fobj.get("temp_url")
+            or (raw_p if re.search(r"\bt\d+\.pawchive\.pw\b", raw_p) else "")
+        )
         if temp_u and "?e=" in temp_u:
             try:
                 m = re.search(r'[?&]e=(\d+)', temp_u)
@@ -810,10 +935,10 @@ class KemonoDownloader:
             if isinstance(a, dict):
                 targets.append(a)
 
-        # 1. Resolve direct temp_url fields provided in the API JSON for file and attachments
+        # 1. Resolve direct temp_download_url / temp_url fields provided in the API JSON for file and attachments
         for target in targets:
-            temp_u = target.get("temp_url")
-            if temp_u and not self._is_pawchive_temp_expired(target):
+            temp_u = target.get("temp_download_url") or target.get("temp_url")
+            if temp_u and not str(temp_u).split("?")[0].lower().endswith(".m3u8") and not self._is_pawchive_temp_expired(target):
                 target["path"] = temp_u
                 target["is_temporary"] = True
                 target["preview_only"] = False
@@ -853,7 +978,7 @@ class KemonoDownloader:
                 logger.warning(f"Could not fetch HTML for post {post_id} (HTTP {resp.status_code}) to resolve temporary files", category="downloader")
                 return resolved_count
 
-            matches = re.findall(r'(?:href|src)=["\'](https://t1\.pawchive\.pw/f/[^"\']+)["\']', resp.text)
+            matches = re.findall(r'(?:href|src)=["\'](https://t\d+\.pawchive\.pw/(?:f|d)/[^"\']+)["\']', resp.text)
             temp_map: Dict[str, str] = {}
             for raw_u in matches:
                 u = raw_u.replace("&amp;", "&")
@@ -918,7 +1043,7 @@ class KemonoDownloader:
             r = requests.get(page_url, headers=headers, timeout=15)
             if r.status_code != 200 or not r.text:
                 return None
-            matches = re.findall(r'(?:href|src)=["\'](https://t1\.pawchive\.pw/f/[^"\']+)["\']', r.text)
+            matches = re.findall(r'(?:href|src)=["\'](https://t\d+\.pawchive\.pw/(?:f|d)/[^"\']+)["\']', r.text)
             fn_low = filename.lower()
             for raw_u in matches:
                 u = raw_u.replace("&amp;", "&")
@@ -940,7 +1065,8 @@ class KemonoDownloader:
         options: FilterOptions,
         batch_id: Optional[str] = None,
         artist_dir: Optional[str] = None,
-        user_id: str = ""
+        user_id: str = "",
+        progress_callback: Optional[Callable[[int, int, str], None]] = None
     ) -> List[DownloadTask]:
         """
         Filters posts and attachments, building the list of download tasks with structured paths.
@@ -995,6 +1121,12 @@ class KemonoDownloader:
             )
 
         # CoomerFans media resolution: resolve full attachments before structuring tasks
+        total_posts_count = len(posts_to_process)
+        if progress_callback and total_posts_count > 0:
+            try:
+                progress_callback(0, total_posts_count, "Resolving media & filtering posts...")
+            except Exception:
+                pass
         if domain == "coomerfans.com" or any(p.get("_needs_coomerfans_media") for p in posts_to_process):
             from services.coomerfans_client import resolve_posts_media
             resolve_posts_media(posts_to_process, cancel_event=self._cancel_event)
@@ -1013,11 +1145,24 @@ class KemonoDownloader:
         build_text_posts: List[Tuple[str, str, str]] = []
 
         creator_folder_name = None          # (looked up once per scan)
+        _last_build_prog_ts = 0.0
         for post_idx, post in enumerate(posts_to_process, 1):
             if _build_cancelled():
                 self.last_build_cancelled = True
                 logger.info("Task structuring cancelled by user.", category="downloader")
                 return []
+            if progress_callback and total_posts_count > 0:
+                now_prog = time.monotonic()
+                if post_idx == total_posts_count or post_idx % 50 == 0 or (now_prog - _last_build_prog_ts) >= 0.25:
+                    _last_build_prog_ts = now_prog
+                    try:
+                        progress_callback(
+                            post_idx,
+                            total_posts_count,
+                            f"Building queue: {post_idx:,}/{total_posts_count:,} posts ({len(new_tasks):,} files)"
+                        )
+                    except Exception:
+                        pass
 
             post_id = str(post.get("id", ""))
             post_title, post_caption = FilterEngine.extract_post_title_and_caption(
@@ -1044,9 +1189,9 @@ class KemonoDownloader:
 
             # Construct canonical web post link for manual inspection/testing
             post_user = str(post.get("user") or post.get("user_id") or post.get("artist_id") or user_id or "")
+            is_dm = bool(post.get("is_dms") or post.get("is_dm") or post.get("type") == "dm" or post.get("dm"))
+            route = "dm" if is_dm else "post"
             if domain == "cum.st":
-                is_dm = bool(post.get("is_dms") or post.get("type") == "dm" or post.get("dm"))
-                route = "dm" if is_dm else "post"
                 if service and post_user and post_id:
                     task_post_url = f"https://cum.st/creators/{service}/{post_user}/{route}/{post_id}"
                 elif service and post_id:
@@ -1056,7 +1201,7 @@ class KemonoDownloader:
             elif domain == "coomerfans.com":
                 task_post_url = f"https://coomerfans.com/p/{post_id}/{post_user}/{service}"
             elif domain and service and post_user and post_id:
-                task_post_url = f"https://{domain}/{service}/user/{post_user}/post/{post_id}"
+                task_post_url = f"https://{domain}/{service}/user/{post_user}/{route}/{post_id}"
             elif domain and service and post_id:
                 task_post_url = f"https://{domain}/{service}/post/{post_id}"
             else:
@@ -1476,7 +1621,7 @@ class KemonoDownloader:
                 # skip cover pictures that are thumbnails/previews (but keep full-size temporary files)
                 mf_name = (main_file.get("name") or main_file.get("originalFilename") or "").lower()
                 mf_path = str(main_file.get("path") or main_file.get("storageKey") or "").lower()
-                is_mf_temp = bool(main_file.get("is_temporary")) or "t1.pawchive.pw" in mf_path
+                is_mf_temp = bool(main_file.get("is_temporary")) or bool(re.search(r"\bt\d+\.pawchive\.pw\b", mf_path))
                 if not is_mf_temp and (
                     is_preview_url(mf_path) or
                     bool(main_file.get("preview_only")) or
@@ -1498,7 +1643,7 @@ class KemonoDownloader:
                         if (options.skip_post_covers or (has_other_files and not allow_thumbnails)) and (has_other_files or len(attachments) > 1):
                             att_name = (att.get("name") or att.get("originalFilename") or "").lower()
                             att_path = str(att.get("path") or att.get("storageKey") or "").lower()
-                            is_att_temp = bool(att.get("is_temporary")) or "t1.pawchive.pw" in att_path
+                            is_att_temp = bool(att.get("is_temporary")) or bool(re.search(r"\bt\d+\.pawchive\.pw\b", att_path))
                             if not is_att_temp and (
                                 att_name.startswith(("cover.", "cover_", "preview.", "thumb.", "thumbnail.")) or
                                 is_preview_url(att_path) or
@@ -1508,11 +1653,15 @@ class KemonoDownloader:
 
                         k = self.extract_norm_rel_key(att)
                         if k and k in seen_post_file_keys:
-                            # Upgrade metadata if att has non-preview or better name
+                            # Upgrade metadata if att has non-preview or better name / server
                             idx = seen_post_file_keys[k]
                             existing = files_to_process[idx]
                             if existing.get("preview_only") and not att.get("preview_only"):
                                 existing["preview_only"] = False
+                            if att.get("server") and not existing.get("server"):
+                                existing["server"] = att.get("server")
+                                if att.get("path"):
+                                    existing["path"] = att.get("path")
                             if att.get("name") and not att.get("name", "").lower().startswith("cover"):
                                 existing["name"] = att.get("name")
                             continue
@@ -1625,9 +1774,9 @@ class KemonoDownloader:
                     original_url = f"https://cdn.cum.st/media/{norm_path}/{primary_variant}"
                     norm_path = f"/{norm_path[:2]}/{norm_path[2:4]}/{norm_path}.{ext}"  # legacy fallback path
                 elif norm_path.startswith("http://") or norm_path.startswith("https://"):
-                    is_pawchive_temp = "t1.pawchive.pw" in norm_path or bool(fobj.get("is_temporary")) or "coomerfans.com" in norm_path
+                    is_pawchive_temp = bool(re.search(r"\bt\d+\.pawchive\.pw\b", norm_path)) or bool(fobj.get("is_temporary")) or "coomerfans.com" in norm_path
                     if is_pawchive_temp:
-                        # Pawchive temporary oversized storage on t1.pawchive.pw uses signed URLs (?e=...&s=...)
+                        # Pawchive temporary oversized storage on t1-t4.pawchive.pw uses signed URLs (?e=...&s=...)
                         # Preserve full signed URL with query parameters intact
                         original_url = norm_path
                         # Clean relative path for deduplication and file_id: /f/<hash>/<filename>
@@ -1639,6 +1788,20 @@ class KemonoDownloader:
                         original_url = norm_path.split("?")[0]  # strip existing query params
                         if "e1.cum.st" in original_url:
                             original_url = original_url.replace("e1.cum.st", "cdn.cum.st")
+                        elif re.match(r"^https?://pawchive\.pw/data/", original_url, re.IGNORECASE):
+                            # Bare pawchive.pw/data/... returns 404; route to assigned n1-n4 server or file.pawchive.pw
+                            _srv = str(fobj.get("server") or post.get("server") or "").strip().rstrip("/")
+                            if not _srv and fobj.get("node") is not None:
+                                _srv = f"https://n{fobj.get('node')}.pawchive.pw"
+                            if _srv and not _srv.startswith(("http://", "https://")):
+                                _srv = f"https://{_srv}"
+                            original_url = re.sub(
+                                r"^https?://pawchive\.pw",
+                                _srv or "https://file.pawchive.pw",
+                                original_url,
+                                count=1,
+                                flags=re.IGNORECASE,
+                            )
                         # Check for cum.st/media/ pattern (e1.cum.st or cdn.cum.st) — keep as-is, extract a norm_path for fallbacks
                         m_cumst = re.match(r'https?://[^/]*cum\.st/media/([0-9a-f]{64})/([^?#]+)', norm_path)
                         if m_cumst:
@@ -1647,7 +1810,7 @@ class KemonoDownloader:
                             ext = os.path.splitext(variant)[1].lstrip(".") or "jpg"
                             norm_path = f"/{storage_key[:2]}/{storage_key[2:4]}/{storage_key}.{ext}"
                         else:
-                            match_data = re.search(r'/(?:data|thumbnail/data)?(/[0-9a-f]{2}/[0-9a-f]{2}/[^\s?#]+)', norm_path, re.IGNORECASE)
+                            match_data = re.search(r'/(?:data|thumbnail/data)?(/[0-9a-f]{2,3}/[0-9a-f]{2}/[^\s?#]+)', norm_path, re.IGNORECASE)
                             if match_data:
                                 norm_path = match_data.group(1)
                             else:
@@ -1712,7 +1875,7 @@ class KemonoDownloader:
                 is_preview_only = (
                     bool(fobj.get("preview_only")) and
                     not bool(fobj.get("is_temporary")) and
-                    "t1.pawchive.pw" not in str(original_url or norm_path or fobj.get("path") or "")
+                    not bool(re.search(r"\bt\d+\.pawchive\.pw\b", str(original_url or norm_path or fobj.get("path") or "")))
                 )
                 allow_thumb_fallback = getattr(options, "fallback_to_thumbnails", False)
                 allow_thumbnails = getattr(options, "download_thumbnails_only", False) or allow_thumb_fallback
@@ -1747,11 +1910,11 @@ class KemonoDownloader:
                         sanitized_name = f"{os.path.splitext(sanitized_name)[0]}.jpg"
                 else:
                     is_pawchive_temp = (
-                        bool(original_url and ("t1.pawchive.pw" in original_url or "coomerfans.com" in original_url))
+                        bool(original_url and (re.search(r"\bt\d+\.pawchive\.pw\b", original_url) or "coomerfans.com" in original_url))
                         or bool(fobj.get("is_temporary"))
                     )
                     if is_pawchive_temp and original_url:
-                        # Temporary oversized files on t1.pawchive.pw are signed URLs.
+                        # Temporary oversized files on t1-t4.pawchive.pw are signed URLs.
                         # Append the signed URL directly as the primary candidate (do not fallback to file.pawchive.pw)
                         candidate_urls.append(original_url)
                     else:
@@ -1785,24 +1948,38 @@ class KemonoDownloader:
                             candidate_urls.append(f"https://img.cum.st/data{clean_rel}")
                             fallback_thumb_url = f"https://img.cum.st/thumbnail/data{clean_rel}"
                         elif "pawchive" in effective_domain:
-                            # Pawchive first; then Kemono / Coomer, which hold the same files (same hash
-                            # paths). Posts Pawchive imported from Kemono but hasn't copied yet
-                            # (origin "kemono" / preview_state "pending") only exist there, so they go first.
-                            full_url = f"https://file.pawchive.pw/data{clean_rel}?f={_fq(sanitized_name)}"
-                            mirror_host = "coomer.st" if service.lower() in COOMER_SERVICES else "kemono.cr"
-                            mirror_url = f"https://{mirror_host}/data{clean_rel}?f={_fq(sanitized_name)}"
-                            not_copied_yet = str(post.get("origin", "")).lower() in ("kemono", "coomer") or str(post.get("preview_state", "")).lower() == "pending"
-                            order = [mirror_url, full_url] if not_copied_yet else [full_url, mirror_url]
-                            for u in order:
-                                if u not in candidate_urls and not is_disabled(u):
-                                    candidate_urls.append(u)
+                            # Pawchive nodes (n1-n4.pawchive.pw) first when 'server' is provided by the API,
+                            # plus file.pawchive.pw and remaining n1-n4 nodes as fallback mirrors.
+                            srv_raw = str(
+                                (fobj.get("server") if isinstance(fobj, dict) else "")
+                                or (post.get("server") if isinstance(post, dict) else "")
+                                or ""
+                            ).strip().rstrip("/")
+                            if srv_raw and not srv_raw.startswith(("http://", "https://")):
+                                srv_raw = f"https://{srv_raw}"
                             node_num = fobj.get("node") if isinstance(fobj, dict) else None
                             if not node_num and isinstance(post, dict):
                                 node_num = post.get("node")
+
+                            full_url = f"https://file.pawchive.pw/data{clean_rel}?f={_fq(sanitized_name)}"
+                            srv_url = f"{srv_raw}/data{clean_rel}?f={_fq(sanitized_name)}" if srv_raw else None
+                            mirror_host = "coomer.st" if service.lower() in COOMER_SERVICES else "kemono.cr"
+                            mirror_url = f"https://{mirror_host}/data{clean_rel}?f={_fq(sanitized_name)}"
+                            not_copied_yet = str(post.get("origin", "")).lower() in ("kemono", "coomer") or str(post.get("preview_state", "")).lower() == "pending"
+
+                            primary_paw_list = [srv_url, full_url] if srv_url else [full_url]
+                            order = ([mirror_url] + primary_paw_list) if not_copied_yet else (primary_paw_list + [mirror_url])
+                            for u in order:
+                                if u and u not in candidate_urls and not is_disabled(u):
+                                    candidate_urls.append(u)
                             if node_num is not None:
                                 node_url = f"https://n{node_num}.pawchive.pw/data{clean_rel}?f={_fq(sanitized_name)}"
                                 if node_url not in candidate_urls:
                                     candidate_urls.append(node_url)
+                            for n_idx in (1, 2, 3, 4):
+                                n_url = f"https://n{n_idx}.pawchive.pw/data{clean_rel}?f={_fq(sanitized_name)}"
+                                if n_url not in candidate_urls:
+                                    candidate_urls.append(n_url)
                             fallback_thumb_url = f"https://img.pawchive.pw/thumbnail/data{clean_rel}"
                         elif "coomer" in effective_domain:
                             # coomer.st/data/… redirects to the file server that holds the file.
@@ -1930,9 +2107,11 @@ class KemonoDownloader:
 
                 expected_sha = str(fobj.get("sha256") or fobj.get("hash") or "")
 
+                force_redownload = bool(getattr(options, "force_redownload", False))
+
                 # Skip if already recorded in download archive database (gallery-dl style) — unless the
                 # copy still on disk is a small / preview one that should be upgraded to full size
-                if self.archive_manager and self.archive_manager.is_enabled:
+                if not force_redownload and self.archive_manager and self.archive_manager.is_enabled:
                     if self.archive_manager.is_archived(service=service, post_id=post_id, file_id=file_id, file_hash=expected_sha):
                         on_disk = next((cp for cp in disk_candidates
                                         if os.path.exists(cp) and os.path.getsize(cp) > 0), None)
@@ -1943,7 +2122,7 @@ class KemonoDownloader:
                             continue
 
                 # Skip if already exists on disk at target_path, webp path, or raw name path
-                if not options.keep_duplicates:
+                if not force_redownload and not options.keep_duplicates:
                     existing_disk_path = next((cp for cp in disk_candidates
                                                if os.path.exists(cp) and os.path.getsize(cp) > 0), None)
 
@@ -2009,14 +2188,14 @@ class KemonoDownloader:
                     e_target_path = fit_path_for_windows(os.path.join(e_dest_dir, e_name))
                     e_file_id = f"embed_{post_id}_{embed_idx}"
 
-                    if self.archive_manager and self.archive_manager.is_enabled:
+                    if not getattr(options, "force_redownload", False) and self.archive_manager and self.archive_manager.is_enabled:
                         if self.archive_manager.is_archived(service=service, post_id=post_id, file_id=e_file_id):
                             logger.info(f"📦 Skipping archived embedded media: '{e_name}' (present in download archive)",
                                         category="file", to_file=False)
                             not_queued["in the download archive"] += 1
                             continue
 
-                    if not options.keep_duplicates and os.path.exists(e_target_path) and os.path.getsize(e_target_path) > 0:
+                    if not getattr(options, "force_redownload", False) and not options.keep_duplicates and os.path.exists(e_target_path) and os.path.getsize(e_target_path) > 0:
                         continue
 
                     e_task = DownloadTask(
@@ -2056,6 +2235,9 @@ class KemonoDownloader:
 
         # Post texts: text-only posts are saved now; the others once their first file is downloaded
         self._post_info_pending.update(build_post_infos)
+        if batch_id and build_post_infos:
+            for _info_key in build_post_infos:
+                self._post_info_owners[_info_key] = batch_id
         for _path, _content, _pid in build_text_posts:
             _write_post_info(_path, _content, _pid)
 
@@ -2155,7 +2337,9 @@ class KemonoDownloader:
         )
         self._download_thread.start()
 
-    def append_tasks(self, new_tasks: List[DownloadTask], options: Optional[FilterOptions] = None, cookie_str: str = "") -> int:
+    def append_tasks(self, new_tasks: List[DownloadTask], options: Optional[FilterOptions] = None,
+                     cookie_str: str = "",
+                     progress_callback: Optional[Callable[[int, int, str], None]] = None) -> int:
         """
         Thread-safely appends new tasks with deduplication.
         If worker loop is running, new pending tasks will be dynamically scheduled.
@@ -2163,6 +2347,12 @@ class KemonoDownloader:
         """
         if not new_tasks:
             return 0
+
+        if progress_callback:
+            try:
+                progress_callback(0, len(new_tasks), f"Deduplicating & reserving paths ({len(new_tasks):,} files)...")
+            except Exception:
+                pass
 
         existing_signatures = set()
         for t in self.tasks:
@@ -2187,17 +2377,23 @@ class KemonoDownloader:
 
         self._keep_paths_apart(deduped, self.tasks)
         if options is not None:
+            batch_opts_cache: Dict[str, FilterOptions] = {}
             for t in deduped:
+                bid = self._task_batch_id(t)
                 if getattr(t, "options", None) is None:
-                    t.options = options
-                bid = getattr(t, "batch_id", "")
+                    if bid:
+                        if bid not in batch_opts_cache:
+                            batch_opts_cache[bid] = FilterOptions.from_dict(options.to_dict())
+                        t.options = batch_opts_cache[bid]
+                    else:
+                        t.options = FilterOptions.from_dict(options.to_dict())
                 if bid:
-                    self.set_batch_options(bid, options)
+                    self.set_batch_options(bid, t.options)
         self.tasks.extend(deduped)
         logger.info(f"Appended {len(deduped)} new tasks to download queue (total in queue: {len(self.tasks)}).", category="downloader")
 
         if not self._is_running and options is not None:
-            self.start_download_queue(self.tasks, options, cookie_str)
+            self.start_download_queue(self.tasks, FilterOptions.from_dict(options.to_dict()), cookie_str)
 
         return len(deduped)
 
@@ -2238,16 +2434,207 @@ class KemonoDownloader:
                          category="downloader")
         return renamed
 
+    @staticmethod
+    def _task_batch_id(batch_id_or_task) -> str:
+        if isinstance(batch_id_or_task, str):
+            return batch_id_or_task
+        t = batch_id_or_task
+        return (
+            getattr(t, "batch_id", "")
+            or f"{getattr(t, 'service', '')}_{getattr(t, 'creator_name', '')}_{getattr(t, 'post_id', '')}".strip("_")
+        )
+
+    def _track_active_response(self, resp, batch_id: str) -> None:
+        if resp is None:
+            return
+        with self._active_resp_lock:
+            self._active_responses[resp] = batch_id or ""
+
+    def _untrack_active_response(self, resp) -> None:
+        if resp is None:
+            return
+        with self._active_resp_lock:
+            self._active_responses.pop(resp, None)
+
+    def _close_batch_responses(self, batch_ids: Set[str]) -> int:
+        """Closes only active HTTP stream responses belonging to `batch_ids`."""
+        if not batch_ids:
+            return 0
+        with self._active_resp_lock:
+            targets = [r for r, bid in list(self._active_responses.items()) if bid in batch_ids]
+        closed = 0
+        for r in targets:
+            try:
+                r.close()
+                closed += 1
+            except Exception:
+                pass
+        return closed
+
+    def _increment_batch_worker(self, batch_id: str) -> None:
+        bid = batch_id or ""
+        with self._workers_drained_cond:
+            self._active_batch_workers[bid] = self._active_batch_workers.get(bid, 0) + 1
+
+    def _decrement_batch_worker(self, batch_id: str) -> None:
+        bid = batch_id or ""
+        with self._workers_drained_cond:
+            cur = self._active_batch_workers.get(bid, 0) - 1
+            if cur <= 0:
+                self._active_batch_workers.pop(bid, None)
+            else:
+                self._active_batch_workers[bid] = cur
+            self._workers_drained_cond.notify_all()
+
     def is_batch_paused(self, batch_id_or_task) -> bool:
         if not self._paused_batches:
             return False
-        if isinstance(batch_id_or_task, str):
-            bid = batch_id_or_task
-        else:
-            t = batch_id_or_task
-            bid = getattr(t, "batch_id", "") or f"{getattr(t, 'service', '')}_{getattr(t, 'creator_name', '')}_{getattr(t, 'post_id', '')}".strip("_")
+        bid = self._task_batch_id(batch_id_or_task)
         with self._paused_batches_lock:
             return bid in self._paused_batches
+
+    def is_batch_cancelled(self, batch_id_or_task) -> bool:
+        if self._cancel_event.is_set():
+            return True
+        if not self._cancelled_batches:
+            return False
+        bid = self._task_batch_id(batch_id_or_task)
+        with self._paused_batches_lock:
+            return bid in self._cancelled_batches
+
+    def has_pending_rebuilds(self) -> bool:
+        with self._mutation_lock:
+            return bool(self._pending_rebuild_batches)
+
+    def register_batch_context(self, ctx: BatchBuildContext) -> None:
+        """Registers or merges a creator/album build snapshot for mid-download re-planning."""
+        if not ctx or not ctx.batch_id:
+            return
+        opts_copy = FilterOptions.from_dict(ctx.applied_options.to_dict()) if ctx.applied_options else FilterOptions()
+        with self._batch_contexts_lock:
+            existing = self._batch_contexts.get(ctx.batch_id)
+            if existing is None:
+                ctx.applied_options = opts_copy
+                self._batch_contexts[ctx.batch_id] = ctx
+            else:
+                if ctx.posts:
+                    seen_keys = {(str(p.get("id", "")), bool(p.get("_is_dm"))) for p in existing.posts}
+                    for p in ctx.posts:
+                        pk = (str(p.get("id", "")), bool(p.get("_is_dm")))
+                        if pk not in seen_keys:
+                            seen_keys.add(pk)
+                            existing.posts.append(p)
+                if ctx.external_files and not existing.external_files:
+                    existing.external_files = list(ctx.external_files)
+                existing.fetched_dms = existing.fetched_dms or ctx.fetched_dms
+                existing.fetched_comments = existing.fetched_comments or ctx.fetched_comments
+                if ctx.fetched_fav_ids is not None:
+                    existing.fetched_fav_ids = set(ctx.fetched_fav_ids)
+                existing.scan_page_start = min(existing.scan_page_start, ctx.scan_page_start)
+                existing.scan_page_end = max(existing.scan_page_end, ctx.scan_page_end)
+                if ctx.scan_date_after and (not existing.scan_date_after or ctx.scan_date_after < existing.scan_date_after):
+                    existing.scan_date_after = ctx.scan_date_after
+                if ctx.scan_date_before and (not existing.scan_date_before or ctx.scan_date_before > existing.scan_date_before):
+                    existing.scan_date_before = ctx.scan_date_before
+                existing.applied_options = opts_copy
+                if ctx.applied_download_dir:
+                    existing.applied_download_dir = ctx.applied_download_dir
+                existing.applied_site_in_folder_name = ctx.applied_site_in_folder_name
+                if ctx.artist_dir is not None:
+                    existing.artist_dir = ctx.artist_dir
+                if ctx.base_dir:
+                    existing.base_dir = ctx.base_dir
+            self._prune_finished_batch_contexts_unlocked()
+
+    def _prune_finished_batch_contexts_unlocked(self) -> None:
+        """Drops bulky cached post payloads for finished batches so memory stays bounded."""
+        active_bids: Set[str] = set()
+        for t in self.tasks:
+            if t.status in ("pending", "downloading", "retrying", "paused", "failed"):
+                bid = self._task_batch_id(t)
+                if bid:
+                    active_bids.add(bid)
+        active_bids.update(self._pending_rebuild_batches)
+        for bid, ctx in list(self._batch_contexts.items()):
+            if bid not in active_bids and (len(ctx.posts) > 500 or len(self._batch_contexts) > 32):
+                ctx.posts = []
+                ctx.external_files = []
+
+    def unregister_batch_context(self, batch_id: str) -> None:
+        if not batch_id:
+            return
+        with self._batch_contexts_lock:
+            self._batch_contexts.pop(batch_id, None)
+
+    def get_batch_context(self, batch_id: str) -> Optional[BatchBuildContext]:
+        if not batch_id:
+            return None
+        with self._batch_contexts_lock:
+            return self._batch_contexts.get(batch_id)
+
+    def get_all_batch_contexts(self) -> List[BatchBuildContext]:
+        with self._batch_contexts_lock:
+            return list(self._batch_contexts.values())
+
+    def active_unfinished_batch_ids(self) -> List[str]:
+        """Returns distinct batch IDs that still have active, pending, or paused tasks."""
+        seen: List[str] = []
+        seen_set: Set[str] = set()
+        for t in list(self.tasks):
+            if t.status in ("pending", "downloading", "retrying", "paused"):
+                bid = self._task_batch_id(t)
+                if bid and bid not in seen_set:
+                    seen_set.add(bid)
+                    seen.append(bid)
+        return seen
+
+    def active_batch_ids_for(self, creator_id: str, service: str = "") -> List[str]:
+        """Returns unfinished batch IDs matching a creator_id (and optional service)."""
+        cid = str(creator_id or "").strip()
+        svc = str(service or "").strip().lower()
+        if not cid:
+            return []
+        matched: List[str] = []
+        seen: Set[str] = set()
+        for t in list(self.tasks):
+            if t.status not in ("pending", "downloading", "retrying", "paused"):
+                continue
+            t_cid = str(getattr(t, "user_id", "") or "").strip()
+            t_svc = str(getattr(t, "service", "") or "").strip().lower()
+            if t_cid == cid and (not svc or t_svc == svc):
+                bid = self._task_batch_id(t)
+                if bid and bid not in seen:
+                    seen.add(bid)
+                    matched.append(bid)
+        if not matched:
+            with self._batch_contexts_lock:
+                ctx_vals = list(self._batch_contexts.values())
+            for ctx in ctx_vals:
+                if str(ctx.user_id or "").strip() == cid and (not svc or str(ctx.service or "").lower() == svc):
+                    bid = ctx.batch_id
+                    if bid in self._pending_rebuild_batches and bid not in seen:
+                        seen.add(bid)
+                        matched.append(bid)
+        return matched
+
+    def has_active_tasks_for_creator(self, service: str, creator_id: str) -> bool:
+        return bool(self.active_batch_ids_for(creator_id, service))
+
+    def _clear_post_info_for_batches(self, batch_ids: Set[str], remaining_tasks: Optional[List[DownloadTask]] = None) -> None:
+        if not batch_ids:
+            return
+        keep_tasks = remaining_tasks if remaining_tasks is not None else [
+            t for t in self.tasks if self._task_batch_id(t) not in batch_ids
+        ]
+        live_keys = {
+            (getattr(t, "post_info_path", ""), getattr(t, "post_id", ""))
+            for t in keep_tasks
+            if getattr(t, "post_info_path", "")
+        }
+        for key, owner_bid in list(self._post_info_owners.items()):
+            if owner_bid in batch_ids and key not in live_keys:
+                self._post_info_owners.pop(key, None)
+                self._post_info_pending.pop(key, None)
 
     def set_batch_options(self, batch_id: str, options: FilterOptions) -> None:
         if batch_id and options:
@@ -2268,7 +2655,7 @@ class KemonoDownloader:
             self._paused_batches.add(batch_id)
         paused = 0
         for t in self.tasks:
-            bid = getattr(t, "batch_id", "") or f"{getattr(t, 'service', '')}_{getattr(t, 'creator_name', '')}_{getattr(t, 'post_id', '')}".strip("_")
+            bid = self._task_batch_id(t)
             if bid == batch_id and t.status in ("pending", "downloading", "retrying"):
                 t.status = "paused"
                 t.speed_bps = 0
@@ -2286,12 +2673,13 @@ class KemonoDownloader:
             return 0
         with self._paused_batches_lock:
             self._paused_batches.discard(batch_id)
+            self._cancelled_batches.discard(batch_id)
         self._dispatch_cursor = 0
         self._last_full_scan = 0.0
 
         resumed_tasks = []
         for t in self.tasks:
-            bid = getattr(t, "batch_id", "") or f"{getattr(t, 'service', '')}_{getattr(t, 'creator_name', '')}_{getattr(t, 'post_id', '')}".strip("_")
+            bid = self._task_batch_id(t)
             if bid == batch_id and t.status == "paused":
                 t.status = "pending"
                 t.error_msg = ""
@@ -2312,9 +2700,12 @@ class KemonoDownloader:
         """Cancels all pending and downloading tasks belonging to a specific batch_id."""
         with self._paused_batches_lock:
             self._paused_batches.discard(batch_id)
+            if batch_id:
+                self._cancelled_batches.add(batch_id)
+        self._close_batch_responses({batch_id})
         cancelled = 0
         for t in self.tasks:
-            if getattr(t, "batch_id", "") == batch_id and t.status in ("pending", "downloading", "retrying", "paused"):
+            if self._task_batch_id(t) == batch_id and t.status in ("pending", "downloading", "retrying", "paused"):
                 t.status = "cancelled"
                 t.error_msg = "Download cancelled by user"
                 t.progress_pct = 0
@@ -2324,15 +2715,17 @@ class KemonoDownloader:
                 cancelled += 1
                 if notify and self.on_task_status_changed:
                     self.on_task_status_changed(t)
+        self.unregister_batch_context(batch_id)
         return cancelled
 
     def retry_batch_failed(self, batch_id: str, options: Optional[FilterOptions] = None, cookie_str: str = "") -> int:
         """Resets failed/cancelled tasks in a specific batch to pending and resumes download."""
         with self._paused_batches_lock:
             self._paused_batches.discard(batch_id)
+            self._cancelled_batches.discard(batch_id)
         failed = []
         for t in self.tasks:
-            t_bid = getattr(t, "batch_id", "") or f"{t.service}_{t.creator_name}_{t.post_id}".strip("_")
+            t_bid = self._task_batch_id(t)
             if t_bid == batch_id:
                 if t.status in ("failed", "cancelled") or (not self._is_running and t.status in ("pending", "paused")):
                     failed.append(t)
@@ -2353,9 +2746,417 @@ class KemonoDownloader:
         """Removes non-active tasks belonging to a batch from the queue."""
         with self._paused_batches_lock:
             self._paused_batches.discard(batch_id)
+            self._cancelled_batches.discard(batch_id)
+        with self._mutation_lock:
+            self._pending_rebuild_batches.discard(batch_id)
         initial_count = len(self.tasks)
-        self.tasks = [t for t in self.tasks if (getattr(t, "batch_id", "") or f"{t.service}_{t.creator_name}_{t.post_id}".strip("_")) != batch_id or t.status == "downloading"]
+        self.tasks = [t for t in self.tasks if self._task_batch_id(t) != batch_id or t.status == "downloading"]
+        if not any(self._task_batch_id(t) == batch_id for t in self.tasks):
+            self.unregister_batch_context(batch_id)
+            self._clear_post_info_for_batches({batch_id}, self.tasks)
         return initial_count - len(self.tasks)
+
+    def quiesce_batches(self, batch_ids: Set[str], mode: str = "pause", timeout: float = 15.0) -> Tuple[bool, str]:
+        """Safely pauses or cancels `batch_ids` and waits until zero active workers remain for them.
+
+        Must never be called from the Qt main thread.
+        """
+        target_bids = {b for b in (batch_ids or set()) if b}
+        if not target_bids:
+            return True, ""
+
+        try:
+            from PySide6.QtCore import QCoreApplication, QThread
+            app = QCoreApplication.instance()
+            if app is not None and QThread.currentThread() == app.thread():
+                raise RuntimeError("quiesce_batches must not be called on the Qt main thread")
+        except ImportError:
+            pass
+
+        with self._mutation_lock:
+            self._pending_rebuild_batches.update(target_bids)
+            with self._paused_batches_lock:
+                if mode == "cancel":
+                    self._cancelled_batches.update(target_bids)
+                    self._paused_batches.difference_update(target_bids)
+                else:
+                    self._paused_batches.update(target_bids)
+
+            changed_tasks: List[DownloadTask] = []
+            for t in self.tasks:
+                if self._task_batch_id(t) not in target_bids:
+                    continue
+                if mode == "cancel":
+                    if t.status in ("pending", "paused", "retrying"):
+                        t.status = "cancelled"
+                        t.error_msg = "Download cancelled by user"
+                        t.speed_bps = 0
+                        t.speed_str = "0 KB/s"
+                        t.eta_str = "--"
+                        changed_tasks.append(t)
+                else:
+                    if t.status in ("pending", "retrying"):
+                        t.status = "paused"
+                        t.speed_bps = 0
+                        t.speed_str = "0 KB/s"
+                        t.eta_str = "--"
+                        changed_tasks.append(t)
+
+        if changed_tasks:
+            self._notify_many(changed_tasks)
+
+        if mode == "cancel":
+            self._close_batch_responses(target_bids)
+
+        def _all_drained() -> bool:
+            return all(self._active_batch_workers.get(b, 0) == 0 for b in target_bids)
+
+        deadline = time.monotonic() + max(0.2, float(timeout))
+        initial_wait = min(1.5, max(0.1, deadline - time.monotonic()))
+        with self._workers_drained_cond:
+            drained = self._workers_drained_cond.wait_for(_all_drained, timeout=initial_wait)
+
+        if not drained:
+            # Close active sockets even on pause mode after 1.5s so stalled transfers don't hang rebuild
+            self._close_batch_responses(target_bids)
+            remaining = max(0.1, deadline - time.monotonic())
+            with self._workers_drained_cond:
+                drained = self._workers_drained_cond.wait_for(_all_drained, timeout=remaining)
+
+        if not drained:
+            with self._mutation_lock:
+                self._pending_rebuild_batches.difference_update(target_bids)
+            return False, "Active file transfer is still winding down; please try again in a moment."
+
+        # Workers have fully exited for target_bids; normalize any straggling 'downloading' state
+        stragglers: List[DownloadTask] = []
+        with self._mutation_lock:
+            for t in self.tasks:
+                if self._task_batch_id(t) in target_bids and t.status == "downloading":
+                    t.status = "cancelled" if mode == "cancel" else "paused"
+                    t.speed_bps = 0
+                    t.speed_str = "0 KB/s"
+                    t.eta_str = "--"
+                    if mode == "cancel" and not t.error_msg:
+                        t.error_msg = "Download cancelled by user"
+                    stragglers.append(t)
+        if stragglers:
+            self._notify_many(stragglers)
+
+        return True, ""
+
+    def update_runtime_options(
+        self,
+        batch_ids: Set[str],
+        new_options: FilterOptions,
+        proxy_changed: bool = False,
+        update_global_options: bool = True,
+    ) -> None:
+        """Applies Tier 2 runtime/transport settings in-place without pausing or rebuilding tasks."""
+        if not new_options:
+            return
+        if update_global_options:
+            self.current_options = FilterOptions.from_dict(new_options.to_dict())
+            self.max_workers = max(1, int(getattr(new_options, "threads", self.max_workers) or self.max_workers))
+        for bid in batch_ids:
+            opts_copy = FilterOptions.from_dict(new_options.to_dict())
+            self.set_batch_options(bid, opts_copy)
+            with self._batch_contexts_lock:
+                ctx = self._batch_contexts.get(bid)
+                if ctx is not None:
+                    ctx.applied_options = FilterOptions.from_dict(new_options.to_dict())
+            for t in list(self.tasks):
+                if self._task_batch_id(t) == bid and t.status in ("pending", "downloading", "retrying", "paused"):
+                    t.options = opts_copy
+        if proxy_changed:
+            self.bump_worker_session_epoch(getattr(new_options, "proxy_url", ""))
+
+    def build_tasks_from_external_files(
+        self,
+        files: List[Dict[str, Any]],
+        provider: str,
+        creator_name: str,
+        base_dir: str,
+        options: FilterOptions,
+        batch_id: str,
+        post_id: str = "",
+        artist_dir: Optional[str] = None,
+        user_id: str = "",
+    ) -> List[DownloadTask]:
+        """Builds filtered DownloadTask objects for Bunkr/Erome/nHentai external album batches."""
+        from core.text_utils import sanitize_filesystem_name
+        from core.path_utils import unique_name_in_batch
+
+        prefix_map = {"bunkr": "Bunkr", "erome": "Erome", "nhentai": "nHentai"}
+        label_prefix = prefix_map.get((provider or "").lower(), (provider or "Album").title())
+        fallback_name = f"Gallery {post_id}" if (provider or "").lower() == "nhentai" else f"{label_prefix} Album"
+        folder_name = sanitize_filesystem_name(creator_name or fallback_name, fallback=fallback_name)
+        folder = artist_dir or os.path.join(base_dir, f"{label_prefix} - {folder_name}")
+        taken: Set[str] = set()
+        tasks: List[DownloadTask] = []
+        force_redownload = bool(getattr(options, "force_redownload", False))
+        svc = (provider or "").lower()
+        pid = post_id or svc
+
+        for f in files:
+            url = f.get("url", "")
+            fname = f.get("filename", "") or "file"
+            fsize = int(f.get("size", 0) or 0)
+            if not url:
+                continue
+            keep, _ = FilterEngine.should_keep_file(fname, options, file_size=fsize)
+            if not keep:
+                continue
+            if not force_redownload and self.archive_manager and self.archive_manager.is_enabled:
+                if self.archive_manager.is_archived(service=svc, post_id=pid, file_id=url):
+                    continue
+            target_path = fit_path_for_windows(unique_name_in_batch(folder, fname, taken))
+            t = DownloadTask(
+                url=url,
+                target_path=target_path,
+                post_title=creator_name or fallback_name,
+                creator_name=creator_name or fallback_name,
+                service=svc,
+                post_id=pid,
+                file_id=url,
+                file_size=fsize,
+                batch_id=batch_id,
+                user_id=user_id,
+            )
+            t.options = options
+            tasks.append(t)
+        return tasks
+
+    def rebuild_batches_in_place(
+        self,
+        batch_plans: Dict[str, Dict[str, Any]],
+        new_options: FilterOptions,
+        cookie_str: str = "",
+        force_redownload: bool = False,
+        clear_previous_completed: bool = False,
+        update_global_options: bool = True,
+    ) -> Dict[str, Any]:
+        """Rebuilds queued/paused/failed tasks for `batch_plans` using new settings cleanly.
+
+        Callers must invoke `quiesce_batches(...)` beforehand so zero active workers remain.
+        """
+        batch_ids = {b for b in (batch_plans or {}).keys() if b}
+        if not batch_ids:
+            return {"ok": True, "rebuilt_batch_ids": [], "replacement_tasks": []}
+
+        with self._workers_drained_cond:
+            busy = [b for b in batch_ids if self._active_batch_workers.get(b, 0) > 0]
+        if busy:
+            with self._mutation_lock:
+                self._pending_rebuild_batches.difference_update(batch_ids)
+            return {"ok": False, "error": f"Workers still active for batches: {', '.join(busy)}"}
+
+        build_session = self._session_id
+        migrated_parts = 0
+        cleaned_parts = 0
+        kept_completed_count = 0
+        new_pending_count = 0
+
+        try:
+            with self._mutation_lock:
+                self._pending_rebuild_batches.update(batch_ids)
+                existing_tasks = list(self.tasks)
+
+            by_batch_existing: Dict[str, List[DownloadTask]] = defaultdict(list)
+            other_tasks: List[DownloadTask] = []
+            for t in existing_tasks:
+                bid = self._task_batch_id(t)
+                if bid in batch_ids:
+                    by_batch_existing[bid].append(t)
+                else:
+                    other_tasks.append(t)
+
+            self._clear_post_info_for_batches(batch_ids, other_tasks)
+
+            rebuilt_map: Dict[str, List[DownloadTask]] = {}
+            all_new_candidates: List[DownloadTask] = []
+
+            for bid, plan in batch_plans.items():
+                plan_opts = plan.get("options") or new_options
+                fresh_options = FilterOptions.from_dict(plan_opts.to_dict())
+                fresh_options.force_redownload = bool(force_redownload)
+
+                existing_for_bid = by_batch_existing.get(bid, [])
+                completed_tasks = (
+                    []
+                    if clear_previous_completed
+                    else [t for t in existing_for_bid if t.status == "completed"]
+                )
+                old_interrupted = (
+                    existing_for_bid
+                    if clear_previous_completed
+                    else [t for t in existing_for_bid if t.status in ("pending", "paused", "retrying", "failed")]
+                )
+
+                old_by_url: Dict[str, List[Tuple[str, bool, str]]] = defaultdict(list)
+                ctx = self.get_batch_context(bid)
+                old_thumb_flag = bool(
+                    getattr(ctx.applied_options, "download_thumbnails_only", False)
+                    if ctx and ctx.applied_options
+                    else False
+                )
+                for ot in old_interrupted:
+                    ot_thumb = (
+                        bool(getattr(ot.options, "download_thumbnails_only", False))
+                        if getattr(ot, "options", None) is not None
+                        else old_thumb_flag
+                    )
+                    old_by_url[ot.url].append((ot.target_path, ot_thumb, ot.target_path + PART_SUFFIX))
+
+                if "tasks" in plan and plan["tasks"] is not None:
+                    candidates = list(plan["tasks"])
+                elif plan.get("external_files"):
+                    candidates = self.build_tasks_from_external_files(
+                        files=plan["external_files"],
+                        provider=plan.get("provider") or plan.get("service", ""),
+                        creator_name=plan.get("creator_name", ""),
+                        base_dir=plan.get("base_dir", ""),
+                        options=fresh_options,
+                        batch_id=bid,
+                        post_id=plan.get("post_id", ""),
+                        artist_dir=plan.get("artist_dir"),
+                        user_id=plan.get("user_id", ""),
+                    )
+                else:
+                    candidates = self.build_tasks_from_posts(
+                        posts=plan.get("posts") or [],
+                        creator_name=plan.get("creator_name", "creator"),
+                        service=plan.get("service", ""),
+                        domain=plan.get("domain", ""),
+                        base_dir=plan.get("base_dir", ""),
+                        options=fresh_options,
+                        batch_id=bid,
+                        artist_dir=plan.get("artist_dir"),
+                        user_id=plan.get("user_id", ""),
+                        progress_callback=plan.get("progress_callback"),
+                    )
+
+                if self.last_build_cancelled or (self._cancel_event.is_set() and build_session != self._session_id):
+                    return {"ok": False, "cancelled": True, "error": "Rebuild cancelled"}
+
+                thumb_changed = old_thumb_flag != bool(getattr(fresh_options, "download_thumbnails_only", False))
+                filtered_candidates: List[DownloadTask] = []
+                if not clear_previous_completed and completed_tasks and not thumb_changed:
+                    done_identities = {
+                        (str(t.service).lower(), str(t.post_id), str(t.file_id))
+                        for t in completed_tasks
+                        if getattr(t, "file_id", "")
+                    }
+                    done_urls = {t.url for t in completed_tasks if getattr(t, "url", "")}
+                    for c in candidates:
+                        c_id = (str(c.service).lower(), str(c.post_id), str(c.file_id))
+                        if (c.file_id and c_id in done_identities) or (c.url and c.url in done_urls):
+                            continue
+                        filtered_candidates.append(c)
+                else:
+                    filtered_candidates = list(candidates)
+
+                # Reserve collision-free paths against other batches, kept completed tasks, and earlier rebuilt batches
+                self._keep_paths_apart(filtered_candidates, other_tasks + completed_tasks + all_new_candidates)
+
+                new_thumb_flag = bool(getattr(fresh_options, "download_thumbnails_only", False))
+                migrated_part_paths: Set[str] = set()
+                for c in filtered_candidates:
+                    c.batch_id = bid
+                    c.options = fresh_options
+                    c.target_path = fit_path_for_windows(c.target_path)
+                    if not clear_previous_completed and c.url in old_by_url and old_by_url[c.url]:
+                        old_target, ot_thumb, old_part = old_by_url[c.url].pop(0)
+                        if ot_thumb == new_thumb_flag and os.path.isfile(old_part):
+                            try:
+                                if os.path.getsize(old_part) > 0:
+                                    dst_part = c.target_path + PART_SUFFIX
+                                    if os.path.abspath(old_part) == os.path.abspath(dst_part) or atomic_move_part(old_part, dst_part):
+                                        migrated_part_paths.add(os.path.abspath(old_part))
+                                        migrated_parts += 1
+                                        try:
+                                            c.downloaded_bytes = os.path.getsize(dst_part)
+                                        except OSError:
+                                            pass
+                            except OSError:
+                                pass
+
+                if not clear_previous_completed:
+                    for ot in old_interrupted:
+                        old_part = ot.target_path + PART_SUFFIX
+                        if os.path.abspath(old_part) not in migrated_part_paths and os.path.isfile(old_part):
+                            _remove_quietly(old_part)
+                            cleaned_parts += 1
+
+                kept_completed_count += len(completed_tasks)
+                new_pending_count += len(filtered_candidates)
+                all_new_candidates.extend(filtered_candidates)
+                rebuilt_map[bid] = completed_tasks + filtered_candidates
+                self.set_batch_options(bid, fresh_options)
+
+            with self._mutation_lock:
+                if build_session != self._session_id:
+                    return {"ok": False, "cancelled": True, "error": "Session superseded"}
+
+                new_task_list: List[DownloadTask] = []
+                emitted_batches: Set[str] = set()
+                for t in existing_tasks:
+                    bid = self._task_batch_id(t)
+                    if bid in batch_ids:
+                        if bid not in emitted_batches:
+                            emitted_batches.add(bid)
+                            new_task_list.extend(rebuilt_map.get(bid, []))
+                    else:
+                        new_task_list.append(t)
+                for bid in batch_ids:
+                    if bid not in emitted_batches:
+                        emitted_batches.add(bid)
+                        new_task_list.extend(rebuilt_map.get(bid, []))
+
+                self.tasks = new_task_list
+                self._counter_sig = None
+                self._dispatch_cursor = 0
+                self._last_full_scan = 0.0
+                if update_global_options:
+                    self.current_options = FilterOptions.from_dict(new_options.to_dict())
+
+                with self._lock:
+                    self.total_bytes = sum(t.file_size for t in self.tasks if getattr(t, "file_size", 0) > 0)
+
+                with self._paused_batches_lock:
+                    self._paused_batches.difference_update(batch_ids)
+                    self._cancelled_batches.difference_update(batch_ids)
+
+                eff_opts = FilterOptions.from_dict(new_options.to_dict())
+                self._save_recovery_checkpoint(eff_opts, async_write=False, force_full=True)
+
+            replacement_flat: List[DownloadTask] = []
+            for bid in batch_ids:
+                replacement_flat.extend(rebuilt_map.get(bid, []))
+
+            if replacement_flat:
+                self._notify_many(replacement_flat)
+
+            has_pending = any(t.status == "pending" for t in self.tasks)
+            if has_pending and not self._is_running:
+                self.start_download_queue(
+                    self.tasks,
+                    FilterOptions.from_dict(new_options.to_dict()),
+                    cookie_str or self._clean_cookie,
+                )
+
+            return {
+                "ok": True,
+                "rebuilt_batch_ids": list(batch_ids),
+                "replacement_tasks": replacement_flat,
+                "migrated_parts": migrated_parts,
+                "cleaned_parts": cleaned_parts,
+                "kept_completed": kept_completed_count,
+                "new_pending": new_pending_count,
+            }
+        finally:
+            with self._mutation_lock:
+                self._pending_rebuild_batches.difference_update(batch_ids)
 
     def _trigger_rate_limit_backoff(self, threads_locked: bool = False):
         with self._rate_limit_lock:
@@ -2585,6 +3386,7 @@ class KemonoDownloader:
         self.current_options = options
         self.start_time = time.time()
         self.downloaded_bytes = 0
+        statistics_manager.set_download_active(True)
         self._speed_samples.clear()
         self._rolling_speed_samples.clear()
         self._smoothed_speed = 0.0
@@ -2670,329 +3472,357 @@ class KemonoDownloader:
         active_futures = {}
         last_count_time = 0.0
 
-        with ThreadPoolExecutor(max_workers=max(32, target_max_workers)) as executor:
-            while not self._cancel_event.is_set() and (session_id == self._session_id):
-                now = time.time()
-                is_locked = getattr(self.current_options or options, "threads_locked", False)
+        try:
+            with ThreadPoolExecutor(max_workers=max(32, target_max_workers)) as executor:
+                while not self._cancel_event.is_set() and (session_id == self._session_id):
+                    now = time.time()
+                    is_locked = getattr(self.current_options or options, "threads_locked", False)
 
-                # Effective ceiling: learned ceiling if we encountered 429, else user target
-                effective_ceiling = self._learned_stable_ceiling if self._learned_stable_ceiling is not None else target_max_workers
+                    # Effective ceiling: learned ceiling if we encountered 429, else user target
+                    effective_ceiling = self._learned_stable_ceiling if self._learned_stable_ceiling is not None else target_max_workers
 
-                # 1. Check Adaptive Scaling timer (every 5 seconds)
-                if options.adaptive_threading and not is_locked and (now - last_scale_time >= scale_step_interval):
-                    last_scale_time = now
-                    # Only scale up if not currently in rate-limit cooldown
-                    if now >= self._rate_limit_cooldown_until:
-                        if self.max_workers < effective_ceiling:
-                            self.max_workers += 1
-                            consecutive_successes = 0
-                            logger.info(
-                                f"⚡ [Adaptive Threading] Connection stable. Scaling up concurrency to {self.max_workers}/{effective_ceiling} threads (ceiling: {effective_ceiling})...",
-                                category="adaptive"
-                            )
-                            if self.on_concurrency_throttled:
-                                self.on_concurrency_throttled(self.max_workers)
-                        elif self._stable_clean_count >= 50 and effective_ceiling < target_max_workers:
-                            # Long-term stability probe after 50 consecutive error-free downloads
-                            self._learned_stable_ceiling += 1
-                            self.max_workers += 1
-                            self._stable_clean_count = 0
-                            consecutive_successes = 0
-                            logger.info(
-                                f"⚡ [Adaptive Threading] Long-term stability verified (50+ clean files). Probing higher concurrency (+1 to {self.max_workers} threads)...",
-                                category="adaptive"
-                            )
-                            if self.on_concurrency_throttled:
-                                self.on_concurrency_throttled(self.max_workers)
+                    # 1. Check Adaptive Scaling timer (every 5 seconds)
+                    if options.adaptive_threading and not is_locked and (now - last_scale_time >= scale_step_interval):
+                        last_scale_time = now
+                        # Only scale up if not currently in rate-limit cooldown
+                        if now >= self._rate_limit_cooldown_until:
+                            if self.max_workers < effective_ceiling:
+                                self.max_workers += 1
+                                consecutive_successes = 0
+                                logger.info(
+                                    f"⚡ [Adaptive Threading] Connection stable. Scaling up concurrency to {self.max_workers}/{effective_ceiling} threads (ceiling: {effective_ceiling})...",
+                                    category="adaptive"
+                                )
+                                if self.on_concurrency_throttled:
+                                    self.on_concurrency_throttled(self.max_workers)
+                            elif self._stable_clean_count >= 50 and effective_ceiling < target_max_workers:
+                                # Long-term stability probe after 50 consecutive error-free downloads
+                                self._learned_stable_ceiling += 1
+                                self.max_workers += 1
+                                self._stable_clean_count = 0
+                                consecutive_successes = 0
+                                logger.info(
+                                    f"⚡ [Adaptive Threading] Long-term stability verified (50+ clean files). Probing higher concurrency (+1 to {self.max_workers} threads)...",
+                                    category="adaptive"
+                                )
+                                if self.on_concurrency_throttled:
+                                    self.on_concurrency_throttled(self.max_workers)
 
-                # 2. Check if rate-limit cooldown is active
-                if now < self._rate_limit_cooldown_until:
-                    rem = int(self._rate_limit_cooldown_until - now)
-                    time.sleep(min(1.0, self._rate_limit_cooldown_until - now))
-                    continue
-
-                while self._pause_event.is_set():
-                    time.sleep(0.5)
-                    if self._cancel_event.is_set():
-                        break
-
-                # 3. Check finished futures
-                done_futures = [f for f in active_futures if f.done()]
-                for f in done_futures:
-                    task = active_futures.pop(f)
-                    try:
-                        success, msg = f.result()
-                        if success:
-                            if task.status == "skipped" or (msg and msg.startswith("Skipped:")):
-                                task.status = "skipped"
-                                if not task.error_msg and msg.startswith("Skipped:"):
-                                    task.error_msg = msg[len("Skipped:"):].strip()
-                                task.progress_pct = 100
-                                task.eta_str = "Skipped"
-                                self._write_pending_post_info(task)
-                                if self.on_task_status_changed:
-                                    self.on_task_status_changed(task)
-                            else:
-                                task.status = "completed"
-                                task.error_msg = ""
-                                consecutive_successes += 1
-                                self._stable_clean_count += 1
-                                self.session_manager.record_downloaded_file(task.file_id)
-                                self._write_pending_post_info(task)
-                                if self.archive_manager and self.archive_manager.is_enabled and not getattr(task, "used_preview", False):
-                                    self.archive_manager.record_file(
-                                        service=task.service,
-                                        creator_id=task.user_id,
-                                        post_id=task.post_id,
-                                        file_id=task.file_id,
-                                        file_hash=task.expected_sha256,
-                                        filename=task.filename,
-                                        creator_name=task.creator_name,
-                                        post_title=task.post_title,
-                                        file_size=task.file_size,
-                                        file_path=task.target_path
-                                    )
-                                if self.on_task_status_changed:
-                                    self.on_task_status_changed(task)
-
-                                # Fast Adaptive Scaling: Scale up after 10 consecutive successful files if below ceiling and interval elapsed
-                                if options.adaptive_threading and not is_locked and not is_pure_telegram and consecutive_successes >= 10 and (now - last_scale_time >= 6.0):
-                                    effective_ceiling = self._learned_stable_ceiling if self._learned_stable_ceiling is not None else target_max_workers
-                                    if now >= self._rate_limit_cooldown_until and self.max_workers < effective_ceiling:
-                                        self.max_workers += 1
-                                        consecutive_successes = 0
-                                        last_scale_time = now
-                                        logger.info(
-                                            f"⚡ [Adaptive Threading] Fast-scaling concurrency to {self.max_workers}/{effective_ceiling} threads...",
-                                            category="adaptive"
-                                        )
-                                        if self.on_concurrency_throttled:
-                                            self.on_concurrency_throttled(self.max_workers)
-                        else:
-                            consecutive_successes = 0
-                            self._stable_clean_count = 0
-                            if msg.startswith("429_RATE_LIMIT"):
-                                # 429 Rate Limit encountered -> auto-retry after cooldown (30s if locked, 15s if adaptive)
-                                wait_secs = 30 if is_locked else 15
-                                task.status = "pending"
-                                task.error_msg = f"Rate limited (429) — cooling down for {wait_secs}s before auto-retry"
-                                if self.on_task_status_changed:
-                                    self.on_task_status_changed(task)
-                                self._trigger_rate_limit_backoff(threads_locked=is_locked)
-                                last_scale_time = time.time() + float(wait_secs)
-                            elif "Disk full" in msg:
-                                task.status = "pending"
-                                task.error_msg = msg
-                                if self.on_task_status_changed:
-                                    self.on_task_status_changed(task)
-                                if not self._pause_event.is_set():
-                                    self.pause()
-                                    logger.warning(
-                                        "⚠️ [Disk Full Alert] Destination drive ran out of space! Downloads paused to prevent file corruption. Please free space on your drive and click Resume.",
-                                        category="downloader"
-                                    )
-                            elif "Batch paused by user" in msg or task.status == "paused":
-                                task.status = "paused"
-                                task.error_msg = ""
+                    # 2-3. Always drain finished futures first (even during cooldown/pause) so per-batch
+                    # quiescence never stalls waiting on un-popped futures.
+                    done_futures = [f for f in active_futures if f.done()]
+                    for f in done_futures:
+                        task = active_futures.pop(f)
+                        bid = self._task_batch_id(task)
+                        try:
+                            success, msg = f.result()
+                            if self.is_batch_cancelled(task):
+                                task.status = "cancelled"
+                                task.error_msg = "Download cancelled by user"
                                 task.speed_bps = 0
                                 task.speed_str = "0 KB/s"
-                                task.eta_str = "Paused"
+                                task.eta_str = "--"
                                 if self.on_task_status_changed:
                                     self.on_task_status_changed(task)
-                            else:
-                                task.status = "failed"
-                                task.error_msg = msg
-                                if self.on_task_status_changed:
-                                    self.on_task_status_changed(task)
-                    except Exception as e:
-                        consecutive_successes = 0
-                        task.status = "failed"
-                        task.error_msg = str(e)
-                        logger.error(f"Error downloading {task.filename}: {e}", category="downloader",
-                                     details=self._task_context(task) + "\n" + traceback.format_exc())
-                        if self.on_task_status_changed:
-                            self.on_task_status_changed(task)
-
-                # Emit progress a few times a second, from counts kept as statuses change (counting
-                # a huge queue by looping over it used a lot of CPU and made the window stutter)
-                if now - last_count_time >= 0.3:
-                    last_count_time = now
-                    counts = self.status_counts()
-                    completed_count = counts["completed"] + counts["skipped"]
-                    failed_count = counts["failed"]
-                    self._emit_progress(completed_count, failed_count, len(self.tasks))
-
-                # 4. If in cooldown or paused or cancelled, wait
-                if time.time() < self._rate_limit_cooldown_until or self._pause_event.is_set() or self._cancel_event.is_set():
-                    time.sleep(0.2)
-                    continue
-
-                # 5. Dispatch pending tasks up to self.max_workers with Anti-Burst Staggering
-                current_active = len(active_futures)
-                slots_available = max(0, self.max_workers - current_active)
-                if slots_available > 0:
-                    pending_tasks = self._collect_pending(slots_available * 4 + 8, now)
-                    if not pending_tasks and current_active == 0:
-                        pending_tasks = self._collect_pending(slots_available * 4 + 8, now, full=True)
-                    if not pending_tasks and current_active == 0:
-                        has_paused_tasks = any(
-                            (self.is_batch_paused(t) or t.status == "paused")
-                            for t in self.tasks
-                            if t.status in ("pending", "paused")
-                        )
-                        if has_paused_tasks and not self._cancel_event.is_set():
-                            time.sleep(0.5)
-                            continue
-
-                        # Check if "auto retry at the end" is enabled dynamically
-                        auto_retry_active = (
-                            getattr(self.current_options, "auto_retry_at_end", False)
-                            if self.current_options
-                            else options.auto_retry_at_end
-                        )
-                        if auto_retry_active and not self._cancel_event.is_set():
-                            skip_404 = (
-                                getattr(self.current_options, "skip_retry_404", False)
-                                if self.current_options is not None
-                                else getattr(options, "skip_retry_404", False)
-                            )
-                            all_failed = [t for t in self.tasks if t.status == "failed"]
-                            failed_tasks = []
-                            for t in all_failed:
-                                err = str(getattr(t, "error_msg", "")).lower()
-                                if skip_404 and ("404" in err or getattr(t, "http_status", 0) == 404):
-                                    continue
-                                is_fatal_auth = any(f in err for f in (
-                                    "key is not registered",
-                                    "session expired",
-                                    "session revoked",
-                                    "authkey",
-                                    "auth_key",
-                                    "unregistered",
-                                    "unauthorized"
-                                ))
-                                if is_fatal_auth:
-                                    t.retry_capped = True
-                                    continue
-                                if getattr(t, "retry_count", 0) < 5:
-                                    failed_tasks.append(t)
+                            elif success:
+                                if task.status == "skipped" or (msg and msg.startswith("Skipped:")):
+                                    task.status = "skipped"
+                                    if not task.error_msg and msg.startswith("Skipped:"):
+                                        task.error_msg = msg[len("Skipped:"):].strip()
+                                    task.progress_pct = 100
+                                    task.eta_str = "Skipped"
+                                    statistics_manager.record_file_result("skipped")
+                                    self._write_pending_post_info(task)
+                                    if self.on_task_status_changed:
+                                        self.on_task_status_changed(task)
                                 else:
-                                    t.retry_capped = True
-                                    orig_err = getattr(t, "error_msg", "") or "Download failed"
-                                    if "(Stopped after 5 retries)" not in orig_err:
-                                        t.error_msg = f"{orig_err} (Stopped after 5 retries)"
+                                    task.status = "completed"
+                                    task.error_msg = ""
+                                    statistics_manager.record_file_result("completed")
+                                    consecutive_successes += 1
+                                    self._stable_clean_count += 1
+                                    self.session_manager.record_downloaded_file(task.file_id)
+                                    self._write_pending_post_info(task)
+                                    if self.archive_manager and self.archive_manager.is_enabled and not getattr(task, "used_preview", False):
+                                        self.archive_manager.record_file(
+                                            service=task.service,
+                                            creator_id=task.user_id,
+                                            post_id=task.post_id,
+                                            file_id=task.file_id,
+                                            file_hash=task.expected_sha256,
+                                            filename=task.filename,
+                                            creator_name=task.creator_name,
+                                            post_title=task.post_title,
+                                            file_size=task.file_size,
+                                            file_path=task.target_path
+                                        )
                                     if self.on_task_status_changed:
-                                        self.on_task_status_changed(t)
+                                        self.on_task_status_changed(task)
 
-                            if failed_tasks:
-                                retry_attempt = getattr(failed_tasks[0], 'retry_count', 0) + 1
-                                wait_time = min(6.0, 1.5 * retry_attempt)
-                                logger.info(
-                                    f"🔄 Auto-retry triggered for {len(failed_tasks)} failed files (attempt {retry_attempt}/5, cooling down {wait_time:.1f}s)...",
-                                    category="downloader"
-                                )
-                                for t in failed_tasks:
-                                    t.retry_count = getattr(t, "retry_count", 0) + 1
-                                    t.retry_capped = False
-                                    t.status = "pending"
-                                    t.error_msg = ""
-                                    t.progress_pct = 0
-                                    t.downloaded_bytes = 0
-                                    t.speed_bps = 0
-                                    t.speed_str = "0 KB/s"
-                                    t.eta_str = "--"
+                                    # Fast Adaptive Scaling: Scale up after 10 consecutive successful files if below ceiling and interval elapsed
+                                    if options.adaptive_threading and not is_locked and not is_pure_telegram and consecutive_successes >= 10 and (now - last_scale_time >= 6.0):
+                                        effective_ceiling = self._learned_stable_ceiling if self._learned_stable_ceiling is not None else target_max_workers
+                                        if now >= self._rate_limit_cooldown_until and self.max_workers < effective_ceiling:
+                                            self.max_workers += 1
+                                            consecutive_successes = 0
+                                            last_scale_time = now
+                                            logger.info(
+                                                f"⚡ [Adaptive Threading] Fast-scaling concurrency to {self.max_workers}/{effective_ceiling} threads...",
+                                                category="adaptive"
+                                            )
+                                            if self.on_concurrency_throttled:
+                                                self.on_concurrency_throttled(self.max_workers)
+                            else:
+                                consecutive_successes = 0
+                                self._stable_clean_count = 0
+                                if msg.startswith("429_RATE_LIMIT"):
+                                    # 429 Rate Limit encountered -> auto-retry after cooldown (30s if locked, 15s if adaptive)
+                                    wait_secs = 30 if is_locked else 15
+                                    task.status = "pending"
+                                    task.error_msg = f"Rate limited (429) — cooling down for {wait_secs}s before auto-retry"
+                                    statistics_manager.record_retry()
                                     if self.on_task_status_changed:
-                                        self.on_task_status_changed(t)
-                                time.sleep(wait_time)
+                                        self.on_task_status_changed(task)
+                                    self._trigger_rate_limit_backoff(threads_locked=is_locked)
+                                    last_scale_time = time.time() + float(wait_secs)
+                                elif "Disk full" in msg:
+                                    task.status = "pending"
+                                    task.error_msg = msg
+                                    if self.on_task_status_changed:
+                                        self.on_task_status_changed(task)
+                                    if not self._pause_event.is_set():
+                                        self.pause()
+                                        logger.warning(
+                                            "⚠️ [Disk Full Alert] Destination drive ran out of space! Downloads paused to prevent file corruption. Please free space on your drive and click Resume.",
+                                            category="downloader"
+                                        )
+                                elif "Batch paused by user" in msg or self.is_batch_paused(task) or task.status == "paused":
+                                    task.status = "paused"
+                                    task.error_msg = ""
+                                    task.speed_bps = 0
+                                    task.speed_str = "0 KB/s"
+                                    task.eta_str = "Paused"
+                                    if self.on_task_status_changed:
+                                        self.on_task_status_changed(task)
+                                elif msg == "Cancelled":
+                                    task.status = "cancelled"
+                                    task.error_msg = "Download cancelled by user"
+                                    task.speed_bps = 0
+                                    task.speed_str = "0 KB/s"
+                                    task.eta_str = "--"
+                                    if self.on_task_status_changed:
+                                        self.on_task_status_changed(task)
+                                else:
+                                    task.status = "failed"
+                                    task.error_msg = msg
+                                    statistics_manager.record_file_result("failed")
+                                    if self.on_task_status_changed:
+                                        self.on_task_status_changed(task)
+                        except Exception as e:
+                            consecutive_successes = 0
+                            task.status = "failed"
+                            task.error_msg = str(e)
+                            statistics_manager.record_file_result("failed")
+                            logger.error(f"Error downloading {task.filename}: {e}", category="downloader",
+                                         details=self._task_context(task) + "\n" + traceback.format_exc())
+                            if self.on_task_status_changed:
+                                self.on_task_status_changed(task)
+                        finally:
+                            self._decrement_batch_worker(bid)
+
+                    # Emit progress a few times a second, from counts kept as statuses change (counting
+                    # a huge queue by looping over it used a lot of CPU and made the window stutter)
+                    if now - last_count_time >= 0.3:
+                        last_count_time = now
+                        counts = self.status_counts()
+                        completed_count = counts["completed"] + counts["skipped"]
+                        failed_count = counts["failed"]
+                        self._emit_progress(completed_count, failed_count, len(self.tasks))
+
+                    # 4. If in cooldown or paused or cancelled, wait
+                    if time.time() < self._rate_limit_cooldown_until or self._pause_event.is_set() or self._cancel_event.is_set():
+                        time.sleep(0.2)
+                        continue
+
+                    # 5. Dispatch pending tasks up to self.max_workers with Anti-Burst Staggering
+                    current_active = len(active_futures)
+                    slots_available = max(0, self.max_workers - current_active)
+                    if slots_available > 0:
+                        pending_tasks = self._collect_pending(slots_available * 4 + 8, now)
+                        if not pending_tasks and current_active == 0:
+                            pending_tasks = self._collect_pending(slots_available * 4 + 8, now, full=True)
+                        if not pending_tasks and current_active == 0:
+                            has_paused_tasks = any(
+                                (self.is_batch_paused(t) or t.status == "paused")
+                                for t in self.tasks
+                                if t.status in ("pending", "paused")
+                            )
+                            rebuild_active = self.has_pending_rebuilds()
+                            if (has_paused_tasks or rebuild_active) and not self._cancel_event.is_set():
+                                time.sleep(0.25)
                                 continue
 
-                        # All tasks completed or finished
-                        break
+                            # Check if "auto retry at the end" is enabled dynamically
+                            auto_retry_active = (
+                                getattr(self.current_options, "auto_retry_at_end", False)
+                                if self.current_options
+                                else options.auto_retry_at_end
+                            )
+                            if auto_retry_active and not self._cancel_event.is_set():
+                                skip_404 = (
+                                    getattr(self.current_options, "skip_retry_404", False)
+                                    if self.current_options is not None
+                                    else getattr(options, "skip_retry_404", False)
+                                )
+                                all_failed = [t for t in self.tasks if t.status == "failed"]
+                                failed_tasks = []
+                                for t in all_failed:
+                                    err = str(getattr(t, "error_msg", "")).lower()
+                                    if skip_404 and ("404" in err or getattr(t, "http_status", 0) == 404):
+                                        continue
+                                    is_fatal_auth = any(f in err for f in (
+                                        "key is not registered",
+                                        "session expired",
+                                        "session revoked",
+                                        "authkey",
+                                        "auth_key",
+                                        "unregistered",
+                                        "unauthorized"
+                                    ))
+                                    if is_fatal_auth:
+                                        t.retry_capped = True
+                                        continue
+                                    if getattr(t, "retry_count", 0) < 5:
+                                        failed_tasks.append(t)
+                                    else:
+                                        t.retry_capped = True
+                                        orig_err = getattr(t, "error_msg", "") or "Download failed"
+                                        if "(Stopped after 5 retries)" not in orig_err:
+                                            t.error_msg = f"{orig_err} (Stopped after 5 retries)"
+                                        if self.on_task_status_changed:
+                                            self.on_task_status_changed(t)
 
-                    # Telegram concurrency cap (strictly max 2 active Telegram downloads under any circumstance)
-                    active_tg_count = sum(
-                        1 for t in active_futures.values()
-                        if getattr(t, "is_telegram", False) or getattr(t, "service", "") == "telegram" or (t.url and t.url.startswith("tg://"))
-                    )
+                                if failed_tasks:
+                                    retry_attempt = getattr(failed_tasks[0], 'retry_count', 0) + 1
+                                    wait_time = min(6.0, 1.5 * retry_attempt)
+                                    logger.info(
+                                        f"🔄 Auto-retry triggered for {len(failed_tasks)} failed files (attempt {retry_attempt}/5, cooling down {wait_time:.1f}s)...",
+                                        category="downloader"
+                                    )
+                                    for t in failed_tasks:
+                                        t.retry_count = getattr(t, "retry_count", 0) + 1
+                                        t.retry_capped = False
+                                        t.status = "pending"
+                                        t.error_msg = ""
+                                        t.progress_pct = 0
+                                        t.downloaded_bytes = 0
+                                        t.speed_bps = 0
+                                        t.speed_str = "0 KB/s"
+                                        t.eta_str = "--"
+                                        if self.on_task_status_changed:
+                                            self.on_task_status_changed(t)
+                                    time.sleep(wait_time)
+                                    continue
 
-                    tasks_to_dispatch = []
-                    for task in pending_tasks:
-                        if len(tasks_to_dispatch) >= slots_available:
+                            # All tasks completed or finished
                             break
-                        is_tg = getattr(task, "is_telegram", False) or getattr(task, "service", "") == "telegram" or (task.url and task.url.startswith("tg://"))
-                        if is_tg and (active_tg_count >= 2):
-                            continue
-                        if is_tg:
-                            active_tg_count += 1
-                        tasks_to_dispatch.append(task)
 
-                    for i, task in enumerate(tasks_to_dispatch):
-                        if self._cancel_event.is_set():
-                            break
-                        # Feature 4: Jittered Inter-Request Staggering (Anti-Burst Smoothing)
-                        if i > 0 and not self._cancel_event.is_set():
-                            is_pawchive_target = "pawchive" in (task.url or "").lower() or (getattr(task, "service", None) and "pawchive" in str(task.service).lower())
-                            stagger = random.uniform(0.12, 0.22) if is_pawchive_target else 0.06
-                            time.sleep(stagger)
+                        # Telegram concurrency cap (strictly max 2 active Telegram downloads under any circumstance)
+                        active_tg_count = sum(
+                            1 for t in active_futures.values()
+                            if getattr(t, "is_telegram", False) or getattr(t, "service", "") == "telegram" or (t.url and t.url.startswith("tg://"))
+                        )
 
-                        if self._cancel_event.is_set():
-                            break
+                        tasks_to_dispatch = []
+                        for task in pending_tasks:
+                            if len(tasks_to_dispatch) >= slots_available:
+                                break
+                            is_tg = getattr(task, "is_telegram", False) or getattr(task, "service", "") == "telegram" or (task.url and task.url.startswith("tg://"))
+                            if is_tg and (active_tg_count >= 2):
+                                continue
+                            if is_tg:
+                                active_tg_count += 1
+                            tasks_to_dispatch.append(task)
 
-                        task.status = "downloading"
-                        if self.on_task_status_changed:
-                            self.on_task_status_changed(task)
-                        try:
-                            task_opts = getattr(task, "options", None) or self.get_batch_options(getattr(task, "batch_id", "")) or options
-                            fut = executor.submit(self._worker_download_task, task, task_opts)
-                            active_futures[fut] = task
-                        except RuntimeError:
-                            # Executor was shut down (e.g. cancelled)
-                            task.status = "pending"
-                            break
+                        for i, task in enumerate(tasks_to_dispatch):
+                            if self._cancel_event.is_set():
+                                break
+                            # Feature 4: Jittered Inter-Request Staggering (Anti-Burst Smoothing)
+                            if i > 0 and not self._cancel_event.is_set():
+                                is_pawchive_target = "pawchive" in (task.url or "").lower() or (getattr(task, "service", None) and "pawchive" in str(task.service).lower())
+                                stagger = random.uniform(0.12, 0.22) if is_pawchive_target else 0.06
+                                time.sleep(stagger)
 
-                # Feature 5: Track Adaptive Health State
-                if is_locked:
-                    if now < self._rate_limit_cooldown_until:
-                        self.adaptive_state = "cooldown"
-                        rem = max(1, int(self._rate_limit_cooldown_until - now))
-                        self.adaptive_status_text = f"Cooldown: {rem}s (Locked {self.max_workers} threads)"
+                            if self._cancel_event.is_set():
+                                break
+                            bid = self._task_batch_id(task)
+                            if self.is_batch_paused(bid) or self.is_batch_cancelled(bid):
+                                continue
+                            with self._mutation_lock:
+                                if bid in self._pending_rebuild_batches:
+                                    continue
+
+                            task.status = "downloading"
+                            if self.on_task_status_changed:
+                                self.on_task_status_changed(task)
+                            self._increment_batch_worker(bid)
+                            try:
+                                task_opts = getattr(task, "options", None) or self.get_batch_options(bid) or options
+                                fut = executor.submit(self._worker_download_task, task, task_opts)
+                                active_futures[fut] = task
+                            except RuntimeError:
+                                self._decrement_batch_worker(bid)
+                                # Executor was shut down (e.g. cancelled)
+                                task.status = "pending"
+                                break
+
+                    # Feature 5: Track Adaptive Health State
+                    if is_locked:
+                        if now < self._rate_limit_cooldown_until:
+                            self.adaptive_state = "cooldown"
+                            rem = max(1, int(self._rate_limit_cooldown_until - now))
+                            self.adaptive_status_text = f"Cooldown: {rem}s (Locked {self.max_workers} threads)"
+                        else:
+                            self.adaptive_state = "locked"
+                            self.adaptive_status_text = f"Locked ({self.max_workers} threads)"
+                    elif options.adaptive_threading:
+                        if now < self._rate_limit_cooldown_until:
+                            self.adaptive_state = "cooldown"
+                            rem = max(1, int(self._rate_limit_cooldown_until - now))
+                            self.adaptive_status_text = f"Cooldown: {rem}s ({self.max_workers} threads)"
+                        elif self._learned_stable_ceiling is not None and self.max_workers >= self._learned_stable_ceiling:
+                            self.adaptive_state = "optimal"
+                            self.adaptive_status_text = f"Stable Lock ({self.max_workers} threads)"
+                        elif self.max_workers >= target_max_workers:
+                            self.adaptive_state = "optimal"
+                            self.adaptive_status_text = f"Optimal ({self.max_workers} threads)"
+                        else:
+                            self.adaptive_state = "scaling"
+                            effective_ceiling = self._learned_stable_ceiling if self._learned_stable_ceiling is not None else target_max_workers
+                            self.adaptive_status_text = f"Scaling ({self.max_workers}/{effective_ceiling} threads)"
                     else:
-                        self.adaptive_state = "locked"
-                        self.adaptive_status_text = f"Locked ({self.max_workers} threads)"
-                elif options.adaptive_threading:
-                    if now < self._rate_limit_cooldown_until:
-                        self.adaptive_state = "cooldown"
-                        rem = max(1, int(self._rate_limit_cooldown_until - now))
-                        self.adaptive_status_text = f"Cooldown: {rem}s ({self.max_workers} threads)"
-                    elif self._learned_stable_ceiling is not None and self.max_workers >= self._learned_stable_ceiling:
-                        self.adaptive_state = "optimal"
-                        self.adaptive_status_text = f"Stable Lock ({self.max_workers} threads)"
-                    elif self.max_workers >= target_max_workers:
-                        self.adaptive_state = "optimal"
-                        self.adaptive_status_text = f"Optimal ({self.max_workers} threads)"
-                    else:
-                        self.adaptive_state = "scaling"
-                        effective_ceiling = self._learned_stable_ceiling if self._learned_stable_ceiling is not None else target_max_workers
-                        self.adaptive_status_text = f"Scaling ({self.max_workers}/{effective_ceiling} threads)"
-                else:
-                    self.adaptive_state = "manual"
-                    self.adaptive_status_text = f"Manual ({self.max_workers} threads)"
+                        self.adaptive_state = "manual"
+                        self.adaptive_status_text = f"Manual ({self.max_workers} threads)"
 
-                # Periodic crash-proof checkpoint (every 30 seconds), written in the background: writing
-                # 1,000+ tasks with fsync here used to stop new downloads from starting for 30-50 s on
-                # slow drives (e.g. a Windows drive mounted under /mnt on Linux)
-                if now - last_checkpoint_time >= 30.0:
-                    last_checkpoint_time = now
-                    self._save_recovery_checkpoint(options, async_write=True)
+                    # Periodic crash-proof checkpoint (every 30 seconds), written in the background: writing
+                    # 1,000+ tasks with fsync here used to stop new downloads from starting for 30-50 s on
+                    # slow drives (e.g. a Windows drive mounted under /mnt on Linux)
+                    if now - last_checkpoint_time >= 30.0:
+                        last_checkpoint_time = now
+                        self._save_recovery_checkpoint(options, async_write=True)
 
-                time.sleep(0.05)
+                    time.sleep(0.05)
 
-            # Cancel remaining active futures if cancelling
-            for f in list(active_futures.keys()):
-                try:
-                    f.cancel()
-                except Exception:
-                    pass
+                # Cancel remaining active futures if cancelling
+                for f in list(active_futures.keys()):
+                    try:
+                        f.cancel()
+                    except Exception:
+                        pass
+        finally:
+            for f, t in list(active_futures.items()):
+                self._decrement_batch_worker(self._task_batch_id(t))
+            active_futures.clear()
 
         self._close_worker_sessions()
         # The memory cleanup runs on the window thread: a Qt object freed by it on this thread
@@ -3005,9 +3835,11 @@ class KemonoDownloader:
 
         # Discard exit handlers if this thread has been superseded by a newer download session
         if session_id != self._session_id:
+            statistics_manager.set_download_active(False)
             logger.debug(f"Discarding exit of superseded download session {session_id} (active: {self._session_id}).", category="downloader")
             return
 
+        statistics_manager.set_download_active(False)
         self._is_running = False
         duration = self._get_active_elapsed(time.time())
         completed_count = sum(1 for t in self.tasks if t.status == "completed")
@@ -3061,6 +3893,7 @@ class KemonoDownloader:
                 category="downloader",
                 details=(f"Failed files ({len(failed_tasks)}):\n{failed_list}" if failed_tasks else "")
             )
+            statistics_manager.record_batch_completed()
             if getattr(options, "separate_by_known", False):
                 unmatched = getattr(self, "_unmatched_known_count", 0)
                 ai_active = self.known_manager and getattr(self.known_manager, "_ai_recognition_enabled", False)
@@ -3095,7 +3928,7 @@ class KemonoDownloader:
         first = None
         for i in range(self._dispatch_cursor, len(tasks)):
             t = tasks[i]
-            if t.status == "pending" and not self.is_batch_paused(t):
+            if t.status == "pending" and not self.is_batch_paused(t) and not self.is_batch_cancelled(t):
                 if first is None:
                     first = i
                 found.append(t)
@@ -3117,7 +3950,7 @@ class KemonoDownloader:
             session = self._get_worker_session()
         task_opts = getattr(task, "options", None) or self.get_batch_options(getattr(task, "batch_id", "")) or options or self.current_options or FilterOptions()
         options = task_opts
-        if self._cancel_event.is_set():
+        if self.is_batch_cancelled(task):
             return False, "Cancelled"
 
         if self.is_batch_paused(task) or task.status == "paused":
@@ -3130,9 +3963,14 @@ class KemonoDownloader:
             return False, "Batch paused by user"
 
         while self._pause_event.is_set():
-            time.sleep(0.5)
-            if self._cancel_event.is_set():
+            if self.is_batch_cancelled(task):
                 return False, "Cancelled"
+            if self.is_batch_paused(task) or task.status == "paused":
+                return False, "Batch paused by user"
+            time.sleep(0.5)
+
+        if self.is_batch_cancelled(task):
+            return False, "Cancelled"
 
         task.target_path = fit_path_for_windows(task.target_path)
         os.makedirs(os.path.dirname(task.target_path), exist_ok=True)
@@ -3140,11 +3978,13 @@ class KemonoDownloader:
         if self.on_task_status_changed:
             self.on_task_status_changed(task)
 
+        force_redownload = bool(getattr(options, "force_redownload", False))
+
         # Check if file is already recorded in download archive database — unless the copy on disk is a
         # small / preview one that should be replaced by the full-size file (planning allowed that,
         # but this second check used to mark those files "already archived" anyway)
         _disk_cands = _get_media_candidate_paths(task.target_path)
-        if self.archive_manager and self.archive_manager.is_enabled:
+        if not force_redownload and self.archive_manager and self.archive_manager.is_enabled:
             _on_disk = next((p for p in _disk_cands if os.path.exists(p) and os.path.getsize(p) > 0), None)
             _upgrade = bool(_on_disk) and needs_full_size_upgrade(os.path.getsize(_on_disk), task.file_size, task.target_path, options, _on_disk)
             if not _upgrade and self.archive_manager.is_archived(service=task.service, post_id=task.post_id, file_id=task.file_id, file_hash=task.expected_sha256):
@@ -3161,7 +4001,7 @@ class KemonoDownloader:
 
         # Check if file already exists completely on disk (including webp/avif and transcoded video versions)
         found_existing_path = None
-        if not options.keep_duplicates:
+        if not force_redownload and not options.keep_duplicates:
             for cand in _disk_cands:
                 if os.path.exists(cand) and os.path.getsize(cand) > 0:
                     found_existing_path = cand
@@ -3188,6 +4028,8 @@ class KemonoDownloader:
                                                      options, found_existing_path)
 
             if not should_upgrade:
+                if self.is_batch_cancelled(task):
+                    return False, "Cancelled"
                 task.status = "completed"
                 task.downloaded_bytes = existing_disk_sz
                 task.file_size = task.downloaded_bytes
@@ -3222,12 +4064,14 @@ class KemonoDownloader:
 
         # Gentle inter-file pacing for Pawchive targets to prevent burst strain on host
         is_pawchive_target = "pawchive" in (task.url or "").lower() or (getattr(task, "service", None) and "pawchive" in str(task.service).lower())
-        if is_pawchive_target and not self._cancel_event.is_set():
+        if is_pawchive_target and not self.is_batch_cancelled(task):
             pacing_delay = random.uniform(0.25, 0.40)
             steps = int(pacing_delay / 0.05)
             for _ in range(steps):
-                if self._cancel_event.is_set():
+                if self.is_batch_cancelled(task):
                     return False, "Cancelled"
+                if self.is_batch_paused(task) or task.status == "paused":
+                    return False, "Batch paused by user"
                 time.sleep(0.05)
 
         # ── yt-dlp embedded media download execution ─────────────────────────
@@ -3284,6 +4128,9 @@ class KemonoDownloader:
                     self.on_task_status_changed(task)
                 return True, "Skipped: not a video link"
             if ok:
+                if self.is_batch_cancelled(task):
+                    _remove_quietly(task.target_path)
+                    return False, "Cancelled"
                 final_ytdlp_sz = os.path.getsize(task.target_path) if os.path.exists(task.target_path) else 0
                 if final_ytdlp_sz > 0 and options:
                     keep_file, f_reason = FilterEngine.should_keep_file(task.filename, options, file_size=final_ytdlp_sz)
@@ -3325,6 +4172,10 @@ class KemonoDownloader:
                 logger.success(f"✔ [yt-dlp] {task.filename} successfully downloaded", category="ytdlp")
                 return True, "Completed"
             else:
+                if self.is_batch_cancelled(task):
+                    return False, "Cancelled"
+                if self.is_batch_paused(task) or task.status == "paused":
+                    return False, "Batch paused by user"
                 msg = friendly_embed_error(msg, task.url)
                 logger.warning(f"✖ [yt-dlp] {task.filename}: {msg}", category="ytdlp")
                 return False, msg
@@ -3368,6 +4219,9 @@ class KemonoDownloader:
                 pause_event=self._pause_event
             )
             if ok:
+                if self.is_batch_cancelled(task):
+                    _remove_quietly(task.target_path)
+                    return False, "Cancelled"
                 final_tg_sz = os.path.getsize(task.target_path) if os.path.exists(task.target_path) else 0
                 if final_tg_sz > 0 and options:
                     keep_file, f_reason = FilterEngine.should_keep_file(task.filename, options, file_size=final_tg_sz)
@@ -3409,9 +4263,11 @@ class KemonoDownloader:
                 logger.success(f"✔ [Telegram] {task.filename} successfully downloaded", category="telegram")
                 return True, "Completed"
             else:
-                if "Cancelled" in msg:
+                if self.is_batch_cancelled(task) or "Cancelled" in msg:
                     task.status = "cancelled"
                     task.error_msg = msg
+                elif self.is_batch_paused(task) or task.status == "paused":
+                    return False, "Batch paused by user"
                 else:
                     task.status = "failed"
                     task.error_msg = msg
@@ -3420,8 +4276,10 @@ class KemonoDownloader:
                 logger.warning(f"✖ [Telegram] {task.filename}: {msg}", category="telegram")
                 return False, msg
 
-        # Continue an interrupted download from its .part file
+        # Continue an interrupted download from its .part file (unless forcing a clean redownload)
         part_path = task.target_path + PART_SUFFIX
+        if force_redownload and os.path.exists(part_path):
+            _remove_quietly(part_path)
         existing_size = 0
         mode = "wb"
         range_headers = {}
@@ -3549,7 +4407,7 @@ class KemonoDownloader:
                         if resp.status_code in (200, 206, 416):
                             task.url = attempt_url
                             break
-                        elif resp.status_code in (403, 404) and "t1.pawchive.pw" in attempt_url:
+                        elif resp.status_code in (403, 404) and re.search(r"\bt\d+\.pawchive\.pw\b", attempt_url):
                             # Pawchive temporary oversized download URLs are signed (?e=...&s=...) and expire over time.
                             # Re-resolve the post page to get a fresh signed URL if available.
                             fresh_url = self._refresh_pawchive_temp_url(task)
@@ -3889,10 +4747,14 @@ class KemonoDownloader:
                     cancel_event=self._cancel_event,
                     pause_event=self._pause_event,
                     timeout=(25, 60),
-                    session=session
+                    session=session,
+                    abort_check=lambda: self.is_batch_cancelled(task) or self.is_batch_paused(task) or task.status == "paused",
                 )
 
                 if mp_ok:
+                    if self.is_batch_cancelled(task):
+                        _remove_quietly(task.target_path)
+                        return False, "Cancelled"
                     final_mp_size = os.path.getsize(task.target_path) if os.path.exists(task.target_path) else 0
                     if task.file_size > 0 and final_mp_size == 0:
                         if os.path.exists(task.target_path):
@@ -3937,8 +4799,10 @@ class KemonoDownloader:
                         return True, "Completed"
 
                 if not mp_ok:
-                    if self._cancel_event.is_set():
+                    if self.is_batch_cancelled(task):
                         return False, "Cancelled"
+                    if self.is_batch_paused(task) or task.status == "paused" or "Batch paused by user" in str(mp_err):
+                        return False, "Batch paused by user"
 
                     # Clean up temporary file from multipart attempt
                     if os.path.exists(f"{task.target_path}.tmp"):
@@ -4012,12 +4876,11 @@ class KemonoDownloader:
                                 break
                             hasher.update(buf)
 
-            with self._active_resp_lock:
-                self._active_responses.add(resp)
+            self._track_active_response(resp, self._task_batch_id(task))
             try:
                 with open(part_path, mode) as f:
                     for chunk in resp.iter_content(chunk_size=chunk_size):
-                        if self._cancel_event.is_set():
+                        if self.is_batch_cancelled(task):
                             try:
                                 resp.close()
                             except Exception:
@@ -4032,13 +4895,19 @@ class KemonoDownloader:
                         was_paused = False
                         while self._pause_event.is_set():
                             was_paused = True
-                            time.sleep(0.3)
-                            if self._cancel_event.is_set():
+                            if self.is_batch_cancelled(task):
                                 try:
                                     resp.close()
                                 except Exception:
                                     pass
                                 return False, "Cancelled"
+                            if self.is_batch_paused(task) or task.status == "paused":
+                                try:
+                                    resp.close()
+                                except Exception:
+                                    pass
+                                return False, "Batch paused by user"
+                            time.sleep(0.3)
                         if was_paused:
                             last_speed_time = time.time()
                             bytes_since_speed = 0
@@ -4090,8 +4959,7 @@ class KemonoDownloader:
                             if self.on_task_status_changed:
                                 self.on_task_status_changed(task)
             finally:
-                with self._active_resp_lock:
-                    self._active_responses.discard(resp)
+                self._untrack_active_response(resp)
 
 
             final_size = os.path.getsize(part_path) if os.path.exists(part_path) else 0
@@ -4109,13 +4977,18 @@ class KemonoDownloader:
                     self.on_task_status_changed(task)
                 return True, f"Skipped: {f_reason}"
 
+            if self.is_batch_cancelled(task):
+                return False, "Cancelled"
+            if self.is_batch_paused(task) or task.status == "paused":
+                return False, "Batch paused by user"
+
             if task.file_size > 0 and final_size == 0:
                 _remove_quietly(part_path)
                 msg = "Downloaded file is empty (0.00 MB saved)"
                 logger.error(f"  ✖ {task.filename}: {msg}", category="file", details=self._task_context(task))
                 return False, msg
 
-            if task.file_size > 0 and final_size < task.file_size and not self._cancel_event.is_set():
+            if task.file_size > 0 and final_size < task.file_size and not self.is_batch_cancelled(task):
                 # The .part file stays: the retry continues from here
                 msg = (f"Incomplete download ({FilterEngine.format_size_str(final_size)} / "
                        f"{FilterEngine.format_size_str(task.file_size)}); it continues from there on retry")
@@ -4132,14 +5005,18 @@ class KemonoDownloader:
                                        found_existing_path=found_existing_path)
 
         except requests.exceptions.Timeout:
-            if self._cancel_event.is_set():
+            if self.is_batch_cancelled(task):
                 return False, "Cancelled"
+            if self.is_batch_paused(task) or task.status == "paused":
+                return False, "Batch paused by user"
             msg = "Connection timed out"
             logger.error(f"  ✖ {task.filename}: {msg}", category="file", details=self._task_context(task))
             return False, msg
         except requests.exceptions.ConnectionError as e:
-            if self._cancel_event.is_set():
+            if self.is_batch_cancelled(task):
                 return False, "Cancelled"
+            if self.is_batch_paused(task) or task.status == "paused":
+                return False, "Batch paused by user"
             msg = f"Connection error: {e}"
             logger.error(f"  ✖ {task.filename}: {msg}", category="file", details=self._task_context(task))
             return False, msg
@@ -4148,14 +5025,18 @@ class KemonoDownloader:
             # IOError, so without this branch they'd land in the OSError handler below, be
             # mislabelled as disk errors and have their partial file deleted. Keeping the
             # partial file lets the retry resume from where it stopped.
-            if self._cancel_event.is_set():
+            if self.is_batch_cancelled(task):
                 return False, "Cancelled"
+            if self.is_batch_paused(task) or task.status == "paused":
+                return False, "Batch paused by user"
             msg = f"Connection dropped mid-download (will resume on retry): {e}"
             logger.error(f"  ✖ {task.filename}: {msg}", category="file", details=self._task_context(task))
             return False, msg
         except OSError as e:
-            if self._cancel_event.is_set():
+            if self.is_batch_cancelled(task):
                 return False, "Cancelled"
+            if self.is_batch_paused(task) or task.status == "paused":
+                return False, "Batch paused by user"
             is_disk_full = (
                 getattr(e, "errno", None) == 28
                 or getattr(e, "winerror", None) == 112
@@ -4171,13 +5052,16 @@ class KemonoDownloader:
             task.eta_str = "--"
             return False, msg
         except Exception as e:
-            if self._cancel_event.is_set():
+            if self.is_batch_cancelled(task):
                 return False, "Cancelled"
+            if self.is_batch_paused(task) or task.status == "paused":
+                return False, "Batch paused by user"
             logger.error(f"  ✖ {task.filename}: {type(e).__name__}: {e}", category="file",
                          details=self._task_context(task) + "\n" + traceback.format_exc())
             return False, str(e)
         finally:
             if resp is not None:
+                self._untrack_active_response(resp)
                 try:
                     resp.close()
                 except Exception:
@@ -4212,6 +5096,12 @@ class KemonoDownloader:
             task.progress_pct = 0
             logger.error(f"  ✖ {task.filename}: {problem}", category="file", details=self._task_context(task))
             return False, problem
+
+        if self.is_batch_cancelled(task):
+            _remove_quietly(part_path)
+            return False, "Cancelled"
+        if self.is_batch_paused(task) or task.status == "paused":
+            return False, "Batch paused by user"
 
         # One step: an older small copy under the same name stays until the full file replaces it
         replace_file(part_path, task.target_path)
@@ -4424,12 +5314,15 @@ class KemonoDownloader:
                         img.save(tmp_path, "WEBP", lossless=True, exact=True, quality=100, method=6)
                     else:
                         img.save(tmp_path, "WEBP", quality=quality, method=4)
-                if os.path.getsize(tmp_path) >= os.path.getsize(file_path):
+                orig_size = os.path.getsize(file_path)
+                new_size = os.path.getsize(tmp_path)
+                if new_size >= orig_size:
                     _remove_quietly(tmp_path)
                     logger.debug(f"Kept {os.path.basename(file_path)}: as WebP it wasn't smaller.", category="downloader")
                     return None
                 replace_file(tmp_path, webp_path)
                 os.remove(file_path)
+                statistics_manager.record_compression(orig_size, new_size)
                 return webp_path
         except Exception as e:
             _remove_quietly(os.path.splitext(file_path)[0] + ".webp" + PART_SUFFIX)

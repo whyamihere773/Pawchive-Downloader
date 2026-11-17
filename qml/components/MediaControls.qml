@@ -13,10 +13,15 @@ Item {
     property var lb: null               // the MediaLightboxModal (actions + state)
     property MediaPlayer player: null
     property AudioOutput audio: null
+    property var anim: null             // AnimatedMedia (GIF / WebP / APNG / animated AVIF)
     property bool shown: true
 
     // While the user works the controls they stay up
     readonly property bool busy: tlMouse.pressed || tlMouse.containsMouse || barHover.hovered || speedMenu.visible
+
+    readonly property bool animMode: !!anim && anim.isAnimated && anim.frameCount > 1 && !(lb && lb.isMedia)
+    readonly property int totalFrames: animMode ? anim.frameCount : 0
+    readonly property int animFrame: animMode ? anim.currentFrame : 0
 
     height: 92
     opacity: shown ? 1 : 0
@@ -27,11 +32,14 @@ Item {
     Behavior on drop { SpringAnimation { spring: 4.2; damping: 0.34; mass: 1.0; epsilon: 0.01 } }
     transform: Translate { y: mc.drop }
 
-    readonly property bool playing: player && player.playbackState === MediaPlayer.PlayingState
-    readonly property bool ended: player && player.mediaStatus === MediaPlayer.EndOfMedia
-    readonly property real duration: player ? Math.max(0, player.duration) : 0
+    readonly property bool playing: animMode ? (!!lb && !lb.animPaused) : (player && player.playbackState === MediaPlayer.PlayingState)
+    readonly property bool ended: !animMode && player && player.mediaStatus === MediaPlayer.EndOfMedia
+    readonly property real duration: animMode ? Math.max(0, totalFrames - 1) : (player ? Math.max(0, player.duration) : 0)
 
-    function fmt(ms) { return lb ? lb.formatClock(ms, duration) : "" }
+    function fmt(val) {
+        if (animMode) return "Frame " + (Math.round(val) + 1) + " / " + totalFrames
+        return lb ? lb.formatClock(val, duration) : ""
+    }
 
     HoverHandler { id: barHover }
 
@@ -44,6 +52,16 @@ Item {
             GradientStop { position: 0.55; color: "#99070A10" }
             GradientStop { position: 1.0; color: "#E6070A10" }
         }
+    }
+
+    // Absorb stray clicks/wheels on empty bar space so they don't pan/zoom/toggle behind controls
+    MouseArea {
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        height: 68
+        acceptedButtons: Qt.AllButtons
+        onWheel: (wheel) => { wheel.accepted = true }
     }
 
     // ── Timeline ────────────────────────────────────────────────────────────
@@ -60,7 +78,7 @@ Item {
         readonly property bool hot: tlMouse.containsMouse || tlMouse.pressed
         property real hoverX: 0
         property real scrubPos: 0
-        readonly property real shownPos: tlMouse.pressed ? scrubPos : (mc.player ? mc.player.position : 0)
+        readonly property real shownPos: tlMouse.pressed ? scrubPos : (mc.animMode ? mc.animFrame : (mc.player ? mc.player.position : 0))
         readonly property real frac: mc.duration > 0 ? Math.max(0, Math.min(1, shownPos / mc.duration)) : 0
 
         function posAt(x) { return Math.max(0, Math.min(1, x / Math.max(1, width))) * mc.duration }
@@ -137,19 +155,40 @@ Item {
             anchors.bottomMargin: -4
             hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
+            property bool resumeAnimAfterScrub: false
+            function _scrubTo(x) {
+                var pos = timeline.posAt(x)
+                if (mc.animMode) {
+                    var f = Math.round(pos)
+                    timeline.scrubPos = f
+                    if (mc.anim) mc.anim.seekFrame(f)
+                } else {
+                    timeline.scrubPos = pos
+                    if (mc.player) mc.player.setPosition(pos)
+                }
+            }
             onPressed: (mouse) => {
-                timeline.hoverX = mouse.x
-                timeline.scrubPos = timeline.posAt(mouse.x)
-                if (mc.player) mc.player.setPosition(timeline.scrubPos)
+                timeline.hoverX = Math.max(0, Math.min(width, mouse.x))
+                if (mc.animMode && mc.lb) {
+                    resumeAnimAfterScrub = !mc.lb.animPaused
+                    mc.lb.animPaused = true
+                }
+                _scrubTo(mouse.x)
             }
             onPositionChanged: (mouse) => {
                 timeline.hoverX = Math.max(0, Math.min(width, mouse.x))
-                if (pressed) {
-                    timeline.scrubPos = timeline.posAt(mouse.x)
-                    if (mc.player) mc.player.setPosition(timeline.scrubPos)
-                }
+                if (pressed) _scrubTo(mouse.x)
             }
-            onReleased: if (mc.player) mc.player.setPosition(timeline.scrubPos)
+            onReleased: {
+                if (mc.animMode && mc.anim) mc.anim.seekFrame(timeline.scrubPos)
+                else if (mc.player) mc.player.setPosition(timeline.scrubPos)
+                if (resumeAnimAfterScrub && mc.lb) mc.lb.animPaused = false
+                resumeAnimAfterScrub = false
+            }
+            onCanceled: {
+                if (resumeAnimAfterScrub && mc.lb) mc.lb.animPaused = false
+                resumeAnimAfterScrub = false
+            }
         }
     }
 
@@ -220,12 +259,23 @@ Item {
             tip: mc.ended ? "Replay (Space)" : (mc.playing ? "Pause (Space or K)" : "Play (Space or K)")
             onClicked: mc.lb.togglePlay()
         }
-        CtlButton { glyph: "↺"; badge: "10"; tip: "Back 10 seconds (J)   ·   ← goes back 5"; onClicked: mc.lb.seekBy(-10000) }
-        CtlButton { glyph: "↻"; badge: "10"; tip: "Forward 10 seconds (L)   ·   → goes forward 5"; onClicked: mc.lb.seekBy(10000) }
+        CtlButton {
+            glyph: mc.animMode ? "◂" : "↺"
+            badge: mc.animMode ? "1f" : "10"
+            tip: mc.animMode ? "Previous frame (,)" : "Back 10 seconds (J)   ·   ← goes back 5"
+            onClicked: mc.animMode ? mc.lb.stepFrame(-1) : mc.lb.seekBy(-10000)
+        }
+        CtlButton {
+            glyph: mc.animMode ? "▸" : "↻"
+            badge: mc.animMode ? "1f" : "10"
+            tip: mc.animMode ? "Next frame (.)" : "Forward 10 seconds (L)   ·   → goes forward 5"
+            onClicked: mc.animMode ? mc.lb.stepFrame(1) : mc.lb.seekBy(10000)
+        }
 
         // Volume: the slider slides out while hovered (or dragged)
         Item {
             id: volGroup
+            visible: !mc.animMode
             implicitHeight: 34
             implicitWidth: volBtn.implicitWidth + volSlide.width + 4
             HoverHandler { id: volHover }
@@ -277,7 +327,7 @@ Item {
 
         Text {
             Layout.leftMargin: 6
-            text: mc.fmt(mc.player ? mc.player.position : 0) + "  /  " + mc.fmt(mc.duration)
+            text: mc.animMode ? mc.fmt(timeline.shownPos) : (mc.fmt(mc.player ? mc.player.position : 0) + "  /  " + mc.fmt(mc.duration))
             font.family: "Segoe UI"
             font.pixelSize: 12
             font.weight: 600
@@ -292,7 +342,7 @@ Item {
             implicitWidth: speedLabel.implicitWidth + 18
             implicitHeight: 26
             radius: 13
-            readonly property real rate: mc.player ? mc.player.playbackRate : 1
+            readonly property real rate: mc.animMode ? (mc.anim ? mc.anim.speed : 1) : (mc.player ? mc.player.playbackRate : 1)
             color: speedMouse.containsMouse || speedMenu.visible ? "#2EFFFFFF" : (Math.abs(rate - 1) > 0.001 ? "#2238BDF8" : "transparent")
             border.color: Math.abs(rate - 1) > 0.001 ? "#38BDF8" : "#44FFFFFF"
             Text {
@@ -360,6 +410,7 @@ Item {
         }
 
         CtlButton {
+            visible: !mc.animMode
             glyph: "∞"
             glyphSize: 20
             active: !!mc.lb && mc.lb.isLooping
@@ -373,9 +424,9 @@ Item {
             onClicked: mc.lb.showShortcuts = !mc.lb.showShortcuts
         }
         CtlButton {
-            visible: !!mc.lb && mc.lb.isVideo
+            visible: !!mc.lb && (mc.lb.isVideo || mc.animMode)
             glyph: (mc.lb && mc.lb.fullscreen) ? "🗗" : "⛶"
-            tip: (mc.lb && mc.lb.fullscreen) ? "Exit full screen (F or Esc)" : "Full screen (F or double-click)"
+            tip: (mc.lb && mc.lb.fullscreen) ? "Exit full screen (F or Esc)" : (mc.animMode ? "Full screen (F)" : "Full screen (F or double-click)")
             onClicked: mc.lb.toggleFullscreen()
         }
     }

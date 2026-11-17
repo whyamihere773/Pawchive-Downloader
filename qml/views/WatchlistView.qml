@@ -2083,8 +2083,49 @@ Item {
                                 }
                             }
 
+                            // Settings (per-creator folder & options)
+                            Rectangle {
+                                objectName: "watchlistSettingsBtn"
+                                height: 28
+                                implicitWidth: wlSettingsRow.implicitWidth + 20
+                                radius: 6
+                                color: wlSettingsMouse.containsMouse ? "#151D2E" : "#0D121F"
+                                border.color: "#334155"
+                                border.width: 1
+                                Behavior on color { ColorAnimation { duration: 100 } }
+                                scale: wlSettingsMouse.pressed ? 0.94 : (wlSettingsMouse.containsMouse ? 1.04 : 1.0)
+                                transformOrigin: Item.Center
+                                Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutBack; easing.overshoot: 1.5 } }
+
+                                Row {
+                                    id: wlSettingsRow
+                                    anchors.centerIn: parent
+                                    spacing: 5
+                                    Text { text: "\u2699"; font.pixelSize: 11; color: "#94A3B8"; anchors.verticalCenter: parent.verticalCenter }
+                                    Text {
+                                        text: root.tr("watchlist_entry_settings", "Settings")
+                                        font.family: "Segoe UI, sans-serif"
+                                        font.pixelSize: 11
+                                        font.weight: 600
+                                        color: "#CBD5E1"
+                                        anchors.verticalCenter: parent.verticalCenter
+                                    }
+                                }
+                                MouseArea {
+                                    id: wlSettingsMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    ToolTip.visible: containsMouse
+                                    ToolTip.delay: 300
+                                    ToolTip.text: root.tr("watchlist_entry_settings_tip", "Edit folder, cutoff date, and creator download settings")
+                                    onClicked: watchlistSettingsModal.open(entryCard.artistUserId, entryCard.artistService)
+                                }
+                            }
+
                             // Re-download All
                             Rectangle {
+                                objectName: "watchlistRedownloadBtn"
                                 height: 28
                                 implicitWidth: redownloadRow.implicitWidth + 20
                                 radius: 6
@@ -2117,8 +2158,8 @@ Item {
                                     cursorShape: Qt.PointingHandCursor
                                     ToolTip.visible: containsMouse
                                     ToolTip.delay: 300
-                                    ToolTip.text: root.tr("watchlist_redownload_tip", "Re-queue the entire artist's catalog for download")
-                                    onClicked: if (bridge) bridge.redownloadWatchlistEntry(entryCard.artistUserId, entryCard.artistService)
+                                    ToolTip.text: root.tr("watchlist_redownload_tip", "Delete existing files for this creator and re-download everything with current Watchlist settings")
+                                    onClicked: watchlistRedownloadModal.open(entryCard.artistUserId, entryCard.artistService)
                                 }
                             }
 
@@ -2602,32 +2643,67 @@ Item {
                         color: "#CBD5E1"
                     }
 
-                    // Download Folder Input Box
-                    Rectangle {
+                    // Download Folder Input Box + Browse
+                    RowLayout {
                         Layout.fillWidth: true
-                        height: 36
-                        radius: 6
-                        color: "#080B14"
-                        border.color: addFolderInput.activeFocus ? "#8B5CF6" : "#242C40"
-                        border.width: 1
+                        spacing: 8
 
-                        TextInput {
-                            id: addFolderInput
-                            anchors.fill: parent
-                            anchors.leftMargin: 10
-                            anchors.rightMargin: 10
-                            verticalAlignment: TextInput.AlignVCenter
-                            font.family: "Segoe UI, sans-serif"
-                            font.pixelSize: 11
-                            color: "#E2E8F0"
-                            selectByMouse: true
+                        Rectangle {
+                            Layout.fillWidth: true
+                            height: 36
+                            radius: 6
+                            color: "#080B14"
+                            border.color: addFolderInput.activeFocus ? "#8B5CF6" : "#242C40"
+                            border.width: 1
+
+                            TextInput {
+                                id: addFolderInput
+                                anchors.fill: parent
+                                anchors.leftMargin: 10
+                                anchors.rightMargin: 10
+                                verticalAlignment: TextInput.AlignVCenter
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 11
+                                color: "#E2E8F0"
+                                selectByMouse: true
+
+                                Text {
+                                    text: root.tr("watchlist_add_folder_ph", "Leave empty for default download folder")
+                                    font: parent.font
+                                    color: "#475569"
+                                    visible: !addFolderInput.text && !addFolderInput.activeFocus
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            width: 78
+                            height: 36
+                            radius: 6
+                            color: addBrowseMouse.containsMouse ? "#1E293B" : "#111827"
+                            border.color: "#334155"
+                            border.width: 1
 
                             Text {
-                                text: root.tr("watchlist_add_folder_ph", "Leave empty for default download folder")
-                                font: parent.font
-                                color: "#475569"
-                                visible: !addFolderInput.text && !addFolderInput.activeFocus
-                                anchors.verticalCenter: parent.verticalCenter
+                                anchors.centerIn: parent
+                                text: "\uD83D\uDCC2 Browse"
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 11
+                                font.weight: 600
+                                color: "#E2E8F0"
+                            }
+
+                            MouseArea {
+                                id: addBrowseMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    if (!bridge) return
+                                    var picked = bridge.selectExistingDirectory(addFolderInput.text)
+                                    if (picked) addFolderInput.text = picked
+                                }
                             }
                         }
                     }
@@ -2788,5 +2864,26 @@ Item {
         id: folderChangeModal
         objectName: "folderChangeModal"
         bridge: root.bridge
+    }
+
+    WatchlistSettingsModal {
+        id: watchlistSettingsModal
+        objectName: "watchlistSettingsModal"
+        bridge: root.bridge
+        onSettingsSaved: function(msg) {
+            resultToast.showCustom("\u2705 " + msg)
+        }
+        onRedownloadRequested: function(uid, svc) {
+            watchlistRedownloadModal.open(uid, svc)
+        }
+    }
+
+    WatchlistRedownloadModal {
+        id: watchlistRedownloadModal
+        objectName: "watchlistRedownloadModal"
+        bridge: root.bridge
+        onOpenSettingsRequested: function(uid, svc) {
+            watchlistSettingsModal.open(uid, svc)
+        }
     }
 }

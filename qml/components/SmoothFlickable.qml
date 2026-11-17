@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import "ScrollPhysics.js" as ScrollPhysics
 
 Flickable {
     id: flickRoot
@@ -9,16 +10,16 @@ Flickable {
     flickableDirection: Flickable.VerticalFlick
     readonly property real contentRatio: Math.max(1.0, contentHeight / Math.max(1, height))
 
-    // Dynamic deceleration: snappy (6000) on short views, more fluid (4000) on large lists
-    flickDeceleration: Math.max(5000, 6000 - Math.min(1000, (contentRatio - 1.0) * 50))
-    // Dynamic velocity cap: 2500 on short views, scaling up to 7500 on massive lists
-    maximumFlickVelocity: Math.min(5000, 2500 + Math.min(2500, (contentRatio - 1.0) * 100))
+    flickDeceleration: ScrollPhysics.flickDecel(contentRatio)
+    maximumFlickVelocity: ScrollPhysics.maxFlickVel(contentRatio)
 
     property real targetContentY: contentY
     readonly property bool isScrolling: moving || flicking
     property alias verticalScrollBar: vScrollBar
     property real _lastWheelTime: 0
     property real _wheelMomentum: 1.0
+    property real _scrollStreak: 0
+    property int _lastWheelDir: 0
 
     ScrollBar.vertical: ScrollBar {
         id: vScrollBar
@@ -50,38 +51,9 @@ Flickable {
         target: null
         acceptedDevices: PointerDevice.Mouse
         onWheel: function(event) {
-            var delta = event.angleDelta.y
-            if (delta === 0) return
-
-            var now = Date.now()
-            var dt = now - flickRoot._lastWheelTime
-            flickRoot._lastWheelTime = now
-
-            // Detect rapid wheel spinning and build momentum faster on larger lists
-            if (dt < 180) {
-                var accelStep = 0.2 + Math.min(0.2, (flickRoot.contentRatio - 1.0) * 0.02)
-                var maxMomentum = Math.min(2.2, 1.5 + Math.min(0.7, (flickRoot.contentRatio - 1.0) * 0.05))
-                flickRoot._wheelMomentum = Math.min(maxMomentum, flickRoot._wheelMomentum + accelStep)
-            } else {
-                flickRoot._wheelMomentum = 1.0
+            if (ScrollPhysics.applyWheelFlick(flickRoot, event.angleDelta.y)) {
+                event.accepted = true
             }
-
-            // Dynamic base notch scale: 1.0x on short views (~120px), scaling up to 2.8x on huge lists
-            var sizeScale = Math.min(1.35, 1.0 + Math.log2(Math.max(1.0, flickRoot.contentRatio / 1.8)) * 0.12)
-            var baseSpeed = 1100 * sizeScale * flickRoot._wheelMomentum
-
-            var notchV = (delta / 120.0) * baseSpeed
-            var curV = flickRoot.flicking ? flickRoot.verticalVelocity : 0
-            var targetV = 0
-            if ((notchV > 0 && curV > 0) || (notchV < 0 && curV < 0)) {
-                var carryFactor = Math.min(0.55, 0.35 + Math.min(0.2, (flickRoot.contentRatio - 1.0) * 0.02))
-                targetV = curV * carryFactor + notchV
-            } else {
-                targetV = notchV
-            }
-            targetV = Math.max(-flickRoot.maximumFlickVelocity, Math.min(flickRoot.maximumFlickVelocity, targetV))
-            flickRoot.flick(0, targetV)
-            event.accepted = true
         }
     }
 }

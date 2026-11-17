@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import List, Dict, Any, Optional, Callable, Tuple
 
 from core.logger import logger
+from core.path_utils import subprocess_env_kwargs
 
 ARCHIVE_EXTENSIONS = {
     ".7z", ".zip", ".rar", ".tar", ".gz", ".bz2", ".xz",
@@ -383,7 +384,8 @@ class BulkDecompressorEngine:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 startupinfo=startupinfo,
-                creationflags=creationflags
+                creationflags=creationflags,
+                **subprocess_env_kwargs(),
             )
             while proc.poll() is None:
                 if cancel_event and cancel_event.is_set():
@@ -424,7 +426,8 @@ class BulkDecompressorEngine:
                 creationflags=creationflags,
                 bufsize=1,
                 encoding="utf-8",
-                errors="replace"
+                errors="replace",
+                **subprocess_env_kwargs(),
             )
             out, _ = proc.communicate()
             if proc.returncode != 0 and self.is_password_error(out):     # encrypted file names (7z / rar)
@@ -525,7 +528,8 @@ class BulkDecompressorEngine:
                 creationflags=creationflags,
                 bufsize=1,
                 encoding="utf-8",
-                errors="replace"
+                errors="replace",
+                **subprocess_env_kwargs(),
             )
         except Exception as e:
             if dir_created_by_us and os.path.exists(target_dir):
@@ -588,17 +592,20 @@ class BulkDecompressorEngine:
         # 1 = finished with warnings (e.g. a file it couldn't write): what was extracted is kept, but the
         # archive isn't deleted (those files may only be in it). The files were thrown away before.
         if ret_code == 1 and not self.is_password_error("".join(stdout_lines)):
+            from core.statistics_manager import statistics_manager
             item.extracted_present = True
             item.extracted_dir = target_dir
             if effective_pw:
                 item.password = effective_pw
             if progress_callback:
                 progress_callback(100.0)
+            statistics_manager.record_extraction(max(1, int(getattr(item, "file_count", 0) or 1)))
             tail = " ".join(l.strip() for l in stdout_lines[-6:] if l.strip())
             logger.warning(f"Extracted {item.filename} with warnings (the archive was kept): {tail[:300]}",
                            category="decompressor")
             return True, ""
         if ret_code == 0:
+            from core.statistics_manager import statistics_manager
             if progress_callback:
                 progress_callback(100.0)
 
@@ -607,6 +614,7 @@ class BulkDecompressorEngine:
 
             item.extracted_present = True
             item.extracted_dir = target_dir
+            statistics_manager.record_extraction(max(1, int(getattr(item, "file_count", 0) or 1)))
 
             # Move the archive to the Recycle Bin if requested (it was deleted permanently before)
             if delete_after:

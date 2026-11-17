@@ -215,7 +215,8 @@ class FilterOptions:
         sidecar_scope: str = "per_file",
         video_duration_filter_enabled: bool = False,
         min_video_duration: str = "",
-        max_video_duration: str = ""
+        max_video_duration: str = "",
+        force_redownload: bool = False
     ):
         self.characters = characters
         self.character_scope = character_scope
@@ -271,6 +272,7 @@ class FilterOptions:
         self.video_duration_filter_enabled = bool(video_duration_filter_enabled)
         self.min_video_duration = FilterEngine.normalize_duration_str(min_video_duration) if min_video_duration else ""
         self.max_video_duration = FilterEngine.normalize_duration_str(max_video_duration) if max_video_duration else ""
+        self.force_redownload = bool(force_redownload)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize filter options to dictionary for persistence."""
@@ -326,6 +328,7 @@ class FilterOptions:
             "video_duration_filter_enabled": self.video_duration_filter_enabled,
             "min_video_duration": self.min_video_duration,
             "max_video_duration": self.max_video_duration,
+            "force_redownload": self.force_redownload,
         }
 
     @classmethod
@@ -385,7 +388,228 @@ class FilterOptions:
             video_duration_filter_enabled=bool(d.get("video_duration_filter_enabled", False)),
             min_video_duration=d.get("min_video_duration", ""),
             max_video_duration=d.get("max_video_duration", ""),
+            force_redownload=bool(d.get("force_redownload", False)),
         )
+
+
+def _norm_setting_path(path: str) -> str:
+    p = str(path or "").strip()
+    if not p:
+        return ""
+    return os.path.normcase(os.path.normpath(p))
+
+
+def _norm_scan_date(date_str: str) -> str:
+    return str(date_str or "").strip()
+
+
+def classify_settings_change(
+    old_opts: FilterOptions,
+    new_opts: FilterOptions,
+    old_dir: str = "",
+    new_dir: str = "",
+    old_site_in_name: Optional[bool] = None,
+    new_site_in_name: Optional[bool] = None,
+    old_known_mode: str = "",
+    new_known_mode: str = "",
+    old_ai_enabled: Optional[bool] = None,
+    new_ai_enabled: Optional[bool] = None,
+    old_ai_engine: str = "",
+    new_ai_engine: str = "",
+    *,
+    has_comments_fetched: bool = False,
+    fetched_dms: bool = False,
+    has_favs_fetched: bool = False,
+    scan_bounds: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Compare old vs new download settings and classify impact Tier (0/2/3/4).
+
+    Tiers:
+      0: No impactful change (UI / post-session only)
+      2: Runtime transport / post-processing only (no task rebuild needed)
+      3: Task plan / filter / naming / path rebuild from cached posts
+      4: API scan scope expansion required (DMs, comments, favorites, wider pages/dates)
+    """
+    changed_fields: List[str] = []
+    labels: List[str] = []
+    tier = 0
+
+    def _bump(new_tier: int, field_name: str, label: str):
+        nonlocal tier
+        if field_name not in changed_fields:
+            changed_fields.append(field_name)
+        if label and label not in labels:
+            labels.append(label)
+        if new_tier > tier:
+            tier = new_tier
+
+    # Destination / site naming
+    if old_dir or new_dir:
+        if _norm_setting_path(old_dir) != _norm_setting_path(new_dir):
+            _bump(3, "download_dir", "Download folder")
+    if old_site_in_name is not None and new_site_in_name is not None and bool(old_site_in_name) != bool(new_site_in_name):
+        _bump(3, "site_in_folder_name", "Site in creator folder")
+    if (old_known_mode or new_known_mode) and str(old_known_mode) != str(new_known_mode):
+        _bump(3, "known_recognition_mode", "Character detection mode")
+    if old_ai_enabled is not None and new_ai_enabled is not None and bool(old_ai_enabled) != bool(new_ai_enabled):
+        _bump(3, "ai_recognition_enabled", "AI character detection")
+    if (old_ai_engine or new_ai_engine) and str(old_ai_engine) != str(new_ai_engine):
+        _bump(3, "ai_engine_mode", "AI engine mode")
+
+    # Tier 2 runtime/transport/post-processing options
+    runtime_checks = (
+        ("proxy_url", "Proxy URL"),
+        ("download_delay", "Download delay"),
+        ("adaptive_threading", "Adaptive threading"),
+        ("threads_locked", "Locked thread count"),
+        ("auto_retry_at_end", "Auto-retry failed"),
+        ("skip_retry_404", "Skip retrying 404s"),
+        ("fallback_to_thumbnails", "Thumbnail fallback"),
+        ("redownload_small_files", "Re-download small files"),
+        ("compress_to_webp", "WebP compression"),
+        ("webp_quality", "WebP quality"),
+        ("write_audio_metadata", "Audio metadata tags"),
+        ("min_file_size", "Minimum file size"),
+        ("max_file_size", "Maximum file size"),
+    )
+    proxy_changed = str(getattr(old_opts, "proxy_url", "") or "").strip() != str(getattr(new_opts, "proxy_url", "") or "").strip()
+    for attr, lbl in runtime_checks:
+        if getattr(old_opts, attr, None) != getattr(new_opts, attr, None):
+            _bump(2, attr, lbl)
+
+    # Tier 3 local plan / naming / filter / folder structure options
+    plan_checks = (
+        ("characters", "Character filter"),
+        ("skip_words", "Skip keywords"),
+        ("skip_scope", "Skip keyword scope"),
+        ("remove_words", "Remove filename words"),
+        ("file_type", "File type filter"),
+        ("exact_extensions", "Exact extensions"),
+        ("skip_archives", "Skip archives"),
+        ("download_thumbnails_only", "Thumbnails only"),
+        ("scan_content_images", "Inline content images"),
+        ("compress_to_webp", "WebP conversion"),
+        ("keep_duplicates", "Keep duplicate files"),
+        ("subfolder_per_post", "Subfolder per post"),
+        ("date_prefix", "Date prefix"),
+        ("separate_by_known", "Separate folders by character"),
+        ("tag_folder_mode", "Sort by tags"),
+        ("download_revisions", "Post revisions"),
+        ("manga_mode", "Manga numbering mode"),
+        ("filename_style", "Filename style"),
+        ("filename_template", "Filename template"),
+        ("save_post_metadata", "Save post metadata"),
+        ("download_embeds", "Embedded media"),
+        ("file_index_prefix", "File index prefix"),
+        ("skip_post_covers", "Skip post covers"),
+        ("download_pawchive_temporary_files", "Pawchive temporary files"),
+        ("group_file_type", "Group by file type"),
+        ("file_order", "File order"),
+        ("write_sidecars", "Metadata sidecars"),
+        ("sidecar_format", "Sidecar format"),
+        ("sidecar_scope", "Sidecar scope"),
+        ("video_duration_filter_enabled", "Video duration filter"),
+        ("min_video_duration", "Min video duration"),
+        ("max_video_duration", "Max video duration"),
+    )
+    for attr, lbl in plan_checks:
+        if getattr(old_opts, attr, None) != getattr(new_opts, attr, None):
+            _bump(3, attr, lbl)
+
+    # Tier 4 API scope expansion checks
+    requires_dm_scan = False
+    requires_comments_scan = False
+    requires_fav_scan = False
+    requires_window_expand = False
+    requires_links_rescan = False
+
+    old_dms = bool(getattr(old_opts, "download_dms", False))
+    new_dms = bool(getattr(new_opts, "download_dms", False))
+    if old_dms != new_dms:
+        if new_dms and not fetched_dms:
+            requires_dm_scan = True
+            _bump(4, "download_dms", "Direct messages")
+        else:
+            _bump(3, "download_dms", "Direct messages")
+
+    old_fav = bool(getattr(old_opts, "favorite_mode", False))
+    new_fav = bool(getattr(new_opts, "favorite_mode", False))
+    if old_fav != new_fav:
+        if new_fav and not has_favs_fetched:
+            requires_fav_scan = True
+            _bump(4, "favorite_mode", "Favorite mode")
+        else:
+            _bump(3, "favorite_mode", "Favorite mode")
+
+    old_cscope = str(getattr(old_opts, "character_scope", "title") or "title").lower()
+    new_cscope = str(getattr(new_opts, "character_scope", "title") or "title").lower()
+    if old_cscope != new_cscope:
+        if new_cscope in ("comments", "all") and not has_comments_fetched and bool(str(getattr(new_opts, "characters", "") or "").strip()):
+            requires_comments_scan = True
+            _bump(4, "character_scope", "Character comment scope")
+        else:
+            _bump(3, "character_scope", "Character scope")
+    elif new_cscope in ("comments", "all") and str(getattr(new_opts, "characters", "") or "").strip() and not has_comments_fetched:
+        requires_comments_scan = True
+        _bump(4, "characters", "Character comment filter")
+
+    bounds = scan_bounds or {}
+    scanned_p_start = int(bounds.get("page_start", getattr(old_opts, "page_start", 1)) or 1)
+    scanned_p_end = int(bounds.get("page_end", getattr(old_opts, "page_end", 999999)) or 999999)
+    new_p_start = int(getattr(new_opts, "page_start", 1) or 1)
+    new_p_end = int(getattr(new_opts, "page_end", 999999) or 999999)
+    if new_p_start != int(getattr(old_opts, "page_start", 1) or 1) or new_p_end != int(getattr(old_opts, "page_end", 999999) or 999999):
+        if new_p_start < scanned_p_start or new_p_end > scanned_p_end:
+            requires_window_expand = True
+            _bump(4, "page_range", "Page range")
+        else:
+            _bump(3, "page_range", "Page range")
+
+    scanned_after = _norm_scan_date(bounds.get("date_after", getattr(old_opts, "date_after", "")))
+    scanned_before = _norm_scan_date(bounds.get("date_before", getattr(old_opts, "date_before", "")))
+    new_after = _norm_scan_date(getattr(new_opts, "date_after", ""))
+    new_before = _norm_scan_date(getattr(new_opts, "date_before", ""))
+    if new_after != _norm_scan_date(getattr(old_opts, "date_after", "")) or new_before != _norm_scan_date(getattr(old_opts, "date_before", "")):
+        expanded_after = bool(scanned_after) and (not new_after or new_after < scanned_after)
+        expanded_before = bool(scanned_before) and (not new_before or new_before > scanned_before)
+        if expanded_after or expanded_before:
+            requires_window_expand = True
+            _bump(4, "date_range", "Date filter")
+        else:
+            _bump(3, "date_range", "Date filter")
+
+    old_ft = str(getattr(old_opts, "file_type", "all") or "all").lower()
+    new_ft = str(getattr(new_opts, "file_type", "all") or "all").lower()
+    if (old_ft == "links") != (new_ft == "links"):
+        requires_links_rescan = True
+
+    dest_changed = any(f in changed_fields for f in (
+        "download_dir", "site_in_folder_name", "subfolder_per_post", "date_prefix",
+        "separate_by_known", "tag_folder_mode", "group_file_type", "filename_style",
+        "filename_template", "manga_mode", "file_index_prefix"
+    ))
+
+    if not labels:
+        summary = ""
+    elif len(labels) <= 3:
+        summary = ", ".join(labels)
+    else:
+        summary = f"{', '.join(labels[:3])} (+{len(labels) - 3} more)"
+
+    return {
+        "tier": tier,
+        "has_changes": tier > 0,
+        "changed_fields": changed_fields,
+        "labels": labels,
+        "summary": summary,
+        "proxy_changed": proxy_changed,
+        "dest_changed": dest_changed,
+        "requires_dm_scan": requires_dm_scan,
+        "requires_comments_scan": requires_comments_scan,
+        "requires_fav_scan": requires_fav_scan,
+        "requires_window_expand": requires_window_expand,
+        "requires_links_rescan": requires_links_rescan,
+    }
 FILTER_PROFILES = {
     "wip_sketches": {
         "id": "wip_sketches",
@@ -1204,8 +1428,8 @@ class FilterEngine:
                 elif "img.cum.st" in full_url:
                     full_url = full_url.replace("img.cum.st", "cum.st")
 
-                # Deduplicate by key (/data/xx/yy/... or filename)
-                match_rel = re.search(r'/(?:data/)?([0-9a-f]{2}/[0-9a-f]{2}/[^\s?#]+)', full_url, re.IGNORECASE)
+                # Deduplicate by key (/data/xx/yy/... or /data/xxx/yy/... or filename)
+                match_rel = re.search(r'/(?:data/)?[0-9a-f]?([0-9a-f]{2}/[0-9a-f]{2}/[^\s?#]+)', full_url, re.IGNORECASE)
                 dedup_key = match_rel.group(1).lower() if match_rel else os.path.basename(full_url.split("?")[0]).lower()
 
                 if dedup_key in seen_keys:
@@ -1227,16 +1451,20 @@ class FilterEngine:
         """
         if not raw_tags:
             return []
-        if isinstance(raw_tags, list):
+        if isinstance(raw_tags, (list, tuple)):
             out = []
             for t in raw_tags:
                 if isinstance(t, dict):
-                    val = t.get("label") or t.get("slug") or t.get("tag") or ""
+                    val = t.get("name") or t.get("label") or t.get("slug") or t.get("tag") or ""
+                    val = str(val).strip().strip('"\'')
+                    if val:
+                        out.append(val)
+                elif isinstance(t, str) and t.strip().startswith("{") and t.strip().endswith("}"):
+                    out.extend(cls.normalize_tags(t))
                 else:
-                    val = str(t)
-                val = val.strip().strip('"\'')
-                if val:
-                    out.append(val)
+                    val = str(t).strip().strip('"\'')
+                    if val:
+                        out.append(val)
             return out
         if isinstance(raw_tags, str):
             s = raw_tags.strip()

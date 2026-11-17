@@ -15,6 +15,7 @@ import threading
 from typing import Optional
 
 from core.logger import logger
+from core.path_utils import subprocess_env_kwargs
 
 _ES_CONTINUOUS = 0x80000000
 _ES_SYSTEM_REQUIRED = 0x00000001
@@ -87,7 +88,7 @@ class SleepInhibitor:
         else:
             return
         self._proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                      stderr=subprocess.DEVNULL)
+                                      stderr=subprocess.DEVNULL, **subprocess_env_kwargs())
 
 
 sleep_inhibitor = SleepInhibitor()

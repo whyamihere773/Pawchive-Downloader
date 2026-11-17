@@ -309,6 +309,63 @@ class TestFileExplorer(unittest.TestCase):
         removed_again = bridge.removeGalleryBookmark(folder_a)
         self.assertFalse(removed_again)
 
+    def test_folder_previews_bfs_nested_and_cache_invalidation(self):
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication([])
+        bridge = AppBridge()
+        preview_root = os.path.join(self.temp_dir, "PreviewRoot")
+        creator_a = os.path.join(preview_root, "CreatorAlpha")
+        post_1 = os.path.join(creator_a, "Post_01")
+        post_2 = os.path.join(creator_a, "Post_02")
+        deep_dir = os.path.join(post_2, "Nested")
+        os.makedirs(post_1, exist_ok=True)
+        os.makedirs(deep_dir, exist_ok=True)
+
+        # Zero-byte broken image should be ignored
+        with open(os.path.join(creator_a, "000_broken.png"), "wb") as f:
+            pass
+        p1 = os.path.join(creator_a, "001_cover.jpg")
+        p2 = os.path.join(post_1, "a.png")
+        p3 = os.path.join(post_2, "b.webp")
+        p4 = os.path.join(deep_dir, "c.gif")
+        p5 = os.path.join(deep_dir, "d.jpg")
+        for p in (p1, p2, p3, p4, p5):
+            with open(p, "wb") as f:
+                f.write(b"fake_image_payload")
+
+        # Direct BFS helper caps at 4 and orders shallow-before-deep
+        found = bridge._find_folder_previews(creator_a, max_items=4)
+        self.assertEqual(len(found), 4)
+        self.assertEqual(found[0], os.path.normpath(p1))
+        self.assertIn(os.path.normpath(p2), found)
+        self.assertIn(os.path.normpath(p3), found)
+        self.assertNotIn(os.path.normpath(os.path.join(creator_a, "000_broken.png")), found)
+
+        # listDirectory triggers background preview calculation + populates cache
+        received = []
+        bridge.folderPreviewsCalculated.connect(lambda fp, pvs: received.append((fp, list(pvs))))
+        items = bridge.listDirectory(preview_root)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["previews"], [])
+
+        import time
+        deadline = time.time() + 3.0
+        while time.time() < deadline and not received:
+            app.processEvents()
+            time.sleep(0.01)
+
+        self.assertTrue(received, "Expected folderPreviewsCalculated signal from background worker")
+        self.assertEqual(os.path.normpath(received[0][0]), os.path.normpath(creator_a))
+        self.assertEqual(len(received[0][1]), 4)
+
+        # Subsequent listDirectory serves cached previews synchronously
+        items_cached = bridge.listDirectory(preview_root)
+        self.assertEqual(len(items_cached[0]["previews"]), 4)
+
+        # Invalidation clears cached previews for child and ancestors
+        bridge._invalidate_folder_stats(p2)
+        self.assertNotIn(os.path.normpath(creator_a), bridge._folder_previews_cache)
+
 
 if __name__ == "__main__":
     unittest.main()

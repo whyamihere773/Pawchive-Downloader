@@ -17,6 +17,7 @@ from PySide6.QtCore import QObject, Property, Signal, Slot
 
 from core.archive_password_manager import archive_password_manager
 from core.logger import logger
+from core.path_utils import subprocess_env_kwargs
 from services.archive_tools import (
     ARCHIVE_FORMATS,
     ArchiveTools,
@@ -228,7 +229,7 @@ class GalleryArchiveBridge(QObject):
         cmd = [engine._7za_path, "l", "-slt", "-sccUTF-8", f"-p{password}" if password else "-p-", "--", path]
         try:
             r = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                               timeout=120, **_hidden_window_kwargs())
+                               timeout=120, **_hidden_window_kwargs(), **subprocess_env_kwargs())
         except Exception as e:
             result["error"] = f"Couldn't read the archive: {e}"
             return result
@@ -329,7 +330,7 @@ class GalleryArchiveBridge(QObject):
                    f"-o{out_dir}", f"-p{password}" if password else "-p-", archive_path, f"@{list_file}"]
             try:
                 r = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                   timeout=600, **_hidden_window_kwargs())
+                                   timeout=600, **_hidden_window_kwargs(), **subprocess_env_kwargs())
                 out = r.stdout.decode("utf-8", errors="replace")
                 if r.returncode != 0:
                     if engine.is_password_error(out):

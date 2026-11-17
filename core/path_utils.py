@@ -8,7 +8,7 @@ import hashlib
 import os
 import re
 import sys
-from typing import List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 
 def get_base_dir() -> str:
@@ -123,7 +123,19 @@ def migrate_legacy_files(new_dir: str, legacy_dir: str, names) -> None:
     """
     import shutil
     try:
-        if not legacy_dir or os.path.normcase(os.path.abspath(legacy_dir)) == os.path.normcase(os.path.abspath(new_dir)):
+        new_abs = os.path.normcase(os.path.abspath(new_dir))
+        # Explicit config/data overrides (used by tests & sandboxes) must start clean
+        for env_var in ("PAWCHIVE_CONFIG_DIR", "PAWCHIVE_DATA_DIR"):
+            env_path = os.environ.get(env_var)
+            if not env_path:
+                continue
+            env_abs = os.path.normcase(os.path.abspath(env_path))
+            try:
+                if os.path.commonpath([env_abs, new_abs]) == env_abs:
+                    return
+            except ValueError:
+                pass
+        if not legacy_dir or os.path.normcase(os.path.abspath(legacy_dir)) == new_abs:
             return
         for name in names:
             src = os.path.join(legacy_dir, name)
@@ -339,3 +351,87 @@ def post_info_for_file(folder: str, file_name: str = "", post_id: str = "") -> s
             if _lists_file(info, file_name) or (base != file_name and _lists_file(info, base)):
                 return info
     return ""
+
+
+# ── Subprocess environment (frozen POSIX builds) ─────────────────────────────
+def _bundle_dirs() -> List[str]:
+    """Return normalized bundle directories injected into linker/Qt env by PyInstaller."""
+    dirs: List[str] = []
+    for cand in (
+        getattr(sys, "_MEIPASS", None),
+        get_base_dir() if getattr(sys, "frozen", False) else None,
+        os.path.join(get_app_root(), "_internal") if getattr(sys, "frozen", False) else None,
+    ):
+        if cand:
+            norm = cand.replace("\\", "/").rstrip("/")
+            if norm and norm not in dirs:
+                dirs.append(norm)
+    return dirs
+
+
+def _is_in_bundle_dir(entry: str, bundle_dirs: List[str]) -> bool:
+    norm = entry.strip().replace("\\", "/").rstrip("/")
+    if not norm:
+        return False
+    return any(norm == b or norm.startswith(b + "/") for b in bundle_dirs)
+
+
+def clean_subprocess_env(
+    env: Optional[Mapping[str, str]] = None,
+    extra: Optional[Mapping[str, str]] = None,
+) -> Optional[Dict[str, str]]:
+    """Return an env dict with PyInstaller's bundled library/Qt paths removed on frozen POSIX builds.
+
+    PyInstaller prepends ``_internal`` to ``LD_LIBRARY_PATH`` (saving the original value in
+    ``LD_LIBRARY_PATH_ORIG``). External tools such as ``yt-dlp``, ``bash``, ``ffmpeg``,
+    ``7z``, ``git``, or ``xdg-open`` fail with symbol lookup errors if they inherit older
+    bundled ``.so`` files instead of the host distribution's libraries.
+    """
+    frozen_posix = bool(getattr(sys, "frozen", False)) and sys.platform != "win32"
+    if not frozen_posix and env is None and extra is None:
+        return None
+
+    out = dict(os.environ if env is None else env)
+    if frozen_posix:
+        bundle_dirs = _bundle_dirs()
+        sep = ":"
+        pairs = [("LD_LIBRARY_PATH", "LD_LIBRARY_PATH_ORIG")]
+        if sys.platform == "darwin":
+            pairs.extend([
+                ("DYLD_LIBRARY_PATH", "DYLD_LIBRARY_PATH_ORIG"),
+                ("DYLD_FRAMEWORK_PATH", "DYLD_FRAMEWORK_PATH_ORIG"),
+            ])
+        for var, orig_var in pairs:
+            if orig_var in out:
+                orig = out.pop(orig_var)
+                if orig:
+                    out[var] = orig
+                else:
+                    out.pop(var, None)
+            elif var in out and bundle_dirs:
+                kept = [p for p in out[var].split(sep) if p and not _is_in_bundle_dir(p, bundle_dirs)]
+                if kept:
+                    out[var] = sep.join(kept)
+                else:
+                    out.pop(var, None)
+
+        for qt_var in ("QT_PLUGIN_PATH", "QML_IMPORT_PATH", "QML2_IMPORT_PATH"):
+            if qt_var in out and bundle_dirs:
+                kept = [p for p in out[qt_var].split(sep) if p and not _is_in_bundle_dir(p, bundle_dirs)]
+                if kept:
+                    out[qt_var] = sep.join(kept)
+                else:
+                    out.pop(qt_var, None)
+
+    if extra:
+        out.update(extra)
+    return out
+
+
+def subprocess_env_kwargs(
+    env: Optional[Mapping[str, str]] = None,
+    extra: Optional[Mapping[str, str]] = None,
+) -> Dict[str, Any]:
+    """Return ``{'env': ...}`` when cleaned/custom env is needed, else ``{}``."""
+    cleaned = clean_subprocess_env(env=env, extra=extra)
+    return {"env": cleaned} if cleaned is not None else {}

@@ -68,6 +68,42 @@ MODEL_CATALOG: Dict[str, Dict[str, Any]] = {
             }
         ],
     },
+    "visual_clip_vit": {
+        "name": "Visual Sorter Encoder (CLIP ViT-B/32 • INT8)",
+        "description": "Fast ONNX vision encoder for visual style, aesthetic, and content clustering on any CPU or GPU (DirectML).",
+        "size_bytes": 88 * 1024 * 1024,  # ~88 MB
+        "files": [
+            {
+                "filename": "clip_vit_b32_vision_int8.onnx",
+                "mirrors": [
+                    "https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/main/onnx/vision_model_int8.onnx",
+                    "https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/main/onnx/vision_model_quantized.onnx",
+                ],
+                "expected_min_bytes": 40 * 1024 * 1024,
+            }
+        ],
+    },
+    "visual_vlm_light": {
+        "name": "Visual Sorter VLM (Moondream2 / Qwen-VL • Q4)",
+        "description": "Local Vision-Language Model for natural-language image & video frame sorting on mid-range CPUs and GPUs.",
+        "size_bytes": 1450 * 1024 * 1024,  # ~1.45 GB
+        "files": [
+            {
+                "filename": "moondream2-text-model-f16.gguf",
+                "mirrors": [
+                    "https://huggingface.co/vikhyatk/moondream2/resolve/main/moondream2-text-model-f16.gguf",
+                ],
+                "expected_min_bytes": 800 * 1024 * 1024,
+            },
+            {
+                "filename": "moondream2-mmproj-f16.gguf",
+                "mirrors": [
+                    "https://huggingface.co/vikhyatk/moondream2/resolve/main/moondream2-mmproj-f16.gguf",
+                ],
+                "expected_min_bytes": 200 * 1024 * 1024,
+            },
+        ],
+    },
 }
 
 # Alias deep_reasoner default to light model
@@ -265,7 +301,7 @@ class ModelManager:
         })
 
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Pawchive/1.4.0 (AI Assistant)",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Pawchive/1.4.1 (AI Assistant)",
             "Accept": "*/*"
         }
 
@@ -306,7 +342,9 @@ class ModelManager:
                                 if cancel_event.is_set():
                                     break
                                 if chunk:
+                                    from core.statistics_manager import statistics_manager
                                     f.write(chunk)
+                                    statistics_manager.record_download(len(chunk), category="media")
                                     file_downloaded += len(chunk)
                                     downloaded_so_far += len(chunk)
 

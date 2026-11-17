@@ -93,6 +93,9 @@ class RecordListModel(QAbstractListModel):
     def get(self, row: int) -> dict:
         return self._creators[row] if 0 <= row < len(self._creators) else {}
 
+    def items_list(self) -> list:
+        return list(self._creators)
+
     @Slot(str, result=bool)
     def hasKey(self, key: str) -> bool:
         return key in self._row_of_key

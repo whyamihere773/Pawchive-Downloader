@@ -14,6 +14,7 @@ import time
 import sqlite3
 import datetime
 import threading
+from contextlib import contextmanager
 from typing import Optional, List, Dict, Any, Tuple, Callable
 from core.logger import logger
 from core import archive_index
@@ -59,6 +60,7 @@ class ArchiveManager:
         self._backfill_thread: Optional[threading.Thread] = None
         self._index_ready = False
         self._maintenance_stop = threading.Event()
+        self._paused_depth = 0
 
         if self._enabled:
             self._init_db()
@@ -240,9 +242,45 @@ class ArchiveManager:
         if summaries:
             try:
                 archive_index.ensure(conn)
+                if archive_index.is_paused(conn):
+                    logger.warning("Detected interrupted archive summary pause state on startup; rebuilding summaries...", category="archive")
+                    archive_index.restart(conn)
             except Exception as e_idx:
                 logger.warning(f"Archive summaries unavailable ({e_idx}); the Archive tab uses slower queries.",
                                category="archive")
+
+    @contextmanager
+    def _paused_index(self, conn: sqlite3.Connection, enabled: bool = True):
+        """Re-entrant guard around archive_index.paused so triggers never remain permanently disabled."""
+        if not enabled:
+            yield
+            return
+        self._paused_depth += 1
+        did_set = False
+        if self._paused_depth == 1:
+            archive_index.paused(conn, True)
+            did_set = True
+        try:
+            yield
+            if self._paused_depth == 1 and did_set:
+                archive_index.paused(conn, False)
+        except BaseException:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            self._paused_depth = max(0, self._paused_depth - 1)
+
+    def _passive_wal_checkpoint(self, conn: Optional[sqlite3.Connection]) -> None:
+        """Runs a non-blocking WAL checkpoint so bulk deletes don't bloat -wal on large archives."""
+        if conn is None:
+            return
+        try:
+            conn.execute("PRAGMA wal_checkpoint(PASSIVE);")
+        except Exception:
+            pass
 
     # ── Summaries & search index ───────────────────────────────────────────────
 
@@ -709,7 +747,8 @@ class ArchiveManager:
             result.sort(key=lambda x: str(x.get("creator_name") or "").lower())
 
     def get_creator_posts(self, creator_key: str, query: str = "", service: str = "all",
-                          file_type: str = "all") -> List[Dict[str, Any]]:
+                          file_type: str = "all",
+                          should_stop: Optional[Callable[[], bool]] = None) -> Optional[List[Dict[str, Any]]]:
         """The posts (with their files) of one creator from get_creator_summaries ("service|name")."""
         if not self._ensure_db():
             return []
@@ -743,7 +782,22 @@ class ArchiveManager:
                 conn = self._reader()
                 if conn is None:
                     return []
-                rows = [r for r in conn.execute(sql, params) if self._creator_key(r[1], r[2], r[3]) == key]
+                if should_stop is not None:
+                    conn.set_progress_handler(lambda: 1 if should_stop() else 0, 20000)
+                try:
+                    raw_rows = conn.execute(sql, params).fetchall()
+                finally:
+                    if should_stop is not None:
+                        conn.set_progress_handler(None, 0)
+            if should_stop is not None and should_stop():
+                return None
+            rows = [r for r in raw_rows if self._creator_key(r[1], r[2], r[3]) == key]
+        except sqlite3.OperationalError as e:
+            if should_stop is not None and should_stop():
+                return None
+            logger.error(f"Failed to read the archive's posts for {name}: {e}", category="archive")
+            self._note_error(e)
+            return []
         except Exception as e:
             logger.error(f"Failed to read the archive's posts for {name}: {e}", category="archive")
             self._note_error(e)
@@ -1506,29 +1560,30 @@ class ArchiveManager:
                 cparams = (clean_cid, clean_cid, clean_svc) if clean_svc else (clean_cid, clean_cid)
                 wm, done, fts = archive_index.state(self._conn)
                 bulk = wm > 0 or done > 0
-                if bulk:
-                    # A creator can have hundreds of thousands of records: the summaries and the search
-                    # index are fixed up in a few statements instead of record by record
-                    archive_index.paused(self._conn, True)
-                    counted = f"{cond} AND (id <= ? OR id > ?)"
-                    if fts:
-                        cursor.execute(
-                            "INSERT INTO archive_fts (archive_fts, rowid, filename, post_title, creator_name, creator_id, post_id) "
-                            f"SELECT 'delete', id, filename, post_title, creator_name, creator_id, post_id FROM downloaded_files WHERE {counted};",
-                            cparams + (done, wm))
-                    exts = cursor.execute(
-                        f"SELECT LOWER(IFNULL(file_ext, '')), COUNT(*) FROM downloaded_files WHERE {counted} GROUP BY 1;",
-                        cparams + (done, wm)).fetchall()
-                cursor.execute(f"DELETE FROM downloaded_files WHERE {cond};", cparams)
-                affected = cursor.rowcount
-                if bulk:
-                    for table in ("archive_post_cats", "archive_creator_cats", "archive_posts", "archive_creators"):
-                        cursor.execute(f"DELETE FROM {table} WHERE {cond};", cparams)
-                    for ext, n in exts:
-                        cursor.execute("UPDATE archive_exts SET files = files - ? WHERE ext = ?;", (n, ext))
-                    cursor.execute("DELETE FROM archive_exts WHERE files <= 0;")
-                    archive_index.paused(self._conn, False)
+                with self._paused_index(self._conn, enabled=bulk):
+                    if bulk:
+                        # A creator can have hundreds of thousands of records: the summaries and the search
+                        # index are fixed up in a few statements instead of record by record
+                        counted = f"{cond} AND (id <= ? OR id > ?)"
+                        if fts:
+                            cursor.execute(
+                                "INSERT INTO archive_fts (archive_fts, rowid, filename, post_title, creator_name, creator_id, post_id) "
+                                f"SELECT 'delete', id, filename, post_title, creator_name, creator_id, post_id FROM downloaded_files WHERE {counted};",
+                                cparams + (done, wm))
+                        exts = cursor.execute(
+                            f"SELECT LOWER(IFNULL(file_ext, '')), COUNT(*) FROM downloaded_files WHERE {counted} GROUP BY 1;",
+                            cparams + (done, wm)).fetchall()
+                    cursor.execute(f"DELETE FROM downloaded_files WHERE {cond};", cparams)
+                    affected = cursor.rowcount
+                    if bulk:
+                        for table in ("archive_post_cats", "archive_creator_cats", "archive_posts", "archive_creators"):
+                            cursor.execute(f"DELETE FROM {table} WHERE {cond};", cparams)
+                        for ext, n in exts:
+                            cursor.execute("UPDATE archive_exts SET files = files - ? WHERE ext = ?;", (n, ext))
+                        cursor.execute("DELETE FROM archive_exts WHERE files <= 0;")
                 self._conn.commit()
+                if affected >= 1000:
+                    self._passive_wal_checkpoint(self._conn)
                 self._stats_cache = None
                 return affected
             except Exception as e:
@@ -1537,6 +1592,91 @@ class ArchiveManager:
                 except Exception:
                     pass
                 logger.error(f"Failed to delete archive records for creator {creator_id}: {e}", category="archive")
+                self._note_error(e)
+                return -1
+
+    def get_file_paths_for_creator(self, creator_id: str, service: str = "") -> List[str]:
+        """Return distinct non-empty stored file paths belonging to a specific creator."""
+        with self._lock:
+            if self._conn is None:
+                if not os.path.exists(self.db_path):
+                    return []
+                self._init_db_unlocked()
+            if self._conn is None:
+                return []
+            try:
+                clean_cid = str(creator_id or "")
+                clean_svc = str(service or "").lower()
+                cond = "(creator_id = ? OR creator_name = ?)" + (" AND service = ?" if clean_svc else "")
+                params = (clean_cid, clean_cid, clean_svc) if clean_svc else (clean_cid, clean_cid)
+                rows = self._conn.execute(
+                    f"SELECT DISTINCT file_path FROM downloaded_files WHERE {cond} AND file_path IS NOT NULL AND file_path != '';",
+                    params,
+                ).fetchall()
+                return [str(r[0]) for r in rows if r and r[0]]
+            except Exception as e:
+                logger.debug(f"Failed to query file paths for creator {creator_id}: {e}", category="archive")
+                return []
+
+    def delete_under_paths(self, folders: List[str]) -> int:
+        """Delete archive file records whose stored file_path sits strictly inside `folders`."""
+        clean_dirs = [os.path.normpath(d) for d in (folders or []) if d]
+        if not clean_dirs:
+            return 0
+        with self._lock:
+            if self._conn is None:
+                if not os.path.exists(self.db_path):
+                    return 0
+                self._init_db_unlocked()
+            if self._conn is None:
+                return 0
+            try:
+                dir_keys = [self._path_key(d).rstrip("\\/") for d in clean_dirs]
+                candidates = self.records_under(clean_dirs)
+                row_ids = [
+                    rid for fp_key, rid in candidates.items()
+                    if any(fp_key == dk or fp_key.startswith(dk + os.sep) for dk in dir_keys if dk)
+                ]
+                if not row_ids:
+                    return 0
+                cursor = self._conn.cursor()
+                wm, done, fts = archive_index.state(self._conn)
+                bulk = wm > 0 or done > 0
+                total_deleted = 0
+                with self._paused_index(self._conn, enabled=bulk):
+                    for start in range(0, len(row_ids), 400):
+                        chunk = row_ids[start:start + 400]
+                        placeholders = ",".join("?" for _ in chunk)
+                        if bulk:
+                            if fts:
+                                cursor.execute(
+                                    "INSERT INTO archive_fts (archive_fts, rowid, filename, post_title, creator_name, creator_id, post_id) "
+                                    f"SELECT 'delete', id, filename, post_title, creator_name, creator_id, post_id "
+                                    f"FROM downloaded_files WHERE id IN ({placeholders}) AND (id <= ? OR id > ?);",
+                                    tuple(chunk) + (done, wm),
+                                )
+                            exts = cursor.execute(
+                                f"SELECT LOWER(IFNULL(file_ext, '')), COUNT(*) FROM downloaded_files "
+                                f"WHERE id IN ({placeholders}) AND (id <= ? OR id > ?) GROUP BY 1;",
+                                tuple(chunk) + (done, wm),
+                            ).fetchall()
+                            for ext, n in exts:
+                                cursor.execute("UPDATE archive_exts SET files = files - ? WHERE ext = ?;", (n, ext))
+                        cursor.execute(f"DELETE FROM downloaded_files WHERE id IN ({placeholders});", tuple(chunk))
+                        total_deleted += max(0, cursor.rowcount)
+                    if bulk:
+                        cursor.execute("DELETE FROM archive_exts WHERE files <= 0;")
+                self._conn.commit()
+                if total_deleted >= 1000:
+                    self._passive_wal_checkpoint(self._conn)
+                self._stats_cache = None
+                return total_deleted
+            except Exception as e:
+                try:
+                    self._conn.rollback()
+                except Exception:
+                    pass
+                logger.error(f"Failed to delete archive records under paths: {e}", category="archive")
                 self._note_error(e)
                 return -1
 
@@ -1551,15 +1691,14 @@ class ArchiveManager:
                 return False
 
             try:
-                if archive_index.state(self._conn) != (0, 0, False):
-                    archive_index.paused(self._conn, True)      # (record by record took ages)
+                has_idx = archive_index.state(self._conn) != (0, 0, False)
+                with self._paused_index(self._conn, enabled=has_idx):
                     self._conn.execute("DELETE FROM downloaded_files;")
-                    archive_index.forget_all(self._conn)
-                    archive_index.paused(self._conn, False)
-                else:
-                    self._conn.execute("DELETE FROM downloaded_files;")
+                    if has_idx:
+                        archive_index.forget_all(self._conn)
                 self._conn.commit()
                 self._conn.execute("VACUUM;")
+                self._passive_wal_checkpoint(self._conn)
                 self._stats_cache = None
                 logger.info("🗑️ Download Archive Database cleared.", category="archive")
                 return True
@@ -1945,11 +2084,12 @@ class ArchiveManager:
 
     def relocate_files(self, old_dirs: List[str], moves: Dict[str, str]) -> int:
         """After files were moved: the records of files that were in old_dirs point to where the
-        files are now. moves maps old path → new path."""
+        files are now. moves maps old path → new path (or a list of (old, new) tuples)."""
         if not moves:
             return 0
+        moves_map = moves if isinstance(moves, dict) else dict(moves)
         ids = self.records_under(old_dirs)
-        return self.set_file_paths([(ids[k], new) for old, new in moves.items()
+        return self.set_file_paths([(ids[k], new) for old, new in moves_map.items()
                                     if (k := self._path_key(old)) in ids])
 
     def remove_missing_for_creator(self, service: str, creator_id: str) -> int:

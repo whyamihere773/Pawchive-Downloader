@@ -2,7 +2,7 @@ import os
 import re
 import time
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait as _wait_futures
 from typing import Optional, Callable, Dict, Tuple
 import requests
 from core.bandwidth_limiter import bandwidth_limiter
@@ -46,7 +46,8 @@ def download_multipart_file(
     cancel_event: Optional[threading.Event] = None,
     pause_event: Optional[threading.Event] = None,
     timeout: int = 30,
-    session: Optional[requests.Session] = None
+    session: Optional[requests.Session] = None,
+    abort_check: Optional[Callable[[], bool]] = None
 ) -> Tuple[bool, str]:
     """
     Downloads a large file using parallel HTTP Range requests (multipart chunking).
@@ -69,7 +70,8 @@ def download_multipart_file(
             cancel_event=cancel_event,
             pause_event=pause_event,
             timeout=timeout,
-            req_session=req_session
+            req_session=req_session,
+            abort_check=abort_check
         )
     finally:
         if created_session:
@@ -88,10 +90,24 @@ def _do_download_multipart_file(
     cancel_event: Optional[threading.Event],
     pause_event: Optional[threading.Event],
     timeout: int,
-    req_session: requests.Session
+    req_session: requests.Session,
+    abort_check: Optional[Callable[[], bool]] = None
 ) -> Tuple[bool, str]:
-    if cancel_event and cancel_event.is_set():
-        return False, "Download cancelled"
+    def _aborted() -> bool:
+        if cancel_event and cancel_event.is_set():
+            return True
+        if abort_check:
+            try:
+                return bool(abort_check())
+            except Exception:
+                return False
+        return False
+
+    def _abort_msg() -> str:
+        return "Download cancelled" if (cancel_event and cancel_event.is_set()) else "Batch paused by user"
+
+    if _aborted():
+        return False, _abort_msg()
 
     # 1. Probe server for Range support and Content-Length
     probe_headers = dict(req_headers)
@@ -102,23 +118,23 @@ def _do_download_multipart_file(
         with _active_multipart_lock:
             _active_multipart_resps.add(probe_resp)
     except Exception:
-        if cancel_event and cancel_event.is_set():
-            return False, "Download cancelled"
+        if _aborted():
+            return False, _abort_msg()
         # Network error on probe — attempt normal single-stream download
         return _fallback_single_download(
-            url, target_path, req_headers, progress_callback, cancel_event, pause_event, timeout, req_session
+            url, target_path, req_headers, progress_callback, cancel_event, pause_event, timeout, req_session, abort_check=abort_check
         )
     finally:
         if probe_resp is not None:
             with _active_multipart_lock:
                 _active_multipart_resps.discard(probe_resp)
 
-    if cancel_event and cancel_event.is_set():
+    if _aborted():
         try:
             probe_resp.close()
         except Exception:
             pass
-        return False, "Download cancelled"
+        return False, _abort_msg()
 
     if probe_resp.status_code not in (200, 206):
         # Retry with browser headers if 403
@@ -141,7 +157,7 @@ def _do_download_multipart_file(
             except Exception:
                 pass
             return _fallback_single_download(
-                url, target_path, req_headers, progress_callback, cancel_event, pause_event, timeout, req_session
+                url, target_path, req_headers, progress_callback, cancel_event, pause_event, timeout, req_session, abort_check=abort_check
             )
 
     content_length_str = probe_resp.headers.get("Content-Length")
@@ -169,7 +185,7 @@ def _do_download_multipart_file(
     # Fallback to single stream if file is small, size unknown, or server lacks Range support
     if total_size < MIN_MULTIPART_SIZE or not is_partial_capable or num_chunks <= 1:
         return _fallback_single_download(
-            url, target_path, req_headers, progress_callback, cancel_event, pause_event, timeout, req_session
+            url, target_path, req_headers, progress_callback, cancel_event, pause_event, timeout, req_session, abort_check=abort_check
         )
 
     # 2. Divide into chunk ranges
@@ -199,12 +215,27 @@ def _do_download_multipart_file(
         if is_disk_full:
             return False, f"Disk full: {e}"
         return _fallback_single_download(
-            url, target_path, req_headers, progress_callback, cancel_event, pause_event, timeout, req_session
+            url, target_path, req_headers, progress_callback, cancel_event, pause_event, timeout, req_session, abort_check=abort_check
         )
 
     downloaded_bytes_per_chunk = [0] * num_chunks
     lock = threading.Lock()
+    transfer_resps: set = set()
     last_progress_emit = [0.0]
+
+    def _close_transfer_resps():
+        with _active_multipart_lock:
+            to_close = list(transfer_resps)
+            transfer_resps.clear()
+        for r in to_close:
+            with _active_multipart_lock:
+                _active_multipart_resps.discard(r)
+            try:
+                r.close()
+                if hasattr(r, "raw") and r.raw:
+                    r.raw.close()
+            except Exception:
+                pass
 
     def _update_global_progress(force: bool = False):
         if progress_callback:
@@ -221,13 +252,14 @@ def _do_download_multipart_file(
         expected_len = end - start + 1
 
         for attempt in range(3):
-            if cancel_event and cancel_event.is_set():
-                return False, "Cancelled"
+            if _aborted():
+                return False, _abort_msg()
 
             try:
                 with req_session.get(url, headers=chunk_headers, timeout=timeout, stream=True) as resp:
                     with _active_multipart_lock:
                         _active_multipart_resps.add(resp)
+                        transfer_resps.add(resp)
                     try:
                         if resp.status_code == 200 or (resp.status_code == 206 and not _content_range_matches(resp, start, end)):
                             return False, _RANGE_IGNORED
@@ -239,11 +271,11 @@ def _do_download_multipart_file(
                         with open(temp_final, "r+b") as f:
                             f.seek(start)
                             for chunk in resp.iter_content(chunk_size=CHUNK_BUFFER_SIZE):
-                                if cancel_event and cancel_event.is_set():
-                                    return False, "Cancelled"
+                                if _aborted():
+                                    return False, _abort_msg()
                                 while pause_event and pause_event.is_set():
-                                    if cancel_event and cancel_event.is_set():
-                                        return False, "Cancelled"
+                                    if _aborted():
+                                        return False, _abort_msg()
                                     time.sleep(0.5)
 
                                 if chunk:
@@ -263,9 +295,10 @@ def _do_download_multipart_file(
                     finally:
                         with _active_multipart_lock:
                             _active_multipart_resps.discard(resp)
+                            transfer_resps.discard(resp)
             except Exception as e:
-                if cancel_event and cancel_event.is_set():
-                    return False, "Cancelled"
+                if _aborted():
+                    return False, _abort_msg()
                 is_disk_full = (
                     getattr(e, "errno", None) == 28
                     or getattr(e, "winerror", None) == 112
@@ -286,16 +319,18 @@ def _do_download_multipart_file(
             for idx, start, end in ranges
         ]
         while not all(f.done() for f in futures):
-            if cancel_event and cancel_event.is_set():
-                cancel_all_multipart()
+            if _aborted():
+                _close_transfer_resps()
                 for f in futures:
                     f.cancel()
+                # Wait briefly so chunk workers exit `with open(temp_final)` before unlinking on Windows
+                _wait_futures(futures, timeout=5.0)
                 if os.path.exists(temp_final):
                     try:
                         os.remove(temp_final)
                     except OSError:
                         pass
-                return False, "Download cancelled"
+                return False, _abort_msg()
             time.sleep(0.05)
 
         results = []
@@ -313,13 +348,13 @@ def _do_download_multipart_file(
                     os.remove(temp_final)
                 except OSError:
                     pass
-            if cancel_event and cancel_event.is_set():
-                return False, "Download cancelled"
+            if _aborted() or "paused" in str(err).lower() or "cancel" in str(err).lower():
+                return False, (_abort_msg() if _aborted() else err)
             if "disk full" in err.lower():
                 return False, err
             # Fallback to single stream if multipart fails
             return _fallback_single_download(
-                url, target_path, req_headers, progress_callback, cancel_event, pause_event, timeout, req_session
+                url, target_path, req_headers, progress_callback, cancel_event, pause_event, timeout, req_session, abort_check=abort_check
             )
 
     # 4. Finalize file: direct replace (no chunk stitching overhead)
@@ -358,9 +393,26 @@ def _fallback_single_download(
     cancel_event: Optional[threading.Event],
     pause_event: Optional[threading.Event],
     timeout: int,
-    session: requests.Session
+    session: requests.Session,
+    abort_check: Optional[Callable[[], bool]] = None
 ) -> Tuple[bool, str]:
     """Single stream standard download fallback."""
+    def _aborted() -> bool:
+        if cancel_event and cancel_event.is_set():
+            return True
+        if abort_check:
+            try:
+                return bool(abort_check())
+            except Exception:
+                return False
+        return False
+
+    def _abort_msg() -> str:
+        return "Download cancelled" if (cancel_event and cancel_event.is_set()) else "Batch paused by user"
+
+    if _aborted():
+        return False, _abort_msg()
+
     temp_target = f"{target_path}.tmp"
     os.makedirs(os.path.dirname(os.path.abspath(target_path)), exist_ok=True)
 
@@ -397,32 +449,17 @@ def _fallback_single_download(
 
         with open(temp_target, "wb") as f:
             for chunk in resp.iter_content(chunk_size=CHUNK_BUFFER_SIZE):
-                if cancel_event and cancel_event.is_set():
-                    if os.path.exists(temp_target):
-                        try:
-                            os.remove(temp_target)
-                        except OSError:
-                            pass
-                    return False, "Download cancelled"
+                if _aborted():
+                    return False, _abort_msg()
 
                 while pause_event and pause_event.is_set():
-                    if cancel_event and cancel_event.is_set():
-                        if os.path.exists(temp_target):
-                            try:
-                                os.remove(temp_target)
-                            except OSError:
-                                pass
-                        return False, "Download cancelled"
+                    if _aborted():
+                        return False, _abort_msg()
                     time.sleep(0.5)
 
                 if chunk:
                     if not bandwidth_limiter.wait_for(len(chunk), cancel_event, pause_event):
-                        if os.path.exists(temp_target):
-                            try:
-                                os.remove(temp_target)
-                            except OSError:
-                                pass
-                        return False, "Download cancelled"
+                        return False, "Cancelled"
                     f.write(chunk)
                     downloaded += len(chunk)
                     if progress_callback:
@@ -441,13 +478,8 @@ def _fallback_single_download(
         os.replace(temp_target, target_path)
         return True, ""
     except Exception as e:
-        if cancel_event and cancel_event.is_set():
-            if os.path.exists(temp_target):
-                try:
-                    os.remove(temp_target)
-                except OSError:
-                    pass
-            return False, "Download cancelled"
+        if _aborted():
+            return False, _abort_msg()
         if os.path.exists(temp_target):
             try:
                 os.remove(temp_target)
@@ -470,6 +502,11 @@ def _fallback_single_download(
                 if hasattr(resp, "raw") and resp.raw:
                     resp.raw.close()
             except Exception:
+                pass
+        if _aborted() and os.path.exists(temp_target):
+            try:
+                os.remove(temp_target)
+            except OSError:
                 pass
 
 

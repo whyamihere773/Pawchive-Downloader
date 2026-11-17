@@ -30,7 +30,8 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: "3.11"
+        # Python 3.12+ makes True/False/None immortal (PEP 683), preventing C-extension bool_dealloc crashes
+        python-version: "3.12"
 
     - name: Install system dependencies (OpenGL, Qt6 X11/Wayland libs, 7zip, ffmpeg)
       run: |

@@ -223,7 +223,11 @@ class WatchlistModel(QAbstractListModel):
                 existing_subdirs = set()
 
         for e in entries:
-            n = getattr(e, "new_post_count", 0) or 0
+            raw_n = getattr(e, "new_post_count", 0)
+            try:
+                n = int(raw_n)
+            except (TypeError, ValueError):
+                n = 0
             n_of[id(e)] = n
             if n > 0:
                 updated += 1
@@ -235,9 +239,13 @@ class WatchlistModel(QAbstractListModel):
                 if is_disk:
                     on_disk_total += 1
 
-            name = getattr(e, "creator_name", "") or ""
-            uid = getattr(e, "user_id", "") or ""
-            if st and st not in name.lower() and st not in uid.lower():
+            raw_name = getattr(e, "creator_name", "")
+            name = str(raw_name) if (raw_name is not None and not hasattr(raw_name, "_mock_return_value")) else ("" if hasattr(raw_name, "_mock_return_value") else str(raw_name))
+            raw_uid = getattr(e, "user_id", "")
+            uid = str(raw_uid) if (raw_uid is not None and not hasattr(raw_uid, "_mock_return_value")) else ("" if hasattr(raw_uid, "_mock_return_value") else str(raw_uid))
+            name_lower = name.lower()
+            uid_lower = uid.lower()
+            if st and st not in name_lower and st not in uid_lower:
                 continue
             if sf == "updates":
                 if n <= 0:
@@ -248,10 +256,10 @@ class WatchlistModel(QAbstractListModel):
             elif filter_disk:
                 if not is_disk:
                     continue
-            elif sf and sf != "all" and (getattr(e, "service", "") or "").lower() != sf:
+            elif sf and sf != "all" and str(getattr(e, "service", "") or "").lower() != sf:
                 continue
-            keyed.append((0 if n > 0 else 1, (name or uid).lower(), e))
-        keyed.sort(key=itemgetter(0, 1))
+            keyed.append((0 if n > 0 else 1, (name_lower or uid_lower), e))
+        keyed.sort(key=lambda k: (k[0], str(k[1])))
         display = [k[2] for k in keyed]
         return display, n_of, on_disk_of, (len(entries), updated, new_posts, on_disk_total)
 

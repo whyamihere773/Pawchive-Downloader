@@ -123,6 +123,7 @@ def error_title(code: str) -> str:
         "disk": "Not enough free space",
         "locked": "Some files are in use",
         "permission": "No permission to update this folder",
+        "path_too_long": "Install folder path is too long",
         "local_changes": "You've changed some app files",
         "diverged": "Your copy has its own commits",
         "wrong_branch": "You're on a different branch",
@@ -136,6 +137,11 @@ def error_hint(code: str) -> str:
         "locked": "Another program (often an antivirus scan) is holding them. Your previous version was restored.",
         "permission": ("Your previous version was restored. Try again as administrator." if sys.platform == "win32"
                        else "Your previous version was restored. The app folder needs to be writable by your user."),
+        "path_too_long": ("Your previous version was restored. Move the Pawchive Downloader folder to a shorter "
+                          "path (for example C:\\Pawchive Downloader) and try updating again."
+                          if sys.platform == "win32"
+                          else "Your previous version was restored. Move the Pawchive Downloader folder to a shorter "
+                               "path and try updating again."),
         "local_changes": "Updating would replace your edits. You can keep them safe with git stash and update, or keep "
                          "your changes and skip this update.",
         "diverged": "It can't simply be moved to the new version. Update it with git (git pull).",
@@ -257,6 +263,8 @@ def run_gui(plan: Dict[str, Any], log: ui.UpdateLog) -> int:
             self._shake = 0
             self._cancel = threading.Event()
             self._installing = False
+            self._quitting = False
+            self._relaunched = False
             self._worker: Optional[threading.Thread] = None
             self._timer = QTimer(self)
             self._timer.setInterval(1000)
@@ -303,6 +311,7 @@ def run_gui(plan: Dict[str, Any], log: ui.UpdateLog) -> int:
             self._phase, self._title, self._text, self._details, self._warning = "running", "", "", "", ""
             self._actions, self._progress, self._detail = [], -1.0, ""
             self._can_cancel, self._installing = True, False
+            self._relaunched = False
             self._cancel.clear()
             self.changed.emit()
             self._worker = threading.Thread(target=self._work, daemon=True)
@@ -362,6 +371,8 @@ def run_gui(plan: Dict[str, Any], log: ui.UpdateLog) -> int:
         def _finish(self, r):
             if self._phase != "running":
                 return
+            self._installing = False
+            self._can_cancel = False
             self._code = r.get("code", "")
             if r.get("ok"):
                 self._phase = "success"
@@ -395,6 +406,7 @@ def run_gui(plan: Dict[str, Any], log: ui.UpdateLog) -> int:
                 self._cancel.set()
                 if not self._installing:
                     self._finish({"ok": False, "code": "cancelled", "message": "The update was cancelled."})
+                    self.changed.emit()
                 else:
                     self._detail = "Cancelling…"
                     self.changed.emit()
@@ -406,9 +418,12 @@ def run_gui(plan: Dict[str, Any], log: ui.UpdateLog) -> int:
 
         @Slot(str)
         def act(self, action):
+            if self._quitting:
+                return
             self._timer.stop()
             if action == "open":
-                if self._code not in ("app_running",):
+                if not self._relaunched and self._code not in ("app_running",):
+                    self._relaunched = True
                     ui.relaunch(self.plan, log)
                 self._quit()
             elif action == "close":
@@ -418,7 +433,7 @@ def run_gui(plan: Dict[str, Any], log: ui.UpdateLog) -> int:
                 self.start()
             elif action == "admin":
                 if elevate(self.plan):
-                    QGuiApplication.quit()       # the elevated updater carries on
+                    self._quit(drop=False)       # the elevated updater carries on
                 else:
                     self._text = "Windows didn't allow running as administrator."
                     self._shake += 1
@@ -427,7 +442,9 @@ def run_gui(plan: Dict[str, Any], log: ui.UpdateLog) -> int:
                 self.plan["stash_changes"] = True
                 self.start()
             elif action == "keep":
-                ui.relaunch(self.plan, log)
+                if not self._relaunched:
+                    self._relaunched = True
+                    ui.relaunch(self.plan, log)
                 self._quit()
             elif action == "archive":
                 self.plan["force_archive"] = True
@@ -437,14 +454,17 @@ def run_gui(plan: Dict[str, Any], log: ui.UpdateLog) -> int:
 
         @Slot(result=bool)
         def canClose(self):
-            return not self._installing
+            return self._quitting or not (self._phase == "running" and self._installing)
 
         @Slot()
         def windowClosing(self):
+            if self._quitting:
+                return
             if self._phase == "running":
                 if self._can_cancel and not self._installing:
                     self._cancel.set()
-                    if self.plan.get("pid") and not self.plan.get("_manual"):
+                    if not self._relaunched and self.plan.get("pid") and not self.plan.get("_manual"):
+                        self._relaunched = True
                         ui.relaunch(self.plan, log)
                     self._quit()
                 elif self._can_cancel:
@@ -452,8 +472,18 @@ def run_gui(plan: Dict[str, Any], log: ui.UpdateLog) -> int:
             else:
                 self._quit()
 
-        def _quit(self):
-            drop_plan(self.plan)
+        def _quit(self, drop: bool = True):
+            if self._quitting:
+                return
+            self._quitting = True
+            self._timer.stop()
+            if drop:
+                drop_plan(self.plan)
+            for w in list(QGuiApplication.topLevelWindows()):
+                try:
+                    w.close()
+                except Exception:
+                    pass
             QGuiApplication.quit()
 
     ctrl = Controller()
@@ -466,8 +496,9 @@ def run_gui(plan: Dict[str, Any], log: ui.UpdateLog) -> int:
     ctrl.start()
     rc = app.exec()
     if ctrl._worker and ctrl._worker.is_alive():
-        if ctrl._installing:
+        if ctrl._installing and ctrl._phase == "running":
             ctrl._worker.join(timeout=600)       # only wait if actively writing files
+    del engine
     return rc
 
 

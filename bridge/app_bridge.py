@@ -13,8 +13,9 @@ import threading
 import json
 import re
 import datetime
-from typing import Optional, Dict, Any, List, Tuple
-from PySide6.QtCore import QObject, Signal, Property, Slot, Qt, QUrl, QCoreApplication, QTimer
+from collections import deque
+from typing import Optional, Dict, Any, List, Tuple, Set
+from PySide6.QtCore import QObject, Signal, Property, Slot, Qt, QUrl, QCoreApplication, QTimer, QThread
 from PySide6.QtGui import QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import QFileDialog, QApplication
 
@@ -53,11 +54,14 @@ def watchlist_cutoff(done_posts, unfinished_posts):
     day_ids = sorted({p for d, p in done if d == newest_date and p})
     return newest_pid, newest_date, day_ids
 from core.logger import logger
-from core.parser import KemonoURLParser, URLParseResult
-from core.filter_engine import FilterEngine, FilterOptions, FilenameStyles, FILTER_PROFILES, REMOVE_WORDS_PROFILES
+from core.parser import KemonoURLParser, URLParseResult, canonical_site_url, normalize_archive_url
+from core.filter_engine import (
+    FilterEngine, FilterOptions, FilenameStyles, FILTER_PROFILES,
+    REMOVE_WORDS_PROFILES, classify_settings_change
+)
 from core.file_order import normalize_file_order, order_files
 from core.api_client import KemonoApiClient
-from core.downloader import KemonoDownloader, DownloadTask, is_permanent_failure
+from core.downloader import KemonoDownloader, DownloadTask, BatchBuildContext, is_permanent_failure
 from core.session_manager import SessionManager
 from core.known_manager import KnownManager
 from bridge.log_model import LogModel
@@ -68,7 +72,13 @@ from bridge.archive_creators_model import ArchiveCreatorsModel, RecordListModel
 from core import folder_naming
 from core.folder_naming import pick_creator_folder, is_creator_folder
 from bridge.decompressor_bridge import DecompressorBridge
+from bridge.thumbnail_provider import VIDEO_EXTENSIONS
 from core.bandwidth_limiter import bandwidth_limiter
+
+_FOLDER_PREVIEW_IMAGE_EXTS = {
+    ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp",
+    ".avif", ".apng", ".tif", ".tiff", ".jfif",
+}
 from core.watchlist_manager import WatchlistManager
 from services.batch_loader import BatchLoader
 from services.link_extractor import LinkExtractor
@@ -85,7 +95,13 @@ from services.cloud_downloader import (
     download_gofile_link
 )
 from core.text_utils import clean_text, sanitize_filesystem_name, safe_file_name
-from core.path_utils import unique_name_in_batch, post_info_for_file, post_info_files
+from core.path_utils import (
+    unique_name_in_batch,
+    post_info_for_file,
+    post_info_files,
+    clean_subprocess_env,
+    subprocess_env_kwargs,
+)
 from core.post_metadata_index import parse_post_info_content
 from core.archive_manager import ArchiveManager
 from core.archive_rebuilder import ArchiveRebuilder, ArchiveRebuildOptions
@@ -149,6 +165,7 @@ class AppBridge(QObject):
     postSelectionLoadingChanged = Signal()
     postSelectionReady = Signal(list, str, int)
     postSelectionError = Signal(str)
+    selectionCacheChanged = Signal()
     postSelectionProgress = Signal(int, int, int, str)
     postSelectionProgressStatusChanged = Signal()
     postSelectionProgressPageChanged = Signal()
@@ -201,6 +218,7 @@ class AppBridge(QObject):
     aiHardwareInfoChanged = Signal()
     languageChanged = Signal()
     uiScaleChanged = Signal()
+    disabledTabsChanged = Signal()
     postActionCountdownStarted = Signal(str)  # carries human label e.g. "Shutdown"
     exportCompleted = Signal(str, bool)       # (filePath, wasDownloading)
     importCompleted = Signal(int, int)        # (taskCount, creatorCount)
@@ -238,6 +256,7 @@ class AppBridge(QObject):
     watchlistFolderChangeRequested = Signal(str, str, str, str, str, int, str)
     watchlistFolderChanged = Signal(str, str, str)
     watchlistFolderMoveProgress = Signal(str, str, int, int)   # (userId, service, files moved, files to move)
+    watchlistRedownloadPreviewReady = Signal(str, str, int, str, str)  # (userId, service, fileCount, sizeText, folderSummary)
 
     # Link Vault signals
     linkVaultChanged          = Signal()
@@ -283,6 +302,7 @@ class AppBridge(QObject):
 
     # File Explorer & Media Gallery signals
     folderStatsCalculated     = Signal(str, 'qint64', 'qint64', 'qint64')  # (path, total_size, file_count, folder_count)
+    folderPreviewsCalculated  = Signal(str, 'QVariantList')                # (path, up to 4 media file paths)
     galleryBookmarksChanged   = Signal()
     drivesUpdated             = Signal('QVariantList')   # drives with fresh free space (Gallery)
     galleryShowRequested      = Signal(str, bool)   # (path, is_dir): other tabs ask the Gallery to open a place
@@ -302,6 +322,16 @@ class AppBridge(QObject):
     _watchlist_checker = None
     _watchlistArtistResultSignal = Signal(str, str, int)  # (userId, service, newCount)
     _scheduledCreatorSyncSignal = Signal(str)  # scheduler thread -> GUI thread
+    # Live scan & mid-download settings reconfiguration signals
+    isScanningChanged = Signal()
+    scanProgressChanged = Signal()
+    hasPendingDownloadSettingsChangesChanged = Signal()
+    pendingSettingsDiffSummaryChanged = Signal()
+    isApplyingMidDownloadSettingsChanged = Signal()
+    midDownloadApplyStatusTextChanged = Signal()
+    midDownloadSettingsPromptRequested = Signal(str, 'QVariantMap')
+    midDownloadApplyFinished = Signal(bool, str)
+    _replaceBatchesSignal = Signal(object, list)
     # Slow folder scans run in the background; QML gets the answer here: (request id, result)
     asyncResultReady = Signal(str, 'QVariant')
     _callOnGui = Signal(object)      # a function to run on the window thread (from background jobs)
@@ -311,8 +341,9 @@ class AppBridge(QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        # File explorer folder stats cache & worker token
+        # File explorer folder stats & preview caches + worker token
         self._folder_stats_cache = {}
+        self._folder_previews_cache = {}
         self._folder_stats_worker_token = 0
 
         # Core systems
@@ -414,8 +445,12 @@ class AppBridge(QObject):
         self._post_selection_progress_total = 0
         self._post_selection_progress_status = ""
         self._selection_cached_posts = []
+        self._selection_cached_cards = []
+        self._selection_cache_key = ""
+        self._selection_session_key = ""
         self._selection_parsed = None
         self._selection_creator_name = ""
+        self._selection_creator_unimported = False
         self._gallery_bookmarks = list(saved_settings.get("gallery_bookmarks", []) or [])
         if not self._gallery_bookmarks:
             self._gallery_bookmarks = self._get_default_gallery_bookmarks()
@@ -488,6 +523,15 @@ class AppBridge(QObject):
         self.model_manager.register_callback("deep_reasoner_light", _on_model_progress)
         self.model_manager.register_callback("deep_reasoner_heavy", _on_model_progress)
         self.model_manager.register_callback("deep_reasoner", _on_model_progress)
+        self.model_manager.register_callback("visual_clip_vit", _on_model_progress)
+        self.model_manager.register_callback("visual_vlm_light", _on_model_progress)
+
+        self._disabled_tabs = [
+            str(t).strip().lower()
+            for t in (saved_settings.get("disabled_tabs") or [])
+            if str(t).strip().lower() and str(t).strip().lower() not in ("downloader", "settings")
+        ]
+        self._local_library_roots = list(saved_settings.get("local_library_roots") or [])
 
         self._language = str(saved_settings.get("language", "auto"))
         raw_scale = saved_settings.get("ui_scale", 1.0)
@@ -564,6 +608,29 @@ class AppBridge(QObject):
         self._has_error = False
         self._last_error_message = ""
         self._is_favorite_artists_loading = False
+        self._is_scanning = False
+        self._scan_phase_text = ""
+        self._scan_progress_current = 0
+        self._scan_progress_total = 0
+        self._scan_ui_gen = 0
+        self._last_scan_ui_emit = 0.0
+        self._active_scan_jobs = 0
+        self._scan_jobs_lock = threading.Lock()
+        self._has_pending_download_settings_changes = False
+        self._pending_settings_diff_summary = ""
+        self._is_applying_mid_download = False
+        self._mid_download_apply_status_text = ""
+        self._settings_apply_gen = 0
+        self._apply_cancel_event = threading.Event()
+        self._settings_dismissed_baseline = None
+        self._dirty_archive_completed = 0
+        self._seen_session_archive_creators: Set[Tuple[str, str]] = set()
+        self._last_archive_full_emit_time = 0.0
+        self._archive_posts_gen = 0
+        self._settings_dirty_timer = QTimer(self)
+        self._settings_dirty_timer.setSingleShot(True)
+        self._settings_dirty_timer.setInterval(250)
+        self._settings_dirty_timer.timeout.connect(self._evaluate_pending_download_settings)
 
         # Link Vault state
         self._vault_search = ""
@@ -626,9 +693,41 @@ class AppBridge(QObject):
         self._creatorSignal.connect(self._handle_creator_resolved, Qt.QueuedConnection)
         self._setTasksSignal.connect(self._handle_set_tasks,       Qt.QueuedConnection)
         self._appendTasksSignal.connect(self._handle_append_tasks, Qt.QueuedConnection)
+        self._replaceBatchesSignal.connect(self._handle_replace_batches, Qt.QueuedConnection)
         self._watchlistResultSignal.connect(self._handle_watchlist_result, Qt.QueuedConnection)
         self._watchlistArtistResultSignal.connect(self._handle_watchlist_artist_result, Qt.QueuedConnection)
         self._scheduledCreatorSyncSignal.connect(self._handle_scheduled_creator_sync, Qt.QueuedConnection)
+        for _sig_name in (
+            "pageStartChanged", "pageEndChanged", "downloadDirChanged", "filterCharactersChanged",
+            "characterScopeChanged", "skipWordsChanged", "skipScopeChanged", "removeWordsChanged",
+            "dateAfterChanged", "dateBeforeChanged", "minFileSizeChanged", "maxFileSizeChanged",
+            "videoDurationFilterEnabledChanged", "minVideoDurationChanged", "maxVideoDurationChanged",
+            "filterTypeChanged", "exactExtensionsChanged", "skipArchivesChanged",
+            "downloadThumbnailsOnlyChanged", "fallbackToThumbnailsChanged", "redownloadSmallFilesChanged",
+            "skipPostCoversChanged", "scanContentImagesChanged", "downloadDmsChanged",
+            "downloadPawchiveTemporaryFilesChanged", "compressWebpChanged", "webpQualityChanged",
+            "writeAudioMetadataChanged", "keepDuplicatesChanged", "favoriteModeChanged",
+            "subfolderPerPostChanged", "datePrefixChanged", "siteInFolderNameChanged",
+            "fileIndexPrefixChanged", "separateFoldersByKnownChanged", "downloadRevisionsChanged",
+            "adaptiveThreadingChanged", "autoRetryAtEndChanged", "skipRetry404Changed",
+            "mangaModeChanged", "filenameStyleChanged", "filenameTemplateChanged",
+            "proxyUrlChanged", "bandwidthLimitEnabledChanged", "bandwidthLimitValueChanged",
+            "bandwidthLimitUnitChanged", "threadsCountChanged", "threadsLockedChanged",
+            "downloadDelayChanged", "savePostMetadataChanged", "writeSidecarsChanged",
+            "sidecarFormatChanged", "sidecarScopeChanged", "downloadEmbedsChanged",
+            "embedCookiesBrowserChanged", "knownRecognitionModeChanged", "aiRecognitionEnabledChanged",
+            "aiEngineModeChanged", "tagFolderModeChanged", "groupFileTypeChanged", "fileOrderChanged",
+        ):
+            _sig = getattr(self, _sig_name, None)
+            if _sig is not None:
+                _sig.connect(self._on_download_setting_mutated)
+        for _sig_name in (
+            "currentUrlChanged", "favoriteModeChanged", "pageStartChanged", "pageEndChanged",
+            "dateAfterChanged", "dateBeforeChanged", "downloadDmsChanged", "dateAutoScanPagesChanged",
+        ):
+            _sig = getattr(self, _sig_name, None)
+            if _sig is not None:
+                _sig.connect(self.selectionCacheChanged)
         # Keep the computer awake while downloads run (Scheduler → "Sleep prevention")
         self._scheduled_sweep_retry = False
         self.isDownloadingChanged.connect(self._update_sleep_prevention)
@@ -664,6 +763,92 @@ class AppBridge(QObject):
             logger.warning("Incomplete download session found. UI updated for restore.", category="session")
 
     # Property Getters / Setters
+    @Property(bool, notify=isScanningChanged)
+    def isScanning(self) -> bool:
+        return self._is_scanning
+
+    @Property(str, notify=scanProgressChanged)
+    def scanPhaseText(self) -> str:
+        return self._scan_phase_text
+
+    @Property(int, notify=scanProgressChanged)
+    def scanProgressCurrent(self) -> int:
+        return self._scan_progress_current
+
+    @Property(int, notify=scanProgressChanged)
+    def scanProgressTotal(self) -> int:
+        return self._scan_progress_total
+
+    @Property(bool, notify=hasPendingDownloadSettingsChangesChanged)
+    def hasPendingDownloadSettingsChanges(self) -> bool:
+        return self._has_pending_download_settings_changes
+
+    @Property(str, notify=pendingSettingsDiffSummaryChanged)
+    def pendingSettingsDiffSummary(self) -> str:
+        return self._pending_settings_diff_summary
+
+    @Property(bool, notify=isApplyingMidDownloadSettingsChanged)
+    def isApplyingMidDownloadSettings(self) -> bool:
+        return self._is_applying_mid_download
+
+    @Property(str, notify=midDownloadApplyStatusTextChanged)
+    def midDownloadApplyStatusText(self) -> str:
+        return self._mid_download_apply_status_text
+
+    def _update_scan_progress(
+        self,
+        phase_text: str,
+        current: int = 0,
+        total: int = 0,
+        force: bool = False,
+        gen: Optional[int] = None,
+        active: Optional[bool] = None,
+        update_status_text: bool = True,
+    ) -> None:
+        """Updates throttled scan phase & progress safely from any worker thread."""
+        if gen is not None and gen != self._scan_ui_gen:
+            return
+        now = time.monotonic()
+        if not force and active is None and (now - self._last_scan_ui_emit) < 0.25:
+            return
+        self._last_scan_ui_emit = now
+
+        def _apply():
+            if gen is not None and gen != self._scan_ui_gen:
+                return
+            if active is not None and self._is_scanning != bool(active):
+                self._is_scanning = bool(active)
+                self.isScanningChanged.emit()
+            c_int = max(0, int(current or 0))
+            t_int = max(0, int(total or 0))
+            if (
+                self._scan_phase_text != phase_text
+                or self._scan_progress_current != c_int
+                or self._scan_progress_total != t_int
+            ):
+                self._scan_phase_text = phase_text
+                self._scan_progress_current = c_int
+                self._scan_progress_total = t_int
+                self.scanProgressChanged.emit()
+            if update_status_text and phase_text and self._status_text != phase_text:
+                self._status_text = phase_text
+                self.statusTextChanged.emit()
+
+        if QThread.currentThread() is self.thread():
+            _apply()
+        else:
+            self._callOnGui.emit(_apply)
+
+    @Slot()
+    def cancelScan(self):
+        """Cancels any active creator metadata/post scan without affecting other completed items."""
+        self._scan_cancel_event.set()
+        self._scan_ui_gen += 1
+        self._update_scan_progress("", 0, 0, force=True, active=False, update_status_text=False)
+        if not self.downloader.is_running:
+            self._status_text = "Progress: Scan cancelled"
+            self.statusTextChanged.emit()
+
     @Property(str, notify=currentUrlChanged)
     def currentUrl(self) -> str:
         return self._current_url
@@ -1821,7 +2006,7 @@ class AppBridge(QObject):
                 main_py = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "main.py")
                 cmd = [sys.executable, main_py]
                 cwd = os.path.dirname(main_py)
-            env = os.environ.copy()
+            env = clean_subprocess_env(os.environ)
             if abs(self._ui_scale - 1.0) >= 0.01:
                 env["QT_SCALE_FACTOR"] = f"{self._ui_scale:.2f}".rstrip("0").rstrip(".")
             else:
@@ -1975,6 +2160,40 @@ class AppBridge(QObject):
     @Property(int, notify=archiveRecordCountChanged)
     def archiveRecordCount(self) -> int:
         return self.archive_manager.get_total_count()
+
+    @Property("QVariantList", notify=disabledTabsChanged)
+    def disabledTabs(self) -> list:
+        return list(self._disabled_tabs)
+
+    @Slot(str, result=bool)
+    def isTabDisabled(self, tab_key: str) -> bool:
+        clean = (tab_key or "").strip().lower()
+        if clean in ("downloader", "settings"):
+            return False
+        return clean in self._disabled_tabs
+
+    @Slot(str, bool)
+    def setTabDisabled(self, tab_key: str, disabled: bool) -> None:
+        clean = (tab_key or "").strip().lower()
+        if not clean or clean in ("downloader", "settings"):
+            return
+        changed = False
+        if disabled and clean not in self._disabled_tabs:
+            self._disabled_tabs.append(clean)
+            changed = True
+        elif not disabled and clean in self._disabled_tabs:
+            self._disabled_tabs = [t for t in self._disabled_tabs if t != clean]
+            changed = True
+        if changed:
+            self.disabledTabsChanged.emit()
+            self.saveSettings()
+
+    @Slot()
+    def resetDisabledTabs(self) -> None:
+        if self._disabled_tabs:
+            self._disabled_tabs = []
+            self.disabledTabsChanged.emit()
+            self.saveSettings()
 
     # ── Privacy Mode & Shield Protection ────────────────────────────────────
     @Property(bool, notify=privacyModeActiveChanged)
@@ -2158,7 +2377,19 @@ class AppBridge(QObject):
     def getArchiveCreatorPostsAsync(self, request_id: str, creatorKey: str, query: str = "",
                                     service: str = "all", fileType: str = "all"):
         """The posts and files of one creator in the Archive view (its "key" from getArchiveDataAsync)."""
-        self._run_async(request_id, self.archive_manager.get_creator_posts, creatorKey, query, service, fileType)
+        gen = self.__dict__.get("_archive_posts_gen", 0) + 1
+        self._archive_posts_gen = gen
+        stale = lambda: self._archive_posts_gen != gen  # noqa: E731
+
+        def _job():
+            res = self.archive_manager.get_creator_posts(
+                creatorKey, query, service, fileType, should_stop=stale
+            )
+            if stale() or res is None:
+                return None
+            return res
+
+        self._run_async(request_id, _job)
 
     @Slot(str, str, str)
     def exportArchiveFileAsync(self, request_id: str, filepath: str, exportFormat: str = "txt"):
@@ -2283,7 +2514,12 @@ class AppBridge(QObject):
     # the window thread. Each answers with asyncResultReady(request_id, result) like the sync version.
     def _archive_change_async(self, request_id: str, fn, *args) -> None:
         def _job():
-            result = fn(*args)
+            try:
+                result = fn(*args)
+            except Exception as exc:
+                self.archive_manager.last_error = str(exc)
+                logger.error(f"Archive operation failed: {exc}", category="archive")
+                return -1
             changed = (result is True) or (isinstance(result, int) and not isinstance(result, bool) and result > 0)
             if changed:
                 self.archiveRecordCountChanged.emit()
@@ -2301,7 +2537,15 @@ class AppBridge(QObject):
 
     @Slot(str, str, str)
     def deleteArchiveCreatorAsync(self, request_id: str, creatorId: str, service: str = ""):
-        self._archive_change_async(request_id, self.archive_manager.delete_by_creator, creatorId, service)
+        def _guarded_delete():
+            if self.downloader.has_active_tasks_for_creator(service, creatorId):
+                self.archive_manager.last_error = (
+                    "This creator is currently downloading — pause or cancel its active download before removing archive records."
+                )
+                logger.warning(self.archive_manager.last_error, category="archive")
+                return -1
+            return self.archive_manager.delete_by_creator(creatorId, service)
+        self._archive_change_async(request_id, _guarded_delete)
 
     @Slot(str, str, str)
     def removeMissingArchiveRecordsForCreatorAsync(self, request_id: str, service: str, creatorId: str):
@@ -2310,9 +2554,16 @@ class AppBridge(QObject):
     @Slot(str)
     def clearDownloadArchiveAsync(self, request_id: str):
         def _clear():
+            if self.downloader.is_running or self.downloader.active_unfinished_batch_ids():
+                self.archive_manager.last_error = (
+                    "Downloads are currently active — pause or cancel active downloads before clearing the Archive database."
+                )
+                logger.warning(self.archive_manager.last_error, category="archive")
+                return False
             ok = self.archive_manager.clear_archive()
-            self.archiveRecordCountChanged.emit()
-            self.archiveUpdated.emit()
+            if ok:
+                self.archiveRecordCountChanged.emit()
+                self.archiveUpdated.emit()
             return ok
         self._run_async(request_id, _clear)
 
@@ -2460,9 +2711,9 @@ class AppBridge(QObject):
             else:
                 import sys
                 if sys.platform == 'darwin':
-                    subprocess.Popen(["open", "-R" if os.path.isfile(clean_path) else "", clean_path])
+                    subprocess.Popen(["open", "-R" if os.path.isfile(clean_path) else "", clean_path], **subprocess_env_kwargs())
                 else:
-                    subprocess.Popen(["xdg-open", os.path.dirname(clean_path) if os.path.isfile(clean_path) else clean_path])
+                    subprocess.Popen(["xdg-open", os.path.dirname(clean_path) if os.path.isfile(clean_path) else clean_path], **subprocess_env_kwargs())
                 return True
         except Exception as e:
             logger.error(f"Failed to reveal file {filePath}: {e}", category="archive")
@@ -3288,6 +3539,53 @@ class AppBridge(QObject):
             daemon=True
         ).start()
 
+    @Slot("QVariantList", bool, bool)
+    @Slot("QVariantList", bool)
+    @Slot("QVariantList")
+    def enqueueBatchUrls(self, urls: list, autoStart: bool = True, forceRedownload: bool = False) -> None:
+        """
+        Enqueues a batch of creator or post URLs (e.g. from the Browser selection cart)
+        directly into the normal Downloader & Queue pipeline.
+        """
+        raw_urls = [str(u or "").strip() for u in (urls or []) if str(u or "").strip()]
+        if not raw_urls:
+            return
+
+        self._scan_cancel_event.clear()
+        if autoStart:
+            self._has_error = False
+            self.hasErrorChanged.emit()
+            if not self._is_downloading:
+                self._is_downloading = True
+                self.isDownloadingChanged.emit()
+            self._status_text = f"Fetching {len(raw_urls)} marked item(s) for download…"
+            self.statusTextChanged.emit()
+
+        def _batch_worker():
+            for u in raw_urls:
+                if self._scan_cancel_event.is_set():
+                    break
+                parsed = KemonoURLParser.parse(u)
+                if not parsed.is_valid:
+                    logger.error(f"Invalid URL: {parsed.error_msg} ({u})", category="parser")
+                    continue
+                if self._refuse_if_disabled(u):
+                    continue
+
+                link_type, identity_key, parent_artist_key, display_name = self._get_link_identity(parsed)
+                if not forceRedownload:
+                    if identity_key in self._queued_links:
+                        logger.info(f"Skipping duplicate {link_type}: {display_name} is already in queue.", category="queue")
+                        continue
+                    if parent_artist_key and parent_artist_key in self._queued_links:
+                        logger.info(f"Skipping post: entire artist ({parsed.user_id}) is already in queue.", category="queue")
+                        continue
+
+                self._queued_links.add(identity_key)
+                self._async_fetch_and_start(parsed, auto_start=autoStart, force_redownload=bool(forceRedownload))
+
+        threading.Thread(target=_batch_worker, daemon=True, name="BrowserBatchQueueWorker").start()
+
     @Slot(str, result=str)
     def previewCustomFilename(self, template: str) -> str:
         """Evaluate a custom filename template against realistic sample metadata for live preview."""
@@ -3499,11 +3797,24 @@ class AppBridge(QObject):
                 is_favorite=True
             )
         if download_dir:
-            entry.download_dir = download_dir
+            resolved_fav = self.resolve_explicit_watch_folder(
+                entry,
+                download_dir,
+                creator_name=entry.creator_name or user_id,
+                service=service,
+                allow_empty_leaf=False,
+            )
+            try:
+                os.makedirs(resolved_fav, exist_ok=True)
+            except OSError:
+                pass
+            entry.download_dir = resolved_fav
+            entry.custom_folder = True
             if hasattr(entry, "download_dirs") and isinstance(entry.download_dirs, list):
-                if download_dir not in entry.download_dirs:
-                    entry.download_dirs.insert(0, download_dir)
+                if resolved_fav not in entry.download_dirs:
+                    entry.download_dirs.insert(0, resolved_fav)
             self._watchlist_manager.save(entry)
+            download_dir = resolved_fav
 
         def _run():
             try:
@@ -3540,12 +3851,270 @@ class AppBridge(QObject):
         """Shortcut to fetch and sync Pawchive favorites."""
         self.fetchFavoriteArtists()
 
+    def _build_selection_keys(self, url_input: str, parsed: Optional[URLParseResult]) -> Tuple[str, str]:
+        """Return (fetch_cache_key, session_identity_key) for the post selection modal.
+
+        `session_identity_key` stays stable across re-fetches and page tweaks so user checkmarks
+        survive; `fetch_cache_key` also includes page/date/DM bounds so changing scan scope
+        triggers a fresh fetch instead of serving stale truncated results.
+        """
+        raw = str(getattr(parsed, "raw_url", "") or url_input or "").strip().rstrip("/").lower()
+        session_key = "|".join([
+            "1" if getattr(self, "_favorite_mode", False) else "0",
+            str(getattr(parsed, "domain", "") or "").lower(),
+            str(getattr(parsed, "provider", "") or "").lower(),
+            str(getattr(parsed, "service", "") or "").lower(),
+            str(getattr(parsed, "user_id", "") or ""),
+            str(getattr(parsed, "post_id", "") or ""),
+            "1" if getattr(parsed, "is_dms", False) else "0",
+            raw,
+        ])
+        effective_page_end = (
+            999999
+            if (getattr(self, "_date_auto_scan_pages", False) and (getattr(self, "_date_after", "") or getattr(self, "_date_before", "")))
+            else getattr(self, "_page_end", 999999)
+        )
+        cache_key = "|".join([
+            session_key,
+            str(getattr(self, "_page_start", 1)),
+            str(effective_page_end),
+            str(getattr(self, "_date_after", "") or ""),
+            str(getattr(self, "_date_before", "") or ""),
+            "1" if getattr(self, "_download_dms", False) else "0",
+        ])
+        return cache_key, session_key
+
+    @Property(bool, notify=selectionCacheChanged)
+    def hasCachedSelectionForCurrentUrl(self) -> bool:
+        """True when already-fetched posts match the active URL and scan bounds."""
+        url_input = (self._current_url or "").strip()
+        if not url_input or not self._selection_cache_key or not self._selection_cached_cards:
+            return False
+        parsed = KemonoURLParser.parse(url_input)
+        if not parsed.is_valid:
+            return False
+        cache_key, _ = self._build_selection_keys(url_input, parsed)
+        return cache_key == self._selection_cache_key
+
+    @Property(bool, notify=selectionCacheChanged)
+    def selectionCreatorUnimported(self) -> bool:
+        """True when the creator loaded into PostSelectionModal is flagged unimported on Pawchive."""
+        return bool(getattr(self, "_selection_creator_unimported", False))
+
+    @Slot(result=str)
+    def getSelectionSessionKey(self) -> str:
+        """Return the creator/source key used by PostSelectionModal to preserve selections."""
+        return self._selection_session_key or self._selection_cache_key or ""
+
+    def _resolve_selection_creator_unimported(
+        self,
+        profile: Optional[Dict[str, Any]],
+        parsed: Optional[URLParseResult],
+    ) -> bool:
+        """Determines creator-level unimported status from profile payload or local catalog cache."""
+        if isinstance(profile, dict):
+            if "ever_imported" in profile and profile.get("ever_imported") is not None:
+                return profile.get("ever_imported") is False
+            if profile.get("is_unimported") is not None:
+                return bool(profile.get("is_unimported"))
+        if parsed and not parsed.is_external_provider and parsed.service and parsed.user_id:
+            prov_id = self.get_provider_for_domain(parsed.domain or "")
+            if prov_id:
+                try:
+                    from core.browser_providers import browser_registry
+                    prov = browser_registry.get_provider(prov_id)
+                    if prov and hasattr(prov, "is_creator_unimported_cached"):
+                        return bool(prov.is_creator_unimported_cached(parsed.service, parsed.user_id))
+                except Exception:
+                    pass
+        return False
+
+    def _build_selection_file_item(
+        self,
+        fobj: Dict[str, Any],
+        raw_post: Dict[str, Any],
+        domain: str,
+        prov_id: str,
+        post_url: str,
+        post_id: str,
+        is_main: bool,
+    ) -> Optional[Dict[str, Any]]:
+        """Formats a post file or attachment dict for PostSelectionModal + MediaLightboxModal."""
+        if not isinstance(fobj, dict):
+            return None
+        from core.browser_providers.base import build_media_attachment_dto, resolve_kemono_media_urls
+        from core.browser_providers.cumst_provider import resolve_cumst_media_dto
+
+        domain_lower = (domain or "").strip().lower()
+        dto = None
+        if "cum.st" in domain_lower or "cumst" in domain_lower or (bool(fobj.get("storageKey")) and not fobj.get("path")):
+            dto = resolve_cumst_media_dto(fobj)
+        elif prov_id in ("pawchive", "kemono", "coomer") or not str(fobj.get("path") or fobj.get("url") or "").startswith(("http://", "https://")):
+            resolved = resolve_kemono_media_urls(fobj, base_domain=domain or "pawchive.pw", post_raw=raw_post)
+            if resolved:
+                fname, full_url, thumb_url = resolved
+                dto = build_media_attachment_dto(
+                    name=fname,
+                    url=full_url,
+                    thumbnail_url=thumb_url,
+                    file_size=int(fobj.get("size") or fobj.get("file_size") or 0),
+                )
+        else:
+            raw_url = str(fobj.get("temp_download_url") or fobj.get("temp_url") or fobj.get("url") or fobj.get("path") or "").strip()
+            if raw_url:
+                fname = str(fobj.get("name") or fobj.get("filename") or os.path.basename(raw_url.split("?")[0]) or "file")
+                thumb_url = str(fobj.get("thumbnailUrl") or fobj.get("thumbnail") or fobj.get("previewUrl") or "").strip()
+                dto = build_media_attachment_dto(
+                    name=fname,
+                    url=raw_url,
+                    thumbnail_url=thumb_url,
+                    file_size=int(fobj.get("size") or fobj.get("file_size") or 0),
+                )
+
+        if not dto:
+            return None
+
+        selection_path = str(fobj.get("path") or fobj.get("storageKey") or fobj.get("url") or dto["url"] or "")
+        thumb = dto.get("thumbnail_url") or ""
+        return {
+            "name": dto["name"],
+            "path": selection_path,
+            "url": dto["url"],
+            "thumbnail": thumb,
+            "previewUrl": thumb,
+            "thumbnail_url": thumb,
+            "ext": dto["ext"],
+            "media_type": dto["media_type"],
+            "is_loop": bool(dto["is_loop"]),
+            "file_size": int(dto.get("file_size") or 0),
+            "provider_id": prov_id,
+            "postUrl": post_url,
+            "postId": str(post_id or ""),
+            "is_main": bool(is_main),
+            "selected": True,
+        }
+
+    def _build_selection_post_card(
+        self,
+        raw_post: Dict[str, Any],
+        parsed: Optional[URLParseResult],
+        default_domain: str = "pawchive.pw",
+        creator_is_unimported: bool = False,
+        title_prefix: str = "",
+    ) -> Dict[str, Any]:
+        """Normalizes a raw API post dict into a PostSelectionModal card with full media + unimported metadata."""
+        import html as _html
+
+        pid = str(raw_post.get("id") or "")
+        domain = (
+            raw_post.get("domain")
+            or (getattr(parsed, "domain", "") if parsed else "")
+            or default_domain
+            or "pawchive.pw"
+        )
+        svc = str(raw_post.get("service") or (getattr(parsed, "service", "") if parsed else "") or "").strip().lower()
+        cid = str(raw_post.get("user") or (getattr(parsed, "user_id", "") if parsed else "") or "").strip()
+        is_dm = bool(raw_post.get("is_dm") or raw_post.get("is_dms") or (getattr(parsed, "is_dms", False) if parsed else False))
+        is_ext = bool(getattr(parsed, "is_external_provider", False)) if parsed else False
+        prov_id = "" if is_ext else self.get_provider_for_domain(domain)
+
+        if not is_ext and domain and svc and cid and pid:
+            post_url = canonical_site_url(domain, svc, cid, "dm" if is_dm else "post", pid)
+        else:
+            post_url = str(raw_post.get("url") or "")
+
+        if "has_full" in raw_post:
+            post_is_unimported = raw_post.get("has_full") is False
+        elif raw_post.get("is_unimported") is not None:
+            post_is_unimported = bool(raw_post.get("is_unimported"))
+        else:
+            post_is_unimported = bool(creator_is_unimported and not is_ext)
+
+        title, _ = FilterEngine.extract_post_title_and_caption(raw_post, fallback_title="Untitled Post")
+        if title_prefix:
+            title = f"{title_prefix}{title}"
+        published = str(raw_post.get("published") or raw_post.get("added") or "")[:10]
+
+        post_files: List[Dict[str, Any]] = []
+        seen_selection_keys: Set[str] = set()
+
+        def _append_fobj(fobj: Dict[str, Any], is_main: bool) -> None:
+            if not isinstance(fobj, dict):
+                return
+            if not (fobj.get("path") or fobj.get("storageKey") or fobj.get("url") or fobj.get("temp_download_url") or fobj.get("temp_url")):
+                return
+            sel_key = KemonoDownloader.extract_norm_rel_key(fobj) or str(fobj.get("path") or fobj.get("url") or fobj.get("storageKey") or "").lower()
+            if sel_key and sel_key in seen_selection_keys:
+                if not is_main and post_files and post_files[0].get("is_main"):
+                    att_name = str(fobj.get("name") or os.path.basename(str(fobj.get("path") or "")) or "")
+                    if att_name and not att_name.lower().startswith(("cover", "preview")):
+                        post_files[0]["name"] = att_name
+                return
+            if sel_key:
+                seen_selection_keys.add(sel_key)
+            item = self._build_selection_file_item(
+                fobj,
+                raw_post=raw_post,
+                domain=domain,
+                prov_id=prov_id,
+                post_url=post_url,
+                post_id=pid,
+                is_main=is_main,
+            )
+            if item:
+                post_files.append(item)
+
+        _append_fobj(raw_post.get("file"), is_main=True)
+        for att in raw_post.get("attachments", []) or []:
+            _append_fobj(att, is_main=False)
+
+        thumb_url = str(raw_post.get("thumbnail") or "").strip()
+        if not thumb_url:
+            for pf in post_files:
+                if pf.get("thumbnail"):
+                    thumb_url = str(pf["thumbnail"])
+                    break
+
+        raw_content = raw_post.get("content") or raw_post.get("captionHtml") or raw_post.get("caption") or ""
+        clean_content = re.sub(r"<br\s*/?>", "\n", str(raw_content), flags=re.IGNORECASE)
+        clean_content = _html.unescape(re.sub(r"<[^>]+>", "", clean_content).strip())
+
+        has_video = any(pf.get("media_type") == "video" for pf in post_files)
+        has_gif = any(pf.get("is_loop") or pf.get("ext") == ".gif" for pf in post_files)
+
+        return {
+            "id": pid,
+            "title": title,
+            "content": clean_content,
+            "published": published,
+            "thumbnail": thumb_url,
+            "fileCount": len(post_files),
+            "files": [dict(pf, postedIndex=i) for i, pf in enumerate(post_files)],
+            "selected": True,
+            "provider_id": prov_id,
+            "service": svc,
+            "creator_id": cid,
+            "url": post_url,
+            "is_dm": is_dm,
+            "is_unimported": post_is_unimported,
+            "hasVideo": has_video,
+            "hasGif": has_gif,
+        }
+
     @Slot()
     def fetchPostsForSelection(self):
         """
-        Fetches creator profile and posts in a background worker for the interactive
-        PostSelectionModal so the user can visually review and check/uncheck items before downloading.
+        Fetches creator profile and posts in a background worker for PostSelectionModal,
+        reusing cached posts when the same URL and scan bounds were already fetched.
         """
+        self._fetch_posts_for_selection_impl(force_refresh=False)
+
+    @Slot()
+    def refetchPostsForSelection(self):
+        """Force a fresh network fetch of posts for PostSelectionModal, bypassing the session cache."""
+        self._fetch_posts_for_selection_impl(force_refresh=True)
+
+    def _fetch_posts_for_selection_impl(self, force_refresh: bool = False):
         if self._is_post_selection_loading:
             return
 
@@ -3575,6 +4144,19 @@ class AppBridge(QObject):
                 self.postSelectionError.emit(f"Favorite Mode requires an account login for {prov_id.capitalize()} in Settings → Accounts.")
                 return
 
+        cache_key, session_key = self._build_selection_keys(url_input, parsed)
+        if (
+            not force_refresh
+            and cache_key
+            and cache_key == self._selection_cache_key
+            and self._selection_cached_posts
+            and self._selection_cached_cards
+        ):
+            self._selection_parsed = parsed
+            cached_cards = list(self._selection_cached_cards)
+            self.postSelectionReady.emit(cached_cards, self._selection_creator_name, len(cached_cards))
+            return
+
         self._scan_cancel_event.clear()
         self._is_post_selection_loading = True
         self.postSelectionLoadingChanged.emit()
@@ -3584,6 +4166,7 @@ class AppBridge(QObject):
             try:
                 creator_name = ""
                 posts = []
+                profile = {}
 
                 if parsed.is_external_provider:
                     creator_name = parsed.domain
@@ -3707,6 +4290,11 @@ class AppBridge(QObject):
                                 if dms:
                                     posts = (posts or []) + dms
 
+                if self._scan_cancel_event.is_set():
+                    self._is_post_selection_loading = False
+                    self.postSelectionLoadingChanged.emit()
+                    return
+
                 if not posts:
                     self._is_post_selection_loading = False
                     self._emit_post_selection_progress(0, 0, 0, f"No posts found for {creator_name or 'URL'}.")
@@ -3722,13 +4310,10 @@ class AppBridge(QObject):
                     f"Formatting {total_posts_found} posts for preview…"
                 )
 
-                self._selection_cached_posts = list(posts)
-                self._selection_parsed = parsed
-                self._selection_creator_name = creator_name
-
                 # Build cards list for UI
                 cards = []
                 domain = parsed.domain or "pawchive.pw"
+                creator_is_unimported = self._resolve_selection_creator_unimported(profile, parsed)
                 for idx, p in enumerate(posts, 1):
                     if self._scan_cancel_event.is_set():
                         break
@@ -3739,129 +4324,28 @@ class AppBridge(QObject):
                             total_posts_found,
                             f"Preparing previews ({idx}/{total_posts_found})…"
                         )
-                    pid = str(p.get("id", ""))
-                    title, _ = FilterEngine.extract_post_title_and_caption(p, fallback_title="Untitled Post")
-                    published = str(p.get("published") or "")[:10]
+                    cards.append(
+                        self._build_selection_post_card(
+                            p,
+                            parsed=parsed,
+                            default_domain=domain,
+                            creator_is_unimported=creator_is_unimported,
+                        )
+                    )
 
-                    image_exts = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".avif")
-                    def _is_image(p_str: str) -> bool:
-                        if not p_str:
-                            return False
-                        return p_str.lower().split("?")[0].endswith(image_exts)
+                if self._scan_cancel_event.is_set():
+                    self._is_post_selection_loading = False
+                    self.postSelectionLoadingChanged.emit()
+                    return
 
-                    thumb_url = p.get("thumbnail") or ""
-                    if not thumb_url:
-                        f = p.get("file")
-                        if f and isinstance(f, dict):
-                            fpath = f.get("path") or ""
-                            fname = f.get("name") or ""
-                            if fpath and (_is_image(fpath) or _is_image(fname)):
-                                if fpath.startswith("http://") or fpath.startswith("https://"):
-                                    thumb_url = fpath
-                                else:
-                                    clean_p = fpath if fpath.startswith("/") else f"/{fpath}"
-                                    if clean_p.startswith("/data/"):
-                                        clean_p = clean_p[5:]
-                                    thumb_url = f"https://img.{domain}/thumbnail/data{clean_p}"
-                    if not thumb_url:
-                        for att in p.get("attachments", []) or []:
-                            if isinstance(att, dict) and att.get("path"):
-                                apath = att["path"]
-                                aname = att.get("name") or ""
-                                if _is_image(apath) or _is_image(aname):
-                                    if apath.startswith("http://") or apath.startswith("https://"):
-                                        thumb_url = apath
-                                    else:
-                                        clean_p = apath if apath.startswith("/") else f"/{apath}"
-                                        if clean_p.startswith("/data/"):
-                                            clean_p = clean_p[5:]
-                                        thumb_url = f"https://img.{domain}/thumbnail/data{clean_p}"
-                                    break
-
-                    post_files = []
-                    seen_selection_keys = set()
-                    # 1. Main post file
-                    if f and isinstance(f, dict) and (f.get("path") or f.get("storageKey")):
-                        mf_name = f.get("name") or os.path.basename(f.get("path", "") or "main_file")
-                        mf_path = f.get("path") or ""
-                        mf_key = KemonoDownloader.extract_norm_rel_key(f) or mf_path.lower()
-                        if mf_key:
-                            seen_selection_keys.add(mf_key)
-                        mf_thumb = ""
-                        if mf_path and (_is_image(mf_path) or _is_image(mf_name)):
-                            if mf_path.startswith("http://") or mf_path.startswith("https://"):
-                                mf_thumb = mf_path
-                            else:
-                                clean_p = mf_path if mf_path.startswith("/") else f"/{mf_path}"
-                                if clean_p.startswith("/data/"):
-                                    clean_p = clean_p[5:]
-                                mf_thumb = f"https://img.{domain}/thumbnail/data{clean_p}"
-                        elif f.get("storageKey") and ("cum.st" in domain or "cumst" in domain) and (_is_image(mf_name) or (f.get("mimeType") or "").startswith("image/")):
-                            sk = f.get("storageKey")
-                            ext = os.path.splitext(mf_name)[1].lower() or ".jpg"
-                            mf_thumb = f"https://cdn.cum.st/media/{sk}/original{ext}"
-                        post_files.append({
-                            "name": mf_name,
-                            "path": mf_path,
-                            "thumbnail": mf_thumb,
-                            "previewUrl": mf_thumb,
-                            "is_main": True,
-                            "selected": True
-                        })
-
-                    # 2. Attachments
-                    for att in p.get("attachments", []) or []:
-                        if isinstance(att, dict) and (att.get("path") or att.get("storageKey")):
-                            att_key = KemonoDownloader.extract_norm_rel_key(att) or (att.get("path") or "").lower()
-                            if att_key and att_key in seen_selection_keys:
-                                # Identical file already listed from post.file (Kemono API schema duplicate)
-                                att_name = att.get("name") or os.path.basename(att.get("path", "") or "")
-                                if att_name and not att_name.lower().startswith("cover") and not att_name.lower().startswith("preview") and post_files:
-                                    if post_files[0].get("is_main"):
-                                        post_files[0]["name"] = att_name
-                                continue
-                            if att_key:
-                                seen_selection_keys.add(att_key)
-                            att_name = att.get("name") or os.path.basename(att.get("path", "") or "attachment")
-                            att_path = att.get("path") or ""
-                            att_thumb = ""
-                            if att_path and (_is_image(att_path) or _is_image(att_name)):
-                                if att_path.startswith("http://") or att_path.startswith("https://"):
-                                    att_thumb = att_path
-                                else:
-                                    clean_p = att_path if att_path.startswith("/") else f"/{att_path}"
-                                    if clean_p.startswith("/data/"):
-                                        clean_p = clean_p[5:]
-                                    att_thumb = f"https://img.{domain}/thumbnail/data{clean_p}"
-                            elif att.get("storageKey") and ("cum.st" in domain or "cumst" in domain) and (_is_image(att_name) or (att.get("mimeType") or "").startswith("image/")):
-                                sk = att.get("storageKey")
-                                ext = os.path.splitext(att_name)[1].lower() or ".jpg"
-                                att_thumb = f"https://cdn.cum.st/media/{sk}/original{ext}"
-                            post_files.append({
-                                "name": att_name,
-                                "path": att_path,
-                                "thumbnail": att_thumb,
-                                "previewUrl": att_thumb,
-                                "is_main": False,
-                                "selected": True
-                            })
-
-                    # Clean post content / description
-                    import html
-                    raw_content = p.get("content") or p.get("captionHtml") or p.get("caption") or ""
-                    clean_content = re.sub(r'<br\s*/?>', '\n', str(raw_content), flags=re.IGNORECASE)
-                    clean_content = html.unescape(re.sub(r'<[^>]+>', '', clean_content).strip())
-
-                    cards.append({
-                        "id": pid,
-                        "title": title,
-                        "content": clean_content,
-                        "published": published,
-                        "thumbnail": thumb_url,
-                        "fileCount": len(post_files),
-                        "files": [dict(pf, postedIndex=i) for i, pf in enumerate(post_files)],
-                        "selected": True
-                    })
+                self._selection_cached_posts = list(posts)
+                self._selection_cached_cards = list(cards)
+                self._selection_cache_key = cache_key
+                self._selection_session_key = session_key
+                self._selection_parsed = parsed
+                self._selection_creator_name = creator_name
+                self._selection_creator_unimported = bool(creator_is_unimported)
+                self.selectionCacheChanged.emit()
 
                 self._is_post_selection_loading = False
                 self.postSelectionLoadingChanged.emit()
@@ -3889,6 +4373,7 @@ class AppBridge(QObject):
 
     def _start_favorites_post_selection_worker(self):
         """Fetches account favorites for display in the interactive post selector modal."""
+        self._scan_cancel_event.clear()
         self._is_post_selection_loading = True
         self.postSelectionLoadingChanged.emit()
 
@@ -3916,62 +4401,46 @@ class AppBridge(QObject):
                     cancel_event=self._scan_cancel_event
                 )
 
+                if self._scan_cancel_event.is_set():
+                    self._is_post_selection_loading = False
+                    self.postSelectionLoadingChanged.emit()
+                    return
+
                 if not posts:
                     self._is_post_selection_loading = False
                     self.postSelectionLoadingChanged.emit()
                     self.postSelectionError.emit("No favorited posts found on your account.")
                     return
 
-                self._selection_cached_posts = list(posts)
-                self._selection_parsed = KemonoURLParser.parse(f"https://{domain}/favorites")
-                self._selection_creator_name = creator_name
-
                 # Build cards list for UI
+                fav_parsed = KemonoURLParser.parse(f"https://{domain}/favorites")
                 cards = []
-                image_exts = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".avif")
                 for p in posts:
-                    pid = str(p.get("id", ""))
-                    title, _ = FilterEngine.extract_post_title_and_caption(p, fallback_title="Untitled Post")
-                    published = str(p.get("published") or "")[:10]
-
-                    thumb_url = ""
-                    f = p.get("file")
-                    if f and isinstance(f, dict):
-                        fpath = f.get("path") or ""
-                        fname = f.get("name") or ""
-                        if any((fpath or fname).lower().split("?")[0].endswith(ext) for ext in image_exts):
-                            thumb_url = fpath if fpath.startswith("http") else f"https://{domain}/data{fpath}"
-
-                    if not thumb_url:
-                        for att in (p.get("attachments") or []):
-                            if isinstance(att, dict):
-                                apath = att.get("path") or ""
-                                aname = att.get("name") or ""
-                                if any((apath or aname).lower().split("?")[0].endswith(ext) for ext in image_exts):
-                                    thumb_url = apath if apath.startswith("http") else f"https://{domain}/data{apath}"
-                                    break
-
-                    p_service = p.get("service") or "post"
                     p_user = p.get("username") or p.get("user") or ""
-                    f_dict = p.get("file")
-                    atts = [a for a in (p.get("attachments") or []) if isinstance(a, dict) and (a.get("path") or a.get("storageKey"))]
-                    f_key = KemonoDownloader.extract_norm_rel_key(f_dict) if isinstance(f_dict, dict) else ""
-                    att_keys = {KemonoDownloader.extract_norm_rel_key(a) for a in atts if KemonoDownloader.extract_norm_rel_key(a)}
-                    unique_count = len(att_keys)
-                    if f_key and f_key not in att_keys:
-                        unique_count += 1
-                    post_files_count = unique_count or (1 if f_dict else len(atts))
-                    cards.append({
-                        "id": pid,
-                        "title": f"[{p_user}] {title}" if p_user else title,
-                        "published": published,
-                        "service": p_service,
-                        "userId": p_user,
-                        "thumbnailUrl": thumb_url,
-                        "filesCount": post_files_count,
-                        "selected": True,
-                        "files": []
-                    })
+                    cards.append(
+                        self._build_selection_post_card(
+                            p,
+                            parsed=fav_parsed,
+                            default_domain=domain,
+                            creator_is_unimported=False,
+                            title_prefix=f"[{p_user}] " if p_user else "",
+                        )
+                    )
+
+                if self._scan_cancel_event.is_set():
+                    self._is_post_selection_loading = False
+                    self.postSelectionLoadingChanged.emit()
+                    return
+
+                fav_key = f"favorites_posts|{domain}"
+                self._selection_cached_posts = list(posts)
+                self._selection_cached_cards = list(cards)
+                self._selection_cache_key = fav_key
+                self._selection_session_key = fav_key
+                self._selection_parsed = fav_parsed
+                self._selection_creator_name = creator_name
+                self._selection_creator_unimported = False
+                self.selectionCacheChanged.emit()
 
                 self._is_post_selection_loading = False
                 self.postSelectionLoadingChanged.emit()
@@ -4065,8 +4534,12 @@ class AppBridge(QObject):
         creator_name = clean_text(channel_title) or "Telegram Channel"
         self._selection_cached_posts = list(messages)
         parsed_url = raw_url or (self._current_url or "")
-        self._selection_parsed = KemonoURLParser.parse(parsed_url)
+        tg_parsed = KemonoURLParser.parse(parsed_url)
+        cache_key, session_key = self._build_selection_keys(parsed_url, tg_parsed)
+        self._selection_parsed = tg_parsed
         self._selection_creator_name = creator_name
+
+        from core.browser_providers.base import build_media_attachment_dto
 
         cards = []
         for m in messages:
@@ -4077,15 +4550,31 @@ class AppBridge(QObject):
             thumb = m.get("thumbnail") or ""
             fsize = int(m.get("file_size") or 0)
             url = m.get("url") or f"tg://{m.get('channel_id')}/{mid}"
+            dto = build_media_attachment_dto(
+                name=fn,
+                url=url,
+                thumbnail_url=thumb,
+                local_path=thumb if thumb and os.path.isfile(str(thumb)) else "",
+                file_size=fsize,
+            )
 
             file_item = {
                 "name": fn,
                 "path": url,
+                "url": url,
                 "thumbnail": thumb,
                 "previewUrl": thumb,
+                "thumbnail_url": thumb,
+                "ext": dto["ext"],
+                "media_type": dto["media_type"],
+                "is_loop": bool(dto["is_loop"]),
+                "file_size": fsize,
                 "size": fsize,
+                "provider_id": "telegram",
+                "postUrl": "",
+                "postId": mid,
                 "is_main": True,
-                "selected": True
+                "selected": True,
             }
 
             cards.append({
@@ -4096,8 +4585,22 @@ class AppBridge(QObject):
                 "thumbnail": thumb,
                 "fileCount": 1,
                 "files": [file_item],
-                "selected": True
+                "selected": True,
+                "provider_id": "telegram",
+                "service": "telegram",
+                "creator_id": str(m.get("channel_id") or ""),
+                "url": "",
+                "is_dm": False,
+                "is_unimported": False,
+                "hasVideo": dto["media_type"] == "video",
+                "hasGif": bool(dto["is_loop"] or dto["ext"] == ".gif"),
             })
+
+        self._selection_cached_cards = list(cards)
+        self._selection_cache_key = cache_key
+        self._selection_session_key = session_key
+        self._selection_creator_unimported = False
+        self.selectionCacheChanged.emit()
 
         self._is_post_selection_loading = False
         self.postSelectionLoadingChanged.emit()
@@ -4196,8 +4699,9 @@ class AppBridge(QObject):
             self.queueTelegramFiles(creator_name, filtered_posts, auto_start=autoStart)
             return
 
-        options = self._get_filter_options()
+        options = FilterOptions.from_dict(self._get_filter_options().to_dict())
 
+        sel_batch_id = f"{parsed.service}_{parsed.user_id}"
         # Build download tasks
         tasks = self.downloader.build_tasks_from_posts(
             posts=filtered_posts,
@@ -4206,13 +4710,35 @@ class AppBridge(QObject):
             domain=parsed.domain,
             base_dir=self._download_dir,
             options=options,
-            batch_id=f"{parsed.service}_{parsed.user_id}",
+            batch_id=sel_batch_id,
             user_id=parsed.user_id if not parsed.is_external_provider else ""
         )
 
         if not tasks:
             logger.warning("No downloadable files found matching active filters in selected posts.", category="downloader")
             return
+
+        self.downloader.register_batch_context(
+            BatchBuildContext(
+                batch_id=sel_batch_id,
+                parsed=parsed,
+                creator_name=creator_name,
+                service=parsed.service,
+                user_id=parsed.user_id if not parsed.is_external_provider else "",
+                domain=parsed.domain,
+                base_dir=self._download_dir,
+                artist_dir=None,
+                from_watchlist=False,
+                posts=list(filtered_posts),
+                fetched_dms=bool(getattr(parsed, "is_dms", False)),
+                fetched_comments=(options.character_scope in ("comments", "all")),
+                scan_page_start=1,
+                scan_page_end=999999,
+                applied_options=options,
+                applied_download_dir=str(self._download_dir or ""),
+                applied_site_in_folder_name=bool(folder_naming.include_service),
+            )
+        )
 
         if autoStart:
             if self._is_downloading:
@@ -4223,6 +4749,18 @@ class AppBridge(QObject):
                 self._queue_model.clear()
                 self._active_queue_model.clear()
                 self._queued_links.clear()
+                self._apply_cancel_event.set()
+                self._settings_apply_gen += 1
+                self._scan_ui_gen += 1
+                self._update_scan_progress("", 0, 0, force=True, active=False, update_status_text=False)
+                self._seen_session_archive_creators.clear()
+                self._dirty_archive_completed = 0
+                self._settings_dismissed_baseline = None
+                if self._has_pending_download_settings_changes:
+                    self._has_pending_download_settings_changes = False
+                    self._pending_settings_diff_summary = ""
+                    self.hasPendingDownloadSettingsChangesChanged.emit()
+                    self.pendingSettingsDiffSummaryChanged.emit()
                 self.downloader.reset_state()
                 self.downloader.tasks = list(tasks)
                 self._handle_set_tasks(tasks)
@@ -4315,7 +4853,20 @@ class AppBridge(QObject):
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    def _async_fetch_and_start(self, parsed: URLParseResult, auto_start: bool):
+    def _async_fetch_and_start(
+        self,
+        parsed: URLParseResult,
+        auto_start: bool,
+        force_redownload: bool = False,
+        *,
+        from_watchlist: bool = False,
+        watchlist_entry=None,
+    ):
+        scan_gen = self._scan_ui_gen
+        with self._scan_jobs_lock:
+            self._active_scan_jobs += 1
+        scan_label = getattr(parsed, "user_id", "") or getattr(parsed, "domain", "") or "creator"
+        self._update_scan_progress(f"Preparing scan ({scan_label})...", 0, 0, force=True, gen=scan_gen, active=True)
         try:
             if self._refuse_if_disabled(getattr(parsed, "raw_url", "") or parsed.domain):
                 self._is_downloading = bool(self.downloader._is_running)
@@ -4330,7 +4881,34 @@ class AppBridge(QObject):
                 self.statusTextChanged.emit()
                 return
 
-            options = self._get_filter_options()
+            wl_entry = watchlist_entry or (
+                self._watchlist_manager._find(parsed.user_id, parsed.service)
+                if (from_watchlist and not parsed.is_external_provider and parsed.user_id)
+                else None
+            )
+            options = (
+                self._get_effective_watchlist_options(wl_entry)
+                if (from_watchlist and wl_entry)
+                else self._get_filter_options()
+            )
+            options = FilterOptions.from_dict(options.to_dict())
+            if force_redownload:
+                options.force_redownload = True
+            baseline_download_dir = str(self._download_dir or "")
+            baseline_site_in_name = bool(folder_naming.include_service)
+
+            raw_posts_for_ctx: List[Dict[str, Any]] = []
+            external_files_for_ctx: List[Dict[str, Any]] = []
+            ctx_fav_ids: Optional[Set[str]] = None
+            ctx_fetched_dms = bool(getattr(parsed, "is_dms", False))
+            ctx_fetched_comments = False
+            ctx_page_start = int(getattr(options, "page_start", 1) or 1)
+            ctx_page_end = int(getattr(options, "page_end", 999999) or 999999)
+            ctx_date_after = str(getattr(options, "date_after", "") or "")
+            ctx_date_before = str(getattr(options, "date_before", "") or "")
+            ctx_artist_dir: Optional[str] = None
+            ctx_base_dir = baseline_download_dir
+            batch_id = ""
 
             # ── Handle Integrated Third-Party Providers ───────────────────────
             if parsed.is_external_provider:
@@ -4338,10 +4916,14 @@ class AppBridge(QObject):
                 tasks = []
 
                 if parsed.provider == "bunkr":
+                    self._update_scan_progress("Resolving Bunkr album...", 0, 0, force=True, gen=scan_gen)
                     album_title, files = fetch_bunkr_album(parsed.raw_url, resolve_files=True)
                     creator_name = clean_text(album_title) or "Bunkr Album"
                     folder_name = sanitize_filesystem_name(creator_name, fallback="Bunkr Album")
                     folder = os.path.join(self._download_dir, f"Bunkr - {folder_name}")
+                    batch_id = f"bunkr_{parsed.post_id or creator_name or 'bunkr'}"
+                    external_files_for_ctx = list(files or [])
+                    ctx_artist_dir = folder
                     taken = set()      # an album can hold different files with the same name
                     for f in files:
                         t = DownloadTask(
@@ -4353,16 +4935,20 @@ class AppBridge(QObject):
                             post_id=parsed.post_id or "bunkr",
                             file_id=f["url"],
                             file_size=f.get("size", 0),
-                            batch_id=f"bunkr_{parsed.post_id or creator_name or 'bunkr'}"
+                            batch_id=batch_id
                         )
                         t.options = options
                         tasks.append(t)
 
                 elif parsed.provider == "erome":
+                    self._update_scan_progress("Resolving Erome album...", 0, 0, force=True, gen=scan_gen)
                     album_title, files = fetch_erome_album(parsed.raw_url)
                     creator_name = clean_text(album_title) or "Erome Album"
                     folder_name = sanitize_filesystem_name(creator_name, fallback="Erome Album")
                     folder = os.path.join(self._download_dir, f"Erome - {folder_name}")
+                    batch_id = f"erome_{parsed.post_id or creator_name or 'erome'}"
+                    external_files_for_ctx = list(files or [])
+                    ctx_artist_dir = folder
                     taken = set()      # an album can hold different files with the same name
                     for f in files:
                         t = DownloadTask(
@@ -4373,16 +4959,20 @@ class AppBridge(QObject):
                             service="erome",
                             post_id=parsed.post_id or "erome",
                             file_id=f["url"],
-                            batch_id=f"erome_{parsed.post_id or creator_name or 'erome'}"
+                            batch_id=batch_id
                         )
                         t.options = options
                         tasks.append(t)
 
                 elif parsed.provider == "nhentai":
+                    self._update_scan_progress("Resolving nHentai gallery...", 0, 0, force=True, gen=scan_gen)
                     gallery_title, files = fetch_nhentai_gallery(parsed.post_id or parsed.raw_url)
                     creator_name = clean_text(gallery_title) or f"Gallery {parsed.post_id}"
                     folder_name = sanitize_filesystem_name(creator_name, fallback=f"Gallery {parsed.post_id}")
                     folder = os.path.join(self._download_dir, f"nHentai - {folder_name}")
+                    batch_id = f"nhentai_{parsed.post_id or creator_name or 'nhentai'}"
+                    external_files_for_ctx = list(files or [])
+                    ctx_artist_dir = folder
                     taken = set()      # an album can hold different files with the same name
                     for f in files:
                         t = DownloadTask(
@@ -4393,7 +4983,7 @@ class AppBridge(QObject):
                             service="nhentai",
                             post_id=parsed.post_id or "nhentai",
                             file_id=f["url"],
-                            batch_id=f"nhentai_{parsed.post_id or creator_name or 'nhentai'}"
+                            batch_id=batch_id
                         )
                         t.options = options
                         tasks.append(t)
@@ -4467,55 +5057,70 @@ class AppBridge(QObject):
                     # If date auto-scan is enabled and a date filter is active,
                     # override page_end to scan all pages; the API client will
                     # stop early once it passes the requested date range.
-                    effective_page_end = self._page_end
-                    if self._date_auto_scan_pages and (self._date_after or self._date_before):
+                    scan_page_start = options.page_start if from_watchlist else self._page_start
+                    scan_page_end = options.page_end if from_watchlist else self._page_end
+                    scan_date_after = options.date_after if from_watchlist else self._date_after
+                    scan_date_before = options.date_before if from_watchlist else self._date_before
+                    scan_download_dms = (
+                        bool(getattr(options, "download_dms", False))
+                        if from_watchlist
+                        else bool(getattr(options, "download_dms", False) or self._download_dms)
+                    )
+                    effective_page_end = scan_page_end
+                    if not from_watchlist and self._date_auto_scan_pages and (scan_date_after or scan_date_before):
                         effective_page_end = 999999
+                    ctx_page_start = int(scan_page_start or 1)
+                    ctx_page_end = int(effective_page_end or 999999)
+                    ctx_date_after = str(scan_date_after or "")
+                    ctx_date_before = str(scan_date_before or "")
+
+                    def _on_posts_scan_prog(page: int, count: int, known_total: Optional[int] = None):
+                        total_pages = ((known_total + 49) // 50) if (known_total and known_total > 0) else 0
+                        cur_val = min(page, total_pages) if total_pages else 0
+                        txt = f"Fetching posts ({creator_name}): Page {page}" + (f"/{total_pages}" if total_pages else "") + f" ({count:,} posts)..."
+                        self._update_scan_progress(txt, cur_val, total_pages, gen=scan_gen)
+
+                    def _on_dms_scan_prog(page: int, count: int, known_total: Optional[int] = None):
+                        total_pages = ((known_total + 49) // 50) if (known_total and known_total > 0) else 0
+                        cur_val = min(page, total_pages) if total_pages else 0
+                        txt = f"Fetching DMs ({creator_name}): Page {page}" + (f"/{total_pages}" if total_pages else "") + f" ({count:,} messages)..."
+                        self._update_scan_progress(txt, cur_val, total_pages, gen=scan_gen)
+
                     if parsed.is_dms:
                         posts = self.api_client.fetch_user_dms(
                             parsed=parsed,
-                            page_start=self._page_start,
+                            page_start=scan_page_start,
                             page_end=effective_page_end,
-                            date_after=self._date_after,
-                            date_before=self._date_before,
+                            date_after=scan_date_after,
+                            date_before=scan_date_before,
+                            progress_callback=_on_dms_scan_prog,
                             cancel_event=self._scan_cancel_event
                         )
+                        ctx_fetched_dms = True
                     else:
                         posts = self.api_client.fetch_user_posts(
                             parsed=parsed,
-                            page_start=self._page_start,
+                            page_start=scan_page_start,
                             page_end=effective_page_end,
-                            date_after=self._date_after,
-                            date_before=self._date_before,
+                            date_after=scan_date_after,
+                            date_before=scan_date_before,
+                            progress_callback=_on_posts_scan_prog,
                             cancel_event=self._scan_cancel_event
                         )
-                        if (getattr(options, "download_dms", False) or self._download_dms) and ("cum.st" in (parsed.domain or "").lower() or "pawchive" in (parsed.domain or "").lower()):
+                        if scan_download_dms and ("cum.st" in (parsed.domain or "").lower() or "pawchive" in (parsed.domain or "").lower()):
+                            ctx_fetched_dms = True
                             logger.info(f"Direct messages enabled: scanning DMs for {creator_name}...", category="downloader")
                             dms = self.api_client.fetch_user_dms(
                                 parsed=parsed,
-                                page_start=self._page_start,
+                                page_start=scan_page_start,
                                 page_end=effective_page_end,
-                                date_after=self._date_after,
-                                date_before=self._date_before,
+                                date_after=scan_date_after,
+                                date_before=scan_date_before,
+                                progress_callback=_on_dms_scan_prog,
                                 cancel_event=self._scan_cancel_event
                             )
                             if dms:
                                 posts = (posts or []) + dms
-
-                    if options.favorite_mode and posts:
-                        from core.auth_manager import auth_manager
-                        prov_id = self.get_provider_for_domain(parsed.domain)
-                        if not auth_manager.is_logged_in(prov_id):
-                            meta = auth_manager.get_provider_summary(prov_id)
-                            pname = meta.get("name", prov_id.capitalize())
-                            logger.warning(f"⭐ Favorite Mode active but not logged into {pname}. Showing auth prompt.", category="auth")
-                            self.favoriteAuthRequired.emit(pname)
-                        else:
-                            logger.info(f"⭐ Favorite Mode active: Filtering {len(posts)} post(s) against account favorites...", category="downloader")
-                            fav_posts = self.api_client.fetch_user_favorites(domain=parsed.domain, fav_type="post", cancel_event=self._scan_cancel_event)
-                            fav_ids = {str(f.get("id")) for f in fav_posts if f.get("id")}
-                            before_cnt = len(posts)
-                            posts = [p for p in posts if str(p.get("id")) in fav_ids]
-                            logger.info(f"⭐ Favorite Mode filter: {len(posts)} of {before_cnt} post(s) matched user favorites.", category="downloader")
 
                 if self._scan_cancel_event.is_set():
                     self._is_downloading = bool(self.downloader._is_running)
@@ -4534,13 +5139,40 @@ class AppBridge(QObject):
 
                 # If character filter uses comments scope, attach comments to post dictionaries
                 if options.character_scope in ("comments", "all"):
-                    for p in posts:
+                    ctx_fetched_comments = True
+                    total_comment_posts = len(posts)
+                    for idx_c, p in enumerate(posts, 1):
                         if self._scan_cancel_event.is_set():
                             break
+                        self._update_scan_progress(
+                            f"Scanning comments ({creator_name}): {idx_c:,}/{total_comment_posts:,} posts...",
+                            idx_c,
+                            total_comment_posts,
+                            gen=scan_gen
+                        )
                         pid = str(p.get("id", ""))
                         if pid:
                             comms = self.api_client.fetch_post_comments(parsed.domain, parsed.service, parsed.user_id, pid)
                             p["comments_text"] = "\n".join(c.get("content", "") for c in comms if isinstance(c, dict))
+
+                raw_posts_for_ctx = list(posts)
+                if options.favorite_mode and posts:
+                    from core.auth_manager import auth_manager
+                    prov_id = self.get_provider_for_domain(parsed.domain)
+                    if not auth_manager.is_logged_in(prov_id):
+                        meta = auth_manager.get_provider_summary(prov_id)
+                        pname = meta.get("name", prov_id.capitalize())
+                        logger.warning(f"⭐ Favorite Mode active but not logged into {pname}. Showing auth prompt.", category="auth")
+                        self.favoriteAuthRequired.emit(pname)
+                    else:
+                        self._update_scan_progress(f"Filtering account favorites ({creator_name})...", 0, 0, force=True, gen=scan_gen)
+                        logger.info(f"⭐ Favorite Mode active: Filtering {len(posts)} post(s) against account favorites...", category="downloader")
+                        fav_posts = self.api_client.fetch_user_favorites(domain=parsed.domain, fav_type="post", cancel_event=self._scan_cancel_event)
+                        fav_ids = {str(f.get("id")) for f in fav_posts if f.get("id")}
+                        ctx_fav_ids = fav_ids
+                        before_cnt = len(posts)
+                        posts = [p for p in posts if str(p.get("id")) in fav_ids]
+                        logger.info(f"⭐ Favorite Mode filter: {len(posts)} of {before_cnt} post(s) matched user favorites.", category="downloader")
 
                 if self._scan_cancel_event.is_set():
                     self._is_downloading = bool(self.downloader._is_running)
@@ -4555,36 +5187,84 @@ class AppBridge(QObject):
                     artist_dir = None
                 else:
                     batch_id = f"artist_{parsed.service}_{parsed.user_id}"
-                    existing_entry = self._watchlist_manager._find(parsed.user_id, parsed.service) if (not parsed.is_external_provider and parsed.user_id) else None
+                    existing_entry = wl_entry or (
+                        self._watchlist_manager._find(parsed.user_id, parsed.service)
+                        if (not parsed.is_external_provider and parsed.user_id)
+                        else None
+                    )
                     artist_dir = None
-                    if existing_entry and existing_entry.download_dir:
+                    if from_watchlist and wl_entry:
+                        artist_dir = os.path.normpath(self.resolve_artist_download_dir(wl_entry))
+                        try:
+                            os.makedirs(artist_dir, exist_ok=True)
+                        except OSError:
+                            pass
+                        if not wl_entry.download_dir:
+                            wl_entry.download_dir = artist_dir
+                            if hasattr(wl_entry, "download_dirs") and isinstance(wl_entry.download_dirs, list):
+                                if artist_dir not in wl_entry.download_dirs:
+                                    wl_entry.download_dirs.insert(0, artist_dir)
+                            self._watchlist_manager.save(wl_entry)
+                    elif existing_entry and existing_entry.download_dir:
                         from core.filter_engine import FilterEngine
                         clean_c = FilterEngine.clean_filesystem_text(creator_name or parsed.user_id, max_len=80, fallback="creator")
                         norm_existing = os.path.normpath(existing_entry.download_dir)
                         norm_base = os.path.normpath(self._download_dir) if self._download_dir else ""
-                        # If old folder does not exist on disk, or if user changed self._download_dir:
-                        # re-anchor to active self._download_dir so user changes are 100% respected!
                         if getattr(existing_entry, "custom_folder", False):
-                            artist_dir = norm_existing           # chosen by the user: used as it is
-                        elif not os.path.exists(norm_existing) or (norm_base and not norm_existing.startswith(norm_base)):
-                            new_artist_dir = pick_creator_folder(norm_base, clean_c, parsed.service) if norm_base else norm_existing
-                            existing_entry.download_dir = new_artist_dir
-                            self._watchlist_manager.save()
-                            artist_dir = new_artist_dir
-                            logger.info(f"Download location updated to active download folder: '{new_artist_dir}'", category="downloader")
+                            artist_dir = norm_existing           # chosen by the user: never overridden by downloader path
+                            try:
+                                os.makedirs(artist_dir, exist_ok=True)
+                            except OSError:
+                                pass
                         else:
-                            artist_dir = norm_existing
+                            # Compare direct parent dir (not prefix startswith) so moving Downloader path
+                            # shallower (e.g. cg2/21 -> cg2) properly creates cg2/<Author> instead of staying deep.
+                            parent_mismatch = bool(norm_base) and (
+                                (
+                                    not self._separate_folders_by_known
+                                    and self._norm_path_key(os.path.dirname(norm_existing)) != self._norm_path_key(norm_base)
+                                )
+                                or (
+                                    self._separate_folders_by_known
+                                    and not self._is_ancestor_dir(norm_base, norm_existing)
+                                )
+                            )
+                            existing_base = os.path.basename(norm_existing)
+                            not_creator_dir = not (
+                                is_creator_folder(existing_base, clean_c, parsed.service)
+                                or (parsed.service and existing_base.lower().startswith(f"{clean_c.lower()} ["))
+                            )
+                            if not os.path.exists(norm_existing) or parent_mismatch or not_creator_dir:
+                                new_artist_dir = pick_creator_folder(norm_base, clean_c, parsed.service) if norm_base else norm_existing
+                                try:
+                                    os.makedirs(new_artist_dir, exist_ok=True)
+                                except OSError:
+                                    pass
+                                existing_entry.download_dir = new_artist_dir
+                                self._watchlist_manager.save(existing_entry)
+                                artist_dir = new_artist_dir
+                                logger.info(f"Download location updated to active download folder: '{new_artist_dir}'", category="downloader")
+                            else:
+                                artist_dir = norm_existing
 
+                tasks_base_dir = (
+                    os.path.dirname(os.path.abspath(artist_dir))
+                    if (from_watchlist and artist_dir)
+                    else self._download_dir
+                )
+                ctx_base_dir = tasks_base_dir
+                ctx_artist_dir = artist_dir
                 tasks = self.downloader.build_tasks_from_posts(
                     posts=posts,
                     creator_name=creator_name,
                     service=parsed.service,
                     domain=parsed.domain,
-                    base_dir=self._download_dir,
+                    base_dir=tasks_base_dir,
                     options=options,
                     batch_id=batch_id,
                     artist_dir=artist_dir,
-                    user_id=parsed.user_id if not parsed.is_external_provider else ""
+                    user_id=parsed.user_id if not parsed.is_external_provider else "",
+                    progress_callback=lambda cur, tot, txt: self._update_scan_progress(txt, cur, tot, gen=scan_gen),
                 )
 
                 # Auto-harvest cloud storage links into permanent Link Vault
@@ -4640,7 +5320,7 @@ class AppBridge(QObject):
             # filters, failed or cancelled as downloaded, so the Watchlist never offered them).
             if not parsed.is_single_post and not parsed.is_external_provider and parsed.user_id:
                 try:
-                    canonical_url = getattr(parsed, "raw_url", "") or f"https://{parsed.domain}/{parsed.service}/user/{parsed.user_id}"
+                    canonical_url = normalize_archive_url(getattr(parsed, "raw_url", "")) or canonical_site_url(parsed.domain, parsed.service, parsed.user_id)
                     target_download_dir = ""
                     if artist_dir:
                         target_download_dir = artist_dir
@@ -4656,6 +5336,12 @@ class AppBridge(QObject):
                         clean_c = FilterEngine.clean_filesystem_text(creator_name or parsed.user_id, max_len=80, fallback="creator")
                         target_download_dir = pick_creator_folder(self._download_dir, clean_c, parsed.service)
 
+                    track_entry = wl_entry or self._watchlist_manager._find(parsed.user_id, parsed.service)
+                    keep_custom_opts = from_watchlist or bool(
+                        track_entry
+                        and isinstance(getattr(track_entry, "options", None), dict)
+                        and track_entry.options.get("use_custom_settings")
+                    )
                     self._watchlist_manager.add_entry(
                         url=canonical_url,
                         creator_name=creator_name or parsed.user_id,
@@ -4663,7 +5349,8 @@ class AppBridge(QObject):
                         service=parsed.service,
                         domain=parsed.domain,
                         download_dir=target_download_dir,
-                        options=options.to_dict() if hasattr(options, "to_dict") else {},
+                        options=None if keep_custom_opts else (options.to_dict() if hasattr(options, "to_dict") else {}),
+                        custom_folder=True if (track_entry and getattr(track_entry, "custom_folder", False)) else None,
                     )
                     self._watchlist_model.refresh()
                     self.watchlistChanged.emit()
@@ -4671,11 +5358,44 @@ class AppBridge(QObject):
                     logger.debug(f"Watchlist auto-track error: {e}", category="watchlist")
 
 
+            eff_batch_id = batch_id or (self.downloader._task_batch_id(tasks[0]) if tasks else "")
+            if eff_batch_id:
+                self.downloader.register_batch_context(
+                    BatchBuildContext(
+                        batch_id=eff_batch_id,
+                        parsed=parsed,
+                        creator_name=creator_name,
+                        service=parsed.service if not parsed.is_external_provider else parsed.provider,
+                        user_id=parsed.user_id if not parsed.is_external_provider else "",
+                        domain=parsed.domain,
+                        base_dir=ctx_base_dir,
+                        artist_dir=ctx_artist_dir,
+                        from_watchlist=bool(from_watchlist),
+                        custom_folder=bool(wl_entry and getattr(wl_entry, "custom_folder", False)),
+                        posts=raw_posts_for_ctx,
+                        external_files=external_files_for_ctx,
+                        provider=parsed.provider if parsed.is_external_provider else "",
+                        post_id=parsed.post_id or "",
+                        fetched_dms=ctx_fetched_dms,
+                        fetched_comments=ctx_fetched_comments,
+                        fetched_fav_ids=ctx_fav_ids,
+                        scan_page_start=ctx_page_start,
+                        scan_page_end=ctx_page_end,
+                        scan_date_after=ctx_date_after,
+                        scan_date_before=ctx_date_before,
+                        applied_options=options,
+                        applied_download_dir=baseline_download_dir,
+                        applied_site_in_folder_name=baseline_site_in_name,
+                        force_redownload=bool(force_redownload),
+                    )
+                )
+
+            _append_prog = lambda cur, tot, txt: self._update_scan_progress(txt, cur, tot, gen=scan_gen)  # noqa: E731
             if auto_start:
                 if self.downloader._is_running or self.downloader.tasks:
                     # Running, or files kept in the queue: add to it (starts the queue when idle)
                     self._appendTasksSignal.emit(tasks)
-                    self.downloader.append_tasks(tasks, options=options, cookie_str=self._cookie_string)
+                    self.downloader.append_tasks(tasks, options=options, cookie_str=self._cookie_string, progress_callback=_append_prog)
                 else:
                     self._setTasksSignal.emit(tasks)
                     self.downloader.start_download_queue(
@@ -4688,7 +5408,7 @@ class AppBridge(QObject):
                         self.isDownloadingChanged.emit()
             else:
                 self._appendTasksSignal.emit(tasks)
-                self.downloader.append_tasks(tasks, options=options, cookie_str=self._cookie_string)
+                self.downloader.append_tasks(tasks, options=options, cookie_str=self._cookie_string, progress_callback=_append_prog)
                 self._status_text = f"Queued {len(tasks)} files ({creator_name})."
                 self.statusTextChanged.emit()
 
@@ -4700,6 +5420,13 @@ class AppBridge(QObject):
             self.isDownloadingChanged.emit()
             self.hasErrorChanged.emit()
             self.lastErrorMessageChanged.emit()
+        finally:
+            should_hide = False
+            with self._scan_jobs_lock:
+                self._active_scan_jobs = max(0, self._active_scan_jobs - 1)
+                should_hide = (self._active_scan_jobs == 0)
+            if should_hide:
+                self._update_scan_progress("", 0, 0, force=True, active=False, update_status_text=False)
 
     def _on_scan_progress(self, page: int, count: int):
         """Callback from api_client during favorites scanning."""
@@ -4981,6 +5708,10 @@ class AppBridge(QObject):
         if was_downloading:
             logger.info("Application closing: stopping downloads and saving the session...", category="system")
             self.downloader.cancel()
+        self._scan_cancel_event.set()
+        self._apply_cancel_event.set()
+        self._settings_apply_gen += 1
+        self._scan_ui_gen += 1
         checker = self._watchlist_checker
         if checker is not None:
             checker.cancel()        # continues where it stopped at the next check
@@ -4992,6 +5723,12 @@ class AppBridge(QObject):
                 mover.join(timeout=10)
 
         def _persist():
+            try:
+                from core.statistics_manager import statistics_manager
+                statistics_manager.set_download_active(False)
+                statistics_manager.flush()
+            except Exception:
+                pass
             try:
                 self.session_manager.flush_history()
             except Exception:
@@ -5207,6 +5944,18 @@ class AppBridge(QObject):
             pass
 
         self._queued_links.clear()
+        self._apply_cancel_event.set()
+        self._settings_apply_gen += 1
+        self._scan_ui_gen += 1
+        self._update_scan_progress("", 0, 0, force=True, active=False, update_status_text=False)
+        self._seen_session_archive_creators.clear()
+        self._dirty_archive_completed = 0
+        self._settings_dismissed_baseline = None
+        if self._has_pending_download_settings_changes:
+            self._has_pending_download_settings_changes = False
+            self._pending_settings_diff_summary = ""
+            self.hasPendingDownloadSettingsChangesChanged.emit()
+            self.pendingSettingsDiffSummaryChanged.emit()
 
         # Update downloading and pending tasks to "cancelled", but preserve completed, skipped, and failed
         if self._queue_model:
@@ -5706,7 +6455,7 @@ class AppBridge(QObject):
         if os.name == "nt":
             os.startfile(logs_dir)
         else:
-            subprocess.Popen(["xdg-open", logs_dir])
+            subprocess.Popen(["xdg-open", logs_dir], **subprocess_env_kwargs())
 
     @Slot(str)
     def copyToClipboard(self, text: str):
@@ -5725,7 +6474,7 @@ class AppBridge(QObject):
         if os.name == "nt":
             os.startfile(self._download_dir)
         else:
-            subprocess.Popen(["xdg-open", self._download_dir])
+            subprocess.Popen(["xdg-open", self._download_dir], **subprocess_env_kwargs())
 
     @Slot()
     def openKnownTxt(self):
@@ -5735,7 +6484,7 @@ class AppBridge(QObject):
         if os.name == "nt":
             os.startfile(path)
         else:
-            subprocess.Popen(["xdg-open", path])
+            subprocess.Popen(["xdg-open", path], **subprocess_env_kwargs())
 
     @Slot(str)
     def addKnownCharacter(self, name: str):
@@ -5932,7 +6681,8 @@ class AppBridge(QObject):
         return self.exportFailedTasks([])
 
     @Slot()
-    def saveSettings(self):
+    @Slot(bool)
+    def saveSettings(self, explicit_save: bool = False):
         settings_dict = {
             "download_dir": self._download_dir,
             "threads": self._threads_count,
@@ -6012,9 +6762,628 @@ class AppBridge(QObject):
             "bandwidth_limit_unit": self._bandwidth_limit_unit,
             "privacy_pin": self._privacy_pin,
             "pending_pin_reset": self._pending_pin_reset,
-            "privacy_idle_minutes": self._privacy_idle_minutes
+            "privacy_idle_minutes": self._privacy_idle_minutes,
+            "disabled_tabs": list(self._disabled_tabs),
+            "local_library_roots": list(getattr(self, "_local_library_roots", []))
         }
         self.session_manager.save_settings(settings_dict, silent=True)
+        self._evaluate_pending_download_settings()
+        if explicit_save and self._has_pending_download_settings_changes and not self._is_applying_mid_download:
+            self.requestMidDownloadSettingsPrompt("global")
+
+    # ── Mid-download settings change tracking & application ───────────────────
+
+    @Slot()
+    def _on_download_setting_mutated(self):
+        if self.downloader.active_unfinished_batch_ids():
+            self._settings_dirty_timer.start()
+
+    def _current_settings_signature(self) -> str:
+        payload = {
+            "options": self._get_filter_options().to_dict(),
+            "download_dir": os.path.normpath(str(self._download_dir or "")),
+            "site_in_folder_name": bool(folder_naming.include_service),
+        }
+        return json.dumps(payload, sort_keys=True, default=str)
+
+    def _resolve_ctx_target_settings(self, ctx: BatchBuildContext, scope: str = "global"):
+        """Returns (eff_opts, eff_base_dir, eff_artist_dir, eff_site_in_name, wl_entry)."""
+        site_in_name = bool(folder_naming.include_service)
+        wl = None
+        if ctx.user_id and ctx.service and not (ctx.parsed and ctx.parsed.is_external_provider):
+            wl = self._watchlist_manager._find(ctx.user_id, ctx.service)
+
+        if ctx.from_watchlist and wl is not None:
+            eff_opts = FilterOptions.from_dict(self._get_effective_watchlist_options(wl).to_dict())
+            if getattr(wl, "custom_folder", False) and wl.download_dir:
+                eff_artist_dir = os.path.normpath(wl.download_dir)
+                eff_base_dir = os.path.dirname(os.path.abspath(eff_artist_dir))
+            else:
+                clean_c = FilterEngine.clean_filesystem_text(
+                    wl.creator_name or wl.user_id, max_len=80, fallback="creator"
+                )
+                eff_base_dir = self._download_dir or ctx.base_dir
+                eff_artist_dir = pick_creator_folder(eff_base_dir, clean_c, wl.service)
+            return eff_opts, eff_base_dir, eff_artist_dir, site_in_name, wl
+
+        eff_opts = FilterOptions.from_dict(self._get_filter_options().to_dict())
+        eff_base_dir = self._download_dir or ctx.base_dir
+        if ctx.parsed and ctx.parsed.is_external_provider:
+            prov = (ctx.provider or ctx.service or "").lower()
+            prefix_map = {"bunkr": "Bunkr", "erome": "Erome", "nhentai": "nHentai"}
+            label = prefix_map.get(prov, prov.title())
+            fallback = f"Gallery {ctx.post_id}" if prov == "nhentai" else f"{label} Album"
+            folder_name = sanitize_filesystem_name(ctx.creator_name or fallback, fallback=fallback)
+            eff_artist_dir = os.path.join(eff_base_dir, f"{label} - {folder_name}")
+        else:
+            eff_artist_dir = None
+        return eff_opts, eff_base_dir, eff_artist_dir, site_in_name, None
+
+    def _set_pending_settings_state(self, has_changes: bool, summary: str) -> None:
+        if self._has_pending_download_settings_changes != has_changes:
+            self._has_pending_download_settings_changes = has_changes
+            self.hasPendingDownloadSettingsChangesChanged.emit()
+        if self._pending_settings_diff_summary != summary:
+            self._pending_settings_diff_summary = summary
+            self.pendingSettingsDiffSummaryChanged.emit()
+
+    def _classify_ctx_diff(
+        self,
+        ctx: BatchBuildContext,
+        eff_opts: FilterOptions,
+        eff_base_dir: str,
+        eff_artist_dir: Optional[str],
+        site_flag: bool,
+    ) -> dict:
+        old_dir = ctx.artist_dir if (ctx.from_watchlist and ctx.artist_dir) else ctx.applied_download_dir
+        new_dir = eff_artist_dir if (ctx.from_watchlist and eff_artist_dir) else eff_base_dir
+        return classify_settings_change(
+            ctx.applied_options,
+            eff_opts,
+            old_dir,
+            new_dir,
+            ctx.applied_site_in_folder_name,
+            site_flag,
+            has_comments_fetched=bool(ctx.fetched_comments),
+            fetched_dms=bool(ctx.fetched_dms),
+            has_favs_fetched=(ctx.fetched_fav_ids is not None),
+            scan_bounds={
+                "page_start": ctx.scan_page_start,
+                "page_end": ctx.scan_page_end,
+                "date_after": ctx.scan_date_after,
+                "date_before": ctx.scan_date_before,
+            },
+        )
+
+    @Slot()
+    def _evaluate_pending_download_settings(self) -> None:
+        unfinished_bids = set(self.downloader.active_unfinished_batch_ids())
+        if not unfinished_bids or not (self._is_downloading or self.downloader.is_running or unfinished_bids):
+            self._settings_dismissed_baseline = None
+            self._set_pending_settings_state(False, "")
+            return
+
+        contexts = [c for c in self.downloader.get_all_batch_contexts() if c.batch_id in unfinished_bids]
+        if not contexts:
+            self._set_pending_settings_state(False, "")
+            return
+
+        cur_sig = self._current_settings_signature()
+        if self._settings_dismissed_baseline is not None:
+            if self._settings_dismissed_baseline == cur_sig:
+                self._set_pending_settings_state(False, "")
+                return
+            self._settings_dismissed_baseline = None
+
+        labels: List[str] = []
+        seen_labels: Set[str] = set()
+        for ctx in contexts:
+            eff_opts, eff_base_dir, eff_artist_dir, site_flag, _wl = self._resolve_ctx_target_settings(ctx)
+            diff = self._classify_ctx_diff(ctx, eff_opts, eff_base_dir, eff_artist_dir, site_flag)
+            if diff.get("tier", 0) > 0:
+                for part in str(diff.get("summary") or "").split(","):
+                    clean_p = part.strip()
+                    if clean_p and clean_p not in seen_labels:
+                        seen_labels.add(clean_p)
+                        labels.append(clean_p)
+
+        if labels:
+            self._set_pending_settings_state(True, ", ".join(labels[:6]) + ("..." if len(labels) > 6 else ""))
+        else:
+            self._set_pending_settings_state(False, "")
+
+    @Slot()
+    def dismissPendingDownloadSettingsBanner(self):
+        """Hides the pending settings banner until a subsequent settings edit occurs."""
+        self._settings_dismissed_baseline = self._current_settings_signature()
+        self._set_pending_settings_state(False, "")
+
+    def _build_mid_download_prompt_payload(
+        self, scope: str = "global", target_user_id: str = "", target_service: str = ""
+    ) -> dict:
+        if scope == "creator" and target_user_id:
+            bids = set(self.downloader.active_batch_ids_for(target_user_id, target_service))
+        else:
+            bids = set(self.downloader.active_unfinished_batch_ids())
+        contexts = [c for c in self.downloader.get_all_batch_contexts() if c.batch_id in bids]
+        names = []
+        seen_names: Set[str] = set()
+        labels: List[str] = []
+        seen_labels: Set[str] = set()
+        requires_scan = False
+        for c in contexts:
+            nm = c.creator_name or c.user_id or "Download"
+            if nm not in seen_names:
+                seen_names.add(nm)
+                names.append(nm)
+            eff_opts, eff_base_dir, eff_artist_dir, site_flag, _wl = self._resolve_ctx_target_settings(c, scope=scope)
+            diff = self._classify_ctx_diff(c, eff_opts, eff_base_dir, eff_artist_dir, site_flag)
+            if diff.get("tier", 0) >= 4:
+                requires_scan = True
+            for part in str(diff.get("summary") or "").split(","):
+                cp = part.strip()
+                if cp and cp not in seen_labels:
+                    seen_labels.add(cp)
+                    labels.append(cp)
+
+        scope_label = (
+            names[0]
+            if (scope == "creator" and names)
+            else f"All Active Queue ({max(1, len(bids))} batch{'es' if len(bids) != 1 else ''})"
+        )
+        return {
+            "scope": scope,
+            "targetUserId": str(target_user_id or ""),
+            "targetService": str(target_service or ""),
+            "scopeLabel": scope_label,
+            "summary": ", ".join(labels) if labels else (self._pending_settings_diff_summary or "Download settings"),
+            "requiresScan": requires_scan,
+        }
+
+    @Slot()
+    @Slot(str)
+    @Slot(str, str, str)
+    def requestMidDownloadSettingsPrompt(self, scope: str = "global", targetUserId: str = "", targetService: str = ""):
+        payload = self._build_mid_download_prompt_payload(scope, targetUserId, targetService)
+        self.midDownloadSettingsPromptRequested.emit(scope, payload)
+
+    def _set_applying_mid_download_ui(self, active: bool, status_text: str = "") -> None:
+        def _apply():
+            if self._is_applying_mid_download != active:
+                self._is_applying_mid_download = active
+                self.isApplyingMidDownloadSettingsChanged.emit()
+            if self._mid_download_apply_status_text != status_text:
+                self._mid_download_apply_status_text = status_text
+                self.midDownloadApplyStatusTextChanged.emit()
+        if QThread.currentThread() is self.thread():
+            _apply()
+        else:
+            self._callOnGui.emit(_apply)
+
+    @Slot()
+    def cancelMidDownloadApply(self):
+        self._apply_cancel_event.set()
+        self._settings_apply_gen += 1
+        self._set_applying_mid_download_ui(self._is_applying_mid_download, "Cancelling settings update...")
+
+    def _is_safe_delete_path(self, path: str) -> bool:
+        if not path:
+            return False
+        abs_p = os.path.abspath(os.path.normpath(path))
+        if os.path.dirname(abs_p) == abs_p:
+            return False
+        protected = self._protected_root_dirs()
+        root_keys = {self._norm_path_key(r).rstrip("\\/") for r in protected if r}
+        p_key = self._norm_path_key(abs_p).rstrip("\\/")
+        if not p_key or p_key in root_keys:
+            return False
+        if any(self._is_ancestor_dir(abs_p, r) for r in protected):
+            return False
+        return True
+
+    def _wipe_ad_hoc_batch_before_redownload(
+        self, ctx: BatchBuildContext, batch_tasks: List[DownloadTask], delete_creator_archive: bool = False
+    ) -> None:
+        """Removes only files and archive entries belonging to an ad-hoc batch cleanly."""
+        target_files: List[str] = []
+        parent_dirs: Set[str] = set()
+        for t in batch_tasks:
+            tp = getattr(t, "target_path", "")
+            if tp:
+                target_files.append(tp)
+                target_files.append(tp + ".part")
+                parent_dirs.add(os.path.dirname(os.path.abspath(tp)))
+
+        for fp in target_files:
+            try:
+                if os.path.isfile(fp):
+                    os.remove(fp)
+                    self._invalidate_folder_stats(fp)
+            except OSError as e:
+                logger.warning(f"Could not delete '{fp}' during re-download wipe: {e}", category="downloader")
+
+        # Prune empty subfolders created strictly by this batch without touching protected roots
+        for d in sorted(parent_dirs, key=len, reverse=True):
+            curr = d
+            while curr and self._is_safe_delete_path(curr):
+                try:
+                    if os.path.isdir(curr) and not os.listdir(curr):
+                        os.rmdir(curr)
+                        curr = os.path.dirname(curr)
+                    else:
+                        break
+                except OSError:
+                    break
+
+        if ctx.artist_dir and self._is_safe_delete_path(ctx.artist_dir) and os.path.isdir(ctx.artist_dir):
+            base_k = self._norm_path_key(ctx.artist_dir)
+            if delete_creator_archive or (ctx.parsed and ctx.parsed.is_external_provider):
+                try:
+                    shutil.rmtree(ctx.artist_dir, ignore_errors=True)
+                    self._invalidate_folder_stats(os.path.join(ctx.artist_dir, "x"))
+                except Exception:
+                    pass
+
+        if self._enable_download_archive or os.path.exists(self.archive_manager.db_path):
+            if delete_creator_archive and ctx.user_id and ctx.service:
+                self.archive_manager.delete_by_creator(ctx.user_id, ctx.service)
+                if ctx.creator_name and ctx.creator_name != ctx.user_id:
+                    self.archive_manager.delete_by_creator(ctx.creator_name, ctx.service)
+            clean_files = [os.path.normpath(p) for p in target_files if not p.endswith(".part")]
+            if clean_files:
+                self.archive_manager.delete_under_paths(clean_files)
+
+    def _fetch_tier4_delta(
+        self,
+        ctx: BatchBuildContext,
+        eff_opts: FilterOptions,
+        diff: Dict[str, Any],
+        my_gen: int,
+    ) -> Tuple[bool, List[Dict[str, Any]], Optional[Set[str]], bool, bool, int, int, str, str]:
+        """Fetches only missing API scopes (DMs, comments, favorites, expanded range) before pause."""
+        posts_copy = list(ctx.posts or [])
+        fav_ids = set(ctx.fetched_fav_ids) if ctx.fetched_fav_ids is not None else None
+        fetched_dms = bool(ctx.fetched_dms)
+        fetched_comments = bool(ctx.fetched_comments)
+        p_start = ctx.scan_page_start
+        p_end = ctx.scan_page_end
+        d_after = ctx.scan_date_after
+        d_before = ctx.scan_date_before
+
+        parsed = ctx.parsed
+        if not parsed or (getattr(parsed, "is_external_provider", False)) or getattr(parsed, "is_single_post", False):
+            return True, posts_copy, fav_ids, fetched_dms, fetched_comments, p_start, p_end, d_after, d_before
+
+        def _cancelled() -> bool:
+            return self._apply_cancel_event.is_set() or (my_gen != self._settings_apply_gen)
+
+        want_window_expand = bool(diff.get("requires_window_expand")) or (len(posts_copy) == 0)
+        new_p_start = int(getattr(eff_opts, "page_start", 1) or 1)
+        new_p_end = int(getattr(eff_opts, "page_end", 999999) or 999999)
+        if not ctx.from_watchlist and self._date_auto_scan_pages and (eff_opts.date_after or eff_opts.date_before):
+            new_p_end = 999999
+        new_d_after = str(getattr(eff_opts, "date_after", "") or "")
+        new_d_before = str(getattr(eff_opts, "date_before", "") or "")
+
+        if want_window_expand:
+            self._set_applying_mid_download_ui(True, f"Scanning expanded post range for {ctx.creator_name}...")
+            fresh = self.api_client.fetch_user_posts(
+                parsed=parsed,
+                page_start=new_p_start,
+                page_end=new_p_end,
+                date_after=new_d_after,
+                date_before=new_d_before,
+                cancel_event=self._apply_cancel_event,
+            )
+            if _cancelled():
+                return False, posts_copy, fav_ids, fetched_dms, fetched_comments, p_start, p_end, d_after, d_before
+            if fresh:
+                existing_comments = {str(p.get("id", "")): p.get("comments_text") for p in posts_copy if "comments_text" in p}
+                seen_k = {(str(p.get("id", "")), bool(p.get("_is_dm"))) for p in posts_copy}
+                for p in fresh:
+                    pid = str(p.get("id", ""))
+                    if pid in existing_comments:
+                        p["comments_text"] = existing_comments[pid]
+                    pk = (pid, bool(p.get("_is_dm")))
+                    if pk not in seen_k:
+                        seen_k.add(pk)
+                        posts_copy.append(p)
+                p_start = min(p_start, new_p_start)
+                p_end = max(p_end, new_p_end)
+                d_after = new_d_after if not d_after else (min(d_after, new_d_after) if new_d_after else "")
+                d_before = new_d_before if not d_before else (max(d_before, new_d_before) if new_d_before else "")
+
+        if (diff.get("requires_dm_scan") or (want_window_expand and getattr(eff_opts, "download_dms", False))) and not fetched_dms:
+            if "cum.st" in (ctx.domain or "").lower() or "pawchive" in (ctx.domain or "").lower():
+                self._set_applying_mid_download_ui(True, f"Fetching DMs for {ctx.creator_name}...")
+                dms = self.api_client.fetch_user_dms(
+                    parsed=parsed,
+                    page_start=new_p_start,
+                    page_end=new_p_end,
+                    date_after=new_d_after,
+                    date_before=new_d_before,
+                    cancel_event=self._apply_cancel_event,
+                )
+                if _cancelled():
+                    return False, posts_copy, fav_ids, fetched_dms, fetched_comments, p_start, p_end, d_after, d_before
+                fetched_dms = True
+                if dms:
+                    seen_k = {(str(p.get("id", "")), bool(p.get("_is_dm"))) for p in posts_copy}
+                    for dm in dms:
+                        pk = (str(dm.get("id", "")), True)
+                        if pk not in seen_k:
+                            seen_k.add(pk)
+                            posts_copy.append(dm)
+
+        if diff.get("requires_fav_scan") and fav_ids is None:
+            from core.auth_manager import auth_manager
+            prov_id = self.get_provider_for_domain(ctx.domain)
+            if not auth_manager.is_logged_in(prov_id):
+                meta = auth_manager.get_provider_summary(prov_id)
+                self._callOnGui.emit(lambda: self.favoriteAuthRequired.emit(meta.get("name", prov_id.capitalize())))
+                return False, posts_copy, fav_ids, fetched_dms, fetched_comments, p_start, p_end, d_after, d_before
+            self._set_applying_mid_download_ui(True, f"Fetching favorites for {ctx.creator_name}...")
+            fav_posts = self.api_client.fetch_user_favorites(domain=ctx.domain, fav_type="post", cancel_event=self._apply_cancel_event)
+            if _cancelled():
+                return False, posts_copy, fav_ids, fetched_dms, fetched_comments, p_start, p_end, d_after, d_before
+            fav_ids = {str(f.get("id")) for f in fav_posts if f.get("id")}
+
+        if (diff.get("requires_comments_scan") or eff_opts.character_scope in ("comments", "all")) and not fetched_comments:
+            self._set_applying_mid_download_ui(True, f"Scanning post comments for {ctx.creator_name}...")
+            for p in posts_copy:
+                if _cancelled():
+                    return False, posts_copy, fav_ids, fetched_dms, fetched_comments, p_start, p_end, d_after, d_before
+                if "comments_text" in p:
+                    continue
+                pid = str(p.get("id", ""))
+                if pid:
+                    comms = self.api_client.fetch_post_comments(ctx.domain, ctx.service, ctx.user_id, pid)
+                    p["comments_text"] = "\n".join(c.get("content", "") for c in comms if isinstance(c, dict))
+            fetched_comments = True
+
+        return True, posts_copy, fav_ids, fetched_dms, fetched_comments, p_start, p_end, d_after, d_before
+
+    @Slot(str, str)
+    @Slot(str, str, str, str)
+    def applyMidDownloadSettings(
+        self,
+        mode: str,
+        scope: str = "global",
+        targetUserId: str = "",
+        targetService: str = "",
+    ):
+        """Applies mid-download settings cleanly via Continue, Delete & Re-download All, or Future Only."""
+        mode_clean = str(mode or "").strip().lower()
+        scope_clean = str(scope or "global").strip().lower()
+        if mode_clean == "future_only":
+            if scope_clean == "global":
+                self.dismissPendingDownloadSettingsBanner()
+            self.midDownloadApplyFinished.emit(True, "New settings saved for future downloads.")
+            return
+
+        if self._is_applying_mid_download:
+            logger.warning("Settings update is already in progress.", category="downloader")
+            return
+
+        self._settings_apply_gen += 1
+        my_gen = self._settings_apply_gen
+        self._apply_cancel_event.clear()
+        self._set_applying_mid_download_ui(True, "Preparing mid-download settings update...")
+
+        def _worker():
+            ok_final = False
+            msg_final = ""
+            try:
+                if scope_clean == "creator" and targetUserId:
+                    target_bids = set(self.downloader.active_batch_ids_for(targetUserId, targetService))
+                else:
+                    target_bids = set(self.downloader.active_unfinished_batch_ids())
+
+                if not target_bids:
+                    ok_final = True
+                    msg_final = "No active downloads required updating."
+                    return
+
+                contexts = [
+                    c for c in self.downloader.get_all_batch_contexts()
+                    if c.batch_id in target_bids
+                ]
+
+                # Fast path: Tier 2 runtime-only changes never pause or rebuild
+                if mode_clean == "continue" and contexts and len(contexts) == len(target_bids):
+                    resolved_per_ctx = {}
+                    all_tier2_only = True
+                    any_proxy_changed = False
+                    for c in contexts:
+                        eff_opts, eff_base, eff_artist, site_flag, _wl = self._resolve_ctx_target_settings(c, scope=scope_clean)
+                        diff = self._classify_ctx_diff(c, eff_opts, eff_base, eff_artist, site_flag)
+                        resolved_per_ctx[c.batch_id] = (c, eff_opts, eff_base, eff_artist, site_flag, diff, _wl)
+                        if diff.get("tier", 0) > 2 or diff.get("dest_changed"):
+                            all_tier2_only = False
+                        if diff.get("proxy_changed"):
+                            any_proxy_changed = True
+
+                    if all_tier2_only:
+                        primary_opts = self._get_filter_options()
+                        self.downloader.update_runtime_options(
+                            target_bids,
+                            primary_opts,
+                            proxy_changed=any_proxy_changed,
+                            update_global_options=(scope_clean == "global"),
+                        )
+                        for _bid, (ctx_item, e_opts, _eb, _ea, _sf, _df, _wl_item) in resolved_per_ctx.items():
+                            ctx_item.applied_options = FilterOptions.from_dict(e_opts.to_dict())
+                        ok_final = True
+                        msg_final = "Active download transport settings updated."
+                        return
+                else:
+                    resolved_per_ctx = {}
+                    for c in contexts:
+                        eff_opts, eff_base, eff_artist, site_flag, _wl = self._resolve_ctx_target_settings(c, scope=scope_clean)
+                        diff = self._classify_ctx_diff(c, eff_opts, eff_base, eff_artist, site_flag)
+                        resolved_per_ctx[c.batch_id] = (c, eff_opts, eff_base, eff_artist, site_flag, diff, _wl)
+
+                # Step 1: Fetch Tier 4 API deltas BEFORE pausing workers or deleting files
+                updated_posts_map: Dict[str, Any] = {}
+                for bid, (c, eff_opts, eff_base, eff_artist, site_flag, diff, _wl) in resolved_per_ctx.items():
+                    if self._apply_cancel_event.is_set() or my_gen != self._settings_apply_gen:
+                        msg_final = "Settings update cancelled."
+                        return
+                    need_delta = (
+                        diff.get("tier", 0) >= 4
+                        or (not c.posts and not (c.parsed and c.parsed.is_external_provider))
+                    )
+                    if need_delta:
+                        ok_d, p_list, f_ids, dms_f, comm_f, p_st, p_en, d_af, d_be = self._fetch_tier4_delta(
+                            c, eff_opts, diff, my_gen
+                        )
+                        if not ok_d:
+                            msg_final = "Settings update cancelled before interrupting active downloads."
+                            return
+                        updated_posts_map[bid] = (p_list, f_ids, dms_f, comm_f, p_st, p_en, d_af, d_be)
+
+                # Also ensure recovery batches without context still support redownload cleanly
+                if mode_clean == "continue" and len(resolved_per_ctx) < len(target_bids):
+                    missing = [b for b in target_bids if b not in resolved_per_ctx]
+                    msg_final = f"Batch {', '.join(missing[:2])} lacks source post metadata; use Delete Old & Re-download All."
+                    return
+
+                # Step 2: Quiesce target batch workers cleanly
+                is_redownload = (mode_clean == "redownload")
+                self._set_applying_mid_download_ui(
+                    True,
+                    "Stopping active transfers before cleanup..." if is_redownload else "Waiting for active transfers to pause...",
+                )
+                q_ok, q_err = self.downloader.quiesce_batches(
+                    target_bids, mode=("cancel" if is_redownload else "pause"), timeout=15.0
+                )
+                if not q_ok:
+                    msg_final = q_err or "Active transfers did not stop in time."
+                    return
+
+                # Step 3: Destructive cleanup for Option B ONLY after workers drained
+                if is_redownload:
+                    self._set_applying_mid_download_ui(True, "Deleting old files & archive records...")
+                    all_tasks_snapshot = list(self.downloader.tasks)
+                    wiped_wl_keys: Set[Tuple[str, str]] = set()
+                    for bid in target_bids:
+                        pair = resolved_per_ctx.get(bid)
+                        batch_tasks = [t for t in all_tasks_snapshot if self.downloader._task_batch_id(t) == bid]
+                        for bt in batch_tasks:
+                            p_file = getattr(bt, "target_path", "") + ".part"
+                            if p_file and os.path.isfile(p_file):
+                                try:
+                                    os.remove(p_file)
+                                except OSError:
+                                    pass
+                        if pair is not None:
+                            c, eff_opts, eff_base, eff_artist, site_flag, _diff, wl = pair
+                            if wl is not None:
+                                wkey = (wl.service.lower(), wl.user_id.lower())
+                                if wkey not in wiped_wl_keys:
+                                    wiped_wl_keys.add(wkey)
+                                    self._wipe_creator_before_redownload(wl)
+                            else:
+                                self._wipe_ad_hoc_batch_before_redownload(
+                                    c, batch_tasks, delete_creator_archive=not (c.parsed and c.parsed.is_single_post)
+                                )
+                    self.archiveRecordCountChanged.emit()
+                    self.archiveUpdated.emit()
+
+                # Step 4: Build new plans and splice in-place
+                self._set_applying_mid_download_ui(True, "Rebuilding download queue with new settings...")
+                batch_plans: Dict[str, Dict[str, Any]] = {}
+                for bid, (c, eff_opts, eff_base, eff_artist, site_flag, _diff, wl) in resolved_per_ctx.items():
+                    if wl is not None and not getattr(wl, "custom_folder", False) and eff_artist:
+                        try:
+                            os.makedirs(eff_artist, exist_ok=True)
+                        except OSError:
+                            pass
+                        wl.download_dir = eff_artist
+                        self._watchlist_manager.save(wl)
+
+                    p_list, f_ids, dms_f, comm_f, p_st, p_en, d_af, d_be = updated_posts_map.get(
+                        bid,
+                        (
+                            list(c.posts or []),
+                            set(c.fetched_fav_ids) if c.fetched_fav_ids is not None else None,
+                            c.fetched_dms,
+                            c.fetched_comments,
+                            c.scan_page_start,
+                            c.scan_page_end,
+                            c.scan_date_after,
+                            c.scan_date_before,
+                        ),
+                    )
+                    posts_for_build = (
+                        [p for p in p_list if str(p.get("id")) in f_ids]
+                        if (getattr(eff_opts, "favorite_mode", False) and f_ids is not None)
+                        else p_list
+                    )
+                    batch_plans[bid] = {
+                        "options": eff_opts,
+                        "posts": posts_for_build,
+                        "external_files": list(c.external_files or []) if (c.parsed and c.parsed.is_external_provider) else None,
+                        "provider": c.provider or (c.parsed.provider if c.parsed else ""),
+                        "post_id": c.post_id or (c.parsed.post_id if c.parsed else ""),
+                        "creator_name": c.creator_name,
+                        "service": c.service,
+                        "domain": c.domain,
+                        "base_dir": eff_base,
+                        "artist_dir": eff_artist,
+                        "user_id": c.user_id,
+                    }
+
+                    # Persist updated snapshot back into BatchBuildContext
+                    c.posts = p_list
+                    c.fetched_fav_ids = f_ids
+                    c.fetched_dms = dms_f
+                    c.fetched_comments = comm_f
+                    c.scan_page_start = p_st
+                    c.scan_page_end = p_en
+                    c.scan_date_after = d_af
+                    c.scan_date_before = d_be
+                    c.base_dir = eff_base
+                    c.artist_dir = eff_artist
+                    c.applied_options = FilterOptions.from_dict(eff_opts.to_dict())
+                    c.applied_download_dir = str(self._download_dir or "")
+                    c.applied_site_in_folder_name = site_flag
+                    c.force_redownload = is_redownload
+
+                global_opts = self._get_filter_options()
+                res = self.downloader.rebuild_batches_in_place(
+                    batch_plans=batch_plans,
+                    new_options=global_opts,
+                    cookie_str=self._cookie_string,
+                    force_redownload=is_redownload,
+                    clear_previous_completed=is_redownload,
+                    update_global_options=(scope_clean == "global"),
+                )
+                if not res.get("ok"):
+                    msg_final = res.get("error") or "Could not rebuild queue."
+                    return
+
+                self._replaceBatchesSignal.emit(target_bids, res.get("replacement_tasks") or [])
+                ok_final = True
+                if is_redownload:
+                    msg_final = "Cleared previous files and restarted with new settings."
+                else:
+                    migrated = int(res.get("migrated_parts", 0))
+                    msg_final = (
+                        f"Continued with new settings ({migrated} partial resume file(s) preserved)."
+                        if migrated
+                        else "Continued active downloads with new settings."
+                    )
+            except Exception as exc:
+                logger.error(f"Error applying mid-download settings: {exc}", category="downloader")
+                ok_final = False
+                msg_final = str(exc)
+            finally:
+                self._set_applying_mid_download_ui(False, "")
+                self._callOnGui.emit(self._evaluate_pending_download_settings)
+                self._callOnGui.emit(lambda: self.midDownloadApplyFinished.emit(ok_final, msg_final))
+
+        threading.Thread(target=_worker, daemon=True, name="MidDownloadApply").start()
 
     # ── Thread-safe downloader event handlers ─────────────────────────────────
     # These slots run on the MAIN thread (via QueuedConnection) so it is safe
@@ -6099,6 +7468,18 @@ class AppBridge(QObject):
             if now - self._last_archive_emit_time >= 2.0:
                 self._last_archive_emit_time = now
                 self.archiveRecordCountChanged.emit()
+            self._dirty_archive_completed += 1
+            creator_key = (
+                str(getattr(task, "service", "") or "").lower(),
+                str(getattr(task, "user_id", "") or getattr(task, "creator_name", "") or "").lower(),
+            )
+            is_new_creator = creator_key not in self._seen_session_archive_creators
+            elapsed_full = now - self._last_archive_full_emit_time
+            if (is_new_creator and elapsed_full >= 1.5) or elapsed_full >= 6.0:
+                self._seen_session_archive_creators.add(creator_key)
+                self._dirty_archive_completed = 0
+                self._last_archive_full_emit_time = now
+                self.archiveUpdated.emit()
 
     def _cleanup_after_run(self):
         """Memory cleanup after a download run, on the window thread (see MemoryCollector.collect)."""
@@ -6131,18 +7512,33 @@ class AppBridge(QObject):
             self._task_updates_scheduled = False
 
     def _invalidate_folder_stats(self, file_path: str):
-        """Forget the Gallery's cached totals for every folder above a new file. They are checked
-        against a folder's own date, which doesn't change when files land in its subfolders, so a
-        creator folder kept showing its old size and file count."""
-        if not file_path or not self._folder_stats_cache:
+        """Forget the Gallery's cached totals and previews for every folder above or under a changed path."""
+        if not file_path:
             return
-        folder = os.path.normpath(os.path.dirname(file_path))
-        while folder:
-            self._folder_stats_cache.pop(folder, None)
-            parent = os.path.dirname(folder)
-            if parent == folder:
+        if not self._folder_stats_cache and not self._folder_previews_cache:
+            return
+        cur = os.path.normpath(file_path)
+        prefix = os.path.normcase(cur) + os.sep
+        for cache in (self._folder_stats_cache, self._folder_previews_cache):
+            stale = [k for k in list(cache.keys()) if os.path.normcase(k).startswith(prefix)]
+            for k in stale:
+                cache.pop(k, None)
+        while cur:
+            self._folder_stats_cache.pop(cur, None)
+            self._folder_previews_cache.pop(cur, None)
+            parent = os.path.dirname(cur)
+            if parent == cur:
                 break
-            folder = parent
+            cur = parent
+
+    @Slot(str)
+    def invalidateFolderCache(self, folder_path: str = ""):
+        """Forget cached Gallery stats and previews (all, or folder_path and its subtree/ancestors)."""
+        if not folder_path:
+            self._folder_stats_cache.clear()
+            self._folder_previews_cache.clear()
+            return
+        self._invalidate_folder_stats(os.path.normpath(os.path.abspath(folder_path)))
 
     @Slot(int)
     def _handle_throttled(self, new_count: int):
@@ -6182,6 +7578,17 @@ class AppBridge(QObject):
     def _handle_append_tasks(self, tasks: list):
         self._queue_model.appendTasks(tasks)
         self._active_queue_model.appendTasks(tasks)
+
+    @Slot(object, list)
+    def _handle_replace_batches(self, batch_ids, replacement_tasks: list):
+        """Atomically splices rebuilt batch tasks into QueueModel and ActiveQueueModel on GUI thread."""
+        target_bids = {str(b) for b in (batch_ids or ()) if b}
+        self._queue_model.replace_batches(target_bids, replacement_tasks)
+        if self._active_queue_model:
+            self._active_queue_model.replace_batches(target_bids, replacement_tasks)
+        self._is_downloading = bool(self.downloader._is_running)
+        self.isDownloadingChanged.emit()
+        self.isPausedChanged.emit()
 
     @Slot(str)
     def _handle_batch_cancel(self, batch_id: str):
@@ -6240,6 +7647,18 @@ class AppBridge(QObject):
     def _handle_queue_cleared(self):
         self.downloader.tasks.clear()
         self._queued_links.clear()
+        self._apply_cancel_event.set()
+        self._settings_apply_gen += 1
+        self._scan_ui_gen += 1
+        self._update_scan_progress("", 0, 0, force=True, active=False, update_status_text=False)
+        self._seen_session_archive_creators.clear()
+        self._dirty_archive_completed = 0
+        self._settings_dismissed_baseline = None
+        if self._has_pending_download_settings_changes:
+            self._has_pending_download_settings_changes = False
+            self._pending_settings_diff_summary = ""
+            self.hasPendingDownloadSettingsChangesChanged.emit()
+            self.pendingSettingsDiffSummaryChanged.emit()
         logger.info("Download queue cleared.", category="queue")
 
     @Slot()
@@ -6614,7 +8033,8 @@ class AppBridge(QObject):
                         # (sleep / hibernate return only after the computer wakes up again)
                         res = subprocess.run(cmd, check=False, capture_output=True, text=True,
                                              timeout=None if action in ("sleep", "hibernate") else 30,
-                                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                                             **subprocess_env_kwargs())
                     except (OSError, subprocess.SubprocessError) as e:
                         logger.debug(f"'{cmd[0]}' unavailable: {e}", category="system")
                         continue
@@ -6665,6 +8085,21 @@ class AppBridge(QObject):
         self._scheduled_sweep_retry = False
         # Links that finished can be queued again (e.g. to fetch a creator's newer posts later)
         self._queued_links.clear()
+        self._seen_session_archive_creators.clear()
+        self._dirty_archive_completed = 0
+        self._evaluate_pending_download_settings()
+        self._apply_cancel_event.set()
+        self._settings_apply_gen += 1
+        self._scan_ui_gen += 1
+        self._update_scan_progress("", 0, 0, force=True, active=False, update_status_text=False)
+        self._seen_session_archive_creators.clear()
+        self._dirty_archive_completed = 0
+        self._settings_dismissed_baseline = None
+        if self._has_pending_download_settings_changes:
+            self._has_pending_download_settings_changes = False
+            self._pending_settings_diff_summary = ""
+            self.hasPendingDownloadSettingsChangesChanged.emit()
+            self.pendingSettingsDiffSummaryChanged.emit()
 
         # Calculate actual completed percentage
         tasks = self._queue_model.getTasks()
@@ -6804,7 +8239,7 @@ class AppBridge(QObject):
                                 if t_uid and t_svc and not is_external:
                                     t_name = getattr(t0, "creator_name", "").strip() or t_uid
                                     t_domain = getattr(t0, "domain", "") or ("coomer.st" if t_svc.lower() in ("onlyfans", "fansly", "candfans") else "pawchive.pw")
-                                    t_url = getattr(t0, "artist_url", "") or f"https://{t_domain}/{t_svc}/user/{t_uid}"
+                                    t_url = normalize_archive_url(getattr(t0, "artist_url", "")) or canonical_site_url(t_domain, t_svc, t_uid)
                                     t_dir = self.extract_artist_folder_from_path(
                                         t0.target_path,
                                         t_name,
@@ -7111,11 +8546,88 @@ class AppBridge(QObject):
         """
         from core.filter_engine import FilterEngine
         clean_c = FilterEngine.clean_filesystem_text(creator_name, max_len=80, fallback="creator")
-        folder = os.path.normpath(folder)
+        raw = (folder or "").strip()
+        if not raw:
+            base_dir = self._download_dir or os.path.join(os.path.expanduser("~"), "Downloads", "KemonoDownloads")
+            return pick_creator_folder(base_dir, clean_c, service)
+        folder = os.path.normpath(raw)
         base = os.path.basename(folder)
         if is_creator_folder(base, clean_c, service) or (service and base.lower().startswith(f"{clean_c.lower()} [")):
             return folder
         return pick_creator_folder(folder, clean_c, service)
+
+    @staticmethod
+    def _norm_path_key(path: str) -> str:
+        """Canonical case-insensitive normalized path key for directory tree comparisons."""
+        if not path:
+            return ""
+        return os.path.normcase(os.path.normpath(os.path.abspath(path)))
+
+    @classmethod
+    def _is_ancestor_dir(cls, ancestor: str, descendant: str) -> bool:
+        """Return True if `ancestor` strictly contains `descendant`."""
+        a = cls._norm_path_key(ancestor).rstrip("\\/")
+        d = cls._norm_path_key(descendant).rstrip("\\/")
+        return bool(a and d and a != d and d.startswith(a + os.sep))
+
+    def _protected_root_dirs(self) -> List[str]:
+        """Return global download root folders that must never receive loose creator files."""
+        from core.storage_pool_manager import storage_pool_manager
+        return [
+            r for r in [
+                self._download_dir,
+                storage_pool_manager.primary_dir,
+                *(storage_pool_manager.overflow_dirs or []),
+                os.path.expanduser("~"),
+                os.path.join(os.path.expanduser("~"), "Downloads"),
+            ] if r
+        ]
+
+    def resolve_explicit_watch_folder(
+        self,
+        entry=None,
+        folder: str = "",
+        *,
+        creator_name: str = "",
+        service: str = "",
+        allow_empty_leaf: bool = False,
+    ) -> str:
+        """Resolve an explicitly chosen/typed Watchlist folder path.
+
+        If the user picks a shallower parent folder (e.g. D:/cg2 when old was D:/cg2/21),
+        automatically resolves to `<folder>/<Creator [service]>` instead of downloading loose
+        or nowhere.
+        """
+        raw = (folder or "").strip()
+        if not raw:
+            return ""
+        norm_folder = os.path.normpath(raw)
+        cname = (
+            creator_name
+            or (getattr(entry, "creator_name", "") if entry else "")
+            or (getattr(entry, "user_id", "") if entry else "")
+            or "creator"
+        )
+        svc = service or (getattr(entry, "service", "") if entry else "") or ""
+
+        if allow_empty_leaf and os.path.isdir(norm_folder):
+            try:
+                is_empty = not os.listdir(norm_folder)
+            except OSError:
+                is_empty = False
+            if is_empty:
+                folder_key = self._norm_path_key(norm_folder).rstrip("\\/")
+                abs_folder = os.path.abspath(norm_folder)
+                is_drive_root = os.path.dirname(abs_folder) == abs_folder
+                root_keys = {self._norm_path_key(r).rstrip("\\/") for r in self._protected_root_dirs()}
+                existing_dirs = []
+                if entry:
+                    existing_dirs = [entry.download_dir, *(getattr(entry, "download_dirs", None) or [])]
+                is_ancestor_of_old = any(self._is_ancestor_dir(norm_folder, d) for d in existing_dirs if d)
+                if not is_drive_root and folder_key not in root_keys and not is_ancestor_of_old:
+                    return norm_folder
+
+        return self.resolve_artist_download_dir_for_folder(norm_folder, cname, svc)
 
     def extract_artist_folder_from_path(self, sample_path: str, creator_name: str, service: str, fallback_dir: str = "") -> str:
         """
@@ -7150,6 +8662,17 @@ class AppBridge(QObject):
           creator overrides without falling back to hardcoded defaults for newly added keys.
         """
         from core.filter_engine import FilterOptions
+        entry_opts = getattr(entry, "options", None) or {}
+        if entry_opts.get("use_custom_settings"):
+            base_dict = self._get_filter_options().to_dict()
+            base_dict["date_after"] = ""
+            base_dict["date_before"] = ""
+            base_dict["page_start"] = 1
+            base_dict["page_end"] = 999999
+            base_dict["characters"] = ""
+            base_dict.update(entry_opts)
+            base_dict.pop("use_custom_settings", None)
+            return FilterOptions.from_dict(base_dict)
         if self._watchlist_apply_global_settings:
             options = self._get_filter_options()
             options.date_after = ""
@@ -7158,9 +8681,9 @@ class AppBridge(QObject):
             options.page_end = 999999
             options.characters = ""
             return options
-        elif getattr(entry, "options", None):
+        elif entry_opts:
             base_dict = self._get_filter_options().to_dict()
-            base_dict.update(entry.options)
+            base_dict.update(entry_opts)
             base_dict["date_after"] = ""
             base_dict["date_before"] = ""
             base_dict["page_start"] = 1
@@ -7259,6 +8782,12 @@ class AppBridge(QObject):
         else:
             artist_folder = self.resolve_artist_download_dir(entry)
 
+        if artist_folder:
+            try:
+                os.makedirs(artist_folder, exist_ok=True)
+            except OSError:
+                pass
+
         # Ensure the entry knows its download_dir and download_dirs
         if not entry.download_dir or custom_dir:
             entry.download_dir = artist_folder
@@ -7269,7 +8798,20 @@ class AppBridge(QObject):
         self._watchlist_model.refresh()
         self.watchlistChanged.emit()
 
+        options = FilterOptions.from_dict(options.to_dict())
+        wl_batch_id = f"watchlist_{entry.service}_{entry.user_id}"
+        wl_parsed = KemonoURLParser.parse(getattr(entry, "url", "") or "")
+        if not wl_parsed.is_valid:
+            wl_parsed = URLParseResult(
+                is_valid=True,
+                raw_url=getattr(entry, "url", "") or "",
+                domain=entry.domain,
+                service=entry.service,
+                user_id=entry.user_id,
+            )
+
         base_download_dir = os.path.dirname(artist_folder) if os.path.isabs(artist_folder) else (custom_dir or self._download_dir)
+        wl_prog = lambda cur, tot, txt: self._update_scan_progress(txt, cur, tot)  # noqa: E731
         tasks = self.downloader.build_tasks_from_posts(
             posts=new_posts,
             creator_name=entry.creator_name,
@@ -7277,9 +8819,10 @@ class AppBridge(QObject):
             domain=entry.domain,
             base_dir=base_download_dir,
             options=options,
-            batch_id=f"watchlist_{entry.service}_{entry.user_id}",
+            batch_id=wl_batch_id,
             artist_dir=artist_folder,
-            user_id=entry.user_id
+            user_id=entry.user_id,
+            progress_callback=wl_prog,
         )
 
         # Auto-harvest new posts' cloud links into permanent Link Vault
@@ -7291,6 +8834,27 @@ class AppBridge(QObject):
             user_id=entry.user_id
         )
         if tasks:
+            self.downloader.register_batch_context(
+                BatchBuildContext(
+                    batch_id=wl_batch_id,
+                    parsed=wl_parsed,
+                    creator_name=entry.creator_name or entry.user_id,
+                    service=entry.service,
+                    user_id=entry.user_id,
+                    domain=entry.domain,
+                    base_dir=base_download_dir,
+                    artist_dir=artist_folder,
+                    from_watchlist=True,
+                    custom_folder=bool(getattr(entry, "custom_folder", False)),
+                    posts=list(new_posts),
+                    fetched_dms=bool(getattr(options, "download_dms", False)),
+                    scan_page_start=int(getattr(options, "page_start", 1) or 1),
+                    scan_page_end=int(getattr(options, "page_end", 999999) or 999999),
+                    applied_options=options,
+                    applied_download_dir=str(self._download_dir or ""),
+                    applied_site_in_folder_name=bool(folder_naming.include_service),
+                )
+            )
             post_ids_with_files = {str(t.post_id) for t in tasks}
             no_file_posts = [(self._post_day(p), str(p.get("id", ""))) for p in new_posts
                              if str(p.get("id", "")) not in post_ids_with_files]
@@ -7298,7 +8862,7 @@ class AppBridge(QObject):
                 key = (entry.service.lower(), entry.user_id.lower())
                 self._watchlist_pending_updates.setdefault(key, []).extend(no_file_posts)
             self._appendTasksSignal.emit(tasks)
-            self.downloader.append_tasks(tasks, options=options, cookie_str=self._cookie_string)
+            self.downloader.append_tasks(tasks, options=options, cookie_str=self._cookie_string, progress_callback=wl_prog)
             if not self._is_downloading and self.downloader._is_running:
                 self._is_downloading = True
                 self.isDownloadingChanged.emit()
@@ -7399,8 +8963,18 @@ class AppBridge(QObject):
 
         creator_name = self.api_client.resolve_creator_name(parsed) or parsed.user_id
         target_dir = ""
-        if custom_download_dir:
-            target_dir = self.resolve_artist_download_dir_for_folder(custom_download_dir, creator_name, parsed.service)
+        is_custom_dir = bool(custom_download_dir and str(custom_download_dir).strip())
+        if is_custom_dir:
+            target_dir = self.resolve_explicit_watch_folder(
+                folder=str(custom_download_dir),
+                creator_name=creator_name,
+                service=parsed.service,
+                allow_empty_leaf=False,
+            )
+            try:
+                os.makedirs(target_dir, exist_ok=True)
+            except OSError:
+                pass
         else:
             from core.filter_engine import FilterEngine
             clean_c = FilterEngine.clean_filesystem_text(creator_name, max_len=80, fallback="creator")
@@ -7439,6 +9013,7 @@ class AppBridge(QObject):
             last_post_date=latest_pdate,
             download_dir=target_dir,
             options=options_dict,
+            custom_folder=True if is_custom_dir else None,
         )
         self._watchlist_model.refresh()
         self.watchlistChanged.emit()
@@ -7496,15 +9071,178 @@ class AppBridge(QObject):
         self.watchlistChanged.emit()
         logger.info(f"Ignored current updates for {entry.creator_name!r}.", category="watchlist")
 
-    @Slot(str, str)
-    def redownloadWatchlistEntry(self, userId: str, service: str):
-        """Re-queue the full download for a watched artist (all posts, not just new).
+    def _get_creator_redownload_delete_targets(self, entry) -> Tuple[List[str], List[str], int, int]:
+        """Identify creator-exclusive directories and archived files to remove before re-download.
 
-        Only this creator's entry in the queue is replaced: their waiting files are taken out and a
-        fresh entry is added, while everything else keeps going. It also works during a download
-        (it used to do nothing then, and otherwise threw the whole queue away). Files of this
-        creator that are downloading right now are left to finish, so no file is downloaded twice
-        at the same time; the fresh entry skips files that are already complete on disk.
+        Global download roots, drive roots, and directories belonging to other watchlist creators
+        are never deleted recursively; inside shared directories only files recorded for this
+        creator in the archive are listed. Returns (exclusive_dirs, loose_files, file_count, total_bytes).
+        """
+        from core.folder_mover import count_files
+        from core.filter_engine import FilterEngine
+
+        clean_c = FilterEngine.clean_filesystem_text(
+            entry.creator_name or entry.user_id, max_len=80, fallback="creator"
+        )
+        protected_roots = self._protected_root_dirs()
+        root_keys = {self._norm_path_key(r).rstrip("\\/") for r in protected_roots if r}
+
+        other_dirs: List[str] = []
+        other_keys = set()
+        for other in self._watchlist_manager.get_all():
+            if other.user_id == entry.user_id and other.service == entry.service:
+                continue
+            for od in [other.download_dir, *(getattr(other, "download_dirs", None) or [])]:
+                if od:
+                    other_dirs.append(od)
+                    other_keys.add(self._norm_path_key(od).rstrip("\\/"))
+
+        raw_candidates: List[str] = []
+        for d in [entry.download_dir, *(getattr(entry, "download_dirs", None) or []), self.resolve_artist_download_dir(entry)]:
+            if d and d not in raw_candidates:
+                raw_candidates.append(d)
+
+        candidate_exclusive: List[str] = []
+        seen_keys = set()
+        entry_dir_key = self._norm_path_key(entry.download_dir).rstrip("\\/") if entry.download_dir else ""
+        for d in raw_candidates:
+            if not d or not os.path.isdir(d):
+                continue
+            norm_d = os.path.normpath(d)
+            k = self._norm_path_key(norm_d).rstrip("\\/")
+            if not k or k in seen_keys:
+                continue
+            abs_d = os.path.abspath(norm_d)
+            is_drive_root = os.path.dirname(abs_d) == abs_d
+            if is_drive_root or k in root_keys or any(self._is_ancestor_dir(norm_d, r) for r in protected_roots):
+                continue
+            if k in other_keys or any(self._is_ancestor_dir(norm_d, od) for od in other_dirs):
+                continue
+            base = os.path.basename(norm_d)
+            matches_creator = (
+                is_creator_folder(base, clean_c, entry.service)
+                or is_creator_folder(base, entry.user_id, entry.service)
+                or bool(entry.service and base.lower().startswith(f"{clean_c.lower()} ["))
+            )
+            dedicated_custom = bool(getattr(entry, "custom_folder", False)) and k == entry_dir_key
+            if not (matches_creator or dedicated_custom):
+                continue
+            seen_keys.add(k)
+            candidate_exclusive.append(norm_d)
+
+        exclusive_dirs = [
+            d for d in candidate_exclusive
+            if not any(self._is_ancestor_dir(parent_d, d) for parent_d in candidate_exclusive if parent_d != d)
+        ]
+
+        archived_paths = set(self.archive_manager.get_file_paths_for_creator(entry.user_id, entry.service))
+        if entry.creator_name and entry.creator_name != entry.user_id:
+            archived_paths.update(self.archive_manager.get_file_paths_for_creator(entry.creator_name, entry.service))
+
+        excl_keys = [self._norm_path_key(d).rstrip("\\/") for d in exclusive_dirs]
+        loose_files: List[str] = []
+        for fp in archived_paths:
+            if not fp or not os.path.isfile(fp):
+                continue
+            fp_key = self._norm_path_key(fp)
+            if any(fp_key.startswith(ek + os.sep) for ek in excl_keys if ek):
+                continue
+            loose_files.append(os.path.normpath(fp))
+
+        total_files = 0
+        total_bytes = 0
+        for d in exclusive_dirs:
+            cnt, sz = count_files(d)
+            total_files += cnt
+            total_bytes += sz
+        for fp in loose_files:
+            try:
+                total_files += 1
+                total_bytes += os.path.getsize(fp)
+            except OSError:
+                pass
+        return exclusive_dirs, loose_files, total_files, total_bytes
+
+    def _wipe_creator_before_redownload(self, entry) -> None:
+        """Delete existing files and archive records for `entry`, then re-create its target folder."""
+        exclusive_dirs, loose_files, _, _ = self._get_creator_redownload_delete_targets(entry)
+
+        for fp in loose_files:
+            try:
+                if os.path.isfile(fp):
+                    os.remove(fp)
+                    self._invalidate_folder_stats(fp)
+            except OSError as e:
+                logger.warning(f"Could not delete file '{fp}' during re-download reset: {e}", category="watchlist")
+
+        for d in exclusive_dirs:
+            try:
+                shutil.rmtree(d, ignore_errors=False)
+            except Exception:
+                shutil.rmtree(d, ignore_errors=True)
+            self._invalidate_folder_stats(os.path.join(d, "x"))
+
+        if self._enable_download_archive or os.path.exists(self.archive_manager.db_path):
+            self.archive_manager.delete_by_creator(entry.user_id, entry.service)
+            if entry.creator_name and entry.creator_name != entry.user_id:
+                self.archive_manager.delete_by_creator(entry.creator_name, entry.service)
+            if exclusive_dirs:
+                self.archive_manager.delete_under_paths(exclusive_dirs)
+
+        target_dir = os.path.normpath(self.resolve_artist_download_dir(entry))
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+        except OSError as e:
+            logger.warning(f"Could not create download folder '{target_dir}': {e}", category="watchlist")
+        self._watchlist_manager.reset_for_redownload(entry.user_id, entry.service, keep_dir=target_dir)
+
+        def _refresh_ui():
+            self._watchlist_model.update_new_counts()
+            self._watchlist_model.refresh()
+            self.watchlistChanged.emit()
+        self._callOnGui.emit(_refresh_ui)
+
+    @Slot(str, str, result="QVariantMap")
+    def requestRedownloadPreview(self, userId: str, service: str) -> dict:
+        """Return creator info synchronously and count existing files asynchronously for confirmation dialog."""
+        entry = self._watchlist_manager._find(userId, service)
+        if not entry:
+            return {"ok": False}
+        eff = self._get_effective_watchlist_options(entry)
+        target_dir = self.resolve_artist_download_dir(entry)
+        is_custom = bool((getattr(entry, "options", None) or {}).get("use_custom_settings", False))
+
+        def _count():
+            from core.filter_engine import FilterEngine
+            excl_dirs, loose_files, n_files, total_bytes = self._get_creator_redownload_delete_targets(entry)
+            folder_summary = "\n".join(excl_dirs) if excl_dirs else target_dir
+            if loose_files and excl_dirs:
+                folder_summary += f"\n(+ {len(loose_files)} archived file(s) in shared folder)"
+            elif loose_files and not excl_dirs:
+                folder_summary = f"{target_dir} ({len(loose_files)} archived file(s))"
+            size_text = FilterEngine.format_size_str(total_bytes)
+            self._callOnGui.emit(
+                lambda: self.watchlistRedownloadPreviewReady.emit(
+                    userId, service, int(n_files), size_text, folder_summary
+                )
+            )
+
+        threading.Thread(target=_count, daemon=True, name="RedownloadPreviewCount").start()
+        return {
+            "ok": True,
+            "userId": entry.user_id,
+            "service": entry.service,
+            "creatorName": entry.creator_name or entry.user_id,
+            "targetDir": target_dir,
+            "fileType": eff.file_type,
+            "useCustomSettings": is_custom,
+        }
+
+    @Slot(str, str)
+    @Slot(str, str, bool)
+    def redownloadWatchlistEntry(self, userId: str, service: str, delete_existing: bool = True):
+        """Wipe existing downloads (when delete_existing=True) and re-queue the watched artist
+        using their current Watchlist folder and effective Watchlist settings.
         """
         entry = self._watchlist_manager._find(userId, service)
         if not entry:
@@ -7523,7 +9261,7 @@ class AppBridge(QObject):
         if removed:
             logger.info(f"Re-download: replaced {removed} queued file(s) of {name!r} with a fresh entry.", category="watchlist")
         else:
-            logger.info(f"Re-download: adding {name!r} to the queue.", category="watchlist")
+            logger.info(f"Re-download: preparing full re-download for {name!r}.", category="watchlist")
 
         self._scan_cancel_event.clear()
         if not self._is_downloading:
@@ -7532,10 +9270,32 @@ class AppBridge(QObject):
             self._is_downloading = True
             self.isDownloadingChanged.emit()
             self.isPausedChanged.emit()
-            self._status_text = "Fetching metadata..."
+            self._status_text = f"Removing old files for {name}..." if delete_existing else "Fetching metadata..."
             self.statusTextChanged.emit()
-        threading.Thread(target=self._async_fetch_and_start, args=(parsed, True), daemon=True,
-                         name="WatchlistRedownload").start()
+
+        active_bids = set(self.downloader.active_batch_ids_for(parsed.user_id, parsed.service))
+
+        def _worker():
+            if active_bids:
+                self.downloader.quiesce_batches(active_bids, mode="cancel", timeout=15.0)
+                if self._queue_model:
+                    self._callOnGui.emit(lambda: [self._queue_model.removeBatch(b) for b in active_bids])
+            if delete_existing:
+                self._wipe_creator_before_redownload(entry)
+                if not self._scan_cancel_event.is_set():
+                    self._callOnGui.emit(lambda: (
+                        setattr(self, "_status_text", "Fetching metadata..."),
+                        self.statusTextChanged.emit(),
+                    ))
+            self._async_fetch_and_start(
+                parsed,
+                True,
+                force_redownload=True,
+                from_watchlist=True,
+                watchlist_entry=entry,
+            )
+
+        threading.Thread(target=_worker, daemon=True, name="WatchlistRedownload").start()
 
     def _drop_creator_from_queue(self, service: str, user_id: str) -> int:
         """Take one creator's waiting / finished / failed files out of the queue (GUI thread).
@@ -7582,10 +9342,215 @@ class AppBridge(QObject):
         """Disable auto-check on startup for all artists in the watchlist."""
         self.setAllWatchlistAutoCheck(False)
 
+    @Slot(str, result=str)
+    def selectExistingDirectory(self, initialDir: str = "") -> str:
+        """Open a folder picker dialog and return chosen directory path or empty string."""
+        start = initialDir if (initialDir and os.path.exists(initialDir)) else (self._download_dir or os.path.expanduser("~"))
+        chosen = QFileDialog.getExistingDirectory(None, "Select Folder", start)
+        return os.path.normpath(chosen) if chosen else ""
+
+    @Slot(str, str, result="QVariantMap")
+    def getWatchlistEntrySettings(self, userId: str, service: str) -> dict:
+        """Return full editable Watchlist settings and resolved folder info for `entry`."""
+        entry = self._watchlist_manager._find(userId, service)
+        if not entry:
+            return {"ok": False}
+        eff = self._get_effective_watchlist_options(entry)
+        entry_opts = getattr(entry, "options", None) or {}
+        return {
+            "ok": True,
+            "userId": entry.user_id,
+            "service": entry.service,
+            "creatorName": entry.creator_name or entry.user_id,
+            "url": entry.url or "",
+            "downloadDir": entry.download_dir or "",
+            "resolvedDir": self.resolve_artist_download_dir(entry),
+            "customFolder": bool(getattr(entry, "custom_folder", False)),
+            "autoCheck": bool(entry.auto_check),
+            "lastPostDate": entry.last_post_date or "",
+            "useCustomSettings": bool(entry_opts.get("use_custom_settings", False)),
+            "options": eff.to_dict(),
+        }
+
+    @Slot(str, str, str, result=str)
+    @Slot(str, str, str, bool, result=str)
+    def previewWatchlistResolvedFolder(
+        self,
+        userId: str,
+        service: str,
+        rawFolder: str,
+        allowEmptyLeaf: bool = False,
+    ) -> str:
+        """Preview which folder path Watchlist will create/use for the given input."""
+        entry = self._watchlist_manager._find(userId, service)
+        if not entry:
+            return ""
+        raw = (rawFolder or "").strip()
+        if not raw:
+            from core.filter_engine import FilterEngine
+            clean_c = FilterEngine.clean_filesystem_text(
+                entry.creator_name or entry.user_id, max_len=80, fallback="creator"
+            )
+            base_dir = self._download_dir or os.path.join(os.path.expanduser("~"), "Downloads", "KemonoDownloads")
+            return pick_creator_folder(base_dir, clean_c, entry.service)
+        return self.resolve_explicit_watch_folder(entry, raw, allow_empty_leaf=bool(allowEmptyLeaf))
+
+    @Slot(str, str, str, result="QVariantMap")
+    def browseFolderForWatchlistSettings(self, userId: str, service: str, currentDir: str = "") -> dict:
+        """Open directory picker for Watchlist entry settings modal without committing yet."""
+        entry = self._watchlist_manager._find(userId, service)
+        if not entry:
+            return {"picked": "", "resolved": "", "isLeaf": False}
+        initial = (
+            currentDir
+            if (currentDir and os.path.exists(currentDir))
+            else (entry.download_dir if (entry.download_dir and os.path.exists(entry.download_dir)) else self._download_dir)
+        )
+        chosen = QFileDialog.getExistingDirectory(
+            None,
+            f"Select Download Folder for {entry.creator_name or userId}",
+            initial or os.path.expanduser("~"),
+        )
+        if not chosen:
+            return {"picked": "", "resolved": "", "isLeaf": False}
+        norm_picked = os.path.normpath(chosen)
+        resolved = self.resolve_explicit_watch_folder(entry, norm_picked, allow_empty_leaf=True)
+        is_leaf = self._norm_path_key(norm_picked) == self._norm_path_key(resolved)
+        return {"picked": norm_picked, "resolved": resolved, "isLeaf": bool(is_leaf)}
+
+    @Slot(str, str, "QVariantMap", result="QVariantMap")
+    def saveWatchlistEntrySettings(self, userId: str, service: str, settings: dict) -> dict:
+        """Persist per-creator Watchlist folder, auto-check, cutoff date, and custom filter/download options."""
+        from core.filter_engine import FilterOptions
+        entry = self._watchlist_manager._find(userId, service)
+        if not entry:
+            return {"ok": False, "error": "Creator not found in Watchlist."}
+        data = dict(settings or {})
+
+        raw_date = data.get("lastPostDate")
+        if raw_date is not None:
+            norm_date = self._watchlist_manager.normalize_date(str(raw_date))
+            if norm_date is None:
+                return {"ok": False, "error": "Invalid cutoff date. Use YYYY-MM-DD, DD/MM/YYYY, or leave empty."}
+
+        conflict_bids = self.downloader.active_batch_ids_for(userId, service)
+        prev_eff_opts = self._get_effective_watchlist_options(entry)
+        if conflict_bids:
+            ctx0 = self.downloader.get_batch_context(conflict_bids[0])
+            if ctx0 and ctx0.applied_options:
+                prev_eff_opts = FilterOptions.from_dict(ctx0.applied_options.to_dict())
+            prev_resolved_dir = (ctx0.artist_dir if (ctx0 and ctx0.artist_dir) else None) or self.resolve_artist_download_dir(entry)
+        else:
+            prev_resolved_dir = self.resolve_artist_download_dir(entry)
+
+        use_custom = bool(data.get("useCustomSettings", False))
+        raw_opts = data.get("options")
+        if isinstance(raw_opts, dict):
+            base_dict = self._get_filter_options().to_dict()
+            base_dict.update(raw_opts)
+            base_dict["date_after"] = ""
+            base_dict["date_before"] = ""
+            base_dict["page_start"] = 1
+            base_dict["page_end"] = 999999
+            sanitized = FilterOptions.from_dict(base_dict).to_dict()
+            sanitized["use_custom_settings"] = use_custom
+        else:
+            sanitized = dict(getattr(entry, "options", None) or {})
+            sanitized["use_custom_settings"] = use_custom
+
+        auto_check = data.get("autoCheck")
+        self._watchlist_manager.update_entry_settings(
+            userId,
+            service,
+            auto_check=bool(auto_check) if auto_check is not None else None,
+            options=sanitized,
+            last_post_date=str(raw_date) if raw_date is not None else None,
+        )
+
+        # Handle folder updates (explicit folder vs reset to default global location)
+        move_prompt = False
+        raw_dir = str(data.get("downloadDir") or "").strip() if "downloadDir" in data else None
+        if raw_dir is not None:
+            if not raw_dir:
+                self._watchlist_manager.set_download_dir(userId, service, "", custom_folder=False)
+                resolved_out = self.resolve_artist_download_dir(entry)
+            else:
+                picked_as_leaf = bool(data.get("pickedAsLeaf", False))
+                resolved = self.resolve_explicit_watch_folder(entry, raw_dir, allow_empty_leaf=picked_as_leaf)
+                old_key = self._norm_path_key(entry.download_dir) if entry.download_dir else ""
+                new_key = self._norm_path_key(resolved)
+                prompt_move = bool(data.get("promptMoveIfNeeded", True)) and not conflict_bids
+                olds = self._folders_to_move(entry, resolved) if old_key != new_key else []
+                has_existing_files = False
+                if olds and prompt_move:
+                    for d in olds:
+                        for _, _, files in os.walk(d):
+                            if files:
+                                has_existing_files = True
+                                break
+                        if has_existing_files:
+                            break
+                if has_existing_files:
+                    self._request_folder_change(entry, resolved)
+                    move_prompt = True
+                else:
+                    try:
+                        os.makedirs(resolved, exist_ok=True)
+                    except OSError as e:
+                        return {"ok": False, "error": f"Could not create folder '{resolved}': {e}"}
+                    self._watchlist_manager.set_download_dir(userId, service, resolved, custom_folder=True)
+                resolved_out = resolved
+        else:
+            resolved_out = self.resolve_artist_download_dir(entry)
+
+        self._watchlist_model.update_new_counts()
+        self._watchlist_model.refresh()
+        self.watchlistChanged.emit()
+
+        if conflict_bids:
+            new_eff_opts = self._get_effective_watchlist_options(entry)
+            site_flag = bool(folder_naming.include_service)
+            diff_info = classify_settings_change(
+                prev_eff_opts,
+                new_eff_opts,
+                prev_resolved_dir,
+                resolved_out,
+                site_flag,
+                site_flag,
+            )
+            if diff_info.get("tier", 0) > 0:
+                return {
+                    "ok": True,
+                    "resolvedDir": resolved_out,
+                    "movePrompt": False,
+                    "activeDownloadConflict": True,
+                    "conflictUserId": str(userId),
+                    "conflictService": str(service),
+                    "conflictCreatorName": entry.creator_name or str(userId),
+                    "conflictSummary": diff_info.get("summary") or "Download settings updated",
+                    "conflictRequiresScan": bool(diff_info.get("tier", 0) >= 4),
+                }
+
+        return {"ok": True, "resolvedDir": resolved_out, "movePrompt": move_prompt}
+
     @Slot(str, str, str)
     def setWatchlistDownloadDir(self, userId: str, service: str, download_dir: str):
         """Set or update the custom download directory for a watchlist artist."""
-        if self._watchlist_manager.set_download_dir(userId, service, download_dir):
+        entry = self._watchlist_manager._find(userId, service)
+        if not entry:
+            return
+        raw = (download_dir or "").strip()
+        if not raw:
+            if self._watchlist_manager.set_download_dir(userId, service, "", custom_folder=False):
+                self._watchlist_model.refresh()
+                self.watchlistChanged.emit()
+            return
+        resolved = self.resolve_explicit_watch_folder(entry, raw, allow_empty_leaf=False)
+        try:
+            os.makedirs(resolved, exist_ok=True)
+        except OSError:
+            pass
+        if self._watchlist_manager.set_download_dir(userId, service, resolved, custom_folder=True):
             self._watchlist_model.refresh()
             self.watchlistChanged.emit()
 
@@ -7624,26 +9589,19 @@ class AppBridge(QObject):
         )
         if not folder or not entry:
             return
-        norm_folder = os.path.normpath(folder)
-        if os.path.isdir(norm_folder) and not os.listdir(norm_folder):
-            resolved = norm_folder             # an empty folder made for this artist: used as it is
-        else:
-            resolved = self.resolve_artist_download_dir_for_folder(norm_folder, entry.creator_name, entry.service)
+        resolved = self.resolve_explicit_watch_folder(entry, folder, allow_empty_leaf=True)
         self._request_folder_change(entry, resolved)
 
     def _folders_to_move(self, entry, new_dir: str) -> List[str]:
         """The artist's current folders whose files could follow them to new_dir: never the main
         download folder or a storage drive's root, nor a folder that contains new_dir or sits in it."""
-        from core.storage_pool_manager import storage_pool_manager
-        key = lambda p: os.path.normcase(os.path.normpath(p))  # noqa: E731
-        new_k = key(new_dir)
-        roots = {key(r) for r in [self._download_dir, storage_pool_manager.primary_dir,
-                                  *storage_pool_manager.overflow_dirs] if r}
+        new_k = self._norm_path_key(new_dir)
+        roots = {self._norm_path_key(r) for r in self._protected_root_dirs() if r}
         out, seen = [], set()
         for d in [entry.download_dir, *(entry.download_dirs or [])]:
             if not d or not os.path.isdir(d):
                 continue
-            k = key(d)
+            k = self._norm_path_key(d)
             if k in seen or k == new_k or k in roots or new_k.startswith(k + os.sep) or k.startswith(new_k + os.sep):
                 continue
             seen.add(k)
@@ -7946,9 +9904,9 @@ class AppBridge(QObject):
             if sys.platform == "win32":
                 subprocess.Popen(["explorer", os.path.normpath(target)])
             elif sys.platform == "darwin":
-                subprocess.Popen(["open", target])
+                subprocess.Popen(["open", target], **subprocess_env_kwargs())
             else:
-                subprocess.Popen(["xdg-open", target])
+                subprocess.Popen(["xdg-open", target], **subprocess_env_kwargs())
 
     @Slot(result=str)
     def getWatchlistJson(self) -> str:
@@ -8587,6 +10545,7 @@ class AppBridge(QObject):
         self._folder_stats_worker_token += 1
         current_token = self._folder_stats_worker_token
         subfolders_to_scan = []
+        previews_to_scan = []
 
         items = []
         try:
@@ -8620,6 +10579,13 @@ class AppBridge(QObject):
                                 folder_count = -1
                                 subfolders_to_scan.append(norm_p)
 
+                            cached_prev = self._folder_previews_cache.get(norm_p)
+                            if cached_prev and cached_prev.get("mtime") == dir_mtime:
+                                previews = list(cached_prev.get("previews") or [])
+                            else:
+                                previews = []
+                                previews_to_scan.append(norm_p)
+
                             items.append({
                                 "name": entry.name,
                                 "path": norm_p,
@@ -8628,6 +10594,7 @@ class AppBridge(QObject):
                                 "file_count": file_count,
                                 "folder_count": folder_count,
                                 "child_count": -1,
+                                "previews": previews,
                                 "mtime": dir_mtime,
                                 "ext": ""
                             })
@@ -8644,6 +10611,7 @@ class AppBridge(QObject):
                                 "file_count": 0,
                                 "folder_count": 0,
                                 "child_count": 0,
+                                "previews": [],
                                 "mtime": mtime,
                                 "ext": ext
                             })
@@ -8655,10 +10623,10 @@ class AppBridge(QObject):
             return []
 
         # Launch background worker for un-cached folders
-        if subfolders_to_scan:
+        if subfolders_to_scan or previews_to_scan:
             threading.Thread(
                 target=self._batch_calculate_folder_stats,
-                args=(subfolders_to_scan, current_token),
+                args=(subfolders_to_scan, current_token, previews_to_scan),
                 daemon=True
             ).start()
 
@@ -8725,7 +10693,114 @@ class AppBridge(QObject):
         except Exception:
             pass
 
-    def _batch_calculate_folder_stats(self, paths: list, token: int):
+    def _find_folder_previews(
+        self,
+        folder_path: str,
+        token: Optional[int] = None,
+        max_items: int = 4,
+        max_dirs: int = 120,
+        max_entries: int = 2000,
+    ) -> List[str]:
+        """Breadth-first scan for up to `max_items` previewable media files in `folder_path`.
+
+        Checks immediate children before nested subfolders (sorted case-insensitively) so
+        Creator -> Post hierarchies resolve quickly within bounded I/O. Images take priority;
+        on Windows, video files are included as fallback thumbnails.
+        """
+        images: List[str] = []
+        videos: List[str] = []
+        allow_videos = sys.platform == "win32"
+        queue: deque = deque([folder_path])
+        visited_dirs = 0
+        scanned_entries = 0
+
+        while queue and visited_dirs < max_dirs and scanned_entries < max_entries:
+            if token is not None and token != self._folder_stats_worker_token:
+                return []
+            cur_dir = queue.popleft()
+            visited_dirs += 1
+            raw_entries = []
+            try:
+                budget = max(1, max_entries - scanned_entries)
+                with os.scandir(cur_dir) as it:
+                    for entry in it:
+                        raw_entries.append(entry)
+                        if len(raw_entries) >= budget:
+                            break
+            except (PermissionError, OSError):
+                continue
+
+            raw_entries.sort(key=lambda e: e.name.lower())
+            subdirs: List[str] = []
+            for entry in raw_entries:
+                if token is not None and token != self._folder_stats_worker_token:
+                    return []
+                scanned_entries += 1
+                name = entry.name
+                if name.startswith(".") or name == "__pycache__":
+                    continue
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        subdirs.append(os.path.normpath(entry.path))
+                        continue
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                    ext = os.path.splitext(name)[1].lower()
+                    is_img = ext in _FOLDER_PREVIEW_IMAGE_EXTS
+                    is_vid = allow_videos and (ext in VIDEO_EXTENSIONS)
+                    if not (is_img or is_vid):
+                        continue
+                    if entry.stat(follow_symlinks=False).st_size <= 0:
+                        continue
+                    norm_entry = os.path.normpath(entry.path)
+                    if is_img:
+                        images.append(norm_entry)
+                        if len(images) >= max_items:
+                            return images[:max_items]
+                    elif len(videos) < max_items:
+                        videos.append(norm_entry)
+                except (PermissionError, OSError):
+                    continue
+
+            for sub in subdirs:
+                if visited_dirs + len(queue) >= max_dirs:
+                    break
+                queue.append(sub)
+
+        return (images + videos)[:max_items]
+
+    def _compute_folder_previews(self, folder_path: str, token: int):
+        """Worker function executed in background thread to populate folder thumbnail previews."""
+        try:
+            if not os.path.exists(folder_path) or not os.path.isdir(folder_path):
+                return
+            mtime = os.path.getmtime(folder_path)
+            cached = self._folder_previews_cache.get(folder_path)
+            if cached and cached.get("mtime") == mtime:
+                previews = list(cached.get("previews") or [])
+            else:
+                previews = self._find_folder_previews(folder_path, token=token)
+                if token != self._folder_stats_worker_token:
+                    return
+                self._folder_previews_cache[folder_path] = {
+                    "previews": list(previews),
+                    "mtime": mtime,
+                }
+            if token == self._folder_stats_worker_token and previews:
+                self.folderPreviewsCalculated.emit(
+                    os.path.normpath(folder_path),
+                    previews,
+                )
+        except Exception:
+            pass
+
+    def _batch_calculate_folder_stats(self, paths: list, token: int, preview_paths: Optional[list] = None):
+        # Resolve lightweight folder previews first so folder cards show artwork
+        # within milliseconds instead of waiting for full recursive size scans.
+        for p in (preview_paths or []):
+            if token != self._folder_stats_worker_token:
+                return
+            self._compute_folder_previews(p, token)
         for p in paths:
             if token != self._folder_stats_worker_token:
                 break
@@ -8968,9 +11043,9 @@ class AppBridge(QObject):
                 if sys.platform == "win32":
                     os.startfile(os.path.normpath(path))
                 elif sys.platform == "darwin":
-                    subprocess.Popen(["open", path])
+                    subprocess.Popen(["open", path], **subprocess_env_kwargs())
                 else:
-                    subprocess.Popen(["xdg-open", path])
+                    subprocess.Popen(["xdg-open", path], **subprocess_env_kwargs())
             except Exception as e:
                 logger.warning(f"Could not open file in system: {e}", category="system")
 
@@ -9612,6 +11687,8 @@ class AppBridge(QObject):
                 errors.append(f"Failed deleting {os.path.basename(norm_p)}: {e}")
 
         if deleted:
+            for p in trashed:
+                self._invalidate_folder_stats(p)
             logger.info(f"Moved {deleted} item(s) to the Recycle Bin.", category="gallery",
                         details="\n".join(trashed))
         if errors:
@@ -9669,6 +11746,15 @@ class AppBridge(QObject):
                 errors.append(f"Failed moving {os.path.basename(src)}: {e}")
 
         if moved:
+            for a, b in moved_pairs:
+                self._invalidate_folder_stats(a)
+                self._invalidate_folder_stats(b)
+            if getattr(self, "archive_manager", None) and moved_pairs:
+                try:
+                    old_dirs = list({os.path.dirname(a) for a, _b in moved_pairs})
+                    self.archive_manager.relocate_files(old_dirs, [(a, b) for a, b in moved_pairs])
+                except Exception as e:
+                    logger.debug(f"Archive relocate after moveItems warning: {e}", category="archive")
             logger.info(f"Moved {moved} item(s) to '{dest}'.", category="gallery",
                         details="\n".join(f"{a}  ->  {b}" for a, b in moved_pairs))
         if errors:
@@ -9701,6 +11787,8 @@ class AppBridge(QObject):
             logger.warning(f"Couldn't rename '{os.path.basename(src)}' to '{new_name}': {e}", category="gallery",
                            details=src)
             return {"success": False, "error": str(e), "new_path": ""}
+        self._invalidate_folder_stats(src)
+        self._invalidate_folder_stats(dst)
         logger.info(f"Renamed '{os.path.basename(src)}' to '{new_name}'.", category="gallery",
                     details=f"{src}  ->  {dst}")
         return {"success": True, "error": "", "new_path": dst}

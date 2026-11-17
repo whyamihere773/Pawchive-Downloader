@@ -30,6 +30,7 @@ import urllib.error
 import urllib.request
 import zipfile
 from typing import Any, Dict, List, Optional, Tuple
+from core.path_utils import clean_subprocess_env, subprocess_env_kwargs
 
 GITHUB_OWNER = "whyamihere773"
 GITHUB_REPO = "Pawchive-Downloader"
@@ -88,7 +89,8 @@ def resolve_proxy(app_dir: Optional[str] = None, plan: Optional[Dict[str, Any]] 
         try:
             res = subprocess.run(
                 ["git", "config", "--get", "http.proxy"],
-                capture_output=True, text=True, timeout=2, creationflags=NO_WINDOW
+                capture_output=True, text=True, timeout=2, creationflags=NO_WINDOW,
+                **subprocess_env_kwargs(),
             )
             if res.returncode == 0 and res.stdout.strip():
                 return res.stdout.strip()
@@ -235,7 +237,7 @@ def _git_head(app_dir: str) -> str:
         try:
             res = subprocess.run(git_command(app_dir, "rev-parse", "HEAD"), cwd=app_dir,
                                  capture_output=True, text=True, timeout=5,
-                                 creationflags=NO_WINDOW)
+                                 creationflags=NO_WINDOW, **subprocess_env_kwargs())
             sha = res.stdout.strip()
             if res.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}", sha):
                 return sha
@@ -546,7 +548,8 @@ def _check_source_fallback(res: Dict[str, Any], local: Dict[str, Any], timeout: 
         try:
             ls_res = subprocess.run(
                 git_command(app_dir, "ls-remote", f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}.git", f"refs/heads/{GITHUB_BRANCH}"),
-                cwd=app_dir, capture_output=True, text=True, timeout=timeout, creationflags=NO_WINDOW
+                cwd=app_dir, capture_output=True, text=True, timeout=timeout, creationflags=NO_WINDOW,
+                **subprocess_env_kwargs(),
             )
             if ls_res.returncode == 0 and ls_res.stdout.strip():
                 remote_sha = ls_res.stdout.strip().split()[0]
@@ -665,27 +668,43 @@ def _check_source(res: Dict[str, Any], local: Dict[str, Any], base: str, timeout
 
 
 # ── Archives ────────────────────────────────────────────────────────────────
+def fs_path(path: str) -> str:
+    """Return an extended-length Windows path (\\\\?\\...) so deep trees bypass MAX_PATH."""
+    if sys.platform != "win32" or not path:
+        return path
+    if path.startswith(("\\\\?\\", "\\\\.\\")):
+        return path
+    abs_p = os.path.abspath(path)
+    if abs_p.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + abs_p[2:]
+    if len(abs_p) >= 2 and abs_p[1] == ":":
+        return "\\\\?\\" + abs_p
+    return abs_p
+
+
 def safe_extract(archive_path: str, dest_dir: str) -> None:
     """Extract a .zip / .tar.* refusing anything that would land outside dest_dir
     (absolute paths, '..', links pointing outside, device files). Raises ValueError."""
     dest = os.path.realpath(dest_dir)
+    fs_archive = fs_path(archive_path)
+    fs_dest = fs_path(dest)
 
     def inside(path: str) -> bool:
         p = os.path.realpath(os.path.join(dest, path))
         return p == dest or p.startswith(dest + os.sep)
 
-    if zipfile.is_zipfile(archive_path):
-        with zipfile.ZipFile(archive_path) as zf:
+    if zipfile.is_zipfile(fs_archive):
+        with zipfile.ZipFile(fs_archive) as zf:
             bad = zf.testzip()
             if bad:
                 raise ValueError(f"The download is damaged ({bad}).")
             for m in zf.infolist():
                 if os.path.isabs(m.filename) or m.filename.startswith(("/", "\\")) or not inside(m.filename):
                     raise ValueError(f"Unsafe path in the update package: {m.filename}")
-            zf.extractall(dest)
+            zf.extractall(fs_dest)
         return
-    if tarfile.is_tarfile(archive_path):
-        with tarfile.open(archive_path, "r:*") as tf:
+    if tarfile.is_tarfile(fs_archive):
+        with tarfile.open(fs_archive, "r:*") as tf:
             members = []
             for m in tf.getmembers():
                 if m.isdev() or m.isfifo():
@@ -698,9 +717,9 @@ def safe_extract(archive_path: str, dest_dir: str) -> None:
                     raise ValueError(f"Unsafe link in the update package: {m.name}")
                 members.append(m)
             if hasattr(tarfile, "data_filter"):        # Python 3.12+ and security backports
-                tf.extractall(dest, members=members, filter="data")
+                tf.extractall(fs_dest, members=members, filter="data")
             else:
-                tf.extractall(dest, members=members)
+                tf.extractall(fs_dest, members=members)
         return
     raise ValueError("The download isn't a zip or tar archive.")
 
@@ -779,17 +798,17 @@ def launch_updater(info: Dict[str, Any]) -> str:
     with open(plan_path, "w", encoding="utf-8") as f:
         json.dump(plan, f, indent=1)
     cmd = updater_command(plan["target_dir"], plan["python_exe"]) + ["--plan", plan_path]
-    subprocess.Popen(cmd, cwd=plan["target_dir"], **detached_popen_kwargs())
+    subprocess.Popen(cmd, cwd=plan["target_dir"], **detached_popen_kwargs(), **subprocess_env_kwargs())
     return plan_path
 
 
 def cleanup_update_leftovers(app_dir: Optional[str] = None, max_age_hours: float = 12.0) -> None:
     """Remove old update backups and stale temp folders. Only touches the updater's own folders."""
     app_dir = app_dir or get_app_dir()
-    backup_root = os.path.join(app_dir, BACKUP_DIR)
+    backup_root = fs_path(os.path.join(app_dir, BACKUP_DIR))
     if os.path.isdir(backup_root):
         for name in os.listdir(backup_root):
-            shutil.rmtree(os.path.join(backup_root, name), ignore_errors=True)
+            shutil.rmtree(fs_path(os.path.join(backup_root, name)), ignore_errors=True)
         try:
             os.rmdir(backup_root)
         except OSError:
@@ -799,7 +818,7 @@ def cleanup_update_leftovers(app_dir: Optional[str] = None, max_age_hours: float
     try:
         for name in os.listdir(tmp):
             if name.startswith(("pawchive_plan_", "pawchive_update_", "pawchive_updater_run_")):
-                p = os.path.join(tmp, name)
+                p = fs_path(os.path.join(tmp, name))
                 try:
                     if os.path.getmtime(p) < cutoff:
                         if os.path.isdir(p):

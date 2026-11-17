@@ -50,7 +50,9 @@ def get_desktop_path() -> str:
         # Linux: try xdg-user-dir DESKTOP (handles localized Desktop names e.g. Schreibtisch, Bureau)
         try:
             import subprocess
-            out = subprocess.check_output(["xdg-user-dir", "DESKTOP"], stderr=subprocess.DEVNULL, timeout=2).decode().strip()
+            from core.path_utils import subprocess_env_kwargs
+            out = subprocess.check_output(["xdg-user-dir", "DESKTOP"], stderr=subprocess.DEVNULL, timeout=2,
+                                          **subprocess_env_kwargs()).decode().strip()
             if out and os.path.isdir(out):
                 return out
         except Exception:

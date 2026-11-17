@@ -71,11 +71,76 @@ Rectangle {
     // Archive changes run in the background (seconds on big archives); their answers are matched here
     property var _jobCallbacks: ({})
     property int _jobSeq: 0
-    function archiveJob(start, onDone) {
+    property var _activeJobs: ({})
+    property var _busyCreators: ({})
+    property int _activeJobCount: 0
+    property string _activeJobText: ""
+    property bool _isReloadingCreators: false
+
+    function _creatorBusyKey(service, creatorId) {
+        return String(service || "") + ":" + String(creatorId || "")
+    }
+    function _hasGlobalJob() {
+        for (var k in root._activeJobs) {
+            if (root._activeJobs[k] && root._activeJobs[k].global) return true
+        }
+        return false
+    }
+    function isCreatorBusy(service, creatorId) {
+        if (root._hasGlobalJob()) return true
+        return Boolean(root._busyCreators[root._creatorBusyKey(service, creatorId)])
+    }
+    function _syncActiveJobTelemetry() {
+        var cnt = 0
+        var lastLabel = ""
+        for (var k in root._activeJobs) {
+            cnt += 1
+            if (root._activeJobs[k] && root._activeJobs[k].label) {
+                lastLabel = root._activeJobs[k].label
+            }
+        }
+        root._activeJobCount = cnt
+        root._activeJobText = lastLabel
+    }
+    function _startJob(id, label, creatorKey, isGlobal) {
+        var nextJobs = Object.assign({}, root._activeJobs)
+        nextJobs[id] = { label: label || "Working...", creatorKey: creatorKey || "", global: Boolean(isGlobal) }
+        root._activeJobs = nextJobs
+        if (creatorKey) {
+            var nextBusy = Object.assign({}, root._busyCreators)
+            nextBusy[creatorKey] = (nextBusy[creatorKey] || 0) + 1
+            root._busyCreators = nextBusy
+        }
+        root._syncActiveJobTelemetry()
+    }
+    function _finishJob(id) {
+        var meta = root._activeJobs[id]
+        if (!meta) return
+        var nextJobs = Object.assign({}, root._activeJobs)
+        delete nextJobs[id]
+        root._activeJobs = nextJobs
+        if (meta.creatorKey) {
+            var nextBusy = Object.assign({}, root._busyCreators)
+            var nextCnt = (nextBusy[meta.creatorKey] || 1) - 1
+            if (nextCnt <= 0) delete nextBusy[meta.creatorKey]
+            else nextBusy[meta.creatorKey] = nextCnt
+            root._busyCreators = nextBusy
+        }
+        root._syncActiveJobTelemetry()
+    }
+    function archiveJob(start, onDone, opts) {
+        var o = opts || {}
         root._jobSeq += 1
         var id = "archive-job-" + root._jobSeq
         root._jobCallbacks[id] = onDone
-        start(id)
+        root._startJob(id, o.label || "", o.creatorKey || "", Boolean(o.global))
+        try {
+            start(id)
+        } catch (e) {
+            delete root._jobCallbacks[id]
+            root._finishJob(id)
+            throw e
+        }
     }
     readonly property int pageSize: 50       // posts shown at a time when a creator is opened (files: 100)
     // While searching, every creator found is open with its posts and files showing: smaller first pages
@@ -151,6 +216,7 @@ Rectangle {
         // A new request replaces one still running (the bridge stops the older read)
         root._reloadSeq += 1
         root._reloadRequest = "archive-" + root._reloadSeq
+        root._isReloadingCreators = true
         root.bridge.getArchiveDataAsync(root._reloadRequest, root.searchFilter, root.serviceFilter, root.fileTypeFilter, root.sortOrder)
     }
 
@@ -160,22 +226,31 @@ Rectangle {
             var done = root._jobCallbacks[requestId]
             if (done) {
                 delete root._jobCallbacks[requestId]
-                done(result)
+                try {
+                    done(result)
+                } finally {
+                    root._finishJob(requestId)
+                }
                 return
             }
             if (requestId === root._postsRequest) {
                 var arrivedKey = root._postsRequestKey
-                root.loadedPosts[arrivedKey] = result || []
-                if (root._stalePosts[arrivedKey])
-                    delete root._stalePosts[arrivedKey]
                 root._postsRequest = ""
                 root._postsRequestKey = ""
-                root.postsArrived(arrivedKey)
+                // Ignore cancelled/stale post reads (null) instead of clobbering shown posts
+                if (result !== null && result !== undefined) {
+                    root.loadedPosts[arrivedKey] = result
+                    if (root._stalePosts[arrivedKey])
+                        delete root._stalePosts[arrivedKey]
+                    root.postsArrived(arrivedKey)
+                }
                 root._pumpPosts()
                 return
             }
             if (requestId === root._exportRequest) {
+                var expReq = root._exportRequest
                 root._exportRequest = ""
+                root._finishJob(expReq)
                 var n = (typeof result === "number") ? result : -1
                 if (n < 0)
                     root.showToast(root.archiveErrorText())
@@ -185,6 +260,7 @@ Rectangle {
             }
             if (requestId !== root._reloadRequest) return
             root._reloadRequest = ""
+            root._isReloadingCreators = false
             if (result && root.creatorsModel) {
                 if (root._expandOnResult) {
                     root._expandOnResult = false
@@ -424,6 +500,37 @@ Rectangle {
                                     }
                                 }
                             }
+
+                            // Non-blocking busy status pill (live refresh or background archive operation)
+                            Rectangle {
+                                visible: root._activeJobCount > 0 || root._isReloadingCreators
+                                implicitHeight: 20
+                                implicitWidth: busyPillRow.implicitWidth + 12
+                                radius: 10
+                                color: "#172554"
+                                border.color: "#38BDF8"
+                                border.width: 1
+
+                                RowLayout {
+                                    id: busyPillRow
+                                    anchors.centerIn: parent
+                                    spacing: 4
+
+                                    Text {
+                                        text: "⏳"
+                                        font.pixelSize: 9
+                                    }
+
+                                    Text {
+                                        text: root._activeJobCount > 0
+                                            ? (root._activeJobText || root.tr("status_archive_updating", "Updating..."))
+                                            : root.tr("status_archive_loading", "Refreshing...")
+                                        font.pixelSize: 9
+                                        font.weight: 600
+                                        color: "#BAE6FD"
+                                    }
+                                }
+                            }
                         }
 
                         // Description — wraps naturally, no overflow possible
@@ -526,6 +633,7 @@ Rectangle {
                         iconText: "🎬"
                         variant: "outline"
                         implicitHeight: 30
+                        enabled: !root._hasGlobalJob()
                         tooltip: root.tr("btn_fingerprint_videos_tip", "Scan a folder to calculate SHA-256 fingerprints for existing videos and index them into the archive database")
                         onClicked: fingerprintFolderDialog.open()
                     }
@@ -535,6 +643,7 @@ Rectangle {
                         iconText: "📥"
                         variant: "outline"
                         implicitHeight: 30
+                        enabled: !root._hasGlobalJob()
                         tooltip: root.tr("btn_import_archive_tip", "Import an archive list (.txt) or JSON file exported from Pawchive Downloader")
                         onClicked: importFileDialog.open()
                     }
@@ -553,8 +662,38 @@ Rectangle {
                         iconText: "🗑️"
                         variant: "danger"
                         implicitHeight: 30
+                        enabled: !root._hasGlobalJob()
                         tooltip: root.tr("btn_clear_archive_tip", "Wipe all records from the archive database")
                         onClicked: clearConfirmModal.isOpen = true
+                    }
+                }
+
+                // Non-blocking background job progress bar
+                Rectangle {
+                    visible: root._activeJobCount > 0 || root._isReloadingCreators
+                    Layout.fillWidth: true
+                    implicitHeight: 24
+                    radius: 6
+                    color: "#0C1524"
+                    border.color: "#1E3A5F"
+                    border.width: 1
+
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 10
+                        anchors.rightMargin: 10
+                        spacing: 8
+
+                        Text {
+                            text: root._activeJobCount > 0
+                                ? ((root._activeJobText || "Running background archive job...") + (root._activeJobCount > 1 ? (" (+" + (root._activeJobCount - 1) + ")") : ""))
+                                : root.tr("msg_archive_loading_creators", "Loading creator index...")
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 11
+                            color: "#93C5FD"
+                            elide: Text.ElideRight
+                            Layout.fillWidth: true
+                        }
                     }
                 }
 
@@ -1933,8 +2072,10 @@ Rectangle {
                                         var st = root.creatorVerifyState(creatorModel.service, creatorModel.creator_id)
                                         return st !== null && st.running
                                     }
-                                    color: verifyCreatorMouse.containsMouse ? "#0D2033" : "transparent"
-                                    border.color: verifyCreatorMouse.containsMouse ? "#38BDF8" : (isVerifying ? "#38BDF8" : "transparent")
+                                    readonly property bool isCreatorLocked: root.isCreatorBusy(creatorModel.service, creatorModel.creator_id)
+                                    opacity: isCreatorLocked && !isVerifying ? 0.35 : 1.0
+                                    color: verifyCreatorMouse.containsMouse && !isCreatorLocked ? "#0D2033" : "transparent"
+                                    border.color: verifyCreatorMouse.containsMouse && !isCreatorLocked ? "#38BDF8" : (isVerifying ? "#38BDF8" : "transparent")
                                     border.width: 1
                                     scale: verifyCreatorMouse.pressed ? 0.85 : (verifyCreatorMouse.containsMouse ? 1.18 : 1.0)
                                     Behavior on scale { SpringAnimation { spring: 5.0; damping: 0.32; mass: 0.7 } }
@@ -1957,13 +2098,13 @@ Rectangle {
                                     MouseArea {
                                         id: verifyCreatorMouse
                                         anchors.fill: parent
-                                        cursorShape: Qt.PointingHandCursor
+                                        cursorShape: verifyCreatorBtn.isCreatorLocked ? Qt.BusyCursor : Qt.PointingHandCursor
                                         hoverEnabled: true
                                         ToolTip.visible: containsMouse
                                         ToolTip.delay: 300
                                         ToolTip.text: root.tr("tip_verify_creator_archive", "Verify that all archived files still exist on disk")
                                         onClicked: {
-                                            if (!verifyCreatorBtn.isVerifying && root.bridge) {
+                                            if (!verifyCreatorBtn.isVerifying && !verifyCreatorBtn.isCreatorLocked && root.bridge) {
                                                 root.bridge.verifyCreatorArchiveIntegrity(
                                                     creatorModel.service,
                                                     creatorModel.creator_id,
@@ -1976,12 +2117,15 @@ Rectangle {
 
                                 // Delete Creator Action Button (z: 1 so clicks reach it over the bg MouseArea)
                                 Rectangle {
+                                    id: delCreatorBtn
                                     implicitHeight: 22
                                     implicitWidth: 22
                                     radius: 4
                                     z: 1
-                                    color: delCreatorMouse.containsMouse ? "#3A1212" : "transparent"
-                                    border.color: delCreatorMouse.containsMouse ? "#EF4444" : "transparent"
+                                    readonly property bool isCreatorLocked: root.isCreatorBusy(creatorModel.service, creatorModel.creator_id)
+                                    opacity: isCreatorLocked ? 0.35 : 1.0
+                                    color: delCreatorMouse.containsMouse && !isCreatorLocked ? "#3A1212" : "transparent"
+                                    border.color: delCreatorMouse.containsMouse && !isCreatorLocked ? "#EF4444" : "transparent"
                                     border.width: 1
                                     scale: delCreatorMouse.pressed ? 0.85 : (delCreatorMouse.containsMouse ? 1.18 : 1.0)
                                     Behavior on scale { SpringAnimation { spring: 5.0; damping: 0.32; mass: 0.7 } }
@@ -1998,12 +2142,13 @@ Rectangle {
                                     MouseArea {
                                         id: delCreatorMouse
                                         anchors.fill: parent
-                                        cursorShape: Qt.PointingHandCursor
+                                        cursorShape: delCreatorBtn.isCreatorLocked ? Qt.BusyCursor : Qt.PointingHandCursor
                                         hoverEnabled: true
                                         ToolTip.visible: containsMouse
                                         ToolTip.delay: 300
                                         ToolTip.text: root.tr("tip_delete_creator_archive", "Remove all archived files for this creator (allows re-download)")
                                         onClicked: {
+                                            if (delCreatorBtn.isCreatorLocked) return
                                             deleteTargetCreator = creatorModel
                                             deleteCreatorConfirmModal.isOpen = true
                                         }
@@ -2118,12 +2263,13 @@ Rectangle {
                                         MouseArea {
                                             id: cleanupMouse
                                             anchors.fill: parent
-                                            cursorShape: Qt.PointingHandCursor
+                                            cursorShape: root.isCreatorBusy(creatorModel.service, creatorModel.creator_id) ? Qt.BusyCursor : Qt.PointingHandCursor
                                             hoverEnabled: true
                                             ToolTip.visible: containsMouse
                                             ToolTip.delay: 300
                                             ToolTip.text: root.tr("tip_remove_missing", "Delete archive records for files no longer on disk")
                                             onClicked: {
+                                                if (root.isCreatorBusy(creatorModel.service, creatorModel.creator_id)) return
                                                 removeMissingTargetCreator = creatorModel
                                                 removeMissingConfirmModal.isOpen = true
                                             }
@@ -2660,11 +2806,14 @@ Rectangle {
                                                                     ToolTip.delay: 300
                                                                     ToolTip.text: root.tr("tip_delete_file_archive", "Remove this file from archive (allows re-downloading)")
                                                                     onClicked: {
-                                                                        if (root.bridge) {
+                                                                        if (root.bridge && !root.isCreatorBusy(creatorModel.service, creatorModel.creator_id)) {
                                                                             var recId = fileData.id
                                                                             root.archiveJob(function(id) { root.bridge.deleteArchiveRecordAsync(id, recId) }, function(ok) {
-                                                                                if (ok) root.showToast(root.tr("toast_file_removed", "File removed from archive."))
+                                                                                if (ok === true || (typeof ok === "number" && ok >= 0)) root.showToast(root.tr("toast_file_removed", "File removed from archive."))
                                                                                 else if (root.bridge.archiveLastError()) root.showToast(root.archiveErrorText())
+                                                                            }, {
+                                                                                label: root.tr("job_removing_record", "Removing record from archive..."),
+                                                                                creatorKey: root._creatorBusyKey(creatorModel.service, creatorModel.creator_id)
                                                                             })
                                                                         }
                                                                     }
@@ -2780,13 +2929,13 @@ Rectangle {
                             .replace("%1", res.newly_indexed || 0)
                             .replace("%2", res.already_archived || 0)
                         root.showToast(msg)
-                        root.refreshArchive()
+                        root.scheduleReload()
                     } else if (res && res.errors && res.errors.length) {
                         root.showToast("Fingerprinting finished: " + res.errors[0])
                     } else {
                         root.showToast(root.archiveErrorText())
                     }
-                })
+                }, { label: root.tr("job_fingerprinting_videos", "Fingerprinting videos..."), global: true })
             }
         }
     }
@@ -2803,7 +2952,7 @@ Rectangle {
                 root.archiveJob(function(id) { root.bridge.importArchiveFileAsync(id, path) }, function(imported) {
                     if (imported < 0) root.showToast(root.archiveErrorText())
                     else root.showToast(root.tr("toast_imported_count", "Imported %1 records into archive.").replace("%1", imported || 0))
-                })
+                }, { label: root.tr("job_importing_archive", "Importing archive file..."), global: true })
             }
         }
     }
@@ -2820,6 +2969,7 @@ Rectangle {
                 var path = selectedFile.toString()
                 var fmt = path.toLowerCase().endsWith(".json") ? "json" : "txt"
                 root._exportRequest = "archive-export-" + Date.now()
+                root._startJob(root._exportRequest, root.tr("job_exporting_archive", "Exporting archive..."), "", false)
                 root.bridge.exportArchiveFileAsync(root._exportRequest, path, fmt)
                 root.showToast(root.tr("toast_exporting", "Exporting the archive…"))
             }
@@ -2906,8 +3056,9 @@ Rectangle {
                             clearConfirmModal.isOpen = false
                             if (root.bridge) {
                                 root.archiveJob(function(id) { root.bridge.clearDownloadArchiveAsync(id) }, function(ok) {
-                                    root.showToast(ok ? root.tr("toast_archive_cleared", "Download archive cleared.") : root.archiveErrorText())
-                                })
+                                    var cleared = (ok === true || (typeof ok === "number" && ok >= 0))
+                                    root.showToast(cleared ? root.tr("toast_archive_cleared", "Download archive cleared.") : root.archiveErrorText())
+                                }, { label: root.tr("job_clearing_archive", "Clearing download archive..."), global: true })
                             }
                         }
                     }
@@ -2996,8 +3147,11 @@ Rectangle {
                             if (root.bridge && root.deleteTargetCreator) {
                                 var dc = root.deleteTargetCreator
                                 root.archiveJob(function(id) { root.bridge.deleteArchiveCreatorAsync(id, dc.creator_id, dc.service) }, function(delCnt) {
-                                    if (delCnt < 0) root.showToast(root.archiveErrorText())
+                                    if (typeof delCnt !== "number" || delCnt < 0) root.showToast(root.archiveErrorText())
                                     else root.showToast(root.tr("toast_creator_removed", "Removed %1 files for creator.").replace("%1", delCnt))
+                                }, {
+                                    label: root.tr("job_removing_creator", "Removing %1 from archive...").replace("%1", dc.creator_name || dc.creator_id || "creator"),
+                                    creatorKey: root._creatorBusyKey(dc.service, dc.creator_id)
                                 })
                             }
                         }
@@ -3097,8 +3251,11 @@ Rectangle {
                                     var newMap = Object.assign({}, root.verificationState)
                                     delete newMap[root._verifyKey(rm.service, rm.creator_id)]
                                     root.verificationState = newMap
-                                    if (delCnt < 0) root.showToast(root.archiveErrorText())
+                                    if (typeof delCnt !== "number" || delCnt < 0) root.showToast(root.archiveErrorText())
                                     else root.showToast(root.tr("toast_missing_removed", "Removed %1 missing record(s).").replace("%1", delCnt))
+                                }, {
+                                    label: root.tr("job_removing_missing", "Removing missing records..."),
+                                    creatorKey: root._creatorBusyKey(rm.service, rm.creator_id)
                                 })
                             }
                         }
@@ -3188,8 +3345,11 @@ Rectangle {
                             if (root.bridge && root.deleteTargetPost) {
                                 var dp = root.deleteTargetPost
                                 root.archiveJob(function(id) { root.bridge.deleteArchivePostAsync(id, dp.service, dp.post_id) }, function(delCnt) {
-                                    if (delCnt < 0) root.showToast(root.archiveErrorText())
+                                    if (typeof delCnt !== "number" || delCnt < 0) root.showToast(root.archiveErrorText())
                                     else root.showToast(root.tr("toast_post_removed", "Removed %1 files for post.").replace("%1", delCnt))
+                                }, {
+                                    label: root.tr("job_removing_post", "Removing post from archive..."),
+                                    creatorKey: root._creatorBusyKey(dp.service, dp.service ? (dp.creator_id || "") : "")
                                 })
                             }
                         }

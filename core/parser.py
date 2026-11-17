@@ -22,6 +22,48 @@ def _canonical_archive_domain(domain: str) -> str:
         provider_for_host(domain), "")
 
 
+def canonical_site_url(domain: str, service: str, user_id: str, route: str = "", post_id: str = "") -> str:
+    """Build the canonical frontend page URL for an archive domain (cum.st uses /creators/...)."""
+    dom = _canonical_archive_domain(domain) or (domain or "").strip().lower()
+    svc = (service or "").strip()
+    uid = str(user_id or "").strip()
+    rt = (route or "").strip().strip("/")
+    pid = str(post_id or "").strip()
+    if not (dom and svc and uid):
+        return ""
+    base = f"https://cum.st/creators/{svc}/{uid}" if "cum.st" in dom else f"https://{dom}/{svc}/user/{uid}"
+    if rt and pid:
+        return f"{base}/{rt}/{pid}"
+    if rt:
+        return f"{base}/{rt}"
+    return base
+
+
+def normalize_archive_url(url: str) -> str:
+    """Rewrite legacy /{service}/user/{id}... page URLs on cum.st to canonical /creators/{service}/{id}..."""
+    clean = str(url or "").strip()
+    if not clean or "cum.st" not in clean.lower():
+        return clean
+    low = clean.lower()
+    if "/api/" in low or "cdn.cum.st" in low or "img.cum.st" in low:
+        return clean
+    m = KemonoURLParser.KEMONO_PATTERN.match(clean)
+    if m and "cum.st" in m.group(1).lower():
+        svc, uid, pid = m.group(2), m.group(3), m.group(4) or ""
+        tail_path = clean.split("?", 1)[0].rstrip("/")
+        if pid:
+            route = "dm" if re.search(rf"/dm/{re.escape(pid)}$", tail_path, re.IGNORECASE) else "post"
+        elif re.search(r"/dms?$", tail_path, re.IGNORECASE):
+            route = "dms"
+        else:
+            route = ""
+        built = canonical_site_url("cum.st", svc, uid, route=route, post_id=pid)
+        if "?" in clean:
+            built += "?" + clean.split("?", 1)[1]
+        return built
+    return clean
+
+
 class URLParseResult:
     def __init__(
         self,
@@ -489,3 +531,5 @@ class KemonoURLParser:
             is_valid=False,
             error_msg="URL does not match supported formats (Kemono, Pawchive, Coomer, Cum.st, CoomerFans, Bunkr, Erome, nHentai, Patreon, Fanbox)."
         )
+
+    parse_url = parse

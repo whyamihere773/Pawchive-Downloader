@@ -484,6 +484,15 @@ def paused(conn: sqlite3.Connection, on: bool) -> None:
     conn.execute("UPDATE archive_state SET paused = ? WHERE id = 1;", (1 if on else 0,))
 
 
+def is_paused(conn: sqlite3.Connection) -> bool:
+    """True when archive_state.paused == 1 (e.g. during an active bulk change or after an interrupted crash)."""
+    try:
+        row = conn.execute("SELECT paused FROM archive_state WHERE id = 1;").fetchone()
+        return bool(row and int(row[0] or 0) != 0)
+    except sqlite3.OperationalError:
+        return False
+
+
 def forget_all(conn: sqlite3.Connection) -> None:
     """After every record was removed (call while paused)."""
     for t in _SUMMARY_TABLES:

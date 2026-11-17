@@ -40,24 +40,31 @@
 ## 📸 Interface Preview
 
 <p align="center">
-  <img src="assets/screenshots/01.png" alt="Pawchive Downloader main screen, downloading" width="95%" />
+  <img src="assets/screenshots/01_downloader.png" alt="Pawchive Downloader main screen" width="95%" />
 </p>
 
 <details>
 <summary><strong>🖼️ Click to expand more interface screenshots</strong></summary>
 <br>
 
-<img src="assets/screenshots/02.png" alt="Download queue" width="90%" />
-<img src="assets/screenshots/03.png" alt="Artist Watchlist" width="90%" />
-<img src="assets/screenshots/04.png" alt="Bulk Decompressor with media compression" width="90%" />
-<img src="assets/screenshots/05.png" alt="Permanent Link Vault" width="90%" />
-<img src="assets/screenshots/06.png" alt="Task Scheduler" width="90%" />
-<img src="assets/screenshots/07.png" alt="Media Gallery" width="90%" />
-<img src="assets/screenshots/08.png" alt="Known Series" width="90%" />
-<img src="assets/screenshots/09.png" alt="Download Archive" width="90%" />
-<img src="assets/screenshots/10.png" alt="Download History" width="90%" />
-<img src="assets/screenshots/11.png" alt="Settings" width="90%" />
-<img src="assets/screenshots/12.png" alt="Built-in manual" width="90%" />
+<img src="assets/screenshots/01b_downloader_structure.png" alt="Folder Structure & Template Rules" width="90%" />
+<img src="assets/screenshots/02_browser.png" alt="Built-in Content Browser" width="90%" />
+<img src="assets/screenshots/02b_browser_posts.png" alt="Post Inspector & Selective Downloader" width="90%" />
+<img src="assets/screenshots/02c_browser_local.png" alt="Local Creator Browser" width="90%" />
+<img src="assets/screenshots/03_queue.png" alt="Download Queue" width="90%" />
+<img src="assets/screenshots/04_watchlist.png" alt="Artist Watchlist" width="90%" />
+<img src="assets/screenshots/05_decompressor.png" alt="Bulk Decompressor with media compression" width="90%" />
+<img src="assets/screenshots/06_link_vault.png" alt="Permanent Link Vault" width="90%" />
+<img src="assets/screenshots/07_scheduler.png" alt="Task Scheduler & Automation" width="90%" />
+<img src="assets/screenshots/08_gallery.png" alt="Media Gallery & Lightbox" width="90%" />
+<img src="assets/screenshots/09_known_series.png" alt="Known Series & Franchise Rules" width="90%" />
+<img src="assets/screenshots/10_archive.png" alt="Download Archive & Integrity Verifier" width="90%" />
+<img src="assets/screenshots/11_history.png" alt="Download History" width="90%" />
+<img src="assets/screenshots/12_statistics.png" alt="Session & Lifetime Statistics" width="90%" />
+<img src="assets/screenshots/13_settings_accounts.png" alt="Settings - Accounts & Authentication" width="90%" />
+<img src="assets/screenshots/13b_settings_storage.png" alt="Settings - Storage & Multi-Drive Pools" width="90%" />
+<img src="assets/screenshots/13c_settings_ai.png" alt="Settings - Automation & AI" width="90%" />
+<img src="assets/screenshots/14_manual.png" alt="Built-in Documentation & Manual" width="90%" />
 
 </details>
 

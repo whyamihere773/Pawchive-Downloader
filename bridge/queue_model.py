@@ -7,7 +7,7 @@ import threading
 import time
 from bisect import bisect_left, insort
 from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt, Signal, Slot, Property, QObject, QTimer, QThread
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 from core.downloader import DownloadTask
 from core.logger import logger
 
@@ -1085,6 +1085,71 @@ class QueueModel(QAbstractListModel):
             self._groups_model.remove_batch(batch_id)
             self.groupsChanged.emit()
         self.batchRemoveRequested.emit(batch_id)
+
+    def replace_batches(self, batch_ids: Set[str], replacement_tasks: List[DownloadTask]) -> None:
+        """Atomically replaces all tasks belonging to `batch_ids` on the GUI thread."""
+        target_bids = {str(b) for b in (batch_ids or ()) if b}
+        if not target_bids:
+            return
+        rep_list = list(replacement_tasks or [])
+        if self._off_gui_thread(lambda: self.replace_batches(target_bids, rep_list)):
+            return
+
+        def _bid(t: DownloadTask) -> str:
+            return getattr(t, "batch_id", "") or f"{t.service}_{t.creator_name}_{t.post_id}".strip("_")
+
+        self._paused_batch_ids.difference_update(target_bids)
+        if self._groups_model:
+            for bid in target_bids:
+                self._groups_model.resume_batch(bid)
+
+        rep_by_batch: Dict[str, List[DownloadTask]] = {}
+        for t in rep_list:
+            rep_by_batch.setdefault(_bid(t), []).append(t)
+
+        self.beginResetModel()
+        self._counts_timer.stop()
+        self._removal_timer.stop()
+        self._pending_removals = set()
+
+        new_tasks: List[DownloadTask] = []
+        emitted_batches: Set[str] = set()
+        for t in self._tasks:
+            b = _bid(t)
+            if b in target_bids:
+                if b not in emitted_batches:
+                    emitted_batches.add(b)
+                    new_tasks.extend(rep_by_batch.get(b, []))
+            else:
+                new_tasks.append(t)
+        for b in target_bids:
+            if b not in emitted_batches:
+                emitted_batches.add(b)
+                new_tasks.extend(rep_by_batch.get(b, []))
+
+        self._tasks = new_tasks
+        self._task_last_emit.clear()
+        self._task_last_status = {id(t): t.status for t in new_tasks}
+        self._signatures_dirty = True
+        self._recalculate_counts()
+        self._last_counts = (
+            self._pending_count,
+            self._downloading_count,
+            self._completed_count,
+            self._skipped_count,
+            self._failed_count,
+        )
+        if self._selected_batch_id in target_bids and not rep_by_batch.get(self._selected_batch_id):
+            self._selected_batch_id = ""
+            self.selectedBatchIdChanged.emit()
+        self._rebuild_visible()
+        self.endResetModel()
+        self.countChanged.emit()
+        self.countsChanged.emit()
+        self.failedCountChanged.emit()
+        if self._groups_model:
+            self._groups_model.rebuild(self._tasks, background=True)
+            self.groupsChanged.emit()
 
     @Slot()
     def cancel_all_pending(self):

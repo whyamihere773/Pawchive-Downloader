@@ -1,12 +1,15 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtCore
 import "../components"
+import "ScrollPhysics.js" as ScrollPhysics
 
 Item {
     id: modalRoot
 
     property var bridge: null
+    property var browserBridge: null
     property bool isOpen: false
     property bool fromFavoritesBrowser: false
     signal backToFavoritesRequested()
@@ -17,17 +20,44 @@ Item {
     property int selectedCount: 0
     property int totalFilesCount: 0
     property int totalSelectedFiles: 0
+    property int _selectionTick: 0
+
+    readonly property int unimportedCount: {
+        var posts = allPosts || []
+        var cnt = 0
+        for (var i = 0; i < posts.length; i++) {
+            if (posts[i] && posts[i].is_unimported) cnt++
+        }
+        return cnt
+    }
+    readonly property bool hasUnimportedCreator: (!!bridge && !!bridge.selectionCreatorUnimported) || (allPosts.length > 0 && unimportedCount === allPosts.length)
 
     // Inspector state
     property var inspectedPost: null
     readonly property bool isInspecting: inspectedPost !== null
     property int selectedFilesInPost: 0
     property bool visualGalleryMode: true
+    property bool quickSelectClickMode: false
+    property var _savedSessions: ({})
+    property string activeSessionKey: ""
 
-    // Lightbox / Visualizer state
-    property bool lightboxVisible: false
-    property int lightboxIndex: -1
-    property var lightboxItem: null
+    Settings {
+        category: "post_selector"
+        property alias quickSelectClickMode: modalRoot.quickSelectClickMode
+    }
+
+    // Shift+click range selection anchors
+    property int postSelectionAnchor: -1
+    property bool postSelectionAnchorState: true
+    property int fileSelectionAnchor: -1
+    property bool fileSelectionAnchorState: true
+
+    // Lightbox / Visualizer state (backed by MediaLightboxModal)
+    readonly property bool lightboxVisible: selectionLightbox.isOpen
+    readonly property int lightboxIndex: (selectionLightbox.isOpen && selectionLightbox.currentItem && selectionLightbox.currentItem.postFileIndex !== undefined)
+                                         ? Number(selectionLightbox.currentItem.postFileIndex) : -1
+    readonly property var lightboxItem: (lightboxIndex >= 0 && lightboxIndex < postFilesModel.count)
+                                        ? postFilesModel.get(lightboxIndex) : null
 
     anchors.fill: parent
     visible: opacity > 0.001
@@ -76,53 +106,201 @@ Item {
         return (res && res !== key) ? res : (fallback !== undefined ? fallback : res)
     }
 
-    function isImageFile(name, path, url) {
-        var str = ((url || "") + " " + (path || "") + " " + (name || "")).toLowerCase()
-        if (!str.trim()) return false
-        if (str.indexOf(".mp4") !== -1 || str.indexOf(".mkv") !== -1 || str.indexOf(".webm") !== -1 ||
-            str.indexOf(".mov") !== -1 || str.indexOf(".avi") !== -1 || str.indexOf(".wmv") !== -1 ||
-            str.indexOf(".flv") !== -1 || str.indexOf(".m4v") !== -1 || str.indexOf(".zip") !== -1 ||
-            str.indexOf(".rar") !== -1 || str.indexOf(".7z") !== -1 || str.indexOf(".tar") !== -1 ||
-            str.indexOf(".gz") !== -1 || str.indexOf(".pdf") !== -1 || str.indexOf(".mp3") !== -1 ||
-            str.indexOf(".wav") !== -1 || str.indexOf(".flac") !== -1 || str.indexOf(".ogg") !== -1) {
-            return false
+    function _extractExt(s) {
+        if (!s) return ""
+        var clean = String(s).split("#")[0]
+        var qIdx = clean.indexOf("?")
+        var pathOnly = qIdx >= 0 ? clean.substring(0, qIdx) : clean
+        var dot = pathOnly.lastIndexOf(".")
+        if (dot > 0) {
+            var ext = pathOnly.substring(dot).toLowerCase()
+            if (ext.length <= 6 && ext.indexOf("/") < 0) return ext
         }
-        return str.indexOf(".png") !== -1 || str.indexOf(".jpg") !== -1 ||
-               str.indexOf(".jpeg") !== -1 || str.indexOf(".webp") !== -1 ||
-               str.indexOf(".gif") !== -1 || str.indexOf(".bmp") !== -1 ||
-               str.indexOf(".avif") !== -1
+        if (qIdx >= 0) {
+            var q = clean.substring(qIdx + 1)
+            var m = q.match(/(?:^|&)(?:f|filename|file)=([^&]+)/)
+            if (m && m[1]) {
+                var fname = decodeURIComponent(m[1])
+                var fd = fname.lastIndexOf(".")
+                if (fd > 0) return fname.substring(fd).toLowerCase()
+            }
+        }
+        return ""
+    }
+
+    function _fileExt(item) {
+        if (!item) return ""
+        if (item.ext) return String(item.ext).toLowerCase()
+        return _extractExt(item.name) || _extractExt(item.url) || _extractExt(item.path)
+    }
+
+    function _mediaType(item) {
+        if (!item) return ""
+        var mt = String(item.media_type || "").toLowerCase()
+        if (mt === "video" || mt === "audio" || mt === "image" || mt === "archive") return mt
+        var ext = _fileExt(item)
+        if ([".mp4", ".m4v", ".mkv", ".webm", ".mov", ".avi", ".flv", ".wmv", ".m3u8", ".ts", ".3gp", ".ogv"].indexOf(ext) >= 0) return "video"
+        if ([".mp3", ".wav", ".flac", ".ogg", ".oga", ".m4a", ".aac", ".opus", ".wma"].indexOf(ext) >= 0) return "audio"
+        if ([".png", ".jpg", ".jpeg", ".jpe", ".jfif", ".webp", ".gif", ".bmp", ".avif", ".heic", ".heif", ".apng", ".svg"].indexOf(ext) >= 0) return "image"
+        if ([".zip", ".rar", ".7z", ".tar", ".gz", ".cbz", ".cbr", ".pdf", ".psd"].indexOf(ext) >= 0) return "archive"
+        return ""
+    }
+
+    function isVideoFile(item) {
+        return _mediaType(item) === "video"
+    }
+
+    function isAudioFile(item) {
+        return _mediaType(item) === "audio"
+    }
+
+    function isGifFile(item) {
+        if (!item) return false
+        return _fileExt(item) === ".gif" || !!item.is_loop
+    }
+
+    function isViewableFile(item) {
+        var mt = _mediaType(item)
+        return mt === "image" || mt === "video" || mt === "audio"
+    }
+
+    function fileKindLabel(item) {
+        if (!item) return "FILE"
+        if (isGifFile(item)) return "GIF"
+        var mt = _mediaType(item)
+        if (mt === "video") return "VIDEO"
+        if (mt === "audio") return "AUDIO"
+        var ext = _fileExt(item)
+        if (mt === "image") return ext ? ext.replace(".", "").toUpperCase() : "IMAGE"
+        return ext ? ext.replace(".", "").toUpperCase() : "FILE"
+    }
+
+    function thumbSrc(rawUrl, providerId) {
+        var u = String(rawUrl || "").trim()
+        if (!u) return ""
+        if (u.indexOf("image://") === 0 || u.indexOf("file://") === 0) return u
+        if (u.indexOf("http://") === 0 || u.indexOf("https://") === 0) {
+            if (modalRoot.browserBridge) {
+                return "image://remotethumb/" + encodeURIComponent(providerId || "") + "/" + encodeURIComponent(u)
+            }
+            return u
+        }
+        return u
+    }
+
+    function safeThumbUrl(rawUrl, providerId) {
+        var u = String(rawUrl || "").trim()
+        if (!u) return ""
+        var mt = _mediaType({ "url": u })
+        if (mt === "video" || mt === "audio" || mt === "archive") return ""
+        return thumbSrc(u, providerId)
+    }
+
+    function isImageFile(name, path, url) {
+        return _mediaType({ "name": name || "", "path": path || "", "url": url || "" }) === "image"
+    }
+
+    function _resolveSessionKey(creator) {
+        if (bridge && bridge.getSelectionSessionKey) {
+            var bKey = bridge.getSelectionSessionKey()
+            if (bKey && bKey.length > 0) return bKey
+        }
+        return "local:" + (creator || "")
+    }
+
+    function _saveCurrentSessionState() {
+        if (!allPosts || allPosts.length === 0) return
+        var key = activeSessionKey || _resolveSessionKey(creatorName)
+        if (!key) return
+
+        var postStates = {}
+        for (var i = 0; i < allPosts.length; i++) {
+            var p = allPosts[i]
+            var pid = String(p.id || "")
+            if (!pid) continue
+            var fileStates = {}
+            var hasFiles = !!(p.files && p.files.length)
+            if (hasFiles) {
+                for (var f = 0; f < p.files.length; f++) {
+                    var fp = String(p.files[f].path || f)
+                    fileStates[fp] = !!p.files[f].selected
+                }
+            }
+            postStates[pid] = {
+                selected: !!p.selected,
+                hasFiles: hasFiles,
+                files: fileStates
+            }
+        }
+        var nextSessions = Object.assign({}, _savedSessions)
+        nextSessions[key] = {
+            postStates: postStates,
+            searchFilter: searchFilter || ""
+        }
+        _savedSessions = nextSessions
+        activeSessionKey = key
     }
 
     function openModal(posts, creator, totalCount) {
+        if (isOpen && allPosts && allPosts.length > 0) {
+            _saveCurrentSessionState()
+        }
+        var sessionKey = _resolveSessionKey(creator || "")
+        var savedSession = (sessionKey && _savedSessions[sessionKey]) ? _savedSessions[sessionKey] : null
+        var savedPosts = savedSession ? savedSession.postStates : null
+        activeSessionKey = sessionKey
+
         creatorName = creator || ""
         inspectedPost = null
-        lightboxVisible = false
-        lightboxIndex = -1
-        lightboxItem = null
+        selectionLightbox.close()
 
         var list = []
         if (posts && posts.length) {
             for (var i = 0; i < posts.length; i++) {
                 var p = posts[i]
+                var pid = String(p.id || "")
+                var pProv = String(p.provider_id || "")
+                var pUrl = String(p.url || "")
+                var pIsUnimp = !!p.is_unimported
+                var savedPost = (savedPosts && pid && savedPosts.hasOwnProperty(pid)) ? savedPosts[pid] : null
                 var filesList = []
                 if (p.files && p.files.length) {
                     for (var f = 0; f < p.files.length; f++) {
                         var fileItem = p.files[f]
-                        var thumbUrl = fileItem.thumbnail || ""
-                        var prevUrl = fileItem.previewUrl || thumbUrl
-                        if (prevUrl && prevUrl.indexOf("/thumbnail/data/") === -1 && prevUrl.indexOf("/data/") !== -1) {
-                            prevUrl = prevUrl.replace("/data/", "/thumbnail/data/")
+                        var fExt = _fileExt(fileItem)
+                        var fType = _mediaType(fileItem)
+                        var fLoop = isGifFile(fileItem)
+                        var thumbUrl = String(fileItem.thumbnail || fileItem.thumbnail_url || "")
+                        var prevUrl = String(fileItem.previewUrl || thumbUrl)
+                        if (fType === "image") {
+                            if (prevUrl && prevUrl.indexOf("/thumbnail/data/") === -1 && prevUrl.indexOf("/data/") !== -1) {
+                                prevUrl = prevUrl.replace("/data/", "/thumbnail/data/")
+                            }
+                            if (thumbUrl && thumbUrl.indexOf("/thumbnail/data/") === -1 && thumbUrl.indexOf("/data/") !== -1) {
+                                thumbUrl = thumbUrl.replace("/data/", "/thumbnail/data/")
+                            }
                         }
-                        if (thumbUrl && thumbUrl.indexOf("/thumbnail/data/") === -1 && thumbUrl.indexOf("/data/") !== -1) {
-                            thumbUrl = thumbUrl.replace("/data/", "/thumbnail/data/")
+                        var fp = String(fileItem.path || fileItem.url || f)
+                        var fileSel = fileItem.selected !== undefined ? !!fileItem.selected : true
+                        if (savedPost && savedPost.hasFiles && savedPost.files && savedPost.files.hasOwnProperty(fp)) {
+                            fileSel = !!savedPost.files[fp]
                         }
                         filesList.push({
-                            name: fileItem.name || "attachment",
-                            path: fileItem.path || "",
+                            name: String(fileItem.name || "attachment"),
+                            path: String(fileItem.path || ""),
+                            url: String(fileItem.url || ""),
                             thumbnail: thumbUrl,
                             previewUrl: prevUrl,
+                            thumbnail_url: thumbUrl,
+                            ext: fExt,
+                            media_type: fType,
+                            is_loop: fLoop,
+                            file_size: Number(fileItem.file_size || fileItem.size || 0),
+                            provider_id: String(fileItem.provider_id || pProv),
+                            postUrl: String(fileItem.postUrl || pUrl),
+                            postId: String(fileItem.postId || pid),
                             is_main: !!fileItem.is_main,
-                            selected: fileItem.selected !== undefined ? !!fileItem.selected : true
+                            selected: fileSel
                         })
                     }
                 }
@@ -135,13 +313,25 @@ Item {
                 } else {
                     selF = p.selected !== false ? totalF : 0
                 }
-                var isPostSel = (selF > 0) && (p.selected !== false)
-                var pThumb = p.thumbnail || ""
-                if (pThumb && pThumb.indexOf("/thumbnail/data/") === -1 && pThumb.indexOf("/data/") !== -1) {
+                var defaultPostSel = (filesList.length > 0) ? ((selF > 0) && (p.selected !== false)) : (p.selected !== false)
+                var isPostSel = savedPost ? (!!savedPost.selected && (filesList.length === 0 || selF > 0)) : defaultPostSel
+                if (filesList.length === 0) {
+                    selF = isPostSel ? totalF : 0
+                }
+                var pThumb = String(p.thumbnail || "")
+                if (pThumb && pThumb.indexOf("/thumbnail/data/") === -1 && pThumb.indexOf("/data/") !== -1 && _extractExt(pThumb) !== ".mp4" && _extractExt(pThumb) !== ".webm") {
                     pThumb = pThumb.replace("/data/", "/thumbnail/data/")
                 }
+                var pHasVideo = !!p.hasVideo
+                var pHasGif = !!p.hasGif
+                if (!pHasVideo || !pHasGif) {
+                    for (var pfIdx = 0; pfIdx < filesList.length; pfIdx++) {
+                        if (filesList[pfIdx].media_type === "video") pHasVideo = true
+                        if (filesList[pfIdx].is_loop || filesList[pfIdx].ext === ".gif") pHasGif = true
+                    }
+                }
                 list.push({
-                    id: p.id || "",
+                    id: pid,
                     title: p.title || "Untitled Post",
                     content: p.content || "",
                     published: p.published || "",
@@ -149,26 +339,39 @@ Item {
                     fileCount: totalF,
                     selectedFileCount: selF,
                     files: filesList,
-                    selected: isPostSel
+                    selected: isPostSel,
+                    provider_id: pProv,
+                    url: pUrl,
+                    is_dm: !!p.is_dm,
+                    is_unimported: pIsUnimp,
+                    hasVideo: pHasVideo,
+                    hasGif: pHasGif
                 })
             }
         }
         allPosts = list
-        searchFilter = ""
-        searchInput.text = ""
+        var restoredFilter = (savedSession && savedSession.searchFilter) ? savedSession.searchFilter : ""
+        searchFilter = restoredFilter
+        searchInput.text = restoredFilter
+        postSelectionAnchor = -1
+        fileSelectionAnchor = -1
         updateFilteredPosts()
         updateTotals()
         isOpen = true
     }
 
     function closeModal() {
+        _saveCurrentSessionState()
         isOpen = false
         inspectedPost = null
-        lightboxVisible = false
+        selectionLightbox.close()
         fromFavoritesBrowser = false
+        postSelectionAnchor = -1
+        fileSelectionAnchor = -1
     }
 
     function inspectPost(postId) {
+        fileSelectionAnchor = -1
         for (var i = 0; i < allPosts.length; i++) {
             if (allPosts[i].id === postId) {
                 // Listed in the order they'll be numbered ("File order in posts"); each file keeps
@@ -192,7 +395,23 @@ Item {
 
     function backToPosts() {
         inspectedPost = null
-        lightboxVisible = false
+        selectionLightbox.close()
+        fileSelectionAnchor = -1
+    }
+
+    function _handleWheelScroll(flickItem, anim, event, maxMomentum) {
+        var delta = event.angleDelta.y
+        if (delta === 0) return
+        var mult = ScrollPhysics.stepWheelMomentum(flickItem, delta, maxMomentum || 3.0)
+        var step = (delta / 120.0) * 120 * mult
+        var maxY = Math.max(0, flickItem.contentHeight - flickItem.height)
+        if (!anim.running) flickItem._targetY = flickItem.contentY
+        flickItem._targetY = Math.max(0, Math.min(maxY, flickItem._targetY - step))
+        anim.stop()
+        anim.from = flickItem.contentY
+        anim.to = flickItem._targetY
+        anim.start()
+        event.accepted = true
     }
 
     function updateTotals() {
@@ -248,6 +467,7 @@ Item {
             }
         }
         filteredPosts = out
+        postSelectionAnchor = -1
         postsModel.clear()
         for (var j = 0; j < out.length; j++) {
             postsModel.append(out[j])
@@ -255,42 +475,62 @@ Item {
         updateTotals()
     }
 
-    function toggleItem(index) {
-        if (index < 0 || index >= postsModel.count) return
-        var current = postsModel.get(index).selected
-        var targetState = !current
-        postsModel.setProperty(index, "selected", targetState)
-
-        var id = postsModel.get(index).id
+    function _applyPostSelected(modelIndex, targetState) {
+        postsModel.setProperty(modelIndex, "selected", targetState)
+        var id = String(postsModel.get(modelIndex).id || "")
         for (var i = 0; i < allPosts.length; i++) {
-            if (allPosts[i].id === id) {
+            if (String(allPosts[i].id || "") === id) {
                 allPosts[i].selected = targetState
                 if (allPosts[i].files) {
                     for (var f = 0; f < allPosts[i].files.length; f++) {
                         allPosts[i].files[f].selected = targetState
                     }
                 }
-                var newSelF = targetState ? allPosts[i].files.length : 0
+                var nFiles = (allPosts[i].files && allPosts[i].files.length)
+                             ? allPosts[i].files.length
+                             : (allPosts[i].fileCount || 0)
+                var newSelF = targetState ? nFiles : 0
                 allPosts[i].selectedFileCount = newSelF
-                postsModel.setProperty(index, "selectedFileCount", newSelF)
+                postsModel.setProperty(modelIndex, "selectedFileCount", newSelF)
                 break
             }
         }
+    }
+
+    function toggleItem(index, shiftPressed) {
+        if (index < 0 || index >= postsModel.count) return
+        if (!!shiftPressed && postSelectionAnchor >= 0 && postSelectionAnchor < postsModel.count && postSelectionAnchor !== index) {
+            var rangeState = postSelectionAnchorState
+            var lo = Math.min(postSelectionAnchor, index)
+            var hi = Math.max(postSelectionAnchor, index)
+            for (var r = lo; r <= hi; r++) {
+                _applyPostSelected(r, rangeState)
+            }
+            updateTotals()
+            return
+        }
+        var current = postsModel.get(index).selected
+        var targetState = !current
+        _applyPostSelected(index, targetState)
+        postSelectionAnchor = index
+        postSelectionAnchorState = targetState
         updateTotals()
     }
 
-    function toggleFileItem(index) {
-        if (!inspectedPost || index < 0 || index >= postFilesModel.count) return
-        var cur = postFilesModel.get(index).selected
-        var nextState = !cur
-        postFilesModel.setProperty(index, "selected", nextState)
-        if (inspectedPost.files && inspectedPost.files[index]) {
-            inspectedPost.files[index].selected = nextState
+    function _applyFileSelected(fileIndex, nextState) {
+        postFilesModel.setProperty(fileIndex, "selected", nextState)
+        if (inspectedPost && inspectedPost.files && inspectedPost.files[fileIndex]) {
+            inspectedPost.files[fileIndex].selected = nextState
         }
+        modalRoot._selectionTick += 1
+    }
 
+    function _syncInspectedPostSelection() {
+        if (!inspectedPost) return
         var selFiles = 0
-        for (var f = 0; f < inspectedPost.files.length; f++) {
-            if (inspectedPost.files[f].selected) selFiles++
+        var files = inspectedPost.files || []
+        for (var f = 0; f < files.length; f++) {
+            if (files[f].selected) selFiles++
         }
         inspectedPost.selectedFileCount = selFiles
         inspectedPost.selected = (selFiles > 0)
@@ -303,40 +543,47 @@ Item {
                 break
             }
         }
-
-        // Keep lightbox sync
-        if (lightboxVisible && lightboxIndex === index) {
-            lightboxItem = null
-            lightboxItem = postFilesModel.get(index)
-        }
-
         updateTotals()
+    }
+
+    function toggleFileItem(index, shiftPressed) {
+        if (!inspectedPost || index < 0 || index >= postFilesModel.count) return
+        if (!!shiftPressed && fileSelectionAnchor >= 0 && fileSelectionAnchor < postFilesModel.count && fileSelectionAnchor !== index) {
+            var rangeState = fileSelectionAnchorState
+            var lo = Math.min(fileSelectionAnchor, index)
+            var hi = Math.max(fileSelectionAnchor, index)
+            for (var r = lo; r <= hi; r++) {
+                _applyFileSelected(r, rangeState)
+            }
+            _syncInspectedPostSelection()
+            return
+        }
+        var cur = postFilesModel.get(index).selected
+        var nextState = !cur
+        _applyFileSelected(index, nextState)
+        fileSelectionAnchor = index
+        fileSelectionAnchorState = nextState
+        _syncInspectedPostSelection()
     }
 
     function selectAllFilesInPost(val) {
         if (!inspectedPost) return
+        fileSelectionAnchor = -1
         for (var i = 0; i < postFilesModel.count; i++) {
-            postFilesModel.setProperty(i, "selected", val)
-            if (inspectedPost.files && inspectedPost.files[i]) {
-                inspectedPost.files[i].selected = val
-            }
+            _applyFileSelected(i, val)
         }
-        var selFiles = val ? postFilesModel.count : 0
-        inspectedPost.selectedFileCount = selFiles
-        inspectedPost.selected = (selFiles > 0)
-        selectedFilesInPost = selFiles
-
-        for (var j = 0; j < postsModel.count; j++) {
-            if (String(postsModel.get(j).id) === String(inspectedPost.id)) {
-                postsModel.setProperty(j, "selected", (selFiles > 0))
-                postsModel.setProperty(j, "selectedFileCount", selFiles)
-                break
-            }
-        }
-        updateTotals()
+        _syncInspectedPostSelection()
     }
 
     function selectAll(val) {
+        postSelectionAnchor = -1
+        if (searchFilter.trim() !== "") {
+            for (var j = 0; j < postsModel.count; j++) {
+                _applyPostSelected(j, val)
+            }
+            updateTotals()
+            return
+        }
         for (var i = 0; i < allPosts.length; i++) {
             allPosts[i].selected = val
             if (allPosts[i].files) {
@@ -344,13 +591,16 @@ Item {
                     allPosts[i].files[f].selected = val
                 }
                 allPosts[i].selectedFileCount = val ? allPosts[i].files.length : 0
+            } else {
+                allPosts[i].selectedFileCount = val ? (allPosts[i].fileCount || 0) : 0
             }
         }
-        for (var j = 0; j < postsModel.count; j++) {
-            postsModel.setProperty(j, "selected", val)
-            var curF = postsModel.get(j).fileCount || 0
-            postsModel.setProperty(j, "selectedFileCount", val ? curF : 0)
+        for (var k = 0; k < postsModel.count; k++) {
+            postsModel.setProperty(k, "selected", val)
+            var curF = postsModel.get(k).fileCount || 0
+            postsModel.setProperty(k, "selectedFileCount", val ? curF : 0)
         }
+        modalRoot._selectionTick += 1
         updateTotals()
     }
 
@@ -386,32 +636,62 @@ Item {
         return map
     }
 
-    // ── Lightbox Visualizer Methods ──────────────────────────────
+    // ── Lightbox Visualizer Methods (via shared MediaLightboxModal) ─────────
     function openLightbox(index) {
         if (index < 0 || index >= postFilesModel.count) return
-        lightboxIndex = index
-        lightboxItem = postFilesModel.get(index)
-        lightboxVisible = true
+        var clickedItem = postFilesModel.get(index)
+        if (!isViewableFile(clickedItem)) return
+
+        var mList = []
+        var targetEntry = null
+        var postObj = inspectedPost || ({})
+        var postUnimported = !!postObj.is_unimported
+        var postProv = String(postObj.provider_id || "")
+        var postLink = String(postObj.url || "")
+        var postIdStr = String(postObj.id || "")
+
+        for (var i = 0; i < postFilesModel.count; i++) {
+            var f = postFilesModel.get(i)
+            if (!f || !isViewableFile(f)) continue
+            var mt = _mediaType(f)
+            var rawThumb = String(f.previewUrl || f.thumbnail || "")
+            var mediaUrl = String(f.url || f.path || "")
+            var target = (postUnimported && mt === "image" && rawThumb) ? rawThumb : mediaUrl
+            if (!target) continue
+            var entry = {
+                "path": target,
+                "url": mediaUrl || target,
+                "name": String(f.name || ("file_" + (i + 1))),
+                "ext": _fileExt(f),
+                "media_type": mt,
+                "thumbUrl": (rawThumb && rawThumb !== target) ? rawThumb : "",
+                "size": Number(f.file_size || 0),
+                "is_loop": isGifFile(f),
+                "provider_id": String(f.provider_id || postProv),
+                "postUrl": String(f.postUrl || postLink),
+                "postId": String(f.postId || postIdStr),
+                "is_unimported": postUnimported,
+                "postFileIndex": i
+            }
+            mList.push(entry)
+            if (i === index) targetEntry = entry
+        }
+        if (!targetEntry || mList.length === 0) return
+        selectionLightbox.open(targetEntry, mList)
     }
 
     function closeLightbox() {
-        lightboxVisible = false
-        lightboxIndex = -1
-        lightboxItem = null
+        selectionLightbox.close()
     }
 
     function prevLightboxItem() {
-        if (!lightboxVisible || postFilesModel.count === 0) return
-        var prevIdx = lightboxIndex - 1
-        if (prevIdx < 0) prevIdx = postFilesModel.count - 1
-        openLightbox(prevIdx)
+        if (!selectionLightbox.isOpen) return
+        selectionLightbox.prevItem()
     }
 
     function nextLightboxItem() {
-        if (!lightboxVisible || postFilesModel.count === 0) return
-        var nextIdx = lightboxIndex + 1
-        if (nextIdx >= postFilesModel.count) nextIdx = 0
-        openLightbox(nextIdx)
+        if (!selectionLightbox.isOpen) return
+        selectionLightbox.nextItem()
     }
 
     ListModel {
@@ -426,7 +706,7 @@ Item {
         target: modalRoot.bridge
         function onFileOrderChanged() {
             if (!modalRoot.inspectedPost) return
-            modalRoot.lightboxVisible = false
+            selectionLightbox.close()
             modalRoot.inspectPost(modalRoot.inspectedPost.id)
         }
     }
@@ -441,7 +721,6 @@ Item {
             anchors.fill: parent
             onClicked: {
                 if (modalRoot.lightboxVisible) modalRoot.closeLightbox()
-                else modalRoot.closeModal()
             }
         }
 
@@ -455,9 +734,18 @@ Item {
     // Centered Dialog Window with Newtonian Spring Entrance
     Rectangle {
         id: dialogBox
-        width: Math.min(modalRoot.width - 40, 1040)
-        height: Math.min(modalRoot.height - 40, 720)
+        objectName: "postSelectionDialogBox"
+        width: Math.max(320, modalRoot.width - 36)
+        height: Math.max(280, modalRoot.height - 36)
         anchors.centerIn: parent
+
+        MouseArea {
+            id: dialogClickCatcher
+            anchors.fill: parent
+            z: -1
+            onPressed: function(mouse) { mouse.accepted = true }
+            onClicked: function(mouse) { mouse.accepted = true }
+        }
         radius: 12
         color: "#0F131C"
         border.color: "#222B3D"
@@ -570,6 +858,15 @@ Item {
                         spacing: 8
                         Layout.fillWidth: true
 
+                        UnimportedTriangleBadge {
+                            id: inspectUnimportedBadge
+                            objectName: "postSelectionInspectUnimportedBadge"
+                            visible: modalRoot.isInspecting && !!(modalRoot.inspectedPost && modalRoot.inspectedPost.is_unimported)
+                            showBackground: false
+                            tooltipText: modalRoot.tr("warn_post_unimported", "This post has not been fully imported into Pawchive yet — only a preview thumbnail may be available for images.")
+                            Layout.alignment: Qt.AlignVCenter
+                        }
+
                         Text {
                             text: modalRoot.isInspecting
                                 ? (modalRoot.inspectedPost ? modalRoot.inspectedPost.title : "")
@@ -580,6 +877,17 @@ Item {
                             color: "#F8FAFC"
                             elide: Text.ElideRight
                             Layout.fillWidth: true
+                        }
+
+                        UnimportedTriangleBadge {
+                            id: creatorUnimportedBadge
+                            objectName: "postSelectionCreatorUnimportedBadge"
+                            visible: !modalRoot.isInspecting && (modalRoot.hasUnimportedCreator || modalRoot.unimportedCount > 0)
+                            showBackground: false
+                            tooltipText: modalRoot.hasUnimportedCreator
+                                ? modalRoot.tr("warn_creator_unimported", "This creator has not been imported into Pawchive yet — only preview thumbnails may be available for images.")
+                                : modalRoot.tr("warn_posts_unimported_some", "Some posts below have not been fully imported into Pawchive yet.")
+                            Layout.alignment: Qt.AlignVCenter
                         }
 
                         // Creator name or date badge
@@ -635,6 +943,105 @@ Item {
                         font.pixelSize: 11
                         color: "#94A3B8"
                     }
+                }
+
+                // Click Mode Toggle Pill (Preview vs Select)
+                Rectangle {
+                    id: clickModeBtn
+                    objectName: "postClickModeBtn"
+                    visible: !modalRoot.isInspecting
+                    height: 28
+                    radius: 6
+                    implicitWidth: clickModeRow.implicitWidth + 16
+                    color: modalRoot.quickSelectClickMode
+                        ? (clickModeMouse.containsMouse ? "#075985" : "#0C2A3D")
+                        : (clickModeMouse.containsMouse ? "#1E293B" : "#161D2B")
+                    border.color: modalRoot.quickSelectClickMode ? "#0284C7" : (clickModeMouse.containsMouse ? "#475569" : "#2D3748")
+                    scale: clickModeMouse.pressed ? 0.94 : 1.0
+                    Behavior on scale { SpringAnimation { spring: 3.5; damping: 0.35; mass: 1.0 } }
+
+                    Row {
+                        id: clickModeRow
+                        anchors.centerIn: parent
+                        spacing: 5
+                        Text {
+                            text: modalRoot.quickSelectClickMode ? "⚡" : "🔍"
+                            font.pixelSize: 10
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+                        Text {
+                            text: modalRoot.quickSelectClickMode ? "Click: Select" : "Click: Preview"
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 11
+                            font.weight: Font.DemiBold
+                            color: modalRoot.quickSelectClickMode ? "#38BDF8" : "#CBD5E1"
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+                    }
+
+                    MouseArea {
+                        id: clickModeMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: modalRoot.quickSelectClickMode = !modalRoot.quickSelectClickMode
+                    }
+
+                    ToolTip.visible: clickModeMouse.containsMouse
+                    ToolTip.delay: 400
+                    ToolTip.text: modalRoot.quickSelectClickMode
+                        ? "Click toggles selection • Ctrl+Click previews post • Shift+Click selects range"
+                        : "Click previews post • Ctrl+Click toggles selection • Shift+Click selects range"
+                }
+
+                // Re-fetch Posts Button (bypasses cache while preserving saved selections)
+                Rectangle {
+                    id: refetchPostsBtn
+                    objectName: "refetchPostsBtn"
+                    visible: !modalRoot.isInspecting && !!modalRoot.bridge && !!modalRoot.bridge.refetchPostsForSelection && !modalRoot.fromFavoritesBrowser
+                    height: 28
+                    radius: 6
+                    implicitWidth: refetchRow.implicitWidth + 16
+                    color: refetchMouse.containsMouse ? "#1E293B" : "#161D2B"
+                    border.color: refetchMouse.containsMouse ? "#38BDF8" : "#2D3748"
+                    scale: refetchMouse.pressed ? 0.94 : 1.0
+                    Behavior on scale { SpringAnimation { spring: 3.5; damping: 0.35; mass: 1.0 } }
+
+                    Row {
+                        id: refetchRow
+                        anchors.centerIn: parent
+                        spacing: 5
+                        Text {
+                            text: "🔄"
+                            font.pixelSize: 10
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+                        Text {
+                            text: modalRoot.tr("action_refetch", "Re-fetch")
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 11
+                            font.weight: Font.DemiBold
+                            color: refetchMouse.containsMouse ? "#38BDF8" : "#CBD5E1"
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+                    }
+
+                    MouseArea {
+                        id: refetchMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            modalRoot.closeModal()
+                            if (modalRoot.bridge && modalRoot.bridge.refetchPostsForSelection) {
+                                modalRoot.bridge.refetchPostsForSelection()
+                            }
+                        }
+                    }
+
+                    ToolTip.visible: refetchMouse.containsMouse
+                    ToolTip.delay: 400
+                    ToolTip.text: "Re-fetch fresh post list from server (your current selections stay saved)"
                 }
 
                 // Close Button ✕
@@ -742,7 +1149,9 @@ Item {
                         Text { text: "✓"; font.pixelSize: 11; color: "#38BDF8"; anchors.verticalCenter: parent.verticalCenter }
                         Text {
                             id: selAllText
-                            text: modalRoot.tr("btn_select_all", "Select All")
+                            text: modalRoot.searchFilter.trim() !== ""
+                                  ? "Select Filtered"
+                                  : modalRoot.tr("btn_select_all", "Select All")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 11
                             font.weight: 600
@@ -777,7 +1186,9 @@ Item {
                         Text { text: "✕"; font.pixelSize: 11; color: "#94A3B8"; anchors.verticalCenter: parent.verticalCenter }
                         Text {
                             id: deselAllText
-                            text: modalRoot.tr("btn_deselect_all", "Deselect All")
+                            text: modalRoot.searchFilter.trim() !== ""
+                                  ? "Deselect Filtered"
+                                  : modalRoot.tr("btn_deselect_all", "Deselect All")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 11
                             font.weight: 600
@@ -792,6 +1203,47 @@ Item {
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: modalRoot.selectAll(false)
+                    }
+                }
+            }
+
+            // Creator-level / unimported posts warning banner
+            Rectangle {
+                id: creatorUnimportedBanner
+                objectName: "postSelectionCreatorUnimportedBanner"
+                visible: !modalRoot.isInspecting && (modalRoot.hasUnimportedCreator || modalRoot.unimportedCount > 0)
+                Layout.fillWidth: true
+                Layout.leftMargin: 20
+                Layout.rightMargin: 20
+                Layout.topMargin: 10
+                Layout.preferredHeight: visible ? (creatorBannerCol.implicitHeight + 14) : 0
+                radius: 8
+                color: "#291E0B"
+                border.color: "#B45309"
+                border.width: 1
+
+                RowLayout {
+                    id: creatorBannerCol
+                    anchors {
+                        left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter
+                        leftMargin: 12; rightMargin: 12
+                    }
+                    spacing: 10
+
+                    UnimportedTriangleBadge {
+                        showBackground: false
+                        tooltipText: ""
+                        Layout.alignment: Qt.AlignVCenter
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: modalRoot.hasUnimportedCreator
+                            ? modalRoot.tr("warn_creator_unimported", "This creator has not been imported into Pawchive yet — full-resolution media is only served directly from the origin service when available. Only thumbnails may be previewable.")
+                            : modalRoot.tr("warn_posts_unimported_some", "Some posts below are not fully imported into Pawchive yet (marked with ⚠️) — full-resolution media may not be previewable until imported.")
+                        color: "#FCD34D"
+                        font.pixelSize: 11
+                        wrapMode: Text.WordWrap
                     }
                 }
             }
@@ -821,14 +1273,16 @@ Item {
                         clip: true
                         model: postsModel
 
-                        readonly property int colCount: Math.max(1, Math.floor(width / 215))
+                        readonly property int colCount: Math.max(1, Math.floor(width / 220))
                         cellWidth: Math.floor(width / colCount)
-                        cellHeight: 210
+                        cellHeight: 224
                         boundsBehavior: Flickable.StopAtBounds
 
                         property real _targetY: 0
                         property real _lastWheelTime: 0
-                        property real _wheelVelocity: 1.0
+                        property real _wheelMomentum: 1.0
+                        property real _scrollStreak: 0
+                        property int _lastWheelDir: 0
 
                         NumberAnimation {
                             id: postsGridWheelAnim
@@ -842,22 +1296,7 @@ Item {
                             target: null
                             acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
                             onWheel: function(event) {
-                                var now = Date.now()
-                                var dt = now - postsGrid._lastWheelTime
-                                postsGrid._lastWheelTime = now
-                                if (dt < 130) postsGrid._wheelVelocity = Math.min(2.8, postsGrid._wheelVelocity + 0.4)
-                                else postsGrid._wheelVelocity = 1.0
-                                var delta = event.angleDelta.y
-                                if (delta === 0) return
-                                var step = (delta / 120.0) * 120 * postsGrid._wheelVelocity
-                                var maxY = Math.max(0, postsGrid.contentHeight - postsGrid.height)
-                                if (!postsGridWheelAnim.running) postsGrid._targetY = postsGrid.contentY
-                                postsGrid._targetY = Math.max(0, Math.min(maxY, postsGrid._targetY - step))
-                                postsGridWheelAnim.stop()
-                                postsGridWheelAnim.from = postsGrid.contentY
-                                postsGridWheelAnim.to = postsGrid._targetY
-                                postsGridWheelAnim.start()
-                                event.accepted = true
+                                modalRoot._handleWheelScroll(postsGrid, postsGridWheelAnim, event, 3.0)
                             }
                         }
 
@@ -903,13 +1342,26 @@ Item {
                                 Behavior on color { ColorAnimation { duration: 140 } }
                                 Behavior on border.color { ColorAnimation { duration: 140 } }
 
-                                // Card Click: Inspects the post (FIRST child = behind ColumnLayout)
+                                // Card Click: Preview or Toggle according to mode (Ctrl inverts, Shift toggles range)
                                 MouseArea {
                                     id: cardMouse
+                                    objectName: "postCardMouse"
                                     anchors.fill: parent
                                     hoverEnabled: true
                                     cursorShape: Qt.PointingHandCursor
-                                    onClicked: modalRoot.inspectPost(model.id)
+                                    onClicked: function(mouse) {
+                                        if (mouse.modifiers & Qt.ShiftModifier) {
+                                            modalRoot.toggleItem(index, true)
+                                            return
+                                        }
+                                        var hasCtrl = (mouse.modifiers & Qt.ControlModifier) !== 0
+                                        var shouldToggle = modalRoot.quickSelectClickMode ? !hasCtrl : hasCtrl
+                                        if (shouldToggle) {
+                                            modalRoot.toggleItem(index, false)
+                                        } else {
+                                            modalRoot.inspectPost(model.id)
+                                        }
+                                    }
                                 }
 
                                 ColumnLayout {
@@ -932,7 +1384,11 @@ Item {
                                             Column {
                                                 anchors.centerIn: parent
                                                 spacing: 4
-                                                Text { anchors.horizontalCenter: parent.horizontalCenter; text: "🖼️"; font.pixelSize: 22 }
+                                                Text {
+                                                    anchors.horizontalCenter: parent.horizontalCenter
+                                                    text: model.hasVideo ? "🎬" : (model.hasGif ? "🎞" : "🖼️")
+                                                    font.pixelSize: 22
+                                                }
                                                 Text {
                                                     anchors.horizontalCenter: parent.horizontalCenter
                                                     text: (model.fileCount || 0) + " files"
@@ -946,7 +1402,7 @@ Item {
                                         Image {
                                             id: postThumb
                                             anchors.fill: parent
-                                            source: (modalRoot.isImageFile(model.title, "", model.thumbnail) ? (model.thumbnail || "") : "")
+                                            source: modalRoot.safeThumbUrl(model.thumbnail, model.provider_id)
                                             fillMode: Image.PreserveAspectCrop
                                             asynchronous: true
                                             cache: true
@@ -964,6 +1420,44 @@ Item {
                                                 GradientStop { position: 0.0; color: "transparent" }
                                                 GradientStop { position: 1.0; color: "#99000000" }
                                             }
+                                        }
+
+                                        // Bottom-left media kind pill for video / GIF posts
+                                        Rectangle {
+                                            visible: !!model.hasVideo || !!model.hasGif
+                                            anchors.bottom: parent.bottom
+                                            anchors.left: parent.left
+                                            anchors.margins: 6
+                                            height: 18
+                                            implicitWidth: postMediaKindTxt.implicitWidth + 10
+                                            radius: 4
+                                            color: model.hasVideo ? "#CC0C2A3D" : "#CC1E1B4B"
+                                            border.color: model.hasVideo ? "#38BDF8" : "#818CF8"
+                                            border.width: 1
+                                            z: 2
+
+                                            Text {
+                                                id: postMediaKindTxt
+                                                anchors.centerIn: parent
+                                                text: model.hasVideo ? "▶ VIDEO" : "🎞 GIF"
+                                                font.family: "Segoe UI, sans-serif"
+                                                font.pixelSize: 9
+                                                font.weight: Font.Bold
+                                                color: model.hasVideo ? "#38BDF8" : "#A5B4FC"
+                                            }
+                                        }
+
+                                        // Unimported warning badge (top-right, beside checkbox)
+                                        UnimportedTriangleBadge {
+                                            objectName: "postSelectionUnimportedBadge"
+                                            visible: !!model.is_unimported
+                                            anchors.top: parent.top
+                                            anchors.right: parent.right
+                                            anchors.topMargin: 6
+                                            anchors.rightMargin: 38
+                                            z: 3
+                                            showBackground: true
+                                            tooltipText: modalRoot.tr("warn_post_unimported_short", "Not imported into Pawchive yet — full-resolution media may not be available.")
                                         }
 
                                         // Selected Files / Total Files Count Badge (top-left)
@@ -1047,9 +1541,12 @@ Item {
                                                 anchors.fill: parent
                                                 hoverEnabled: true
                                                 cursorShape: Qt.PointingHandCursor
+                                                ToolTip.visible: containsMouse
+                                                ToolTip.delay: 300
+                                                ToolTip.text: (model.selected ? "Deselect post" : "Select post") + "\nShift+click to select a range"
                                                 onClicked: function(mouse) {
                                                     mouse.accepted = true
-                                                    modalRoot.toggleItem(index)
+                                                    modalRoot.toggleItem(index, (mouse.modifiers & Qt.ShiftModifier) !== 0)
                                                 }
                                             }
                                         }
@@ -1153,6 +1650,7 @@ Item {
 
                     Flickable {
                         id: inspectorFlickable
+                        objectName: "postSelectionInspectorFlickable"
                         anchors.fill: parent
                         anchors.margins: 14
                         contentWidth: width
@@ -1162,7 +1660,9 @@ Item {
 
                         property real _targetY: 0
                         property real _lastWheelTime: 0
-                        property real _wheelVelocity: 1.0
+                        property real _wheelMomentum: 1.0
+                        property real _scrollStreak: 0
+                        property int _lastWheelDir: 0
 
                         onMovingChanged: {
                             if (moving) {
@@ -1183,22 +1683,7 @@ Item {
                             target: null
                             acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
                             onWheel: function(event) {
-                                var now = Date.now()
-                                var dt = now - inspectorFlickable._lastWheelTime
-                                inspectorFlickable._lastWheelTime = now
-                                if (dt < 130) inspectorFlickable._wheelVelocity = Math.min(2.8, inspectorFlickable._wheelVelocity + 0.4)
-                                else inspectorFlickable._wheelVelocity = 1.0
-                                var delta = event.angleDelta.y
-                                if (delta === 0) return
-                                var step = (delta / 120.0) * 120 * inspectorFlickable._wheelVelocity
-                                var maxY = Math.max(0, inspectorFlickable.contentHeight - inspectorFlickable.height)
-                                if (!inspectorWheelAnim.running) inspectorFlickable._targetY = inspectorFlickable.contentY
-                                inspectorFlickable._targetY = Math.max(0, Math.min(maxY, inspectorFlickable._targetY - step))
-                                inspectorWheelAnim.stop()
-                                inspectorWheelAnim.from = inspectorFlickable.contentY
-                                inspectorWheelAnim.to = inspectorFlickable._targetY
-                                inspectorWheelAnim.start()
-                                event.accepted = true
+                                modalRoot._handleWheelScroll(inspectorFlickable, inspectorWheelAnim, event, 2.8)
                             }
                         }
 
@@ -1229,6 +1714,42 @@ Item {
                             id: detailCol
                             width: parent.width
                             spacing: 14
+
+                            // Unimported post warning banner
+                            Rectangle {
+                                id: postUnimportedBanner
+                                objectName: "postSelectionUnimportedBanner"
+                                visible: !!(modalRoot.inspectedPost && modalRoot.inspectedPost.is_unimported)
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: visible ? (postUnimpRow.implicitHeight + 16) : 0
+                                radius: 8
+                                color: "#291E0B"
+                                border.color: "#B45309"
+                                border.width: 1
+
+                                RowLayout {
+                                    id: postUnimpRow
+                                    anchors {
+                                        left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter
+                                        leftMargin: 12; rightMargin: 12
+                                    }
+                                    spacing: 10
+
+                                    UnimportedTriangleBadge {
+                                        showBackground: false
+                                        tooltipText: ""
+                                        Layout.alignment: Qt.AlignVCenter
+                                    }
+
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: modalRoot.tr("warn_post_unimported", "This post has not been fully imported into Pawchive yet — only a preview thumbnail may be available for images.")
+                                        color: "#FCD34D"
+                                        font.pixelSize: 11
+                                        wrapMode: Text.WordWrap
+                                    }
+                                }
+                            }
 
                             // Description & Content Card (if available)
                             Rectangle {
@@ -1509,6 +2030,7 @@ Item {
                                     model: postFilesModel
 
                                     delegate: Rectangle {
+                                        id: galTile
                                         width: 175
                                         height: 185
                                         radius: 8
@@ -1516,20 +2038,45 @@ Item {
                                         border.color: model.selected ? "#38BDF8" : (galMouse.containsMouse ? "#334155" : "#1C2433")
                                         border.width: model.selected ? 1.5 : 1
 
+                                        readonly property var _fMeta: ({
+                                            "name": model.name || "",
+                                            "path": model.path || "",
+                                            "url": model.url || "",
+                                            "ext": model.ext || "",
+                                            "media_type": model.media_type || "",
+                                            "is_loop": !!model.is_loop
+                                        })
+                                        readonly property bool isVideoItem: modalRoot.isVideoFile(_fMeta)
+                                        readonly property bool isAudioItem: modalRoot.isAudioFile(_fMeta)
+                                        readonly property bool isGifItem: modalRoot.isGifFile(_fMeta)
+                                        readonly property bool isArchiveItem: modalRoot._mediaType(_fMeta) === "archive"
+                                        readonly property bool isViewableItem: modalRoot.isViewableFile(_fMeta)
+                                        readonly property string kindText: modalRoot.fileKindLabel(_fMeta)
+
                                         scale: galMouse.pressed ? 0.96 : (galMouse.containsMouse ? 1.03 : 1.0)
                                         transformOrigin: Item.Center
                                         Behavior on scale { SpringAnimation { spring: 3.8; damping: 0.35; mass: 1.0 } }
                                         Behavior on color { ColorAnimation { duration: 120 } }
                                         Behavior on border.color { ColorAnimation { duration: 120 } }
 
-                                        // Background click area (z:0, behind everything) - toggles selection
+                                        // Background click area (z:0, behind everything) - toggles selection (Ctrl+click previews)
                                         MouseArea {
                                             id: galMouse
                                             anchors.fill: parent
                                             hoverEnabled: true
                                             z: 0
                                             cursorShape: Qt.PointingHandCursor
-                                            onClicked: modalRoot.toggleFileItem(index)
+                                            onClicked: function(mouse) {
+                                                if (mouse.modifiers & Qt.ShiftModifier) {
+                                                    modalRoot.toggleFileItem(index, true)
+                                                    return
+                                                }
+                                                if (mouse.modifiers & Qt.ControlModifier) {
+                                                    if (galTile.isViewableItem) modalRoot.openLightbox(index)
+                                                    return
+                                                }
+                                                modalRoot.toggleFileItem(index, false)
+                                            }
                                         }
 
                                         ColumnLayout {
@@ -1555,13 +2102,10 @@ Item {
                                                         spacing: 4
                                                         Text {
                                                             anchors.horizontalCenter: parent.horizontalCenter
-                                                            text: {
-                                                                var fn = (model.name || "").toLowerCase()
-                                                                if (fn.endsWith(".zip") || fn.endsWith(".rar") || fn.endsWith(".7z")) return "📦"
-                                                                if (fn.endsWith(".mp4") || fn.endsWith(".mkv") || fn.endsWith(".webm") || fn.endsWith(".mov")) return "🎥"
-                                                                if (fn.endsWith(".mp3") || fn.endsWith(".wav") || fn.endsWith(".flac") || fn.endsWith(".m4a")) return "🎵"
-                                                                return "🖼️"
-                                                            }
+                                                            text: galTile.isArchiveItem ? "📦"
+                                                                  : (galTile.isVideoItem ? "🎬"
+                                                                  : (galTile.isAudioItem ? "🎵"
+                                                                  : (galTile.isGifItem ? "🎞" : "🖼️")))
                                                             font.pixelSize: 28
                                                         }
                                                         Text {
@@ -1576,12 +2120,32 @@ Item {
                                                 Image {
                                                     id: galThumb
                                                     anchors.fill: parent
-                                                    source: (modalRoot.isImageFile(model.name, model.path, model.previewUrl || model.thumbnail) ? (model.previewUrl || model.thumbnail || "") : "")
+                                                    source: modalRoot.safeThumbUrl(model.previewUrl || model.thumbnail, model.provider_id)
                                                     fillMode: Image.PreserveAspectCrop
                                                     asynchronous: true
                                                     cache: true
                                                     opacity: status === Image.Ready ? 1.0 : 0.0
                                                     Behavior on opacity { NumberAnimation { duration: 180 } }
+                                                }
+
+                                                // Play overlay indicator for videos/audio when thumbnail is visible
+                                                Rectangle {
+                                                    visible: (galTile.isVideoItem || galTile.isAudioItem) && galThumb.status === Image.Ready
+                                                    anchors.centerIn: parent
+                                                    width: 36
+                                                    height: 36
+                                                    radius: 18
+                                                    color: "#B30A0E17"
+                                                    border.color: "#38BDF8"
+                                                    border.width: 1.5
+                                                    z: 2
+                                                    Text {
+                                                        anchors.centerIn: parent
+                                                        anchors.horizontalCenterOffset: 1
+                                                        text: "▶"
+                                                        font.pixelSize: 13
+                                                        color: "#F8FAFC"
+                                                    }
                                                 }
 
                                                 // Top-Left Format Pill
@@ -1592,20 +2156,23 @@ Item {
                                                     height: 18
                                                     implicitWidth: galFormatText.implicitWidth + 8
                                                     radius: 3
-                                                    color: "#CC080C14"
-                                                    border.color: "#334155"
+                                                    color: galTile.isGifItem ? "#CC1E1B4B"
+                                                           : (galTile.isVideoItem ? "#CC0C2A3D"
+                                                           : (galTile.isAudioItem ? "#CC042F2E" : "#CC080C14"))
+                                                    border.color: galTile.isGifItem ? "#818CF8"
+                                                                  : (galTile.isVideoItem ? "#38BDF8"
+                                                                  : (galTile.isAudioItem ? "#2DD4BF" : "#334155"))
 
                                                     Text {
                                                         id: galFormatText
                                                         anchors.centerIn: parent
-                                                        text: {
-                                                            var parts = (model.name || model.path || "").split(".")
-                                                            return parts.length > 1 ? parts[parts.length - 1].toUpperCase() : "FILE"
-                                                        }
+                                                        text: galTile.kindText
                                                         font.family: "Segoe UI, sans-serif"
                                                         font.pixelSize: 9
                                                         font.weight: Font.Bold
-                                                        color: "#E2E8F0"
+                                                        color: galTile.isGifItem ? "#A5B4FC"
+                                                               : (galTile.isVideoItem ? "#38BDF8"
+                                                               : (galTile.isAudioItem ? "#5EEAD4" : "#E2E8F0"))
                                                     }
                                                 }
 
@@ -1640,12 +2207,12 @@ Item {
                                                         cursorShape: Qt.PointingHandCursor
                                                         onClicked: function(mouse) {
                                                             mouse.accepted = true
-                                                            modalRoot.toggleFileItem(index)
+                                                            modalRoot.toggleFileItem(index, (mouse.modifiers & Qt.ShiftModifier) !== 0)
                                                         }
                                                     }
                                                 }
 
-                                                // Hover Zoom / Expand Badge (bottom-right, clickable for Lightbox)
+                                                // Hover Zoom / Play / Expand Badge (bottom-right, clickable for Lightbox)
                                                 Rectangle {
                                                     id: expandBadgeRect
                                                     objectName: "expandBadgeRect"
@@ -1656,16 +2223,16 @@ Item {
                                                     implicitWidth: expandPillText.implicitWidth + 12
                                                     radius: 4
 
-                                                    // Detect if this file is a video
-                                                    readonly property bool isVideo: {
-                                                        var fn = (model.name || "").toLowerCase()
-                                                        return fn.endsWith(".mp4") || fn.endsWith(".mkv") || fn.endsWith(".webm") || fn.endsWith(".mov") || fn.endsWith(".avi") || fn.endsWith(".m4v")
-                                                    }
-
-                                                    color: isVideo ? "#1A0F00" : (expandMouse.containsMouse ? "#0284C7" : "#B30A121F")
-                                                    border.color: isVideo ? "#92400E" : (expandMouse.containsMouse ? "#38BDF8" : "#334155")
+                                                    color: !galTile.isViewableItem
+                                                           ? "#1E293B"
+                                                           : (expandMouse.containsMouse ? "#0284C7"
+                                                              : ((galTile.isVideoItem || galTile.isAudioItem) ? "#CC0C2A3D" : "#B30A121F"))
+                                                    border.color: !galTile.isViewableItem
+                                                                  ? "#334155"
+                                                                  : (expandMouse.containsMouse ? "#38BDF8"
+                                                                     : ((galTile.isVideoItem || galTile.isAudioItem) ? "#0284C7" : "#334155"))
                                                     border.width: 1
-                                                    opacity: (galMouse.containsMouse || expandMouse.containsMouse) ? 1.0 : 0.72
+                                                    opacity: (galMouse.containsMouse || expandMouse.containsMouse) ? 1.0 : 0.78
                                                     Behavior on opacity { NumberAnimation { duration: 120 } }
                                                     Behavior on color { ColorAnimation { duration: 100 } }
                                                     z: 3
@@ -1675,16 +2242,22 @@ Item {
                                                         anchors.centerIn: parent
                                                         spacing: 3
                                                         Text {
-                                                            text: expandBadgeRect.isVideo ? "⚠️" : "🔍"
+                                                            text: (galTile.isVideoItem || galTile.isAudioItem) ? "▶"
+                                                                  : (galTile.isViewableItem ? "🔍" : "📦")
                                                             font.pixelSize: 9
                                                             anchors.verticalCenter: parent.verticalCenter
                                                         }
                                                         Text {
-                                                            text: expandBadgeRect.isVideo ? "No Preview" : "Preview"
+                                                            objectName: "expandBadgeLabel"
+                                                            text: (galTile.isVideoItem || galTile.isAudioItem) ? "Play"
+                                                                  : (galTile.isViewableItem ? "Preview" : "File")
                                                             font.family: "Segoe UI, sans-serif"
                                                             font.pixelSize: 9
                                                             font.weight: Font.Bold
-                                                            color: expandBadgeRect.isVideo ? "#F59E0B" : (expandMouse.containsMouse ? "#FFFFFF" : "#CBD5E1")
+                                                            color: !galTile.isViewableItem
+                                                                   ? "#94A3B8"
+                                                                   : (expandMouse.containsMouse ? "#FFFFFF"
+                                                                      : ((galTile.isVideoItem || galTile.isAudioItem) ? "#38BDF8" : "#CBD5E1"))
                                                             anchors.verticalCenter: parent.verticalCenter
                                                         }
                                                     }
@@ -1694,8 +2267,8 @@ Item {
                                                         objectName: "expandBadgeMouse"
                                                         anchors.fill: parent
                                                         hoverEnabled: true
-                                                        cursorShape: expandBadgeRect.isVideo ? Qt.ArrowCursor : Qt.PointingHandCursor
-                                                        enabled: !expandBadgeRect.isVideo
+                                                        cursorShape: galTile.isViewableItem ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                                        enabled: galTile.isViewableItem
                                                         onClicked: function(mouse) {
                                                             mouse.accepted = true
                                                             modalRoot.openLightbox(index)
@@ -1799,8 +2372,24 @@ Item {
                                     model: postFilesModel
 
                                     delegate: Item {
+                                        id: listRowItem
                                         Layout.fillWidth: true
                                         height: 52
+
+                                        readonly property var _fMeta: ({
+                                            "name": model.name || "",
+                                            "path": model.path || "",
+                                            "url": model.url || "",
+                                            "ext": model.ext || "",
+                                            "media_type": model.media_type || "",
+                                            "is_loop": !!model.is_loop
+                                        })
+                                        readonly property bool isVideoItem: modalRoot.isVideoFile(_fMeta)
+                                        readonly property bool isAudioItem: modalRoot.isAudioFile(_fMeta)
+                                        readonly property bool isGifItem: modalRoot.isGifFile(_fMeta)
+                                        readonly property bool isArchiveItem: modalRoot._mediaType(_fMeta) === "archive"
+                                        readonly property bool isViewableItem: modalRoot.isViewableFile(_fMeta)
+                                        readonly property string kindText: modalRoot.fileKindLabel(_fMeta)
 
                                         // Background rect (hover state driven by fileRowBg)
                                         Rectangle {
@@ -1824,7 +2413,17 @@ Item {
                                             hoverEnabled: true
                                             z: 0
                                             cursorShape: Qt.PointingHandCursor
-                                            onClicked: modalRoot.toggleFileItem(index)
+                                            onClicked: function(mouse) {
+                                                if (mouse.modifiers & Qt.ShiftModifier) {
+                                                    modalRoot.toggleFileItem(index, true)
+                                                    return
+                                                }
+                                                if (mouse.modifiers & Qt.ControlModifier) {
+                                                    if (listRowItem.isViewableItem) modalRoot.openLightbox(index)
+                                                    return
+                                                }
+                                                modalRoot.toggleFileItem(index, false)
+                                            }
                                         }
 
                                         // Content row (z:1 so it sits above the background MouseArea)
@@ -1849,22 +2448,38 @@ Item {
 
                                                 Text {
                                                     anchors.centerIn: parent
-                                                    text: {
-                                                        var fn = (model.name || "").toLowerCase()
-                                                        if (fn.endsWith(".zip") || fn.endsWith(".rar") || fn.endsWith(".7z")) return "📦"
-                                                        if (fn.endsWith(".mp4") || fn.endsWith(".mkv") || fn.endsWith(".webm") || fn.endsWith(".mov")) return "🎥"
-                                                        if (fn.endsWith(".mp3") || fn.endsWith(".wav") || fn.endsWith(".flac") || fn.endsWith(".m4a")) return "🎵"
-                                                        return "🖼️"
-                                                    }
+                                                    text: listRowItem.isArchiveItem ? "📦"
+                                                          : (listRowItem.isVideoItem ? "🎬"
+                                                          : (listRowItem.isAudioItem ? "🎵"
+                                                          : (listRowItem.isGifItem ? "🎞" : "🖼️")))
                                                     font.pixelSize: 16
                                                 }
 
                                                 Image {
+                                                    id: listRowThumbImg
                                                     anchors.fill: parent
-                                                    source: (modalRoot.isImageFile(model.name, model.path, model.thumbnail) ? (model.thumbnail || "") : "")
+                                                    source: modalRoot.safeThumbUrl(model.thumbnail, model.provider_id)
                                                     fillMode: Image.PreserveAspectCrop
                                                     visible: status === Image.Ready
                                                     cache: true
+                                                }
+
+                                                Rectangle {
+                                                    visible: listRowItem.isVideoItem && listRowThumbImg.status === Image.Ready
+                                                    anchors.right: parent.right
+                                                    anchors.bottom: parent.bottom
+                                                    anchors.margins: 2
+                                                    width: 14
+                                                    height: 14
+                                                    radius: 7
+                                                    color: "#CC0A0E17"
+                                                    border.color: "#38BDF8"
+                                                    Text {
+                                                        anchors.centerIn: parent
+                                                        text: "▶"
+                                                        font.pixelSize: 7
+                                                        color: "#38BDF8"
+                                                    }
                                                 }
                                             }
 
@@ -1908,33 +2523,31 @@ Item {
                                                 }
 
                                                 Text {
-                                                    text: {
-                                                        var parts = (model.path || "").split(".")
-                                                        var ext = parts.length > 1 ? ("." + parts[parts.length - 1].toUpperCase()) : ""
-                                                        return ext ? ("Format: " + ext) : "File #" + (index + 1)
-                                                    }
+                                                    text: listRowItem.kindText !== "FILE"
+                                                          ? ("Format: " + listRowItem.kindText)
+                                                          : ("File #" + (index + 1))
                                                     font.family: "Segoe UI, sans-serif"
                                                     font.pixelSize: 10
                                                     color: "#475569"
                                                 }
                                             }
 
-                                            // View button (z:2 to capture clicks above fileRowHover)
+                                            // View / Play button (z:2 to capture clicks above fileRowHover)
                                             Rectangle {
+                                                id: listViewBtn
+                                                objectName: "listFileViewBtn"
                                                 Layout.preferredHeight: 28
                                                 Layout.preferredWidth: viewBtnRow.implicitWidth + 18
                                                 radius: 4
                                                 Layout.alignment: Qt.AlignVCenter
                                                 z: 2
 
-                                                // Detect if this file is a video
-                                                readonly property bool isVideoFile: {
-                                                    var fn = (model.name || "").toLowerCase()
-                                                    return fn.endsWith(".mp4") || fn.endsWith(".mkv") || fn.endsWith(".webm") || fn.endsWith(".mov") || fn.endsWith(".avi") || fn.endsWith(".m4v")
-                                                }
-
-                                                color: isVideoFile ? "#1A0F00" : (viewBtnMouse.containsMouse ? "#1E4A72" : "#141A26")
-                                                border.color: isVideoFile ? "#92400E" : (viewBtnMouse.containsMouse ? "#38BDF8" : "#2D3748")
+                                                color: !listRowItem.isViewableItem
+                                                       ? "#141A26"
+                                                       : (viewBtnMouse.containsMouse ? "#1E4A72" : "#141A26")
+                                                border.color: !listRowItem.isViewableItem
+                                                              ? "#222B3D"
+                                                              : (viewBtnMouse.containsMouse ? "#38BDF8" : "#2D3748")
 
                                                 Behavior on color { ColorAnimation { duration: 100 } }
                                                 Behavior on border.color { ColorAnimation { duration: 100 } }
@@ -1944,26 +2557,32 @@ Item {
                                                     anchors.centerIn: parent
                                                     spacing: 4
                                                     Text {
-                                                        text: parent.parent.isVideoFile ? "⚠️" : "🔍"
+                                                        text: (listRowItem.isVideoItem || listRowItem.isAudioItem) ? "▶"
+                                                              : (listRowItem.isViewableItem ? "🔍" : "📦")
                                                         font.pixelSize: 10
                                                         anchors.verticalCenter: parent.verticalCenter
                                                     }
                                                     Text {
-                                                        text: parent.parent.isVideoFile ? "No Preview" : "View"
+                                                        text: (listRowItem.isVideoItem || listRowItem.isAudioItem) ? "Play"
+                                                              : (listRowItem.isViewableItem ? "View" : "Archive")
                                                         font.family: "Segoe UI, sans-serif"
                                                         font.pixelSize: 10
                                                         font.weight: 600
-                                                        color: parent.parent.isVideoFile ? "#F59E0B" : (viewBtnMouse.containsMouse ? "#38BDF8" : "#94A3B8")
+                                                        color: !listRowItem.isViewableItem
+                                                               ? "#64748B"
+                                                               : (viewBtnMouse.containsMouse ? "#38BDF8"
+                                                                  : ((listRowItem.isVideoItem || listRowItem.isAudioItem) ? "#38BDF8" : "#94A3B8"))
                                                         anchors.verticalCenter: parent.verticalCenter
                                                     }
                                                 }
 
                                                 MouseArea {
                                                     id: viewBtnMouse
+                                                    objectName: "listFileViewMouse"
                                                     anchors.fill: parent
                                                     hoverEnabled: true
-                                                    cursorShape: parent.isVideoFile ? Qt.ArrowCursor : Qt.PointingHandCursor
-                                                    enabled: !parent.isVideoFile
+                                                    cursorShape: listRowItem.isViewableItem ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                                    enabled: listRowItem.isViewableItem
                                                     // Consume click so it doesn't fall through to fileRowHover
                                                     onClicked: function(mouse) {
                                                         mouse.accepted = true
@@ -2003,7 +2622,7 @@ Item {
                                                     cursorShape: Qt.PointingHandCursor
                                                     onClicked: function(mouse) {
                                                         mouse.accepted = true
-                                                        modalRoot.toggleFileItem(index)
+                                                        modalRoot.toggleFileItem(index, (mouse.modifiers & Qt.ShiftModifier) !== 0)
                                                     }
                                                 }
                                             }
@@ -2072,6 +2691,18 @@ Item {
                             anchors.verticalCenter: parent.verticalCenter
                         }
                     }
+                }
+
+                Text {
+                    visible: !modalRoot.isInspecting || postFilesModel.count > 1
+                    text: modalRoot.isInspecting
+                        ? "Tip: Shift+click for range • Ctrl+click to preview/play"
+                        : (modalRoot.quickSelectClickMode
+                            ? "Tip: Click to select • Ctrl+click to preview/play • Shift+click for range"
+                            : "Tip: Click to preview/play • Ctrl+click to select • Shift+click for range")
+                    font.family: "Segoe UI, sans-serif"
+                    font.pixelSize: 10
+                    color: "#64748B"
                 }
 
                 Item { Layout.fillWidth: true }
@@ -2195,284 +2826,21 @@ Item {
         }
     }
 
-    // ── Fullscreen Lightbox Visualizer Overlay ─────────────────────
-    Rectangle {
-        id: lightboxOverlay
+    // ── Fullscreen Media Lightbox Modal (Images, GIFs, Video, Audio) ─────
+    MediaLightboxModal {
+        id: selectionLightbox
         anchors.fill: parent
-        color: "#070A12"
-        visible: modalRoot.lightboxVisible
-        opacity: modalRoot.lightboxVisible ? 1.0 : 0.0
         z: 10000
-
-        Behavior on opacity { NumberAnimation { duration: 200 } }
-
-        MouseArea {
-            anchors.fill: parent
-            onClicked: modalRoot.closeLightbox()
-        }
-
-        ColumnLayout {
-            anchors.fill: parent
-            anchors.margins: 20
-            spacing: 12
-
-            // Lightbox Top Navigation Bar
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 12
-
-                Rectangle {
-                    height: 32
-                    implicitWidth: lbBackRow.implicitWidth + 16
-                    radius: 6
-                    color: lbBackMouse.containsMouse ? "#1E293B" : "#141A26"
-                    border.color: "#2D3748"
-
-                    Row {
-                        id: lbBackRow
-                        anchors.centerIn: parent
-                        spacing: 5
-                        Text { text: "✕"; font.pixelSize: 11; color: "#94A3B8"; anchors.verticalCenter: parent.verticalCenter }
-                        Text {
-                            text: "Close Preview (Esc)"
-                            font.family: "Segoe UI, sans-serif"
-                            font.pixelSize: 11
-                            color: "#E2E8F0"
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
-                    }
-                    MouseArea {
-                        id: lbBackMouse
-                        anchors.fill: parent
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: modalRoot.closeLightbox()
-                    }
-                }
-
-                // File Name and Index
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    spacing: 1
-
-                    Text {
-                        text: modalRoot.lightboxItem ? (modalRoot.lightboxItem.name || "Attachment") : ""
-                        font.family: "Segoe UI, sans-serif"
-                        font.pixelSize: 13
-                        font.weight: Font.Bold
-                        color: "#F8FAFC"
-                        elide: Text.ElideMiddle
-                        Layout.fillWidth: true
-                    }
-
-                    Text {
-                        text: (modalRoot.lightboxIndex + 1) + " of " + postFilesModel.count + " files"
-                        font.family: "Segoe UI, sans-serif"
-                        font.pixelSize: 10
-                        color: "#94A3B8"
-                    }
-                }
-
-                // Interactive Selection Checkbox in Lightbox
-                Rectangle {
-                    id: lbSelRect
-                    objectName: "lbSelRect"
-                    height: 32
-                    implicitWidth: lbSelRow.implicitWidth + 18
-                    radius: 6
-                    readonly property bool isCurrentSelected: (modalRoot.lightboxIndex >= 0 && modalRoot.lightboxIndex < postFilesModel.count)
-                                                              ? !!postFilesModel.get(modalRoot.lightboxIndex).selected : false
-                    color: isCurrentSelected ? "#0C2A3D" : "#1A2234"
-                    border.color: isCurrentSelected ? "#38BDF8" : "#475569"
-
-                    Row {
-                        id: lbSelRow
-                        anchors.centerIn: parent
-                        spacing: 6
-                        Rectangle {
-                            width: 16
-                            height: 16
-                            radius: 3
-                            color: lbSelRect.isCurrentSelected ? "#38BDF8" : "transparent"
-                            border.color: lbSelRect.isCurrentSelected ? "#38BDF8" : "#64748B"
-                            anchors.verticalCenter: parent.verticalCenter
-                            Text {
-                                anchors.centerIn: parent
-                                text: "✓"
-                                font.pixelSize: 11
-                                font.weight: Font.Bold
-                                color: "#0A0E17"
-                                visible: lbSelRect.isCurrentSelected
-                            }
-                        }
-                        Text {
-                            text: lbSelRect.isCurrentSelected ? "Selected for Download" : "Excluded from Download"
-                            font.family: "Segoe UI, sans-serif"
-                            font.pixelSize: 11
-                            font.weight: 600
-                            color: lbSelRect.isCurrentSelected ? "#38BDF8" : "#94A3B8"
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
-                    }
-
-                    MouseArea {
-                        id: lbSelMouse
-                        objectName: "lbSelMouse"
-                        anchors.fill: parent
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: modalRoot.toggleFileItem(modalRoot.lightboxIndex)
-                    }
-                }
-            }
-
-            // Lightbox Main Preview Viewport with Next/Prev Arrows
-            Item {
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-
-                // Prev Arrow
-                Rectangle {
-                    anchors.left: parent.left
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 44
-                    height: 44
-                    radius: 22
-                    color: prevMouse.containsMouse ? "#334155" : "#B31E293B"
-                    border.color: "#475569"
-                    z: 10
-
-                    Text {
-                        anchors.centerIn: parent
-                        text: "←"
-                        font.pixelSize: 18
-                        color: "#F8FAFC"
-                    }
-
-                    MouseArea {
-                        id: prevMouse
-                        anchors.fill: parent
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: modalRoot.prevLightboxItem()
-                    }
-                }
-
-                // Next Arrow
-                Rectangle {
-                    anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 44
-                    height: 44
-                    radius: 22
-                    color: nextMouse.containsMouse ? "#334155" : "#B31E293B"
-                    border.color: "#475569"
-                    z: 10
-
-                    Text {
-                        anchors.centerIn: parent
-                        text: "→"
-                        font.pixelSize: 18
-                        color: "#F8FAFC"
-                    }
-
-                    MouseArea {
-                        id: nextMouse
-                        anchors.fill: parent
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: modalRoot.nextLightboxItem()
-                    }
-                }
-
-                // Image Container
-                Item {
-                    anchors.fill: parent
-                    anchors.leftMargin: 60
-                    anchors.rightMargin: 60
-
-                    Image {
-                        id: lbImage
-                        anchors.fill: parent
-                        source: (modalRoot.lightboxItem && modalRoot.isImageFile(modalRoot.lightboxItem.name, modalRoot.lightboxItem.path, modalRoot.lightboxItem.previewUrl || modalRoot.lightboxItem.thumbnail))
-                                ? (modalRoot.lightboxItem.previewUrl || modalRoot.lightboxItem.thumbnail || "")
-                                : ""
-                        fillMode: Image.PreserveAspectFit
-                        asynchronous: true
-                        cache: true
-                        opacity: status === Image.Ready ? 1.0 : 0.0
-                        Behavior on opacity { NumberAnimation { duration: 180 } }
-                    }
-
-                    // Fallback for non-images or while loading
-                    Column {
-                        anchors.centerIn: parent
-                        spacing: 10
-                        visible: lbImage.status !== Image.Ready
-
-                        readonly property bool lbIsVideo: {
-                            var fn = modalRoot.lightboxItem ? (modalRoot.lightboxItem.name || "").toLowerCase() : ""
-                            return fn.endsWith(".mp4") || fn.endsWith(".mkv") || fn.endsWith(".webm") || fn.endsWith(".mov") || fn.endsWith(".avi") || fn.endsWith(".m4v")
-                        }
-
-                        Text {
-                            anchors.horizontalCenter: parent.horizontalCenter
-                            text: {
-                                var fn = modalRoot.lightboxItem ? (modalRoot.lightboxItem.name || "").toLowerCase() : ""
-                                if (fn.endsWith(".zip") || fn.endsWith(".rar") || fn.endsWith(".7z")) return "📦"
-                                if (fn.endsWith(".mp4") || fn.endsWith(".mkv") || fn.endsWith(".webm") || fn.endsWith(".mov") || fn.endsWith(".avi") || fn.endsWith(".m4v")) return "🎥"
-                                if (fn.endsWith(".mp3") || fn.endsWith(".wav") || fn.endsWith(".flac") || fn.endsWith(".m4a")) return "🎵"
-                                return "🖼️"
-                            }
-                            font.pixelSize: 48
-                        }
-
-                        Text {
-                            anchors.horizontalCenter: parent.horizontalCenter
-                            text: {
-                                var fn = modalRoot.lightboxItem ? (modalRoot.lightboxItem.name || "").toLowerCase() : ""
-                                if (fn.endsWith(".zip") || fn.endsWith(".rar") || fn.endsWith(".7z")) return "Archive File"
-                                if (fn.endsWith(".mp4") || fn.endsWith(".mkv") || fn.endsWith(".webm") || fn.endsWith(".mov") || fn.endsWith(".avi") || fn.endsWith(".m4v")) return "Video File"
-                                if (fn.endsWith(".mp3") || fn.endsWith(".wav") || fn.endsWith(".flac") || fn.endsWith(".m4a")) return "Audio Track"
-                                return "Loading Preview..."
-                            }
-                            font.family: "Segoe UI, sans-serif"
-                            font.pixelSize: 18
-                            font.weight: Font.Bold
-                            color: "#CBD5E1"
-                        }
-
-                        // Video-specific warning banner
-                        Rectangle {
-                            anchors.horizontalCenter: parent.horizontalCenter
-                            visible: parent.lbIsVideo
-                            height: 32
-                            width: videoWarnRow.implicitWidth + 24
-                            radius: 6
-                            color: "#2D1A00"
-                            border.color: "#92400E"
-                            border.width: 1
-
-                            Row {
-                                id: videoWarnRow
-                                anchors.centerIn: parent
-                                spacing: 6
-                                Text { text: "⚠️"; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
-                                Text {
-                                    text: "Videos cannot be previewed — they will be downloaded to your disk."
-                                    font.family: "Segoe UI, sans-serif"
-                                    font.pixelSize: 12
-                                    color: "#F59E0B"
-                                    anchors.verticalCenter: parent.verticalCenter
-                                }
-                            }
-                        }
-
-                        Text {
-                            anchors.horizontalCenter: parent.horizontalCenter
-                            text: modalRoot.lightboxItem ? (modalRoot.lightboxItem.name || "") : ""
-                            font.family: "Segoe UI, sans-serif"
-                            font.pixelSize: 11
-                            color: "#64748B"
-                        }
-                    }
-                }
+        bridge: modalRoot.bridge
+        browserBridge: modalRoot.browserBridge
+        hideExternalActions: true
+        selectionMode: true
+        currentItemSelected: (modalRoot._selectionTick >= 0 && modalRoot.lightboxIndex >= 0 && modalRoot.lightboxIndex < postFilesModel.count)
+            ? !!postFilesModel.get(modalRoot.lightboxIndex).selected
+            : false
+        onSelectionToggled: {
+            if (modalRoot.lightboxIndex >= 0) {
+                modalRoot.toggleFileItem(modalRoot.lightboxIndex, false)
             }
         }
     }

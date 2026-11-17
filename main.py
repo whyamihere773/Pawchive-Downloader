@@ -69,6 +69,9 @@ def _install_qt_message_handler():
         # Ignore benign internal Qt/FFmpeg cancellation notifications (e.g. when clearing source or stopping playback)
         if "Immediate exit requested" in message:
             return
+        # Ignore expected 404s when a remote creator has no custom avatar or banner uploaded (UI shows fallback badge)
+        if "QQuickImage: Error transferring https://" in message and "status code 404" in message:
+            return
 
         # The same warning can fire thousands of times (e.g. on every frame); keep the first 20
         count = seen.get(message, 0) + 1
@@ -225,10 +228,11 @@ def main():
     engine.rootContext().setContextProperty("updaterBridge", updater_bridge)
     engine.rootContext().setContextProperty("Lang", translation_manager)
 
-    from bridge.thumbnail_provider import FrameProvider, FullImageProvider, ThumbnailProvider
+    from bridge.thumbnail_provider import FrameProvider, FullImageProvider, RemoteThumbProvider, ThumbnailProvider
     engine.addImageProvider("thumb", ThumbnailProvider())
     engine.addImageProvider("full", FullImageProvider())   # image viewer: AVIF / mis-named files via Pillow
     engine.addImageProvider("frame", FrameProvider())      # animations Qt can't play (APNG, animated AVIF)
+    engine.addImageProvider("remotethumb", RemoteThumbProvider())  # browser CDN thumbnails w/ headers + silent 404 fallback
 
     from bridge.gallery_tools_bridge import GalleryToolsBridge
     gallery_tools_bridge = GalleryToolsBridge(app_bridge, getattr(app_bridge, "_watchlist_manager", None))
@@ -241,6 +245,21 @@ def main():
     from bridge.gallery_archive_bridge import GalleryArchiveBridge
     gallery_archive_bridge = GalleryArchiveBridge(app_bridge, gallery_tools_bridge)
     engine.rootContext().setContextProperty("galleryArchiveBridge", gallery_archive_bridge)
+
+    from bridge.browser_bridge import BrowserBridge
+    browser_bridge = BrowserBridge(app_bridge=app_bridge)
+    engine.rootContext().setContextProperty("browserBridge", browser_bridge)
+
+    from bridge.visual_sorter_bridge import VisualSorterBridge
+    visual_sorter_bridge = VisualSorterBridge(
+        app_bridge=app_bridge,
+        gallery_tools_bridge=gallery_tools_bridge,
+    )
+    engine.rootContext().setContextProperty("visualSorterBridge", visual_sorter_bridge)
+
+    from bridge.statistics_bridge import StatisticsBridge
+    statistics_bridge = StatisticsBridge(app_bridge=app_bridge)
+    engine.rootContext().setContextProperty("statisticsBridge", statistics_bridge)
 
     qml_file = os.path.join(base_dir, "qml", "main.qml")
 

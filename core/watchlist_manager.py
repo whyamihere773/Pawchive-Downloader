@@ -628,6 +628,7 @@ class WatchlistManager:
         download_dir: str = "",
         options: Optional[Dict[str, Any]] = None,
         is_favorite: bool = False,
+        custom_folder: Optional[bool] = None,
     ) -> bool:
         """
         Add or update a watchlist entry.
@@ -635,10 +636,11 @@ class WatchlistManager:
         """
         with self._lock:
             return self._add_entry_locked(url, creator_name, user_id, service, domain, last_post_id,
-                                          last_post_date, auto_check, download_dir, options, is_favorite)
+                                          last_post_date, auto_check, download_dir, options, is_favorite, custom_folder)
 
     def _add_entry_locked(self, url, creator_name, user_id, service, domain, last_post_id,
-                          last_post_date, auto_check, download_dir, options, is_favorite: bool = False) -> bool:
+                          last_post_date, auto_check, download_dir, options, is_favorite: bool = False,
+                          custom_folder: Optional[bool] = None) -> bool:
         existing = self._find(user_id, service)
         if existing:
             # Update last download info but don't touch auto_check preference
@@ -669,10 +671,24 @@ class WatchlistManager:
                     existing.download_dir = download_dir
             elif download_dir and not existing.download_dir:
                 existing.download_dir = download_dir
+            if custom_folder is True:
+                existing.custom_folder = True
+                if download_dir:
+                    norm_dir = os.path.normpath(download_dir)
+                    existing.download_dir = norm_dir
+                    if not hasattr(existing, "download_dirs") or not isinstance(existing.download_dirs, list):
+                        existing.download_dirs = []
+                    if norm_dir not in existing.download_dirs:
+                        existing.download_dirs.insert(0, norm_dir)
+            elif custom_folder is False:
+                existing.custom_folder = False
             if url:
                 existing.url = url
             if options:
-                existing.options = options
+                existing_is_custom = isinstance(getattr(existing, "options", None), dict) and bool(existing.options.get("use_custom_settings"))
+                incoming_is_custom = isinstance(options, dict) and bool(options.get("use_custom_settings"))
+                if not existing_is_custom or incoming_is_custom:
+                    existing.options = options
             if is_favorite:
                 existing.is_favorite = True
             self.save(existing)
@@ -689,6 +705,7 @@ class WatchlistManager:
                 added_at=datetime.datetime.now().isoformat(timespec="seconds"),
                 auto_check=auto_check,
                 download_dir=download_dir,
+                custom_folder=bool(custom_folder),
                 options=options or {},
                 ignored_post_ids=[],
                 cached_new_posts=[],
@@ -856,10 +873,13 @@ class WatchlistManager:
                 self.save(*changed)
             return len(changed)
 
-    def set_download_dir(self, user_id: str, service: str, download_dir: str) -> bool:
-        """Set or update the custom download directory for an entry."""
-        existing = self._find(user_id, service)
-        if existing:
+    def set_download_dir(self, user_id: str, service: str, download_dir: str,
+                         custom_folder: Optional[bool] = None) -> bool:
+        """Set or update the download directory for a watchlist artist."""
+        with self._lock:
+            existing = self._find(user_id, service)
+            if not existing:
+                return False
             norm = os.path.normpath(download_dir) if download_dir else ""
             existing.download_dir = norm
             if norm:
@@ -867,9 +887,58 @@ class WatchlistManager:
                     existing.download_dirs = []
                 if norm not in existing.download_dirs:
                     existing.download_dirs.insert(0, norm)
+            if custom_folder is not None:
+                existing.custom_folder = bool(custom_folder)
             self.save(existing)
             return True
-        return False
+
+    def update_entry_settings(
+        self,
+        user_id: str,
+        service: str,
+        *,
+        auto_check: Optional[bool] = None,
+        options: Optional[Dict[str, Any]] = None,
+        last_post_date: Optional[str] = None,
+    ) -> bool:
+        """Update auto-check, per-creator options, or cutoff date for a watchlist entry."""
+        with self._lock:
+            existing = self._find(user_id, service)
+            if not existing:
+                return False
+            if auto_check is not None:
+                existing.auto_check = bool(auto_check)
+            if options is not None:
+                existing.options = dict(options)
+            if last_post_date is not None:
+                norm_date = self.normalize_date(last_post_date)
+                if norm_date is not None and norm_date != existing.last_post_date:
+                    existing.last_post_date = norm_date
+                    existing.last_post_id = ""
+                    existing.cutoff_day_ids = []
+                    if not norm_date:
+                        existing.cached_new_posts = []
+                        existing.new_post_count = 0
+            self.save(existing)
+            return True
+
+    def reset_for_redownload(self, user_id: str, service: str, keep_dir: str = "") -> bool:
+        """Clear download cutoff/cache before a full destructive re-download, keeping settings and folder."""
+        with self._lock:
+            existing = self._find(user_id, service)
+            if not existing:
+                return False
+            existing.last_post_id = ""
+            existing.last_post_date = ""
+            existing.cutoff_day_ids = []
+            existing.cached_new_posts = []
+            existing.new_post_count = 0
+            if keep_dir:
+                norm_keep = os.path.normpath(keep_dir)
+                existing.download_dir = norm_keep
+                existing.download_dirs = [norm_keep]
+            self.save(existing)
+            return True
 
     def add_download_dir(self, user_id: str, service: str, new_dir: str) -> bool:
         """Add a path to an artist's download_dirs list if not present."""

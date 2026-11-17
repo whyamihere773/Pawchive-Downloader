@@ -17,6 +17,7 @@ from collections import deque
 from typing import Callable, List, Optional, Tuple
 
 from core.logger import logger
+from core.path_utils import subprocess_env_kwargs
 from services.bulk_decompressor import (
     ARCHIVE_EXTENSIONS,
     ArchiveItem,
@@ -254,6 +255,7 @@ class ArchiveTools:
                 stderr=subprocess.STDOUT,
                 timeout=120,
                 **_hidden_window_kwargs(),
+                **subprocess_env_kwargs(),
             )
         except Exception:
             return False
@@ -318,6 +320,7 @@ class ArchiveTools:
                 encoding="utf-8",
                 errors="replace",
                 **_hidden_window_kwargs(),
+                **subprocess_env_kwargs(),
             )
         except Exception as e:
             return False, f"Failed to launch 7-Zip: {e}"

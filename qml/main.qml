@@ -31,16 +31,46 @@ ApplicationWindow {
         }
     }
 
+    readonly property var ctxBrowserBridge: (typeof browserBridge !== "undefined" && browserBridge) ? browserBridge : null
     property bool showConsole: true
-    property int currentTab: 0 // 0: Downloader, 1: Queue, 2: Watchlist, 3: Decompressor, 4: Link Vault, 5: Scheduler, 6: Gallery, 7: Known, 8: Archive, 9: History, 10: Settings
-    // The Gallery has no use for the download controls, so they step aside to give it the room
-    readonly property bool hideDownloadChrome: currentTab === 6
+    property int currentTab: 0 // 0: Downloader, 1: Browser, 2: Queue, 3: Watchlist, 4: Decompressor, 5: Link Vault, 6: Scheduler, 7: Gallery, 8: Known, 9: Archive, 10: History, 11: Statistics, 12: Settings
+    // The Gallery and Browser have no use for the download controls, so they step aside to give them room
+    readonly property bool hideDownloadChrome: currentTab === 1 || currentTab === 7
 
-    // Safe Mode Tab Vaulting (Tabs 1–9 quarantined after PIN reset or 5 failed attempts)
+    // Safe Mode Tab Vaulting & User-Configurable Tab Visibility
     readonly property bool tabsVaulted: appBridge ? appBridge.safeModeActive : false
+    readonly property var disabledTabsList: appBridge ? appBridge.disabledTabs : []
     readonly property bool tabPermitted: !tabsVaulted
+
+    function isTabDisabled(tabKey) {
+        if (!disabledTabsList) return false
+        return disabledTabsList.indexOf(tabKey) >= 0
+    }
+
+    function tabKeyForIndex(idx) {
+        if (idx === 1) return "browser"
+        if (idx === 2) return "queue"
+        if (idx === 3) return "watchlist"
+        if (idx === 4) return "decompressor"
+        if (idx === 5) return "link_vault"
+        if (idx === 6) return "scheduler"
+        if (idx === 7) return "gallery"
+        if (idx === 8) return "known"
+        if (idx === 9) return "archive"
+        if (idx === 10) return "history"
+        if (idx === 11) return "statistics"
+        return ""
+    }
+
+    onDisabledTabsListChanged: {
+        var curKey = tabKeyForIndex(currentTab)
+        if (curKey !== "" && isTabDisabled(curKey)) {
+            currentTab = 0
+        }
+    }
+
     onTabsVaultedChanged: {
-        if (tabsVaulted && currentTab !== 0 && currentTab !== 10) {
+        if (tabsVaulted && currentTab !== 0 && currentTab !== 12) {
             currentTab = 0
         }
     }
@@ -157,7 +187,7 @@ ApplicationWindow {
 
     function openSettingsTab(subTabIndex) {
         var idx = (subTabIndex !== undefined ? subTabIndex : 0)
-        appWindow.currentTab = 10;      // builds the Settings tab if it wasn't opened yet
+        appWindow.currentTab = 12;      // builds the Settings tab if it wasn't opened yet
         if (settingsLoader.item) settingsLoader.item.currentSubTab = idx
         else appWindow.pendingSettingsSubTab = idx
     }
@@ -254,8 +284,17 @@ ApplicationWindow {
 
                 function ensureIndexVisible(tabIndex) {
                     if (contentWidth <= width) return
-                    if (tabIndex < 0 || tabIndex >= tabsRow.children.length) return
-                    var tabItem = tabsRow.children[tabIndex]
+                    var tabItem = null
+                    for (var i = 0; i < tabsRow.children.length; i++) {
+                        var ch = tabsRow.children[i]
+                        if (ch && ch.tabIdx !== undefined && ch.tabIdx === tabIndex) {
+                            tabItem = ch
+                            break
+                        }
+                    }
+                    if (!tabItem && tabIndex >= 0 && tabIndex < tabsRow.children.length) {
+                        tabItem = tabsRow.children[tabIndex]
+                    }
                     if (!tabItem) return
                     var pad = 36
                     var tabLeft = tabItem.x
@@ -274,6 +313,7 @@ ApplicationWindow {
 
                     // Tab: Downloader
                 Rectangle {
+                    property int tabIdx: 0
                     width: tab0Row.implicitWidth + 18
                     height: 30
                     radius: 6
@@ -316,17 +356,100 @@ ApplicationWindow {
                     }
                 }
 
+                // Tab: Browser (2nd tab — Dual-Mode Online & Local On-Disk Native Browser)
+                Rectangle {
+                    id: browserTabCard
+                    property int tabIdx: 1
+                    readonly property bool tabPermitted: !appWindow.tabsVaulted && !appWindow.isTabDisabled("browser")
+                    visible: width > 0.5
+                    clip: true
+                    width: tabPermitted ? (tabBrowserRow.implicitWidth + 18) : 0
+                    opacity: tabPermitted ? 1.0 : 0.0
+                    height: 30
+                    radius: 6
+                    color: appWindow.currentTab === 1 ? "#181B22" : (tabBrowserMouse.containsMouse ? "#141720" : "transparent")
+                    border.color: appWindow.currentTab === 1 ? "#38BDF8" : "transparent"
+                    border.width: 1
+
+                    scale: tabBrowserMouse.pressed ? 0.94 : (tabBrowserMouse.containsMouse ? 1.035 : (tabPermitted ? 1.0 : 0.8))
+                    transformOrigin: Item.Center
+
+                    Behavior on width {
+                        NumberAnimation {
+                            duration: tabPermitted ? 280 : 180
+                            easing.type: tabPermitted ? Easing.OutBack : Easing.InQuad
+                            easing.overshoot: 1.3
+                        }
+                    }
+                    Behavior on opacity { NumberAnimation { duration: tabPermitted ? 240 : 140; easing.type: Easing.OutCubic } }
+                    Behavior on scale {
+                        NumberAnimation { duration: 180; easing.type: Easing.OutBack; easing.overshoot: 1.5 }
+                    }
+                    Behavior on color { ColorAnimation { duration: 150; easing.type: Easing.OutCubic } }
+                    Behavior on border.color { ColorAnimation { duration: 150; easing.type: Easing.OutCubic } }
+
+                    Row {
+                        id: tabBrowserRow
+                        anchors.centerIn: parent
+                        spacing: 6
+                        Text { text: "🌐"; font.pixelSize: 12 }
+                        Text {
+                            text: appWindow.tr("tab_browser", "Browser")
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 12
+                            font.weight: appWindow.currentTab === 1 ? 600 : Font.Normal
+                            color: appWindow.currentTab === 1 ? "#F8FAFC" : "#94A3B8"
+                        }
+
+                        // Live Marked-for-Download Cart Badge
+                        Rectangle {
+                            id: browserMarkBadge
+                            property int markCount: (typeof browserBridge !== "undefined" && browserBridge) ? browserBridge.markedCount : 0
+                            visible: markCount > 0
+                            width: Math.max(16, browserBadgeTxt.implicitWidth + 8)
+                            height: 16
+                            radius: 8
+                            color: "#0284C7"
+                            anchors.verticalCenter: parent.verticalCenter
+
+                            Behavior on width { NumberAnimation { duration: 160; easing.type: Easing.OutBack } }
+
+                            Text {
+                                id: browserBadgeTxt
+                                anchors.centerIn: parent
+                                text: browserMarkBadge.markCount
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 9
+                                font.weight: Font.Bold
+                                color: "#FFFFFF"
+                            }
+                        }
+                    }
+
+                    MouseArea {
+                        id: tabBrowserMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 400
+                        ToolTip.text: appWindow.tr("tab_browser_tip", "Native In-App Browser (cum.st, pawchive.pw, coomerfans.com) + Multi-Drive On-Disk Local Browser")
+                        onClicked: appWindow.currentTab = 1
+                    }
+                }
+
                 // Tab: Queue
                 Rectangle {
-                    readonly property bool tabPermitted: !appWindow.tabsVaulted
+                    property int tabIdx: 2
+                    readonly property bool tabPermitted: !appWindow.tabsVaulted && !appWindow.isTabDisabled("queue")
                     visible: width > 0.5
                     clip: true
                     width: tabPermitted ? (tab1Row.implicitWidth + 18) : 0
                     opacity: tabPermitted ? 1.0 : 0.0
                     height: 30
                     radius: 6
-                    color: appWindow.currentTab === 1 ? "#181B22" : (tab1Mouse.containsMouse ? "#141720" : "transparent")
-                    border.color: appWindow.currentTab === 1 ? "#38BDF8" : "transparent"
+                    color: appWindow.currentTab === 2 ? "#181B22" : (tab1Mouse.containsMouse ? "#141720" : "transparent")
+                    border.color: appWindow.currentTab === 2 ? "#38BDF8" : "transparent"
                     border.width: 1
 
                     scale: tab1Mouse.pressed ? 0.94 : (tab1Mouse.containsMouse ? 1.035 : (tabPermitted ? 1.0 : 0.8))
@@ -355,8 +478,8 @@ ApplicationWindow {
                             text: appWindow.tr("tab_queue", "Queue")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
-                            font.weight: appWindow.currentTab === 1 ? 600 : Font.Normal
-                            color: appWindow.currentTab === 1 ? "#F8FAFC" : "#94A3B8"
+                            font.weight: appWindow.currentTab === 2 ? 600 : Font.Normal
+                            color: appWindow.currentTab === 2 ? "#F8FAFC" : "#94A3B8"
                         }
                     }
 
@@ -368,22 +491,23 @@ ApplicationWindow {
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
                         ToolTip.text: appWindow.tr("tab_queue_tip", "Task queue and file download monitoring")
-                        onClicked: appWindow.currentTab = 1
+                        onClicked: appWindow.currentTab = 2
                     }
                 }
 
-                // Tab: Watchlist (3rd — tracks followed artists)
+                // Tab: Watchlist (tracks followed artists)
                 Rectangle {
                     id: watchlistTabCard
-                    readonly property bool tabPermitted: !appWindow.tabsVaulted
+                    property int tabIdx: 3
+                    readonly property bool tabPermitted: !appWindow.tabsVaulted && !appWindow.isTabDisabled("watchlist")
                     visible: width > 0.5
                     clip: true
                     width: tabPermitted ? (tab2Row.implicitWidth + 18) : 0
                     opacity: tabPermitted ? 1.0 : 0.0
                     height: 30
                     radius: 6
-                    color: appWindow.currentTab === 2 ? "#181B22" : (tab2Mouse.containsMouse ? "#141720" : "transparent")
-                    border.color: appWindow.currentTab === 2 ? "#A78BFA" : "transparent"
+                    color: appWindow.currentTab === 3 ? "#181B22" : (tab2Mouse.containsMouse ? "#141720" : "transparent")
+                    border.color: appWindow.currentTab === 3 ? "#A78BFA" : "transparent"
                     border.width: 1
 
                     scale: tab2Mouse.pressed ? 0.94 : (tab2Mouse.containsMouse ? 1.035 : (tabPermitted ? 1.0 : 0.8))
@@ -412,8 +536,8 @@ ApplicationWindow {
                             text: appWindow.tr("tab_watchlist", "Watchlist")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
-                            font.weight: appWindow.currentTab === 2 ? 600 : Font.Normal
-                            color: appWindow.currentTab === 2 ? "#F8FAFC" : "#94A3B8"
+                            font.weight: appWindow.currentTab === 3 ? 600 : Font.Normal
+                            color: appWindow.currentTab === 3 ? "#F8FAFC" : "#94A3B8"
                         }
 
                         // Live counter badge — artists that have new posts since last download
@@ -449,21 +573,22 @@ ApplicationWindow {
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
                         ToolTip.text: appWindow.tr("tab_watchlist_tip", "Followed artists — track and download new posts automatically")
-                        onClicked: appWindow.currentTab = 2
+                        onClicked: appWindow.currentTab = 3
                     }
                 }
 
-                // Tab: Bulk Decompressor (3rd — after Watchlist)
+                // Tab: Bulk Decompressor (after Watchlist)
                 Rectangle {
-                    readonly property bool tabPermitted: !appWindow.tabsVaulted
+                    property int tabIdx: 4
+                    readonly property bool tabPermitted: !appWindow.tabsVaulted && !appWindow.isTabDisabled("decompressor")
                     visible: width > 0.5
                     clip: true
                     width: tabPermitted ? (tab3Row.implicitWidth + 18) : 0
                     opacity: tabPermitted ? 1.0 : 0.0
                     height: 30
                     radius: 6
-                    color: appWindow.currentTab === 3 ? "#181B22" : (tab3Mouse.containsMouse ? "#141720" : "transparent")
-                    border.color: appWindow.currentTab === 3 ? "#38BDF8" : "transparent"
+                    color: appWindow.currentTab === 4 ? "#181B22" : (tab3Mouse.containsMouse ? "#141720" : "transparent")
+                    border.color: appWindow.currentTab === 4 ? "#38BDF8" : "transparent"
                     border.width: 1
 
                     scale: tab3Mouse.pressed ? 0.94 : (tab3Mouse.containsMouse ? 1.035 : (tabPermitted ? 1.0 : 0.8))
@@ -492,8 +617,8 @@ ApplicationWindow {
                             text: appWindow.tr("tab_bulk_decompressor", "Decompressor")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
-                            font.weight: appWindow.currentTab === 3 ? 600 : Font.Normal
-                            color: appWindow.currentTab === 3 ? "#F8FAFC" : "#94A3B8"
+                            font.weight: appWindow.currentTab === 4 ? 600 : Font.Normal
+                            color: appWindow.currentTab === 4 ? "#F8FAFC" : "#94A3B8"
                         }
                     }
 
@@ -505,21 +630,22 @@ ApplicationWindow {
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
                         ToolTip.text: appWindow.tr("tab_decompressor_tip", "Bulk archive decompression with disk space pre-flight checks and parallel extraction")
-                        onClicked: appWindow.currentTab = 3
+                        onClicked: appWindow.currentTab = 4
                     }
                 }
 
-                // Tab: Link Vault (4th — permanent link archive & password resolver)
+                // Tab: Link Vault (permanent link archive & password resolver)
                 Rectangle {
-                    readonly property bool tabPermitted: !appWindow.tabsVaulted
+                    property int tabIdx: 5
+                    readonly property bool tabPermitted: !appWindow.tabsVaulted && !appWindow.isTabDisabled("link_vault")
                     visible: width > 0.5
                     clip: true
                     width: tabPermitted ? (tab4Row.implicitWidth + 18) : 0
                     opacity: tabPermitted ? 1.0 : 0.0
                     height: 30
                     radius: 6
-                    color: appWindow.currentTab === 4 ? "#181B22" : (tab4Mouse.containsMouse ? "#141720" : "transparent")
-                    border.color: appWindow.currentTab === 4 ? "#F59E0B" : "transparent"
+                    color: appWindow.currentTab === 5 ? "#181B22" : (tab4Mouse.containsMouse ? "#141720" : "transparent")
+                    border.color: appWindow.currentTab === 5 ? "#F59E0B" : "transparent"
                     border.width: 1
 
                     scale: tab4Mouse.pressed ? 0.94 : (tab4Mouse.containsMouse ? 1.035 : (tabPermitted ? 1.0 : 0.8))
@@ -548,8 +674,8 @@ ApplicationWindow {
                             text: appWindow.tr("tab_link_vault", "Link Vault")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
-                            font.weight: appWindow.currentTab === 4 ? 600 : Font.Normal
-                            color: appWindow.currentTab === 4 ? "#F8FAFC" : "#94A3B8"
+                            font.weight: appWindow.currentTab === 5 ? 600 : Font.Normal
+                            color: appWindow.currentTab === 5 ? "#F8FAFC" : "#94A3B8"
                         }
                     }
 
@@ -561,21 +687,22 @@ ApplicationWindow {
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
                         ToolTip.text: appWindow.tr("tab_link_vault_tip", "Permanent archive of harvested cloud links, smart passwords, and dead link cleanup")
-                        onClicked: appWindow.currentTab = 4
+                        onClicked: appWindow.currentTab = 5
                     }
                 }
 
-                // Tab: Task Scheduler (5th — automation hub & night owl)
+                // Tab: Task Scheduler (automation hub & night owl)
                 Rectangle {
-                    readonly property bool tabPermitted: !appWindow.tabsVaulted
+                    property int tabIdx: 6
+                    readonly property bool tabPermitted: !appWindow.tabsVaulted && !appWindow.isTabDisabled("scheduler")
                     visible: width > 0.5
                     clip: true
                     width: tabPermitted ? (tab5Row.implicitWidth + 18) : 0
                     opacity: tabPermitted ? 1.0 : 0.0
                     height: 30
                     radius: 6
-                    color: appWindow.currentTab === 5 ? "#181B22" : (tab5Mouse.containsMouse ? "#141720" : "transparent")
-                    border.color: appWindow.currentTab === 5 ? "#818CF8" : "transparent"
+                    color: appWindow.currentTab === 6 ? "#181B22" : (tab5Mouse.containsMouse ? "#141720" : "transparent")
+                    border.color: appWindow.currentTab === 6 ? "#818CF8" : "transparent"
                     border.width: 1
 
                     scale: tab5Mouse.pressed ? 0.94 : (tab5Mouse.containsMouse ? 1.035 : (tabPermitted ? 1.0 : 0.8))
@@ -604,8 +731,8 @@ ApplicationWindow {
                             text: appWindow.tr("tab_scheduler", "Scheduler")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
-                            font.weight: appWindow.currentTab === 5 ? 600 : Font.Normal
-                            color: appWindow.currentTab === 5 ? "#F8FAFC" : "#94A3B8"
+                            font.weight: appWindow.currentTab === 6 ? 600 : Font.Normal
+                            color: appWindow.currentTab === 6 ? "#F8FAFC" : "#94A3B8"
                         }
                     }
 
@@ -617,21 +744,22 @@ ApplicationWindow {
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
                         ToolTip.text: appWindow.tr("tab_scheduler_tip", "Automated Watchlist delta sync, scheduled creator backups, and Night Owl windows")
-                        onClicked: appWindow.currentTab = 5
+                        onClicked: appWindow.currentTab = 6
                     }
                 }
 
-                // Tab: File Explorer & Media Gallery (6th — after Scheduler)
+                // Tab: File Explorer & Media Gallery (after Scheduler)
                 Rectangle {
-                    readonly property bool tabPermitted: !appWindow.tabsVaulted
+                    property int tabIdx: 7
+                    readonly property bool tabPermitted: !appWindow.tabsVaulted && !appWindow.isTabDisabled("gallery")
                     visible: width > 0.5
                     clip: true
                     width: tabPermitted ? (tab6Row.implicitWidth + 18) : 0
                     opacity: tabPermitted ? 1.0 : 0.0
                     height: 30
                     radius: 6
-                    color: appWindow.currentTab === 6 ? "#181B22" : (tab6Mouse.containsMouse ? "#141720" : "transparent")
-                    border.color: appWindow.currentTab === 6 ? "#EC4899" : "transparent"
+                    color: appWindow.currentTab === 7 ? "#181B22" : (tab6Mouse.containsMouse ? "#141720" : "transparent")
+                    border.color: appWindow.currentTab === 7 ? "#EC4899" : "transparent"
                     border.width: 1
 
                     scale: tab6Mouse.pressed ? 0.94 : (tab6Mouse.containsMouse ? 1.035 : (tabPermitted ? 1.0 : 0.8))
@@ -660,8 +788,8 @@ ApplicationWindow {
                             text: appWindow.tr("tab_gallery", "Gallery")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
-                            font.weight: appWindow.currentTab === 6 ? 600 : Font.Normal
-                            color: appWindow.currentTab === 6 ? "#F8FAFC" : "#94A3B8"
+                            font.weight: appWindow.currentTab === 7 ? 600 : Font.Normal
+                            color: appWindow.currentTab === 7 ? "#F8FAFC" : "#94A3B8"
                         }
                     }
 
@@ -673,21 +801,22 @@ ApplicationWindow {
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
                         ToolTip.text: appWindow.tr("tab_gallery_tip", "File Explorer & Media Gallery — browse downloads, preview media, and organize your collection")
-                        onClicked: appWindow.currentTab = 6
+                        onClicked: appWindow.currentTab = 7
                     }
                 }
 
-                // Tab: Known Characters (7th)
+                // Tab: Known Characters
                 Rectangle {
-                    readonly property bool tabPermitted: !appWindow.tabsVaulted
+                    property int tabIdx: 8
+                    readonly property bool tabPermitted: !appWindow.tabsVaulted && !appWindow.isTabDisabled("known")
                     visible: width > 0.5
                     clip: true
                     width: tabPermitted ? (tab7Row.implicitWidth + 18) : 0
                     opacity: tabPermitted ? 1.0 : 0.0
                     height: 30
                     radius: 6
-                    color: appWindow.currentTab === 7 ? "#181B22" : (tab7Mouse.containsMouse ? "#141720" : "transparent")
-                    border.color: appWindow.currentTab === 7 ? "#38BDF8" : "transparent"
+                    color: appWindow.currentTab === 8 ? "#181B22" : (tab7Mouse.containsMouse ? "#141720" : "transparent")
+                    border.color: appWindow.currentTab === 8 ? "#38BDF8" : "transparent"
                     border.width: 1
 
                     scale: tab7Mouse.pressed ? 0.94 : (tab7Mouse.containsMouse ? 1.035 : (tabPermitted ? 1.0 : 0.8))
@@ -716,8 +845,8 @@ ApplicationWindow {
                             text: appWindow.tr("tab_known", "Known Series")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
-                            font.weight: appWindow.currentTab === 7 ? 600 : Font.Normal
-                            color: appWindow.currentTab === 7 ? "#F8FAFC" : "#94A3B8"
+                            font.weight: appWindow.currentTab === 8 ? 600 : Font.Normal
+                            color: appWindow.currentTab === 8 ? "#F8FAFC" : "#94A3B8"
                         }
                     }
 
@@ -729,21 +858,22 @@ ApplicationWindow {
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
                         ToolTip.text: appWindow.tr("tab_known_tip", "Known character and series directory rules (Known.txt)")
-                        onClicked: appWindow.currentTab = 7
+                        onClicked: appWindow.currentTab = 8
                     }
                 }
 
-                // Tab: Archive (8th — gallery-dl download archive database)
+                // Tab: Archive (gallery-dl download archive database)
                 Rectangle {
-                    readonly property bool tabPermitted: !appWindow.tabsVaulted
+                    property int tabIdx: 9
+                    readonly property bool tabPermitted: !appWindow.tabsVaulted && !appWindow.isTabDisabled("archive")
                     visible: width > 0.5
                     clip: true
                     width: tabPermitted ? (tab8Row.implicitWidth + 18) : 0
                     opacity: tabPermitted ? 1.0 : 0.0
                     height: 30
                     radius: 6
-                    color: appWindow.currentTab === 8 ? "#181B22" : (tab8Mouse.containsMouse ? "#141720" : "transparent")
-                    border.color: appWindow.currentTab === 8 ? "#2DD4BF" : "transparent"
+                    color: appWindow.currentTab === 9 ? "#181B22" : (tab8Mouse.containsMouse ? "#141720" : "transparent")
+                    border.color: appWindow.currentTab === 9 ? "#2DD4BF" : "transparent"
                     border.width: 1
 
                     scale: tab8Mouse.pressed ? 0.94 : (tab8Mouse.containsMouse ? 1.035 : (tabPermitted ? 1.0 : 0.8))
@@ -772,8 +902,8 @@ ApplicationWindow {
                             text: appWindow.tr("tab_archive", "Archive")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
-                            font.weight: appWindow.currentTab === 8 ? 600 : Font.Normal
-                            color: appWindow.currentTab === 8 ? "#F8FAFC" : "#94A3B8"
+                            font.weight: appWindow.currentTab === 9 ? 600 : Font.Normal
+                            color: appWindow.currentTab === 9 ? "#F8FAFC" : "#94A3B8"
                         }
                     }
 
@@ -785,21 +915,22 @@ ApplicationWindow {
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
                         ToolTip.text: appWindow.tr("tab_archive_tip", "Download archive database — persistent record of all downloaded files")
-                        onClicked: appWindow.currentTab = 8
+                        onClicked: appWindow.currentTab = 9
                     }
                 }
 
-                // Tab: History (9th)
+                // Tab: History
                 Rectangle {
-                    readonly property bool tabPermitted: !appWindow.tabsVaulted
+                    property int tabIdx: 10
+                    readonly property bool tabPermitted: !appWindow.tabsVaulted && !appWindow.isTabDisabled("history")
                     visible: width > 0.5
                     clip: true
                     width: tabPermitted ? (tab9Row.implicitWidth + 18) : 0
                     opacity: tabPermitted ? 1.0 : 0.0
                     height: 30
                     radius: 6
-                    color: appWindow.currentTab === 9 ? "#181B22" : (tab9Mouse.containsMouse ? "#141720" : "transparent")
-                    border.color: appWindow.currentTab === 9 ? "#38BDF8" : "transparent"
+                    color: appWindow.currentTab === 10 ? "#181B22" : (tab9Mouse.containsMouse ? "#141720" : "transparent")
+                    border.color: appWindow.currentTab === 10 ? "#38BDF8" : "transparent"
                     border.width: 1
 
                     scale: tab9Mouse.pressed ? 0.94 : (tab9Mouse.containsMouse ? 1.035 : (tabPermitted ? 1.0 : 0.8))
@@ -828,8 +959,8 @@ ApplicationWindow {
                             text: appWindow.tr("tab_history", "History")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
-                            font.weight: appWindow.currentTab === 9 ? 600 : Font.Normal
-                            color: appWindow.currentTab === 9 ? "#F8FAFC" : "#94A3B8"
+                            font.weight: appWindow.currentTab === 10 ? 600 : Font.Normal
+                            color: appWindow.currentTab === 10 ? "#F8FAFC" : "#94A3B8"
                         }
                     }
 
@@ -841,17 +972,71 @@ ApplicationWindow {
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
                         ToolTip.text: appWindow.tr("tab_history_tip", "Completed downloads and past batch sessions")
-                        onClicked: appWindow.currentTab = 9
+                        onClicked: appWindow.currentTab = 10
                     }
                 }
 
-                // Tab: Settings (10th — terminal tab)
+                // Tab: Statistics
                 Rectangle {
+                    property int tabIdx: 11
+                    readonly property bool tabPermitted: !appWindow.tabsVaulted && !appWindow.isTabDisabled("statistics")
+                    visible: width > 1
+                    width: tabPermitted ? (tabStatsRow.implicitWidth + 18) : 0
+                    height: 30
+                    radius: 6
+                    clip: true
+                    color: appWindow.currentTab === 11 ? "#181B22" : (tabStatsMouse.containsMouse ? "#141720" : "transparent")
+                    border.color: appWindow.currentTab === 11 ? "#38BDF8" : "transparent"
+                    border.width: 1
+                    opacity: tabPermitted ? 1.0 : 0.0
+                    scale: tabStatsMouse.pressed ? 0.94 : (tabStatsMouse.containsMouse && appWindow.currentTab !== 11 ? 1.04 : 1.0)
+                    transformOrigin: Item.Center
+
+                    Behavior on width { NumberAnimation { duration: 240; easing.type: Easing.OutCubic } }
+                    Behavior on opacity { NumberAnimation { duration: 200 } }
+                    Behavior on scale { SpringAnimation { spring: 5.0; damping: 0.35; mass: 0.7 } }
+                    Behavior on color { ColorAnimation { duration: 150 } }
+                    Behavior on border.color { ColorAnimation { duration: 150 } }
+
+                    RowLayout {
+                        id: tabStatsRow
+                        anchors.centerIn: parent
+                        spacing: 6
+                        Text {
+                            text: "📊"
+                            font.pixelSize: 12
+                            scale: appWindow.currentTab === 11 ? 1.1 : 1.0
+                            Behavior on scale { SpringAnimation { spring: 4.5; damping: 0.35; mass: 0.7 } }
+                        }
+                        Text {
+                            text: appWindow.tr("tab_statistics", "Statistics")
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 12
+                            font.weight: appWindow.currentTab === 11 ? 600 : Font.Normal
+                            color: appWindow.currentTab === 11 ? "#F8FAFC" : "#94A3B8"
+                            Behavior on color { ColorAnimation { duration: 150 } }
+                        }
+                    }
+                    MouseArea {
+                        id: tabStatsMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 400
+                        ToolTip.text: appWindow.tr("tab_statistics_tip", "Raw network bandwidth, disk storage, artists, files & folders data")
+                        onClicked: appWindow.currentTab = 11
+                    }
+                }
+
+                // Tab: Settings (terminal tab)
+                Rectangle {
+                    property int tabIdx: 12
                     width: tab10Row.implicitWidth + 18
                     height: 30
                     radius: 6
-                    color: appWindow.currentTab === 10 ? "#181B22" : (tab10Mouse.containsMouse ? "#141720" : "transparent")
-                    border.color: appWindow.currentTab === 10 ? "#38BDF8" : "transparent"
+                    color: appWindow.currentTab === 12 ? "#181B22" : (tab10Mouse.containsMouse ? "#141720" : "transparent")
+                    border.color: appWindow.currentTab === 12 ? "#38BDF8" : "transparent"
                     border.width: 1
 
                     scale: tab10Mouse.pressed ? 0.94 : (tab10Mouse.containsMouse ? 1.035 : 1.0)
@@ -872,8 +1057,8 @@ ApplicationWindow {
                             text: appWindow.tr("tab_settings", "Settings")
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
-                            font.weight: appWindow.currentTab === 10 ? 600 : Font.Normal
-                            color: appWindow.currentTab === 10 ? "#F8FAFC" : "#94A3B8"
+                            font.weight: appWindow.currentTab === 12 ? 600 : Font.Normal
+                            color: appWindow.currentTab === 12 ? "#F8FAFC" : "#94A3B8"
                         }
                     }
 
@@ -885,7 +1070,7 @@ ApplicationWindow {
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
                         ToolTip.text: appWindow.tr("tab_settings_tip", "Global application and network configuration")
-                        onClicked: appWindow.currentTab = 10
+                        onClicked: appWindow.currentTab = 12
                     }
                 }
             } // tabsRow
@@ -1321,7 +1506,7 @@ ApplicationWindow {
                     if (appBridge) appBridge.addToQueue()
                 }
                 onSettingsRequested: {
-                    appWindow.currentTab = 10
+                    appWindow.currentTab = 12
                 }
             }
         }
@@ -1642,7 +1827,11 @@ ApplicationWindow {
                             Text {
                                 text: selectPostsBtn.isLoading
                                     ? appWindow.tr("action_fetching_posts", "Fetching…")
-                                    : (mainStartBtn.isFavoritesMode ? appWindow.tr("action_browse_favorites", "Browse Favorites…") : appWindow.tr("action_select_posts", "Select Posts…"))
+                                    : (mainStartBtn.isFavoritesMode
+                                        ? appWindow.tr("action_browse_favorites", "Browse Favorites…")
+                                        : ((!!appBridge && appBridge.hasCachedSelectionForCurrentUrl)
+                                            ? appWindow.tr("action_select_posts_saved", "Select Posts (Saved)…")
+                                            : appWindow.tr("action_select_posts", "Select Posts…")))
                                 font.family: "Segoe UI, sans-serif"
                                 font.pixelSize: 12
                                 font.weight: 600
@@ -1659,7 +1848,9 @@ ApplicationWindow {
                             enabled: !selectPostsBtn.isLoading
                             ToolTip.visible: containsMouse
                             ToolTip.delay: 400
-                            ToolTip.text: appWindow.tr("tip_select_posts", "Fetch and visually select specific posts and thumbnails before downloading")
+                            ToolTip.text: (!!appBridge && appBridge.hasCachedSelectionForCurrentUrl && !mainStartBtn.isFavoritesMode)
+                                ? appWindow.tr("tip_select_posts_saved", "Reopen cached posts and your saved selections instantly without re-fetching")
+                                : appWindow.tr("tip_select_posts", "Fetch and visually select specific posts and thumbnails before downloading")
                             onClicked: {
                                 if (!appBridge) return
                                 if (appBridge.isTelegramUrl) {
@@ -2356,7 +2547,7 @@ ApplicationWindow {
                             DownloaderView { anchors.fill: parent; bridge: appBridge }
                         }
 
-                        // Tab 1: Queue View with Newtonian slide & fade transition
+                        // Tab 1: Dual-Mode Native Browser View (Online & Local On-Disk) with Newtonian slide & fade
                         Item {
                             visible: opacity > 0.001
                             opacity: appWindow.currentTab === 1 ? 1.0 : 0.0
@@ -2368,16 +2559,15 @@ ApplicationWindow {
                             Behavior on scale { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
 
                             LazyTab {
+                                id: browserLoader
                                 anchors.fill: parent
-                                // Built in the background the first time this tab is opened (the window keeps
-                                // responding, with a spinner if it takes a moment), then kept
                                 wanted: appWindow.currentTab === 1
                                 loadingText: appWindow.tr("tab_loading", "Loading…")
-                                sourceComponent: Component { QueueView { bridge: appBridge } }
+                                sourceComponent: Component { BrowserView { bridge: appBridge } }
                             }
                         }
 
-                        // Tab 2: Watchlist View with Newtonian slide & fade transition
+                        // Tab 2: Queue View with Newtonian slide & fade transition
                         Item {
                             visible: opacity > 0.001
                             opacity: appWindow.currentTab === 2 ? 1.0 : 0.0
@@ -2394,11 +2584,11 @@ ApplicationWindow {
                                 // responding, with a spinner if it takes a moment), then kept
                                 wanted: appWindow.currentTab === 2
                                 loadingText: appWindow.tr("tab_loading", "Loading…")
-                                sourceComponent: Component { WatchlistView { bridge: appBridge } }
+                                sourceComponent: Component { QueueView { bridge: appBridge } }
                             }
                         }
 
-                        // Tab 3: Bulk Decompressor View with Newtonian slide & fade transition
+                        // Tab 3: Watchlist View with Newtonian slide & fade transition
                         Item {
                             visible: opacity > 0.001
                             opacity: appWindow.currentTab === 3 ? 1.0 : 0.0
@@ -2409,10 +2599,17 @@ ApplicationWindow {
                             Behavior on y { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
                             Behavior on scale { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
 
-                            DecompressorView { anchors.fill: parent; bridge: appBridge }
+                            LazyTab {
+                                anchors.fill: parent
+                                // Built in the background the first time this tab is opened (the window keeps
+                                // responding, with a spinner if it takes a moment), then kept
+                                wanted: appWindow.currentTab === 3
+                                loadingText: appWindow.tr("tab_loading", "Loading…")
+                                sourceComponent: Component { WatchlistView { bridge: appBridge } }
+                            }
                         }
 
-                        // Tab 4: Link Vault View with Newtonian slide & fade transition
+                        // Tab 4: Bulk Decompressor View with Newtonian slide & fade transition
                         Item {
                             visible: opacity > 0.001
                             opacity: appWindow.currentTab === 4 ? 1.0 : 0.0
@@ -2423,17 +2620,10 @@ ApplicationWindow {
                             Behavior on y { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
                             Behavior on scale { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
 
-                            LazyTab {
-                                anchors.fill: parent
-                                // Built in the background the first time this tab is opened (the window keeps
-                                // responding, with a spinner if it takes a moment), then kept
-                                wanted: appWindow.currentTab === 4
-                                loadingText: appWindow.tr("tab_loading", "Loading…")
-                                sourceComponent: Component { LinkVaultView { bridge: appBridge } }
-                            }
+                            DecompressorView { anchors.fill: parent; bridge: appBridge }
                         }
 
-                        // Tab 5: Scheduler View with Newtonian slide & fade transition
+                        // Tab 5: Link Vault View with Newtonian slide & fade transition
                         Item {
                             visible: opacity > 0.001
                             opacity: appWindow.currentTab === 5 ? 1.0 : 0.0
@@ -2450,11 +2640,11 @@ ApplicationWindow {
                                 // responding, with a spinner if it takes a moment), then kept
                                 wanted: appWindow.currentTab === 5
                                 loadingText: appWindow.tr("tab_loading", "Loading…")
-                                sourceComponent: Component { SchedulerView { bridge: appBridge } }
+                                sourceComponent: Component { LinkVaultView { bridge: appBridge } }
                             }
                         }
 
-                        // Tab 6: File Explorer & Media Gallery View with Newtonian slide & fade transition
+                        // Tab 6: Scheduler View with Newtonian slide & fade transition
                         Item {
                             visible: opacity > 0.001
                             opacity: appWindow.currentTab === 6 ? 1.0 : 0.0
@@ -2466,11 +2656,32 @@ ApplicationWindow {
                             Behavior on scale { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
 
                             LazyTab {
-                                id: galleryLoader
                                 anchors.fill: parent
                                 // Built in the background the first time this tab is opened (the window keeps
                                 // responding, with a spinner if it takes a moment), then kept
                                 wanted: appWindow.currentTab === 6
+                                loadingText: appWindow.tr("tab_loading", "Loading…")
+                                sourceComponent: Component { SchedulerView { bridge: appBridge } }
+                            }
+                        }
+
+                        // Tab 7: File Explorer & Media Gallery View with Newtonian slide & fade transition
+                        Item {
+                            visible: opacity > 0.001
+                            opacity: appWindow.currentTab === 7 ? 1.0 : 0.0
+                            y: appWindow.currentTab === 7 ? 0 : 10
+                            scale: appWindow.currentTab === 7 ? 1.0 : 0.985
+                            transformOrigin: Item.Center
+                            Behavior on opacity { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+                            Behavior on y { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
+                            Behavior on scale { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
+
+                            LazyTab {
+                                id: galleryLoader
+                                anchors.fill: parent
+                                // Built in the background the first time this tab is opened (the window keeps
+                                // responding, with a spinner if it takes a moment), then kept
+                                wanted: appWindow.currentTab === 7
                                 loadingText: appWindow.tr("tab_loading", "Loading…")
                                 sourceComponent: Component { GalleryView { bridge: appBridge } }
                                 onLoaded: {
@@ -2484,28 +2695,7 @@ ApplicationWindow {
                             }
                         }
 
-                        // Tab 7: Known Manager View with Newtonian slide & fade transition
-                        Item {
-                            visible: opacity > 0.001
-                            opacity: appWindow.currentTab === 7 ? 1.0 : 0.0
-                            y: appWindow.currentTab === 7 ? 0 : 10
-                            scale: appWindow.currentTab === 7 ? 1.0 : 0.985
-                            transformOrigin: Item.Center
-                            Behavior on opacity { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
-                            Behavior on y { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
-                            Behavior on scale { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
-
-                            LazyTab {
-                                anchors.fill: parent
-                                // Built in the background the first time this tab is opened (the window keeps
-                                // responding, with a spinner if it takes a moment), then kept
-                                wanted: appWindow.currentTab === 7
-                                loadingText: appWindow.tr("tab_loading", "Loading…")
-                                sourceComponent: Component { KnownManagerView { bridge: appBridge } }
-                            }
-                        }
-
-                        // Tab 8: Archive View with Newtonian slide & fade transition
+                        // Tab 8: Known Manager View with Newtonian slide & fade transition
                         Item {
                             visible: opacity > 0.001
                             opacity: appWindow.currentTab === 8 ? 1.0 : 0.0
@@ -2517,17 +2707,16 @@ ApplicationWindow {
                             Behavior on scale { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
 
                             LazyTab {
-                                id: archiveLoader
                                 anchors.fill: parent
                                 // Built in the background the first time this tab is opened (the window keeps
                                 // responding, with a spinner if it takes a moment), then kept
                                 wanted: appWindow.currentTab === 8
                                 loadingText: appWindow.tr("tab_loading", "Loading…")
-                                sourceComponent: Component { ArchiveView { bridge: appBridge } }
+                                sourceComponent: Component { KnownManagerView { bridge: appBridge } }
                             }
                         }
 
-                        // Tab 9: History View with Newtonian slide & fade transition
+                        // Tab 9: Archive View with Newtonian slide & fade transition
                         Item {
                             visible: opacity > 0.001
                             opacity: appWindow.currentTab === 9 ? 1.0 : 0.0
@@ -2539,16 +2728,17 @@ ApplicationWindow {
                             Behavior on scale { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
 
                             LazyTab {
+                                id: archiveLoader
                                 anchors.fill: parent
                                 // Built in the background the first time this tab is opened (the window keeps
                                 // responding, with a spinner if it takes a moment), then kept
                                 wanted: appWindow.currentTab === 9
                                 loadingText: appWindow.tr("tab_loading", "Loading…")
-                                sourceComponent: Component { HistoryView { bridge: appBridge } }
+                                sourceComponent: Component { ArchiveView { bridge: appBridge } }
                             }
                         }
 
-                        // Tab 10: Settings View with Newtonian slide & fade transition
+                        // Tab 10: History View with Newtonian slide & fade transition
                         Item {
                             visible: opacity > 0.001
                             opacity: appWindow.currentTab === 10 ? 1.0 : 0.0
@@ -2560,11 +2750,52 @@ ApplicationWindow {
                             Behavior on scale { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
 
                             LazyTab {
-                                id: settingsLoader
                                 anchors.fill: parent
                                 // Built in the background the first time this tab is opened (the window keeps
                                 // responding, with a spinner if it takes a moment), then kept
                                 wanted: appWindow.currentTab === 10
+                                loadingText: appWindow.tr("tab_loading", "Loading…")
+                                sourceComponent: Component { HistoryView { bridge: appBridge } }
+                            }
+                        }
+
+                        // Tab 11: Statistics View with Newtonian slide & fade transition
+                        Item {
+                            visible: opacity > 0.001
+                            opacity: appWindow.currentTab === 11 ? 1.0 : 0.0
+                            y: appWindow.currentTab === 11 ? 0 : 10
+                            scale: appWindow.currentTab === 11 ? 1.0 : 0.985
+                            transformOrigin: Item.Center
+                            Behavior on opacity { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+                            Behavior on y { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
+                            Behavior on scale { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
+
+                            LazyTab {
+                                id: statisticsLoader
+                                anchors.fill: parent
+                                wanted: appWindow.currentTab === 11
+                                loadingText: appWindow.tr("tab_loading", "Loading…")
+                                sourceComponent: Component { StatisticsView { bridge: appBridge } }
+                            }
+                        }
+
+                        // Tab 12: Settings View with Newtonian slide & fade transition
+                        Item {
+                            visible: opacity > 0.001
+                            opacity: appWindow.currentTab === 12 ? 1.0 : 0.0
+                            y: appWindow.currentTab === 12 ? 0 : 10
+                            scale: appWindow.currentTab === 12 ? 1.0 : 0.985
+                            transformOrigin: Item.Center
+                            Behavior on opacity { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+                            Behavior on y { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
+                            Behavior on scale { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
+
+                            LazyTab {
+                                id: settingsLoader
+                                anchors.fill: parent
+                                // Built in the background the first time this tab is opened (the window keeps
+                                // responding, with a spinner if it takes a moment), then kept
+                                wanted: appWindow.currentTab === 12
                                 loadingText: appWindow.tr("tab_loading", "Loading…")
                                 sourceComponent: Component { SettingsView { objectName: "settingsViewTab"; bridge: appBridge } }
                                 onLoaded: {
@@ -2893,8 +3124,90 @@ ApplicationWindow {
         id: archiveRebuildModal
         bridge: appBridge
         onRebuildCompleted: {
-            if (archiveLoader.item && typeof archiveLoader.item.scheduleReload === "function") {
+            if (archiveLoader.item && typeof archiveRebuildModal !== "undefined" && typeof archiveLoader.item.scheduleReload === "function") {
                 archiveLoader.item.scheduleReload();
+            }
+        }
+    }
+
+    // Mid-Download Settings Change Confirmation Modal
+    MidDownloadSettingsModal {
+        id: midDownloadSettingsModal
+        bridge: appBridge
+    }
+
+    // Busy overlay while quiescing workers / re-scanning API / migrating .part files
+    Rectangle {
+        id: midDownloadBusyOverlay
+        anchors.fill: parent
+        z: 9999
+        visible: Boolean(appBridge && appBridge.isApplyingMidDownloadSettings)
+        color: "#B8060910"
+
+        MouseArea {
+            anchors.fill: parent
+            hoverEnabled: true
+        }
+
+        Rectangle {
+            width: Math.min(460, parent.width - 40)
+            implicitHeight: busyOverlayCol.implicitHeight + 36
+            anchors.centerIn: parent
+            radius: 12
+            color: "#131722"
+            border.color: "#38BDF8"
+            border.width: 1.5
+
+            ColumnLayout {
+                id: busyOverlayCol
+                anchors {
+                    top: parent.top
+                    left: parent.left
+                    right: parent.right
+                    margins: 18
+                }
+                spacing: 12
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 10
+
+                    Text {
+                        text: "⏳"
+                        font.pixelSize: 20
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: appWindow.tr("title_applying_mid_settings", "Updating active download...")
+                        font.family: "Segoe UI, Inter, sans-serif"
+                        font.pixelSize: 15
+                        font.bold: true
+                        color: "#F8FAFC"
+                    }
+                }
+
+                Text {
+                    Layout.fillWidth: true
+                    text: (appBridge && appBridge.midDownloadApplyStatusText) ? appBridge.midDownloadApplyStatusText : "Please wait..."
+                    font.family: "Segoe UI, sans-serif"
+                    font.pixelSize: 12
+                    color: "#CBD5E1"
+                    wrapMode: Text.WordWrap
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+
+                    Item { Layout.fillWidth: true }
+
+                    StyledButton {
+                        text: appWindow.tr("btn_cancel", "Cancel")
+                        variant: "outline"
+                        implicitHeight: 32
+                        onClicked: if (appBridge) appBridge.cancelMidDownloadApply()
+                    }
+                }
             }
         }
     }
@@ -2918,8 +3231,16 @@ ApplicationWindow {
         function onSessionDiscardedWarning(oldDesc) {
             discardWarningToast.show(oldDesc)
         }
+        function onMidDownloadSettingsPromptRequested(scope, payload) {
+            midDownloadSettingsModal.openWithPayload(scope, payload)
+        }
+        function onMidDownloadApplyFinished(ok, message) {
+            if (message && message.length > 0) {
+                appWindow.showToast((ok ? "✅ " : "⚠️ ") + message)
+            }
+        }
         function onFavoriteAuthRequired(provName) {
-            appWindow.currentTab = 10      // Settings (9 is History)
+            appWindow.currentTab = 12      // Settings (10 History, 11 Statistics)
             var cleanName = (provName || "").trim()
             var msg = cleanName.length > 0
                 ? ("⭐ " + appWindow.tr("msg_fav_auth_required", "Favorite Mode requires account login for " + cleanName + ". Please connect below."))
@@ -2937,7 +3258,7 @@ ApplicationWindow {
         function onGalleryShowRequested(path, isDir) {
             // An open Gallery handles this itself; otherwise build it first, then show the place
             if (galleryLoader.item) return
-            appWindow.currentTab = 6
+            appWindow.currentTab = 7
             if (galleryLoader.item) {
                 if (isDir) galleryLoader.item.navigateTo(path)
                 else galleryLoader.item.revealInGallery(path)
@@ -3023,6 +3344,7 @@ ApplicationWindow {
     PostSelectionModal {
         id: postSelectionModal
         bridge: appBridge
+        browserBridge: appWindow.ctxBrowserBridge
         onBackToFavoritesRequested: {
             if (favoritesBrowserModal.allArtists && favoritesBrowserModal.allArtists.length > 0) {
                 favoritesBrowserModal.isOpen = true

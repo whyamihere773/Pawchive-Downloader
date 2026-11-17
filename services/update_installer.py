@@ -18,6 +18,7 @@ up front (nothing may be loaded lazily from the install folder once the swap sta
 
 import bz2  # noqa: F401  (tar.bz2 support, imported before files are swapped)
 import encodings.idna  # noqa: F401  (hostname encoding for HTTPS, same reason)
+import errno
 import gzip  # noqa: F401
 import hashlib
 import json
@@ -269,7 +270,7 @@ def _download_once(url: str, dest: str, expected_sha256: str, expected_size: int
 def prepare(archive: str, work_dir: str, plan: Dict[str, Any], rep: Reporter) -> str:
     """Extract safely and return the folder holding the new app files."""
     stage = os.path.join(work_dir, "staging")
-    os.makedirs(stage, exist_ok=True)
+    os.makedirs(us.fs_path(stage), exist_ok=True)
     rep.progress(None, "Unpacking…")
     try:
         us.safe_extract(archive, stage)
@@ -278,14 +279,17 @@ def prepare(archive: str, work_dir: str, plan: Dict[str, Any], rep: Reporter) ->
     except (OSError, EOFError) as e:
         raise UpdateError("verify", "The download is damaged. Try again.", repr(e)) from e
     root = stage
-    entries = os.listdir(stage)
-    if len(entries) == 1 and os.path.isdir(os.path.join(stage, entries[0])):
+    entries = os.listdir(us.fs_path(stage))
+    if len(entries) == 1 and os.path.isdir(us.fs_path(os.path.join(stage, entries[0]))):
         root = os.path.join(stage, entries[0])
     # Sanity check: it has to look like Pawchive
     if plan.get("is_source"):
-        ok = os.path.isfile(os.path.join(root, "main.py")) and os.path.isfile(os.path.join(root, "updater.py"))
+        ok = (
+            os.path.isfile(us.fs_path(os.path.join(root, "main.py")))
+            and os.path.isfile(us.fs_path(os.path.join(root, "updater.py")))
+        )
     else:
-        names = {n.lower() for n in os.listdir(root)}
+        names = {n.lower() for n in os.listdir(us.fs_path(root))}
         ok = "_internal" in names and any(n.endswith(".exe") or n in ("pawchive", "pawchive downloader") for n in names)
     if not ok:
         raise UpdateError("verify", "The download doesn't look like a Pawchive package, so it wasn't installed.")
@@ -301,7 +305,7 @@ def prepare(archive: str, work_dir: str, plan: Dict[str, Any], rep: Reporter) ->
 
 def package_edition(root: str) -> str:
     """'windows' or 'linux' from the program files in an unpacked build ('' if unclear)."""
-    names = {n.lower() for n in os.listdir(root)}
+    names = {n.lower() for n in os.listdir(us.fs_path(root))}
     if "pawchive downloader.exe" in names:
         return "windows"
     if "pawchive" in names:
@@ -312,8 +316,9 @@ def package_edition(root: str) -> str:
 def _staged_files(stage_root: str) -> List[str]:
     """Relative paths ('/' separated) of everything to install. Links count as files."""
     out = []
-    for root, dirs, files in os.walk(stage_root):
-        rel_root = os.path.relpath(root, stage_root)
+    fs_stage_root = us.fs_path(stage_root)
+    for root, dirs, files in os.walk(fs_stage_root):
+        rel_root = os.path.relpath(root, fs_stage_root)
         rel_root = "" if rel_root == "." else rel_root.replace("\\", "/")
         if rel_root and us.is_protected(rel_root + "/x"):
             dirs[:] = []
@@ -336,13 +341,44 @@ def _staged_files(stage_root: str) -> List[str]:
 
 def _dir_size(path: str) -> int:
     total = 0
-    for root, _d, files in os.walk(path):
+    for root, _d, files in os.walk(us.fs_path(path)):
         for f in files:
             try:
                 total += os.lstat(os.path.join(root, f)).st_size
             except OSError:
                 pass
     return total
+
+
+def _strip_fs_prefix(path: str) -> str:
+    if path.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + path[8:]
+    if path.startswith("\\\\?\\"):
+        return path[4:]
+    return path
+
+
+def _is_path_too_long_error(err: OSError, *paths: str) -> bool:
+    if getattr(err, "errno", None) == errno.ENAMETOOLONG:
+        return True
+    winerr = getattr(err, "winerror", None)
+    if winerr == 206:  # ERROR_FILENAME_EXCED_RANGE
+        return True
+    if sys.platform == "win32" and winerr in (2, 3):  # ERROR_FILE_NOT_FOUND / ERROR_PATH_NOT_FOUND at >=260 chars
+        for p in (*paths, getattr(err, "filename", None), getattr(err, "filename2", None)):
+            if isinstance(p, str) and len(_strip_fs_prefix(p)) >= 240:
+                return True
+    return False
+
+
+def _classify_os_error(err: OSError, *paths: str, default_code: str = "permission") -> str:
+    if getattr(err, "errno", None) == errno.ENOSPC:
+        return "disk"
+    if _is_path_too_long_error(err, *paths):
+        return "path_too_long"
+    if isinstance(err, PermissionError):
+        return default_code if default_code == "locked" else "permission"
+    return default_code
 
 
 # ── File transaction ────────────────────────────────────────────────────────
@@ -360,11 +396,17 @@ class FileTransaction:
     def _move_aside(self, path: str) -> None:
         rel = os.path.relpath(path, self.target)
         dest = os.path.join(self.backup, rel)
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        fs_src = us.fs_path(path)
+        fs_dest = us.fs_path(dest)
+        try:
+            os.makedirs(os.path.dirname(fs_dest), exist_ok=True)
+        except OSError as e:
+            code = _classify_os_error(e, path, dest, default_code="permission")
+            raise UpdateError(code, "Some app files couldn't be replaced.", f"{rel}: {e!r}") from e
         last: Optional[Exception] = None
         for _ in range(8):                          # antivirus scanners hold files briefly
             try:
-                os.replace(path, dest)
+                os.replace(fs_src, fs_dest)
                 self.moved.append((path, dest))
                 return
             except PermissionError as e:
@@ -373,42 +415,53 @@ class FileTransaction:
             except OSError as e:
                 last = e
                 break
-        code = "locked" if (sys.platform == "win32" and isinstance(last, PermissionError)) else "permission"
+        if isinstance(last, OSError):
+            default_code = "locked" if (sys.platform == "win32" and isinstance(last, PermissionError)) else "permission"
+            code = _classify_os_error(last, path, dest, default_code=default_code)
+        else:
+            code = "permission"
         raise UpdateError(code, "Some app files couldn't be replaced.", f"{rel}: {last!r}")
 
     def place(self, src: str, dst: str) -> None:
-        if os.path.lexists(dst):
-            if os.path.isdir(dst) and not os.path.islink(dst):
+        src_fs = us.fs_path(src)
+        dst_fs = us.fs_path(dst)
+        if os.path.lexists(dst_fs):
+            if os.path.isdir(dst_fs) and not os.path.islink(dst_fs):
                 raise UpdateError("unknown", "A folder is in the way of a new file.", dst)
             self._move_aside(dst)
         else:
             self.created.append(dst)
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
-        tmp = dst + ".pawchive-new"
-        if os.path.lexists(tmp):
-            os.remove(tmp)
-        if os.path.islink(src):
-            os.symlink(os.readlink(src), tmp)
+        os.makedirs(os.path.dirname(dst_fs), exist_ok=True)
+        tmp = dst + ".pnew"
+        tmp_fs = us.fs_path(tmp)
+        if os.path.lexists(tmp_fs):
+            os.remove(tmp_fs)
+        if os.path.islink(src_fs):
+            os.symlink(os.readlink(src_fs), tmp_fs)
         else:
-            shutil.copy2(src, tmp)
-        os.replace(tmp, dst)
+            shutil.copy2(src_fs, tmp_fs)
+        os.replace(tmp_fs, dst_fs)
 
     def remove(self, path: str) -> None:
-        if os.path.lexists(path) and not (os.path.isdir(path) and not os.path.islink(path)):
+        fs_p = us.fs_path(path)
+        if os.path.lexists(fs_p) and not (os.path.isdir(fs_p) and not os.path.islink(fs_p)):
             self._move_aside(path)
 
     def rollback(self) -> None:
         self.log.write(f"rolling back: {len(self.created)} new, {len(self.moved)} moved")
         for p in reversed(self.created):
             try:
-                if os.path.lexists(p):
-                    os.remove(p)
+                p_fs = us.fs_path(p)
+                if os.path.lexists(p_fs):
+                    os.remove(p_fs)
             except OSError as e:
                 self.log.write(f"rollback: couldn't remove {p}: {e!r}")
         for orig, bak in reversed(self.moved):
             try:
-                os.makedirs(os.path.dirname(orig), exist_ok=True)
-                os.replace(bak, orig)
+                orig_fs = us.fs_path(orig)
+                bak_fs = us.fs_path(bak)
+                os.makedirs(os.path.dirname(orig_fs), exist_ok=True)
+                os.replace(bak_fs, orig_fs)
             except OSError as e:
                 self.log.write(f"rollback: couldn't restore {orig}: {e!r}")
         self._drop_backup()
@@ -417,17 +470,17 @@ class FileTransaction:
         self._drop_backup()
 
     def _drop_backup(self) -> None:
-        shutil.rmtree(self.backup, ignore_errors=True)   # files Windows still holds stay; removed next start
+        shutil.rmtree(us.fs_path(self.backup), ignore_errors=True)   # files Windows still holds stay; removed next start
         root = os.path.dirname(self.backup)
         try:
-            os.rmdir(root)
+            os.rmdir(us.fs_path(root))
         except OSError:
             pass
 
 
 def _load_manifest(target: str) -> List[str]:
     try:
-        with open(os.path.join(target, us.INSTALL_MANIFEST), "r", encoding="utf-8") as f:
+        with open(us.fs_path(os.path.join(target, us.INSTALL_MANIFEST)), "r", encoding="utf-8") as f:
             files = json.load(f).get("files", [])
         return [str(x) for x in files if isinstance(x, str)]
     except (OSError, ValueError, AttributeError):
@@ -442,7 +495,7 @@ def install_files(stage_root: str, plan: Dict[str, Any], rep: Reporter, log: Upd
 
     need = _dir_size(stage_root)
     try:
-        free = shutil.disk_usage(target).free
+        free = shutil.disk_usage(us.fs_path(target)).free
         if free < need * 1.2 + 50 * 1024 * 1024:
             raise UpdateError("disk", f"Not enough free space: the update needs about {_fmt_mb(need * 1.2)}.")
     except OSError:
@@ -462,15 +515,24 @@ def install_files(stage_root: str, plan: Dict[str, Any], rep: Reporter, log: Upd
                 p = os.path.join(target, name)
                 if os.path.isfile(p) and not os.path.islink(p):
                     os.chmod(p, os.stat(p).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-        with open(os.path.join(target, us.INSTALL_MANIFEST + ".tmp"), "w", encoding="utf-8") as f:
+        manifest_tmp = os.path.join(target, us.INSTALL_MANIFEST + ".tmp")
+        manifest_dst = os.path.join(target, us.INSTALL_MANIFEST)
+        with open(us.fs_path(manifest_tmp), "w", encoding="utf-8") as f:
             json.dump({"version": plan.get("to_version", ""), "installed": time.time(), "files": new_files}, f)
-        os.replace(os.path.join(target, us.INSTALL_MANIFEST + ".tmp"), os.path.join(target, us.INSTALL_MANIFEST))
+        os.replace(us.fs_path(manifest_tmp), us.fs_path(manifest_dst))
     except UpdateError:
         tx.rollback()
         raise
     except OSError as e:
         tx.rollback()
-        code = "disk" if getattr(e, "errno", None) == 28 else ("permission" if isinstance(e, PermissionError) else "unknown")
+        default_code = "permission" if isinstance(e, PermissionError) else "unknown"
+        code = _classify_os_error(
+            e,
+            getattr(e, "filename", "") or "",
+            getattr(e, "filename2", "") or "",
+            target,
+            default_code=default_code,
+        )
         raise UpdateError(code, "Installing failed, so your previous version was restored.", repr(e)) from e
     except BaseException:
         tx.rollback()
@@ -495,7 +557,7 @@ def record_installed_commit(target: str, commit: str, log: UpdateLog) -> None:
 # ── Git checkouts ───────────────────────────────────────────────────────────
 def _git(target: str, *args: str, timeout: float = 60) -> subprocess.CompletedProcess:
     return subprocess.run(us.git_command(target, *args), cwd=target, capture_output=True, text=True, timeout=timeout,
-                          env=dict(os.environ, GIT_TERMINAL_PROMPT="0"), creationflags=us.NO_WINDOW)
+                          env=us.clean_subprocess_env(extra={"GIT_TERMINAL_PROMPT": "0"}), creationflags=us.NO_WINDOW)
 
 
 def git_update(plan: Dict[str, Any], rep: Reporter, log: UpdateLog) -> str:
@@ -568,7 +630,7 @@ def install_requirements(target: str, python_exe: str, rep: Reporter, log: Updat
         rep.progress(None, f"Installing components with {name}…")
         try:
             r = subprocess.run(cmd, cwd=target, capture_output=True, text=True, timeout=900,
-                               creationflags=us.NO_WINDOW)
+                               creationflags=us.NO_WINDOW, **us.subprocess_env_kwargs())
             out = (r.stderr or "") + "\n" + (r.stdout or "")
             log.write(f"{name}: exit {r.returncode}\n{out[-3000:]}")
             if r.returncode == 0:
@@ -606,7 +668,7 @@ def relaunch(plan: Dict[str, Any], log: UpdateLog) -> bool:
         log.write("relaunch: app executable not found")
         return False
     try:
-        subprocess.Popen(cmd, cwd=plan["target_dir"], **us.detached_popen_kwargs())
+        subprocess.Popen(cmd, cwd=plan["target_dir"], **us.detached_popen_kwargs(), **us.subprocess_env_kwargs())
         log.write(f"relaunched: {cmd}")
         return True
     except OSError as e:

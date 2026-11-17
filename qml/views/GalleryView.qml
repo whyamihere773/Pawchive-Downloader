@@ -57,6 +57,39 @@ Item {
     property real taggingProgress: taggingTotal > 0 ? (taggingCurrent / taggingTotal) : 0.0
     property string characterFilter: ""
 
+    // Virtual Sort Bucket Filter (previews a virtual bucket in Gallery without touching disk)
+    property string virtualBucketName: ""
+    property var virtualBucketPaths: ({})
+
+    function setVirtualBucketFilter(bucketName, pathsList) {
+        if (!bucketName || !pathsList || !pathsList.length) {
+            root.virtualBucketName = ""
+            root.virtualBucketPaths = ({})
+            root.clearSelection()
+            root.applyFilter()
+            return
+        }
+        var map = {}
+        for (var i = 0; i < pathsList.length; i++) {
+            var norm = String(pathsList[i] || "").replace(/\\/g, "/").toLowerCase()
+            if (norm) map[norm] = true
+        }
+        root.virtualBucketName = bucketName
+        root.virtualBucketPaths = map
+        root.clearSelection()
+        root.applyFilter()
+    }
+
+    function clearVirtualBucketFilter() {
+        root.setVirtualBucketFilter("", [])
+    }
+
+    function openVisualSorter() {
+        var m = modal(visualSorterLoader)
+        if (m) m.open(root.currentPath)
+        return m
+    }
+
     // Group by post: files sharing a post ID prefix ("169913374_…") collapse into one stack
     property bool groupByPost: false
     property string openGroupKey: ""
@@ -86,6 +119,13 @@ Item {
     property int thumbSize: 168          // target grid card width; Ctrl+wheel or the slider changes it
     property bool showPathBar: true       // view options: hide the path bar / shortcuts bar for more room
     property bool showShortcutsBar: true
+    property bool showFolderPreviews: true // show representative artwork previews on folder cards
+    property string thumbFitMode: "fit"   // "fit" (whole image) | "crop" (fill frame edge-to-edge)
+    property string thumbAspect: "square" // "square" (1:1) | "landscape" (16:10) | "portrait" (3:4)
+    property bool cleanThumbCards: false  // hide corner overlay badges on cards unless hovered/selected
+    readonly property int resolvedImageFillMode: root.thumbFitMode === "fit" ? Image.PreserveAspectFit : Image.PreserveAspectCrop
+    readonly property int resolvedVideoFillMode: root.thumbFitMode === "fit" ? VideoOutput.PreserveAspectFit : VideoOutput.PreserveAspectCrop
+    readonly property real thumbAspectRatio: root.thumbAspect === "portrait" ? 1.33 : (root.thumbAspect === "square" ? 1.0 : 0.62)
 
     // Privacy blur (Ctrl+H): every thumbnail and preview hidden at once. Remembered across restarts.
     property bool privacyBlur: false
@@ -222,7 +262,7 @@ Item {
     property string toastText: ""
     property bool toastIsError: false
 
-    readonly property bool shortcutsEnabled: (typeof appWindow !== "undefined" ? appWindow.currentTab === 6 : root.visible)
+    readonly property bool shortcutsEnabled: (typeof appWindow !== "undefined" ? appWindow.currentTab === 7 : root.visible)
         && !isModalOpen(lightboxLoader) && !isModalOpen(batchRenameLoader) && !isModalOpen(galleryCleanerLoader)
         && !isModalOpen(rootDiskSafetyLoader) && !deleteConfirm.isOpen && !renameDialog.isOpen && !archiveModal.isOpen && !isModalOpen(archiveViewerLoader)
         && !isModalOpen(creatorUpdatesLoader) && !isModalOpen(storageLoader) && !isModalOpen(mediaCompressLoader)
@@ -237,6 +277,10 @@ Item {
         property alias thumbSize: root.thumbSize
         property alias showPathBar: root.showPathBar
         property alias showShortcutsBar: root.showShortcutsBar
+        property alias showFolderPreviews: root.showFolderPreviews
+        property alias thumbFitMode: root.thumbFitMode
+        property alias thumbAspect: root.thumbAspect
+        property alias cleanThumbCards: root.cleanThumbCards
         property alias privacyBlur: root.privacyBlur
         property alias privacyHintSeen: root.privacyHintSeen
         property alias groupByDate: root.groupByDate
@@ -579,6 +623,9 @@ Item {
         function onFolderStatsCalculated(path, size, fileCount, folderCount) {
             updateFolderStats(path, size, fileCount, folderCount)
         }
+        function onFolderPreviewsCalculated(path, previews) {
+            updateFolderPreviews(path, previews)
+        }
         function onGalleryBookmarksChanged() {
             root.refreshBookmarks()
         }
@@ -586,7 +633,7 @@ Item {
             root.drives = list      // free space, measured in the background
         }
         function onGalleryShowRequested(path, isDir) {
-            if (typeof appWindow !== "undefined") appWindow.currentTab = 6
+            if (typeof appWindow !== "undefined") appWindow.currentTab = 7
             if (isDir) root.navigateTo(path)
             else root.revealInGallery(path)
         }
@@ -600,17 +647,36 @@ Item {
         })
     }
 
-    // Folder sizes arrive one by one in the background. Labels read them from folderStats (bumped via
-    // statsRev), so the grid isn't rebuilt (and doesn't replay its flow-in) for every subfolder.
+    // Folder sizes and previews arrive one by one in the background. Cards read them via
+    // statsRev, so the grid isn't rebuilt (and doesn't replay its flow-in) for every subfolder.
     property var folderStats: ({})
+    property var folderPreviews: ({})
     property int statsRev: 0
-    function withFolderStats(item, st) {
+    function withFolderStats(item, st, pv) {
         var out = {}
         for (var k in item) out[k] = item[k]
-        out.size = st.size
-        out.file_count = st.file_count
-        out.folder_count = st.folder_count
+        if (st) {
+            out.size = st.size
+            out.file_count = st.file_count
+            out.folder_count = st.folder_count
+        }
+        if (pv !== undefined) {
+            out.previews = pv
+        }
         return out
+    }
+
+    function updateFolderPreviews(path, previews) {
+        var pv = previews ? Array.prototype.slice.call(previews) : []
+        var raw = root.rawItems || []
+        for (var i = 0; i < raw.length; i++) {
+            if (raw[i].path === path) {
+                raw[i].previews = pv
+                root.folderPreviews[path] = pv
+                statsFlushTimer.start()
+                return
+            }
+        }
     }
 
     function updateFolderStats(path, size, fileCount, folderCount) {
@@ -838,8 +904,13 @@ Item {
         root.openGroupKey = ""
         root.openGroupTitle = ""
         root.characterFilter = ""
+        if (!fromHistory && !_samePlace(root.currentPath, targetPath)) {
+            root.virtualBucketName = ""
+            root.virtualBucketPaths = ({})
+        }
         root.charTags = ({})
         root.folderStats = ({})
+        root.folderPreviews = ({})
         statsResortTimer.stop()
         if (root.tagging) root.cancelTagging()
         else { root.tagging = false; root.taggingCurrent = 0; root.taggingTotal = 0 }
@@ -1137,6 +1208,9 @@ Item {
     }
 
     function thumbUrl(item) {
+        if (typeof item === "string") {
+            return "image://thumb/" + encodeURIComponent(item)
+        }
         return "image://thumb/" + encodeURIComponent(item.path) + "?m=" + Math.round(item.mtime || 0)
     }
 
@@ -1774,6 +1848,13 @@ Item {
             // Character / series filter (files only)
             if (root.characterFilter && (it.is_dir || !hasCharacter(it, root.characterFilter))) continue
 
+            // Virtual Sort Bucket filter (files only)
+            if (root.virtualBucketName.length > 0) {
+                if (it.is_dir) continue
+                var normItPath = String(it.path || "").replace(/\\/g, "/").toLowerCase()
+                if (!root.virtualBucketPaths[normItPath]) continue
+            }
+
             // Search query filter (subfolder results already match)
             if (!recursive && !matchesQuery(it, pq)) continue
 
@@ -1934,7 +2015,7 @@ Item {
     }
     Shortcut {
         sequence: "Ctrl+H"
-        enabled: (typeof appWindow !== "undefined" ? appWindow.currentTab === 6 : root.visible)
+        enabled: (typeof appWindow !== "undefined" ? appWindow.currentTab === 7 : root.visible)
         onActivated: root.togglePrivacy()
     }
     Shortcut {
@@ -2590,6 +2671,47 @@ Item {
                     }
                 }
 
+                // Action: Visual & Local AI Sorter (Virtual-First -> Commit to Disk)
+                Rectangle {
+                    implicitHeight: 26
+                    implicitWidth: visualSortBtnRow.implicitWidth + 12
+                    radius: 5
+                    color: root.isCurrentPathBlocked ? "#161922" : (visualSortBtnMouse.containsMouse ? "#2E1065" : "#1A1430")
+                    border.color: root.isCurrentPathBlocked ? "#283042" : (visualSortBtnMouse.containsMouse ? "#C4B5FD" : "#7C3AED")
+                    border.width: 1
+                    opacity: root.isCurrentPathBlocked ? 0.38 : 1.0
+
+                    Row {
+                        id: visualSortBtnRow
+                        anchors.centerIn: parent
+                        spacing: 4
+                        Text { text: "✨"; font.pixelSize: 11 }
+                        Text {
+                            text: "Visual Sort"
+                            visible: root.showActionLabels
+                            font.family: "Segoe UI, sans-serif"
+                            font.pixelSize: 10
+                            font.weight: 600
+                            color: root.isCurrentPathBlocked ? "#64748B" : "#EDE9FE"
+                        }
+                    }
+                    Springy { hover: visualSortBtnMouse.containsMouse; pressed: visualSortBtnMouse.pressed }
+                    MouseArea {
+                        id: visualSortBtnMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: root.isCurrentPathBlocked ? Qt.ForbiddenCursor : Qt.PointingHandCursor
+                        onClicked: {
+                            root.requestSafeAction("Visual Sort", function() {
+                                modal(visualSorterLoader).open(root.currentPath)
+                            })
+                        }
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 300
+                        ToolTip.text: "Visual & Local AI Sorter (Virtual Sandbox)\nGroup media by visual style, resolution, color mood, character tags, or custom AI prompt — preview buckets in memory before moving anything on disk"
+                    }
+                }
+
                 // Action: Refresh Post Metadata
                 Rectangle {
                     implicitHeight: 26
@@ -2878,7 +3000,12 @@ Item {
                         anchors.fill: parent
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: navigateTo(root.currentPath)
+                        onClicked: {
+                            if (root.bridge && root.bridge.invalidateFolderCache) {
+                                root.bridge.invalidateFolderCache(root.currentPath)
+                            }
+                            navigateTo(root.currentPath)
+                        }
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 300
                         ToolTip.text: "Refresh current directory contents"
@@ -3696,6 +3823,48 @@ Item {
             }
         }
 
+        // 4a3. VIRTUAL SORT BUCKET FILTER BAR (while previewing a virtual sort bucket in Gallery)
+        Rectangle {
+            Layout.fillWidth: true
+            readonly property bool shown: root.virtualBucketName.length > 0
+            property real reveal: shown ? 1 : 0
+            Behavior on reveal { SpringAnimation { spring: 4.2; damping: 0.34; mass: 1.0; epsilon: 0.001 } }
+            implicitHeight: 30
+            Layout.preferredHeight: 30 * Math.max(0, reveal)
+            visible: reveal > 0.01
+            opacity: Math.max(0, Math.min(1, reveal))
+            clip: true
+            radius: 6
+            color: "#1E1B4B"
+            border.color: "#818CF8"
+            border.width: 1
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 12
+                anchors.rightMargin: 6
+                spacing: 8
+                Text {
+                    Layout.fillWidth: true
+                    text: "✨ Virtual Sort Bucket: " + root.virtualBucketName + "  •  " + root.shownItemCount + (root.shownItemCount === 1 ? " file" : " files") + " (preview only — no disk changes)"
+                    font.family: "Segoe UI, sans-serif"
+                    font.pixelSize: 11
+                    font.weight: 600
+                    color: "#C7D2FE"
+                    elide: Text.ElideRight
+                }
+                ActionChip {
+                    icon: "✨"; label: "Reopen Sorter"
+                    tip: "Reopen the Visual Sorter sandbox"
+                    onTriggered: modal(visualSorterLoader).open(root.currentPath)
+                }
+                ActionChip {
+                    icon: "✕"; label: "Clear virtual filter"
+                    tip: "Show every file in the folder again"
+                    onTriggered: root.setVirtualBucketFilter("", [])
+                }
+            }
+        }
+
         // 4b. SELECTION ACTION BAR (visible while items are selected)
         // Left: what's selected + selection links. Right, grouped: organize | archive | More, Delete.
         Rectangle {
@@ -3869,7 +4038,7 @@ Item {
                 anchors.margins: 10
                 // Stretch cells so each row fills the full width (target = thumbSize per card)
                 cellWidth: Math.floor(width / Math.max(1, Math.floor(width / root.thumbSize)))
-                readonly property int previewHeight: Math.max(70, Math.round((cellWidth - 18) * 0.62))
+                readonly property int previewHeight: Math.max(70, Math.round((cellWidth - 18) * root.thumbAspectRatio))
                 cellHeight: previewHeight + 68
                 model: root.filteredItems
                 clip: true
@@ -3916,16 +4085,24 @@ Item {
 
                 delegate: Item {
                     id: gridCell
-                    readonly property var info: { root.statsRev; var st = modelData.is_dir ? root.folderStats[modelData.path] : undefined; return st ? root.withFolderStats(modelData, st) : modelData }   // folder sizes update in place
+                    readonly property var info: {
+                        root.statsRev;
+                        var st = modelData.is_dir ? root.folderStats[modelData.path] : undefined;
+                        var pv = modelData.is_dir ? root.folderPreviews[modelData.path] : undefined;
+                        return (st || pv !== undefined) ? root.withFolderStats(modelData, st, pv) : modelData
+                    }   // folder sizes and previews update in place
+                    readonly property var dirPreviews: (modelData.is_dir && root.showFolderPreviews && gridCell.info.previews) ? gridCell.info.previews : []
+                    readonly property bool hasFolderPreviews: dirPreviews.length > 0
                     width: explorerGridView.cellWidth
                     height: explorerGridView.cellHeight
                     readonly property bool isSel: root.selectedPaths[modelData.path] === true
                     readonly property bool isKeyFocus: root.keyboardNav && GridView.isCurrentItem && explorerGridView.activeFocus
                     readonly property bool spacer: !!modelData.is_header || !!modelData.is_filler
                     readonly property bool dropHover: gridFolderDrop.containsDrag
+                    readonly property bool showCardBadges: !root.cleanThumbCards || gridCardMouse.containsMouse || gridCell.isSel
                     readonly property string cat: modelData.is_dir ? "folder" : root.getCategory(modelData.ext)
-                    // Images via Qt; videos via the Windows thumbnail cache (falls back to the icon)
-                    readonly property bool hasThumb: cat === "image" || cat === "video" || (!!modelData.is_group && !!modelData.cover)
+                    // Images via Qt; videos via the Windows thumbnail cache (single-preview folders reuse thumbImage)
+                    readonly property bool hasThumb: cat === "image" || cat === "video" || (!!modelData.is_group && !!modelData.cover) || gridCell.dirPreviews.length === 1
                     // Post stacks fan out a little when hovered
                     property real spread: (modelData.is_group && gridCardMouse.containsMouse) ? 1.8 : 1.0
                     Behavior on spread { SpringAnimation { spring: 4.2; damping: 0.34; mass: 1.0; epsilon: 0.001 } }
@@ -3980,19 +4157,60 @@ Item {
                                 visible: status === Image.Ready && implicitWidth > 1
                                 opacity: visible ? 1 : 0
                                 Behavior on opacity { NumberAnimation { duration: 240; easing.type: Easing.OutCubic } }
-                                source: gridCell.hasThumb ? root.thumbUrl(modelData.is_group ? modelData.cover : modelData) : ""
+                                source: gridCell.hasThumb ? root.thumbUrl(modelData.is_group ? modelData.cover : (gridCell.dirPreviews.length === 1 ? gridCell.dirPreviews[0] : modelData)) : ""
                                 asynchronous: true
                                 cache: true
                                 smooth: true
-                                fillMode: Image.PreserveAspectCrop
+                                fillMode: root.resolvedImageFillMode
                                 // Privacy blur: drawn through a tiny texture, so only soft colours remain
                                 layer.enabled: root.privacyBlur
                                 layer.textureSize: Qt.size(12, 9)
                                 layer.smooth: true
                             }
+
+                            // 2x2 / 2x1 folder preview contact sheet when a folder has 2..4 images
+                            Item {
+                                id: folderCollage
+                                objectName: "folderPreviewCollage"
+                                anchors.fill: parent
+                                anchors.margins: 3
+                                visible: gridCell.dirPreviews.length > 1
+                                readonly property int gap: 3
+                                readonly property int gridRows: gridCell.dirPreviews.length > 2 ? 2 : 1
+                                layer.enabled: root.privacyBlur
+                                layer.textureSize: Qt.size(12, 9)
+                                layer.smooth: true
+
+                                Grid {
+                                    anchors.fill: parent
+                                    columns: 2
+                                    rows: folderCollage.gridRows
+                                    spacing: folderCollage.gap
+                                    Repeater {
+                                        model: gridCell.dirPreviews.length > 1 ? gridCell.dirPreviews : []
+                                        Rectangle {
+                                            width: Math.max(10, Math.floor((folderCollage.width - folderCollage.gap) / 2))
+                                            height: Math.max(10, Math.floor((folderCollage.height - (folderCollage.gridRows > 1 ? folderCollage.gap : 0)) / folderCollage.gridRows))
+                                            radius: 3
+                                            color: "#111827"
+                                            clip: true
+                                            Image {
+                                                anchors.fill: parent
+                                                source: root.thumbUrl(modelData)
+                                                asynchronous: true
+                                                cache: true
+                                                smooth: true
+                                                fillMode: root.resolvedImageFillMode
+                                                visible: status === Image.Ready && implicitWidth > 1
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
                             Rectangle {
                                 anchors.fill: parent
-                                visible: root.privacyBlur && gridCell.hasThumb
+                                visible: root.privacyBlur && (gridCell.hasThumb || gridCell.hasFolderPreviews)
                                 color: "#59101622"
                                 Text { anchors.centerIn: parent; text: "🙈"; font.pixelSize: 22; opacity: 0.8 }
                             }
@@ -4004,7 +4222,7 @@ Item {
                                 sourceComponent: AnimatedMedia {
                                     path: modelData.path
                                     tools: root.tools
-                                    fillMode: Image.PreserveAspectCrop
+                                    fillMode: root.resolvedImageFillMode
                                 }
                             }
 
@@ -4030,14 +4248,14 @@ Item {
                                     VideoOutput {
                                         id: previewOutput
                                         anchors.fill: parent
-                                        fillMode: VideoOutput.PreserveAspectCrop
+                                        fillMode: root.resolvedVideoFillMode
                                     }
                                 }
                             }
 
                             Text {
                                 anchors.centerIn: parent
-                                visible: !thumbImage.visible
+                                visible: !thumbImage.visible && gridCell.dirPreviews.length <= 1
                                 text: getItemIcon(modelData)
                                 font.pixelSize: 34
                                 opacity: thumbImage.status === Image.Loading ? 0.35 : 0.9
@@ -4045,7 +4263,7 @@ Item {
 
                             // Favourite star
                             Rectangle {
-                                readonly property bool on: root.isFavorite(modelData)
+                                readonly property bool on: root.isFavorite(modelData) && gridCell.showCardBadges
                                 visible: opacity > 0.01
                                 opacity: on ? 1 : 0
                                 scale: on ? 1 : 0.2
@@ -4062,9 +4280,30 @@ Item {
                                 Text { anchors.centerIn: parent; text: "★"; font.pixelSize: 11; color: "#FBBF24" }
                             }
 
+                            // Folder corner pill so previewed folders stay unmistakably identifiable as folders
+                            Rectangle {
+                                objectName: "folderPreviewBadge"
+                                visible: modelData.is_dir && gridCell.hasFolderPreviews && gridCell.showCardBadges
+                                anchors.left: parent.left
+                                anchors.bottom: parent.bottom
+                                anchors.margins: 5
+                                implicitHeight: 18
+                                implicitWidth: folderCornerLabel.implicitWidth + 10
+                                radius: 4
+                                color: "#D90B0E17"
+                                border.color: "#38BDF8"
+                                border.width: 1
+                                Text {
+                                    id: folderCornerLabel
+                                    anchors.centerIn: parent
+                                    text: "📁"
+                                    font.pixelSize: 10
+                                }
+                            }
+
                             // File count badge on post stacks
                             Rectangle {
-                                visible: !!modelData.is_group
+                                visible: !!modelData.is_group && gridCell.showCardBadges
                                 anchors.left: parent.left
                                 anchors.bottom: parent.bottom
                                 anchors.margins: 5
@@ -4086,7 +4325,7 @@ Item {
 
                             // Play badge for videos
                             Rectangle {
-                                visible: gridCell.cat === "video"
+                                visible: gridCell.cat === "video" && gridCell.showCardBadges
                                 anchors.right: parent.right
                                 anchors.bottom: parent.bottom
                                 anchors.margins: 5
@@ -4097,6 +4336,7 @@ Item {
 
                             // Size / item-count badge
                             Rectangle {
+                                visible: gridCell.showCardBadges
                                 anchors.top: parent.top
                                 anchors.right: parent.right
                                 anchors.margins: 5
@@ -5107,6 +5347,27 @@ Click to open the Downloader"
     }
 
     Loader {
+        id: visualSorterLoader
+        anchors.fill: parent
+        z: 9998
+        active: false
+        sourceComponent: Component {
+            VisualSorterModal {
+                id: visualSorterModal
+                bridge: root.bridge
+                onSortCommitted: (movedCount, msg) => {
+                    root.setVirtualBucketFilter("", [])
+                    root.showToast(msg || ("Sorted " + movedCount + " files into folders"), false, true)
+                    root.navigateTo(root.currentPath)
+                }
+                onVirtualFilterRequested: (bucketName, paths) => {
+                    root.setVirtualBucketFilter(bucketName, paths)
+                }
+            }
+        }
+    }
+
+    Loader {
         id: rootDiskSafetyLoader
         anchors.fill: parent
         z: 99999
@@ -5131,9 +5392,9 @@ Click to open the Downloader"
                 onBackgroundFinished: (headline, ok) => {
                     root.showToast(headline, !ok)
                     // Elsewhere in the app: the global toast, which jumps back to the result when clicked
-                    if (typeof appWindow !== "undefined" && appWindow.currentTab !== 6 && appWindow.showToast) {
+                    if (typeof appWindow !== "undefined" && appWindow.currentTab !== 7 && appWindow.showToast) {
                         appWindow.showToast((ok ? "✔ " : "⚠ ") + "Gallery: " + headline + " (click to view)", function() {
-                            appWindow.currentTab = 6
+                            appWindow.currentTab = 7
                             if (mediaCompressLoader.item) mediaCompressLoader.item.reopen()
                         })
                     }
@@ -5167,9 +5428,9 @@ Click to open the Downloader"
         onBackgroundFinished: (headline, ok) => {
             root.showToast(headline, !ok)
             // Elsewhere in the app: the global toast, which jumps back to the result when clicked
-            if (typeof appWindow !== "undefined" && appWindow.currentTab !== 6 && appWindow.showToast) {
+            if (typeof appWindow !== "undefined" && appWindow.currentTab !== 7 && appWindow.showToast) {
                 appWindow.showToast((ok ? "✔ " : "⚠ ") + "Gallery: " + headline + " (click to view)", function() {
-                    appWindow.currentTab = 6
+                    appWindow.currentTab = 7
                     archiveModal.reopen()
                 })
             }
@@ -5550,7 +5811,7 @@ Click to open the Downloader"
                 NumberAnimation { property: "scale"; to: 0.94; duration: 110; easing.type: Easing.InCubic }
             }
         }
-        width: 240
+        width: 268
         padding: 4
         focus: true
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
@@ -5568,6 +5829,20 @@ Click to open the Downloader"
                 color: "#64748B"
             }
             MenuRow {
+                icon: root.showFolderPreviews ? "☑" : "☐"
+                label: "Folder previews"
+                checked: root.showFolderPreviews
+                hint: "up to 4 thumbs"
+                onTriggered: root.showFolderPreviews = !root.showFolderPreviews
+            }
+            MenuRow {
+                icon: root.cleanThumbCards ? "☑" : "☐"
+                label: "Clean thumbnails"
+                checked: root.cleanThumbCards
+                hint: "badges on hover"
+                onTriggered: root.cleanThumbCards = !root.cleanThumbCards
+            }
+            MenuRow {
                 icon: root.showPathBar ? "☑" : "☐"
                 label: "Path bar"
                 checked: root.showPathBar
@@ -5580,6 +5855,61 @@ Click to open the Downloader"
                 checked: root.showShortcutsBar
                 hint: root.shortcutChips.length === 0 ? "no shortcuts yet" : ""
                 onTriggered: root.showShortcutsBar = !root.showShortcutsBar
+            }
+            MenuDivider {}
+            Text {
+                width: parent.width
+                leftPadding: 8; topPadding: 4; bottomPadding: 4
+                text: "THUMBNAIL FIT"
+                font.family: "Segoe UI, sans-serif"
+                font.pixelSize: 9
+                font.weight: 700
+                color: "#64748B"
+            }
+            MenuRow {
+                icon: root.thumbFitMode === "fit" ? "●" : "○"
+                label: "Fit whole image"
+                checked: root.thumbFitMode === "fit"
+                hint: "Explorer style"
+                onTriggered: root.thumbFitMode = "fit"
+            }
+            MenuRow {
+                icon: root.thumbFitMode === "crop" ? "●" : "○"
+                label: "Fill frame (crop)"
+                checked: root.thumbFitMode === "crop"
+                hint: "edge to edge"
+                onTriggered: root.thumbFitMode = "crop"
+            }
+            MenuDivider {}
+            Text {
+                width: parent.width
+                leftPadding: 8; topPadding: 4; bottomPadding: 4
+                text: "FRAME RATIO"
+                font.family: "Segoe UI, sans-serif"
+                font.pixelSize: 9
+                font.weight: 700
+                color: "#64748B"
+            }
+            MenuRow {
+                icon: root.thumbAspect === "square" ? "●" : "○"
+                label: "1:1 Square"
+                checked: root.thumbAspect === "square"
+                hint: "Explorer"
+                onTriggered: root.thumbAspect = "square"
+            }
+            MenuRow {
+                icon: root.thumbAspect === "landscape" ? "●" : "○"
+                label: "16:10 Landscape"
+                checked: root.thumbAspect === "landscape"
+                hint: "wide"
+                onTriggered: root.thumbAspect = "landscape"
+            }
+            MenuRow {
+                icon: root.thumbAspect === "portrait" ? "●" : "○"
+                label: "3:4 Portrait"
+                checked: root.thumbAspect === "portrait"
+                hint: "tall"
+                onTriggered: root.thumbAspect = "portrait"
             }
             MenuDivider {}
             MenuRow {

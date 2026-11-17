@@ -7,7 +7,10 @@ small JPEGs so revisiting a folder is instant. The provider is registered with
 ForceAsynchronousImageLoading, so Qt calls requestImage off the UI thread.
 """
 
+import atexit
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
+import io
 import os
 import sys
 import threading
@@ -15,10 +18,15 @@ import time
 from collections import OrderedDict
 import urllib.parse
 
-from PySide6.QtCore import QSize, QStandardPaths, Qt
+from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QSize, QStandardPaths, Qt
 from PySide6.QtGui import QColor, QImage, QImageReader, QPainter
 from PySide6.QtQml import QQmlImageProviderBase
-from PySide6.QtQuick import QQuickImageProvider
+from PySide6.QtQuick import (
+    QQuickAsyncImageProvider,
+    QQuickImageProvider,
+    QQuickImageResponse,
+    QQuickTextureFactory,
+)
 
 from core.logger import logger
 
@@ -202,11 +210,11 @@ def _shell_thumbnail(path: str, box: int) -> QImage:
             ole32.CoUninitialize()
 
 
-def decode_with_pillow(path: str, max_box: int = 0) -> QImage:
+def _decode_pillow_source(source, max_box: int = 0) -> QImage:
     """Decode formats Qt can't (AVIF, files with the wrong extension, …) with Pillow."""
     try:
         from PIL import Image as PILImage, ImageOps
-        with PILImage.open(path) as im:
+        with PILImage.open(source) as im:
             if max_box:
                 im.draft("RGB", (max_box, max_box))   # fast downscale while decoding (JPEG)
             im = ImageOps.exif_transpose(im)
@@ -217,6 +225,11 @@ def decode_with_pillow(path: str, max_box: int = 0) -> QImage:
             return QImage(data, im.width, im.height, im.width * 4, QImage.Format.Format_RGBA8888).copy()
     except Exception:
         return QImage()
+
+
+def decode_with_pillow(path: str, max_box: int = 0) -> QImage:
+    """Decode formats Qt can't (AVIF, files with the wrong extension, …) with Pillow."""
+    return _decode_pillow_source(path, max_box=max_box)
 
 
 def decode_full_image(path: str) -> QImage:
@@ -438,37 +451,356 @@ class ThumbnailProvider(QQuickImageProvider):
         return img
 
     def _maybe_prune(self):
-        with self._prune_lock:
-            if self._prune_started:
-                return
-            self._prune_started = True
-        threading.Thread(target=self._prune_cache, daemon=True, name="ThumbCachePrune").start()
+        _maybe_prune_cache_dir(self._cache_dir)
 
     def _prune_cache(self):
-        """Drop the least recently written thumbnails once the cache grows past its limit."""
-        try:
-            entries = []
-            total = 0
-            for dirpath, _, files in os.walk(self._cache_dir):
-                for f in files:
-                    fp = os.path.join(dirpath, f)
-                    try:
-                        st = os.stat(fp)
-                    except OSError:
-                        continue
-                    entries.append((st.st_mtime, st.st_size, fp))
-                    total += st.st_size
-            if total <= CACHE_MAX_BYTES:
-                return
-            entries.sort()
-            for _, sz, fp in entries:
-                if total <= CACHE_PRUNE_TARGET:
-                    break
+        _prune_cache_dir(self._cache_dir)
+
+
+_PRUNE_LOCK = threading.Lock()
+_PRUNE_STARTED = False
+
+
+def _maybe_prune_cache_dir(cache_dir: str) -> None:
+    global _PRUNE_STARTED
+    with _PRUNE_LOCK:
+        if _PRUNE_STARTED:
+            return
+        _PRUNE_STARTED = True
+    threading.Thread(target=_prune_cache_dir, args=(cache_dir,), daemon=True, name="ThumbCachePrune").start()
+
+
+def _prune_cache_dir(cache_dir: str) -> None:
+    """Drop the least recently written thumbnails once the cache grows past its limit."""
+    try:
+        entries = []
+        total = 0
+        for dirpath, _, files in os.walk(cache_dir):
+            for f in files:
+                fp = os.path.join(dirpath, f)
                 try:
-                    os.remove(fp)
-                    total -= sz
+                    st = os.stat(fp)
                 except OSError:
-                    pass
-            logger.debug(f"Thumbnail cache pruned to {total / (1024 * 1024):.0f} MB.", category="gallery")
-        except Exception as e:
-            logger.debug(f"Thumbnail cache prune failed: {e}", category="gallery")
+                    continue
+                entries.append((st.st_mtime, st.st_size, fp))
+                total += st.st_size
+        if total <= CACHE_MAX_BYTES:
+            return
+        entries.sort()
+        for _, sz, fp in entries:
+            if total <= CACHE_PRUNE_TARGET:
+                break
+            try:
+                os.remove(fp)
+                total -= sz
+            except OSError:
+                pass
+        logger.debug(f"Thumbnail cache pruned to {total / (1024 * 1024):.0f} MB.", category="gallery")
+    except Exception as e:
+        logger.debug(f"Thumbnail cache prune failed: {e}", category="gallery")
+
+
+REMOTE_THUMB_BOX = 384
+REMOTE_MAX_BYTES = 12 * 1024 * 1024
+REMOTE_NEG_TTL_HARD = 300.0
+REMOTE_NEG_TTL_SOFT = 20.0
+REMOTE_NEG_MAX_ITEMS = 512
+
+_NON_IMAGE_THUMB_EXTS = frozenset({
+    ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".zst",
+    ".mp4", ".m4v", ".mkv", ".webm", ".mov", ".avi", ".flv", ".f4v", ".wmv", ".m3u8",
+    ".mp3", ".wav", ".flac", ".ogg", ".oga", ".m4a", ".aac", ".opus", ".wma",
+    ".pdf", ".txt", ".md", ".doc", ".docx", ".psd", ".clip", ".sai", ".blend", ".exe", ".bin",
+})
+
+
+def _transparent_1x1() -> QImage:
+    img = QImage(1, 1, QImage.Format.Format_ARGB32)
+    img.fill(0)
+    return img
+
+
+class _RemoteThumbResponse(QQuickImageResponse):
+    """Async QQuickImageResponse resolved by RemoteThumbProvider's worker pool."""
+
+    def __init__(self, provider: "RemoteThumbProvider", image_id: str, requested_size: QSize):
+        super().__init__()
+        self._provider = provider
+        self._image_id = image_id
+        self._requested_size = QSize(requested_size)
+        self._cancelled = False
+        self._image = QImage()
+
+    def is_cancelled(self) -> bool:
+        return self._cancelled
+
+    def cancel(self) -> None:
+        self._cancelled = True
+
+    def run(self) -> None:
+        try:
+            if not self._cancelled:
+                self._image = self._provider._fetch_and_decode(
+                    self._image_id,
+                    self._requested_size,
+                    cancel_check=self.is_cancelled,
+                )
+        except Exception:
+            self._image = QImage()
+        if self._image.isNull():
+            self._image = _transparent_1x1()
+        try:
+            self.finished.emit()
+        except RuntimeError:
+            pass
+
+    def textureFactory(self) -> QQuickTextureFactory:
+        img = self._image if not self._image.isNull() else _transparent_1x1()
+        return QQuickTextureFactory.textureFactoryForImage(img)
+
+
+class RemoteThumbProvider(QQuickAsyncImageProvider):
+    """
+    Serves ``image://remotethumb/<provider>/<url-encoded https url>`` to BrowserView.
+
+    Decodes/scales remote thumbnails concurrently via a bounded worker pool with provider
+    Referer/UA headers, Pawchive node failover, bounded disk caching, short-TTL negative
+    404 caching, request cancellation, and a 1x1 transparent fallback (zero QML warnings).
+    """
+
+    def __init__(self, max_workers: int = 8):
+        super().__init__()
+        self._base_cache_dir = _cache_dir()
+        self._remote_dir = os.path.join(self._base_cache_dir, "remote")
+        os.makedirs(self._remote_dir, exist_ok=True)
+        self._tls = threading.local()
+        self._shards = [threading.Lock() for _ in range(64)]
+        self._neg_lock = threading.Lock()
+        self._neg_cache: "OrderedDict[str, float]" = OrderedDict()
+        self._pending_lock = threading.Lock()
+        self._pending: "dict[int, _RemoteThumbResponse]" = {}
+        self._shutting_down = False
+        self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="RemoteThumb")
+        atexit.register(self.shutdown)
+
+    def shutdown(self) -> None:
+        self._shutting_down = True
+        try:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
+
+    def _drop_pending(self, rid: int) -> None:
+        with self._pending_lock:
+            self._pending.pop(rid, None)
+
+    def requestImageResponse(self, image_id: str, requested_size: QSize) -> QQuickImageResponse:
+        resp = _RemoteThumbResponse(self, image_id, requested_size)
+        rid = id(resp)
+        with self._pending_lock:
+            self._pending[rid] = resp
+        resp.destroyed.connect(lambda *_a, k=rid: self._drop_pending(k))
+        if self._shutting_down:
+            resp.cancel()
+            resp.run()
+        else:
+            self._executor.submit(resp.run)
+        return resp
+
+    def _session(self):
+        import requests
+        sess = getattr(self._tls, "session", None)
+        if sess is None:
+            sess = requests.Session()
+            self._tls.session = sess
+        return sess
+
+    def _is_negative_cached(self, key: str) -> bool:
+        now = time.monotonic()
+        with self._neg_lock:
+            exp = self._neg_cache.get(key)
+            if exp is None:
+                return False
+            if now >= exp:
+                self._neg_cache.pop(key, None)
+                return False
+            self._neg_cache.move_to_end(key)
+            return True
+
+    def _mark_negative(self, key: str, ttl: float) -> None:
+        exp = time.monotonic() + ttl
+        with self._neg_lock:
+            self._neg_cache[key] = exp
+            self._neg_cache.move_to_end(key)
+            while len(self._neg_cache) > REMOTE_NEG_MAX_ITEMS:
+                self._neg_cache.popitem(last=False)
+
+    @staticmethod
+    def _parse_image_id(image_id: str) -> tuple:
+        provider_id, sep, rest = (image_id or "").partition("/")
+        if sep:
+            pid = urllib.parse.unquote(provider_id).strip()
+            raw_url = urllib.parse.unquote(rest).strip()
+        else:
+            pid = ""
+            raw_url = urllib.parse.unquote(provider_id).strip()
+        return pid, raw_url
+
+    @staticmethod
+    def _scale_for_request(img: QImage, requested_size: QSize) -> QImage:
+        if requested_size.isValid():
+            rw = requested_size.width() if requested_size.width() > 0 else REMOTE_THUMB_BOX
+            rh = requested_size.height() if requested_size.height() > 0 else REMOTE_THUMB_BOX
+            rw = min(rw, REMOTE_THUMB_BOX)
+            rh = min(rh, REMOTE_THUMB_BOX)
+            if img.width() > rw or img.height() > rh:
+                return img.scaled(
+                    rw, rh, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+                )
+        return img
+
+    @staticmethod
+    def _decode_bytes(data: bytes) -> QImage:
+        if not data:
+            return QImage()
+        buf = QBuffer()
+        buf.setData(QByteArray(data))
+        buf.open(QIODevice.OpenModeFlag.ReadOnly)
+        reader = QImageReader(buf)
+        reader.setAutoTransform(True)
+        reader.setDecideFormatFromContent(True)
+        src = reader.size()
+        if src.isValid() and (src.width() > REMOTE_THUMB_BOX or src.height() > REMOTE_THUMB_BOX):
+            reader.setScaledSize(
+                src.scaled(REMOTE_THUMB_BOX, REMOTE_THUMB_BOX, Qt.AspectRatioMode.KeepAspectRatio)
+            )
+        img = reader.read()
+        if img.isNull():
+            img = _decode_pillow_source(io.BytesIO(data), max_box=REMOTE_THUMB_BOX)
+        if not img.isNull() and (img.width() > REMOTE_THUMB_BOX or img.height() > REMOTE_THUMB_BOX):
+            img = img.scaled(
+                REMOTE_THUMB_BOX,
+                REMOTE_THUMB_BOX,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        return img
+
+    def _read_disk_cache(self, key: str) -> QImage:
+        sub = os.path.join(self._remote_dir, key[:2])
+        for ext in (".jpg", ".png"):
+            fp = os.path.join(sub, key + ext)
+            if os.path.exists(fp):
+                img = QImage(fp)
+                if not img.isNull():
+                    return img
+        return QImage()
+
+    def _write_disk_cache(self, key: str, img: QImage) -> None:
+        try:
+            sub = os.path.join(self._remote_dir, key[:2])
+            os.makedirs(sub, exist_ok=True)
+            use_png = img.hasAlphaChannel()
+            ext = ".png" if use_png else ".jpg"
+            fp = os.path.join(sub, key + ext)
+            tmp = f"{fp}.{threading.get_ident()}.tmp"
+            ok = img.save(tmp, "PNG" if use_png else "JPG", 85 if not use_png else -1)
+            if ok:
+                os.replace(tmp, fp)
+            elif os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+
+    def _download_bytes(self, url: str, provider_id: str, cancel_check=None) -> tuple:
+        from core.browser_media_service import build_request_headers, candidate_urls
+
+        sess = self._session()
+        last_status = 0
+        for cand in candidate_urls(url):
+            if cancel_check and cancel_check():
+                return b"", -1
+            try:
+                headers = build_request_headers(cand, provider_id)
+                headers["Accept"] = "image/avif,image/webp,image/png,image/jpeg,image/gif,*/*;q=0.8"
+                with sess.get(cand, headers=headers, stream=True, timeout=(4, 8)) as resp:
+                    last_status = int(resp.status_code)
+                    if resp.status_code >= 400:
+                        continue
+                    ctype = (resp.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+                    if ctype.startswith("text/") or ctype == "application/json":
+                        continue
+                    clen = int(resp.headers.get("Content-Length") or 0)
+                    if clen > REMOTE_MAX_BYTES:
+                        return b"", 413
+                    chunks = []
+                    total = 0
+                    for chunk in resp.iter_content(chunk_size=65536):
+                        if cancel_check and cancel_check():
+                            return b"", -1
+                        if not chunk:
+                            continue
+                        total += len(chunk)
+                        if total > REMOTE_MAX_BYTES:
+                            return b"", 413
+                        chunks.append(chunk)
+                    return b"".join(chunks), resp.status_code
+            except Exception:
+                continue
+        return b"", last_status
+
+    def _fetch_and_decode(self, image_id: str, requested_size: QSize, cancel_check=None) -> QImage:
+        _maybe_prune_cache_dir(self._base_cache_dir)
+        provider_id, url = self._parse_image_id(image_id)
+        if not url or not url.startswith(("http://", "https://")):
+            return _transparent_1x1()
+
+        # Skip non-image resource paths (e.g. .zip/.mp4) before hitting upstream CDNs
+        url_path_ext = os.path.splitext(url.split("#", 1)[0].split("?", 1)[0])[1].lower()
+        if url_path_ext in _NON_IMAGE_THUMB_EXTS:
+            return _transparent_1x1()
+
+        key = hashlib.sha1(f"{url}|{REMOTE_THUMB_BOX}".encode("utf-8")).hexdigest()
+        cached = self._read_disk_cache(key)
+        if not cached.isNull():
+            return self._scale_for_request(cached, requested_size)
+
+        if self._is_negative_cached(key):
+            return _transparent_1x1()
+
+        shard = self._shards[int(key[:8], 16) % len(self._shards)]
+        with shard:
+            if cancel_check and cancel_check():
+                return _transparent_1x1()
+            cached = self._read_disk_cache(key)
+            if not cached.isNull():
+                return self._scale_for_request(cached, requested_size)
+            if self._is_negative_cached(key):
+                return _transparent_1x1()
+
+            data, status = self._download_bytes(url, provider_id, cancel_check=cancel_check)
+            if status == -1:
+                return _transparent_1x1()
+            if not data:
+                ttl = REMOTE_NEG_TTL_HARD if status in (400, 403, 404, 410, 413, 451) else REMOTE_NEG_TTL_SOFT
+                self._mark_negative(key, ttl)
+                logger.debug(f"Remote thumbnail unavailable ({status or 'err'}) for {url}", category="browser")
+                return _transparent_1x1()
+
+            img = self._decode_bytes(data)
+            if img.isNull():
+                self._mark_negative(key, REMOTE_NEG_TTL_HARD)
+                logger.debug(f"Remote thumbnail decode failed for {url}", category="browser")
+                return _transparent_1x1()
+
+            self._write_disk_cache(key, img)
+
+        return self._scale_for_request(img, requested_size)
+
+    def requestImage(self, image_id: str, size: QSize, requested_size: QSize) -> QImage:
+        """Synchronous convenience entry point matching QQuickImageProvider for tests/tools."""
+        out = self._fetch_and_decode(image_id, requested_size)
+        if size is not None:
+            size.setWidth(out.width())
+            size.setHeight(out.height())
+        return out

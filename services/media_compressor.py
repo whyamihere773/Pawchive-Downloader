@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Tuple
 
 from core.logger import logger
+from core.path_utils import subprocess_env_kwargs
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
 GIF_EXTS = {".gif"}
@@ -166,6 +167,7 @@ def frame_durations(im) -> List[int]:
 
 
 def _keep_if_smaller(original: str, tmp: str, final: str, result: CompressResult) -> None:
+    from core.statistics_manager import statistics_manager
     before, after = os.path.getsize(original), os.path.getsize(tmp)
     if after <= 0 or after > before * (1 - MIN_SAVING):
         os.remove(tmp)
@@ -175,6 +177,7 @@ def _keep_if_smaller(original: str, tmp: str, final: str, result: CompressResult
     result.compressed.append((original, final))
     result.bytes_before += before
     result.bytes_after += after
+    statistics_manager.record_compression(before, after)
 
 
 # ── Pictures ─────────────────────────────────────────────────────────────────
@@ -450,7 +453,8 @@ def probe_video(ffmpeg: str, path: str) -> Tuple[float, str, str]:
     """(duration in seconds, video codec, audio codec) from ffmpeg's description of the file."""
     try:
         p = subprocess.run([ffmpeg, "-hide_banner", "-i", path], capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=60, creationflags=_CREATE_NO_WINDOW)
+                           encoding="utf-8", errors="replace", timeout=60, creationflags=_CREATE_NO_WINDOW,
+                           **subprocess_env_kwargs())
         text = p.stderr
     except Exception:
         return 0.0, "", ""
@@ -490,7 +494,8 @@ def is_encoder_supported(ffmpeg: str, encoder: str) -> bool:
         ]
     try:
         flags = _CREATE_NO_WINDOW | _BELOW_NORMAL_PRIORITY
-        res = subprocess.run(cmd, capture_output=True, timeout=8, creationflags=flags)
+        res = subprocess.run(cmd, capture_output=True, timeout=8, creationflags=flags,
+                             **subprocess_env_kwargs())
         supported = (res.returncode == 0)
     except Exception:
         supported = False
@@ -654,7 +659,7 @@ def _run_ffmpeg_encode(cmd: List[str], tmp: str, duration: float,
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, text=True, encoding="utf-8",
-                                errors="replace", **kwargs)
+                                errors="replace", **subprocess_env_kwargs(), **kwargs)
     except OSError as e:
         return -1, [str(e)]
     if procs is not None:
@@ -794,7 +799,8 @@ def validate_ffmpeg_settings(ffmpeg: str, settings: CompressSettings) -> Tuple[b
                 i += 1
 
         flags = _CREATE_NO_WINDOW | _BELOW_NORMAL_PRIORITY
-        res = subprocess.run(new_cmd, capture_output=True, text=True, timeout=10, creationflags=flags)
+        res = subprocess.run(new_cmd, capture_output=True, text=True, timeout=10, creationflags=flags,
+                             **subprocess_env_kwargs())
         if res.returncode == 0 and os.path.exists(tmp_out) and os.path.getsize(tmp_out) > 0:
             return True, f"Verified: {enc_name} ({settings.video_format}) + {settings.audio_codec} working cleanly."
         else:

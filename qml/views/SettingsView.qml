@@ -29,6 +29,11 @@ SmoothFlickable {
     property string aiT2HeavySpeed: ""
     property string aiT2HeavyError: ""
 
+    property string aiClipStatus: "not_downloaded"
+    property real aiClipPercent: 0
+    property string aiClipSpeed: ""
+    property string aiClipError: ""
+
     // Provider vault state
     property var providersList: []
     property var validationResults: ({})
@@ -103,6 +108,13 @@ SmoothFlickable {
             aiT2HeavySpeed = s2h.speed_mbps ? (s2h.speed_mbps.toFixed(1) + " MB/s") : ""
             aiT2HeavyError = s2h.error || ""
         }
+        var sClip = root.bridge.getAiModelStatus("visual_clip_vit")
+        if (sClip) {
+            aiClipStatus = sClip.status || (sClip.is_ready ? "ready" : "not_downloaded")
+            aiClipPercent = (sClip.percent !== undefined) ? sClip.percent : (aiClipStatus === "ready" ? 100 : 0)
+            aiClipSpeed = sClip.speed_mbps ? (sClip.speed_mbps.toFixed(1) + " MB/s") : ""
+            aiClipError = sClip.error || ""
+        }
     }
 
     Connections {
@@ -123,6 +135,11 @@ SmoothFlickable {
                 root.aiT2HeavyPercent = percent
                 root.aiT2HeavySpeed = speedStr
                 root.aiT2HeavyError = error
+            } else if (modelKey === "visual_clip_vit") {
+                root.aiClipStatus = status
+                root.aiClipPercent = percent
+                root.aiClipSpeed = speedStr
+                root.aiClipError = error
             }
         }
         function onProvidersChanged() {
@@ -254,6 +271,11 @@ SmoothFlickable {
         id: settingsCol
         width: root.width - (root.verticalScrollBar && root.verticalScrollBar.visible ? 10 : 0)
         spacing: 12
+
+        PendingSettingsBanner {
+            Layout.fillWidth: true
+            bridge: root.bridge
+        }
 
         // ====================================================================
         // SEGMENTED MODE SWITCHER BAR WITH NEWTONIAN FLUID GLIDER
@@ -3602,7 +3624,7 @@ SmoothFlickable {
                                             implicitHeight: 28
                                             onClicked: {
                                                 if (typeof appWindow !== "undefined" && appWindow) {
-                                                    appWindow.currentTab = 8
+                                                    appWindow.currentTab = 9
                                                 }
                                             }
                                         }
@@ -4656,6 +4678,93 @@ SmoothFlickable {
                     }
                 }
 
+                // Workspace & Tab Bar Visibility (Customize Visible Top-Level Tabs)
+                CardSection {
+                    Layout.fillWidth: true
+                    interactive: !root.isScrolling
+                    title: tr("section_tab_visibility", "Workspace & Tab Bar Visibility")
+                    iconText: "🗂️"
+                    entranceOffsetY: root.tabEntranceOffsetY
+                    entranceOpacity: root.tabEntranceOpacity
+
+                    readonly property var disabledList: root.bridge ? root.bridge.disabledTabs : []
+                    function isTabShown(tabKey) {
+                        if (!disabledList) return true
+                        return disabledList.indexOf(tabKey) < 0
+                    }
+
+                    ColumnLayout {
+                        id: tabVisCol
+                        width: parent.width
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: 0
+                        spacing: 10
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            Text {
+                                text: tr("desc_tab_visibility", "Show or hide optional top-level tabs to keep your workspace clean. 'Downloader' and 'Settings' are always pinned.")
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 11
+                                color: "#94A3B8"
+                                wrapMode: Text.WordWrap
+                                Layout.fillWidth: true
+                            }
+
+                            StyledButton {
+                                visible: root.bridge ? (root.bridge.disabledTabs && root.bridge.disabledTabs.length > 0) : false
+                                text: tr("btn_restore_all_tabs", "Restore All Tabs")
+                                iconText: "↺"
+                                variant: "outline"
+                                implicitHeight: 28
+                                onClicked: {
+                                    if (root.bridge) root.bridge.resetDisabledTabs()
+                                }
+                            }
+                        }
+
+                        Flow {
+                            width: parent.width
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
+                            spacing: 8
+
+                            Repeater {
+                                model: [
+                                    { key: "browser", label: "Browser", icon: "🌐", color: "#38BDF8", tip: "Native Online & On-Disk Local Browser" },
+                                    { key: "queue", label: "Queue", icon: "📋", color: "#38BDF8", tip: "Task queue and download monitoring" },
+                                    { key: "watchlist", label: "Watchlist", icon: "📌", color: "#A78BFA", tip: "Followed creators and update tracker" },
+                                    { key: "decompressor", label: "Decompressor", icon: "📦", color: "#38BDF8", tip: "Bulk archive decompression" },
+                                    { key: "link_vault", label: "Link Vault", icon: "🗝️", color: "#F59E0B", tip: "Harvested cloud links & password resolver" },
+                                    { key: "scheduler", label: "Scheduler", icon: "⏰", color: "#818CF8", tip: "Automated schedules & Night Owl windows" },
+                                    { key: "gallery", label: "Gallery", icon: "🖼️", color: "#EC4899", tip: "File Explorer, Media Gallery & Visual Sorter" },
+                                    { key: "known", label: "Known Series", icon: "🏷️", color: "#34D399", tip: "Known character & series directory rules" },
+                                    { key: "archive", label: "Archive", icon: "🗃️", color: "#2DD4BF", tip: "Persistent download archive database" },
+                                    { key: "history", label: "History", icon: "📜", color: "#38BDF8", tip: "Completed downloads & past batch sessions" },
+                                    { key: "statistics", label: "Statistics", icon: "📊", color: "#38BDF8", tip: "Raw bandwidth, disk size, artists, files & folders telemetry" }
+                                ]
+
+                                delegate: FilterCheckbox {
+                                    readonly property var tb: modelData || ({})
+                                    readonly property bool shown: root.bridge ? (root.bridge.disabledTabs.indexOf(tb.key) < 0) : true
+                                    label: tb.label
+                                    iconText: tb.icon
+                                    activeColor: tb.color || "#38BDF8"
+                                    tooltip: tb.tip + (shown ? " (Visible — click to hide)" : " (Hidden — click to show)")
+                                    checked: shown
+                                    onClicked: {
+                                        if (root.bridge) {
+                                            root.bridge.setTabDisabled(tb.key, shown)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 }
             }
         }
@@ -5331,6 +5440,161 @@ SmoothFlickable {
                                         }
                                     }
 
+                                    // Tier 3 Model Card: Gallery Visual Sorter Vision Encoder (CLIP ViT-B/32 INT8)
+                                    Rectangle {
+                                        id: clipCard
+                                        Layout.fillWidth: true
+                                        Layout.minimumWidth: 0
+                                        implicitHeight: clipCol.implicitHeight + 24
+                                        radius: 6
+                                        color: "#0B111E"
+                                        border.color: root.aiClipStatus === "downloading" ? "#10B981" : "#1E293B"
+                                        border.width: 1
+                                        clip: true
+
+                                        readonly property bool isClipReady: root.aiClipStatus === "ready"
+
+                                        ColumnLayout {
+                                            id: clipCol
+                                            anchors.left: parent.left
+                                            anchors.right: parent.right
+                                            anchors.top: parent.top
+                                            anchors.margins: 12
+                                            spacing: 8
+
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                Layout.minimumWidth: 0
+                                                spacing: 8
+
+                                                Text {
+                                                    text: "🎨"
+                                                    font.pixelSize: 13
+                                                }
+
+                                                Text {
+                                                    text: tr("model_clip_title", "Gallery Visual Sorter Vision Encoder (CLIP ViT-B/32 INT8 • ~88 MB)")
+                                                    font.family: "Segoe UI, sans-serif"
+                                                    font.pixelSize: 11
+                                                    font.weight: 600
+                                                    color: "#E2E8F0"
+                                                    Layout.fillWidth: true
+                                                    Layout.minimumWidth: 0
+                                                    elide: Text.ElideRight
+                                                }
+
+                                                // Status Pill
+                                                Rectangle {
+                                                    implicitHeight: 20
+                                                    implicitWidth: clipStatusText.implicitWidth + 12
+                                                    radius: 10
+                                                    color: root.aiClipStatus === "downloading" ? "#064E3B" : (root.aiClipStatus === "error" ? "#450A0A" : (clipCard.isClipReady ? "#064E3B" : "#1E293B"))
+                                                    border.color: root.aiClipStatus === "downloading" ? "#10B981" : (root.aiClipStatus === "error" ? "#EF4444" : (clipCard.isClipReady ? "#059669" : "#334155"))
+                                                    border.width: 1
+
+                                                    Text {
+                                                        id: clipStatusText
+                                                        anchors.centerIn: parent
+                                                        text: root.aiClipStatus === "downloading" ? (root.aiClipPercent.toFixed(1) + "%") : (root.aiClipStatus === "error" ? "Error" : (clipCard.isClipReady ? "Ready" : "Not Downloaded"))
+                                                        font.pixelSize: 9
+                                                        font.weight: 600
+                                                        color: root.aiClipStatus === "downloading" ? "#34D399" : (root.aiClipStatus === "error" ? "#F87171" : (clipCard.isClipReady ? "#34D399" : "#94A3B8"))
+                                                    }
+                                                }
+
+                                                // Action Button
+                                                StyledButton {
+                                                    variant: root.aiClipStatus === "downloading" ? "secondary" : (clipCard.isClipReady ? "danger" : "primary")
+                                                    text: root.aiClipStatus === "downloading" ? tr("btn_cancel", "Cancel") : (clipCard.isClipReady ? tr("btn_remove_model", "Remove") : (root.aiClipStatus === "error" ? tr("btn_retry", "Retry") : tr("btn_download_clip", "Download 88 MB")))
+                                                    implicitHeight: 26
+                                                    font.pixelSize: 10
+                                                    onClicked: {
+                                                        if (!root.bridge) return
+                                                        if (root.aiClipStatus === "downloading") {
+                                                            root.bridge.cancelAiModelDownload("visual_clip_vit")
+                                                        } else if (clipCard.isClipReady) {
+                                                            root.bridge.deleteAiModel("visual_clip_vit")
+                                                            root.syncAiModelStatuses()
+                                                        } else {
+                                                            root.bridge.startAiModelDownload("visual_clip_vit")
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            // Download Progress Bar
+                                            ColumnLayout {
+                                                Layout.fillWidth: true
+                                                Layout.minimumWidth: 0
+                                                spacing: 4
+                                                visible: root.aiClipStatus === "downloading"
+
+                                                RowLayout {
+                                                    Layout.fillWidth: true
+                                                    Layout.minimumWidth: 0
+
+                                                    Text {
+                                                        text: tr("lbl_downloading_clip", "Downloading quantized ONNX vision weights...")
+                                                        font.family: "Segoe UI, sans-serif"
+                                                        font.pixelSize: 10
+                                                        font.weight: 600
+                                                        color: "#34D399"
+                                                        Layout.fillWidth: true
+                                                        Layout.minimumWidth: 0
+                                                        elide: Text.ElideRight
+                                                    }
+
+                                                    Text {
+                                                        text: root.aiClipSpeed
+                                                        font.family: "Cascadia Code, Consolas, monospace"
+                                                        font.pixelSize: 10
+                                                        color: "#A78BFA"
+                                                        visible: root.aiClipSpeed !== ""
+                                                    }
+
+                                                    Text {
+                                                        text: root.aiClipPercent.toFixed(1) + "%"
+                                                        font.family: "Cascadia Code, Consolas, monospace"
+                                                        font.pixelSize: 10
+                                                        font.weight: Font.DemiBold
+                                                        color: "#E2E8F0"
+                                                    }
+                                                }
+
+                                                Rectangle {
+                                                    Layout.fillWidth: true
+                                                    Layout.minimumWidth: 0
+                                                    height: 6
+                                                    radius: 3
+                                                    color: "#161E2E"
+                                                    border.color: "#1E293B"
+                                                    border.width: 1
+                                                    clip: true
+
+                                                    Rectangle {
+                                                        height: parent.height
+                                                        width: Math.max(0, Math.min(parent.width, parent.width * (root.aiClipPercent / 100.0)))
+                                                        radius: 3
+                                                        color: "#10B981"
+                                                        Behavior on width {
+                                                            NumberAnimation { duration: 160; easing.type: Easing.OutQuad }
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            Text {
+                                                text: tr("desc_model_clip", "Powers the Gallery Visual Sorter with DirectML / CPU neural vision embeddings for visual style, aesthetic clustering, and natural-language custom sorting.")
+                                                font.family: "Segoe UI, sans-serif"
+                                                font.pixelSize: 10
+                                                color: "#64748B"
+                                                wrapMode: Text.WordWrap
+                                                Layout.fillWidth: true
+                                                Layout.minimumWidth: 0
+                                            }
+                                        }
+                                    }
+
                                     // Interactive Testing Sandbox Card
                                     Rectangle {
                                         Layout.fillWidth: true
@@ -5445,7 +5709,7 @@ SmoothFlickable {
                 text: tr("btn_save_preferences", "Save Preferences")
                 iconText: "💾"
                 variant: "primary"
-                onClicked: if (root.bridge) root.bridge.saveSettings()
+                onClicked: if (root.bridge) root.bridge.saveSettings(true)
             }
 
             StyledButton {

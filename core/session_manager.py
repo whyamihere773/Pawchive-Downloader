@@ -241,7 +241,9 @@ class SessionManager:
             "privacy_pin": "",
             "pending_pin_reset": False,
             "privacy_idle_minutes": 5,
-            "ui_scale": 1.0
+            "ui_scale": 1.0,
+            "disabled_tabs": [],
+            "local_library_roots": []
         }
 
         if os.path.exists(self.settings_file):
@@ -277,7 +279,7 @@ class SessionManager:
         loc = path_translation.localize_path
         if isinstance(settings.get("download_dir"), str):
             settings["download_dir"] = loc(settings["download_dir"])
-        for key in ("storage_pool_drives", "gallery_bookmarks"):
+        for key in ("storage_pool_drives", "gallery_bookmarks", "local_library_roots"):
             items = settings.get(key)
             if isinstance(items, list):
                 settings[key] = [loc(i) if isinstance(i, str)

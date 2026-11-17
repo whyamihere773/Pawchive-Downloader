@@ -22,6 +22,7 @@ from typing import Dict, List, Optional, Set, Tuple
 from PySide6.QtCore import Qt, QFileSystemWatcher, QMimeData, QObject, Property, QUrl, Signal, Slot
 
 from core.logger import logger
+from core.parser import KemonoURLParser, canonical_site_url, normalize_archive_url
 from core.post_metadata_index import GLOBAL_POST_META_INDEX
 
 _POST_ID_PREFIX = re.compile(r"^(\d{5,})_")
@@ -314,16 +315,16 @@ class GalleryToolsBridge(QObject):
                 info = next((f for f in (post_info_for_file(d, name, post_id) for d in info_dirs_for(folder)) if f), "")
                 if not info:
                     shared = post_info_files(folder, limit=1)
-                    cm = re.match(r"https?://([^/]+)/([^/]+)/user/([^/?#]+)",
-                                  _parse_post_info(shared[0]).get("creator url", "")) if shared else None
-                    if cm:
-                        domain, service, user = cm.group(1), cm.group(2), cm.group(3)
+                    if shared:
+                        p_res = KemonoURLParser.parse(_parse_post_info(shared[0]).get("creator url", ""))
+                        if p_res.is_valid and p_res.user_id:
+                            domain, service, user = p_res.domain, p_res.service, str(p_res.user_id)
             if info and os.path.isfile(info):
                 meta = _parse_post_info(info, target_post_id=post_id, target_file_name=name)
                 cu = meta.get("creator url", "")
-                cm = re.match(r"https?://([^/]+)/([^/]+)/user/([^/?#]+)", cu)
-                if cm and not domain:
-                    domain, service, user = cm.group(1), cm.group(2), cm.group(3)
+                p_res = KemonoURLParser.parse(cu) if cu else None
+                if p_res and p_res.is_valid and p_res.user_id and not domain:
+                    domain, service, user = p_res.domain, p_res.service, str(p_res.user_id)
                 info_id = meta.get("post id", "")
                 if not post_id and info_id and probe == folder:
                     post_id = info_id
@@ -338,7 +339,7 @@ class GalleryToolsBridge(QObject):
         if not post_id:
             return empty
         if info_post_url:
-            return {"url": info_post_url, "postId": post_id, "title": title}
+            return {"url": normalize_archive_url(info_post_url), "postId": post_id, "title": title}
 
         if not domain and self._watchlist is not None:
             folder_case = os.path.normcase(folder)
@@ -356,7 +357,7 @@ class GalleryToolsBridge(QObject):
 
         if not (domain and service and user):
             return {"url": "", "postId": post_id, "title": title}
-        return {"url": f"https://{domain}/{service}/user/{user}/post/{post_id}", "postId": post_id, "title": title}
+        return {"url": canonical_site_url(domain, service, user, "post", post_id), "postId": post_id, "title": title}
 
     # ── Favourites & ratings ────────────────────────────────────────────────
     def _load_marks(self):
@@ -777,6 +778,8 @@ class GalleryToolsBridge(QObject):
             os.makedirs(target)
         except OSError as e:
             return {"success": False, "error": str(e), "path": ""}
+        if self._app:
+            self._app._invalidate_folder_stats(target)
         self._push_undo({"type": "mkdir", "path": target, "label": f"Undo new folder '{name}'"})
         return {"success": True, "error": "", "path": target}
 
@@ -804,9 +807,20 @@ class GalleryToolsBridge(QObject):
             self._undoDone.emit(res)
         threading.Thread(target=_job, name="GalleryUndo", daemon=True).start()
 
+    def _invalidate_op_cache(self, touched: list) -> None:
+        if not self._app or not touched:
+            return
+        fn = getattr(self._app, "_invalidate_folder_stats", None)
+        if callable(fn):
+            for p in touched:
+                fn(p)
+
     @Slot('QVariantMap')
     def _on_undo_done(self, res: dict) -> None:
-        self._remap_pairs(res.pop("_remap", []) or [])
+        remapped = res.pop("_remap", []) or []
+        touched = res.pop("_touched", []) or []
+        self._remap_pairs(remapped)
+        self._invalidate_op_cache(touched)
         self.undoFinished.emit(res)
 
     @Slot(result='QVariantMap')
@@ -817,17 +831,21 @@ class GalleryToolsBridge(QObject):
         self.undoChanged.emit()
         res = self._undo_op(op, remap=True)
         res.pop("_remap", None)
+        self._invalidate_op_cache(res.pop("_touched", []) or [])
         return res
 
     def _undo_op(self, op: dict, remap: bool) -> dict:
         """Undoes one operation. With remap=False (a background thread) the marks to move along are
         returned in "_remap" for the window thread."""
         remapped: List[list] = []
+        touched: List[str] = []
         errors: List[str] = []
         done = 0
 
         if op["type"] == "move":
             # Move each item back where it came from, newest first
+            archive_back_moves = []
+            archive_old_dirs = set()
             for src, dst in reversed(op["pairs"]):
                 if not os.path.exists(dst):
                     errors.append(f"'{os.path.basename(dst)}' is no longer there")
@@ -839,16 +857,33 @@ class GalleryToolsBridge(QObject):
                 try:
                     os.makedirs(os.path.dirname(src), exist_ok=True)
                     shutil.move(dst, src)
+                    archive_back_moves.append((dst, src))
+                    archive_old_dirs.add(os.path.dirname(dst))
                     if remap:
                         self._remap_pairs([[dst, src]])
                     else:
                         remapped.append([dst, src])
+                    touched.extend([dst, src])
                     done += 1
                 except Exception as e:
                     errors.append(f"{os.path.basename(dst)}: {e}")
+
+            if archive_back_moves and self._app and getattr(self._app, "archive_manager", None):
+                try:
+                    self._app.archive_manager.relocate_files(list(archive_old_dirs), archive_back_moves)
+                except Exception:
+                    pass
+
+            for cdir in reversed(op.get("created_dirs") or []):
+                try:
+                    if os.path.isdir(cdir) and not os.listdir(cdir):
+                        os.rmdir(cdir)
+                except OSError:
+                    pass
         elif op["type"] == "mkdir":
             try:
                 os.rmdir(op["path"])
+                touched.append(op["path"])
                 done = 1
             except OSError:
                 errors.append(f"'{os.path.basename(op['path'])}' isn't empty any more, so it was left in place")
@@ -857,6 +892,7 @@ class GalleryToolsBridge(QObject):
             for p in op["paths"]:
                 if os.path.exists(p):
                     if QFile.moveToTrash(p):
+                        touched.append(p)
                         done += 1
                     else:
                         errors.append(f"Couldn't move '{os.path.basename(p)}' to the Recycle Bin")
@@ -865,6 +901,6 @@ class GalleryToolsBridge(QObject):
             for e in errors[:5]:
                 logger.warning(f"Undo: {e}", category="gallery")
             msg = f"Partly undone ({done} done): {errors[0]}" if done else f"Couldn't undo: {errors[0]}"
-            return {"success": done > 0, "message": msg, "_remap": remapped}
+            return {"success": done > 0, "message": msg, "_remap": remapped, "_touched": touched}
         logger.info(f"{op['label'].replace('Undo', 'Undid', 1)}.", category="gallery")
-        return {"success": True, "message": op["label"].replace("Undo", "Undid", 1), "_remap": remapped}
+        return {"success": True, "message": op["label"].replace("Undo", "Undid", 1), "_remap": remapped, "_touched": touched}

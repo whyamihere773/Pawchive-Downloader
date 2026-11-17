@@ -33,10 +33,12 @@ DEFAULT_HEADERS = {
 class CoomerFansClient:
     """Client for querying coomerfans.com creator profiles and posts."""
 
-    def __init__(self, timeout: int = 15):
+    def __init__(self, timeout: int = 15, cookie: str = ""):
         self.timeout = timeout
         self._session = requests.Session()
         self._session.headers.update(DEFAULT_HEADERS)
+        if cookie and cookie.strip():
+            self._session.headers["Cookie"] = cookie.strip()
 
     def _fetch_html(self, url: str, timeout: Optional[int] = None) -> str:
         t = timeout or self.timeout
