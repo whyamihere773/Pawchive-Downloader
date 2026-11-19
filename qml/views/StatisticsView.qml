@@ -59,6 +59,8 @@ Rectangle {
         if (c === "videos") return root.tr("stat_cat_videos", "Videos")
         if (c === "audio") return root.tr("stat_cat_audio", "Audio")
         if (c === "archives") return root.tr("stat_cat_archives", "Archives")
+        if (c === "graphics") return root.tr("stat_cat_graphics", "Graphics / PSD")
+        if (c === "documents") return root.tr("stat_cat_documents", "Documents")
         if (c === "links") return root.tr("stat_cat_links", "Links / Text")
         return root.tr("stat_cat_other", "Other")
     }

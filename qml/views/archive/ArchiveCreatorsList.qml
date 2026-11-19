@@ -289,6 +289,7 @@ SmoothListView {
                         Behavior on border.color { ColorAnimation { duration: 120 } }
 
                         Text {
+                            id: verifyCreatorIcon
                             anchors.centerIn: parent
                             text: verifyCreatorBtn.isVerifying ? "⏳" : "🔍"
                             font.pixelSize: 10
@@ -298,6 +299,7 @@ SmoothListView {
                                 from: 0; to: 360
                                 duration: 1400
                                 loops: Animation.Infinite
+                                onRunningChanged: if (!running) verifyCreatorIcon.rotation = 0
                             }
                         }
 

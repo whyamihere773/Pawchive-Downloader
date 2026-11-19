@@ -138,7 +138,7 @@ class ArchiveIOMixin:
                     )
                 )
                 self._conn.commit()
-                self._stats_cache = None
+                self._invalidate_stats_cache()
                 return True
             except Exception as e:
                 logger.warning(f"Failed to record file in download archive: {e}", category="archive")
@@ -194,7 +194,7 @@ class ArchiveIOMixin:
             try:
                 self._conn.execute("DELETE FROM downloaded_files WHERE id = ?;", (int(record_id),))
                 self._conn.commit()
-                self._stats_cache = None
+                self._invalidate_stats_cache()
                 return True
             except Exception as e:
                 logger.error(f"Failed to delete archive record {record_id}: {e}", category="archive")
@@ -219,7 +219,7 @@ class ArchiveIOMixin:
                 )
                 affected = cursor.rowcount
                 self._conn.commit()
-                self._stats_cache = None
+                self._invalidate_stats_cache()
                 return affected
             except Exception as e:
                 logger.error(f"Failed to delete archive records for post {post_id}: {e}", category="archive")
@@ -268,7 +268,7 @@ class ArchiveIOMixin:
                 self._conn.commit()
                 if affected >= 1000:
                     self._passive_wal_checkpoint(self._conn)
-                self._stats_cache = None
+                self._invalidate_stats_cache()
                 return affected
             except Exception as e:
                 try:
@@ -325,13 +325,21 @@ class ArchiveIOMixin:
                     return 0
                 cursor = self._conn.cursor()
                 wm, done, fts = archive_index.state(self._conn)
-                bulk = wm > 0 or done > 0
+                has_idx = wm > 0 or done > 0
+                bulk = has_idx and len(row_ids) > 2000
+                affected_creators = set()
                 total_deleted = 0
                 with self._paused_index(self._conn, enabled=bulk):
                     for start in range(0, len(row_ids), 400):
                         chunk = row_ids[start:start + 400]
                         placeholders = ",".join("?" for _ in chunk)
                         if bulk:
+                            for row in cursor.execute(
+                                f"SELECT DISTINCT service, IFNULL(creator_id, ''), IFNULL(creator_name, '') "
+                                f"FROM downloaded_files WHERE id IN ({placeholders}) AND (id <= ? OR id > ?);",
+                                tuple(chunk) + (done, wm),
+                            ):
+                                affected_creators.add((row[0], row[1], row[2]))
                             if fts:
                                 cursor.execute(
                                     "INSERT INTO archive_fts (archive_fts, rowid, filename, post_title, creator_name, creator_id, post_id) "
@@ -350,10 +358,11 @@ class ArchiveIOMixin:
                         total_deleted += max(0, cursor.rowcount)
                     if bulk:
                         cursor.execute("DELETE FROM archive_exts WHERE files <= 0;")
+                        archive_index.recompute_creators(self._conn, affected_creators, done, wm)
                 self._conn.commit()
                 if total_deleted >= 1000:
                     self._passive_wal_checkpoint(self._conn)
-                self._stats_cache = None
+                self._invalidate_stats_cache()
                 return total_deleted
             except Exception as e:
                 try:
@@ -383,7 +392,7 @@ class ArchiveIOMixin:
                 self._conn.commit()
                 self._conn.execute("VACUUM;")
                 self._passive_wal_checkpoint(self._conn)
-                self._stats_cache = None
+                self._invalidate_stats_cache()
                 logger.info("🗑️ Download Archive Database cleared.", category="archive")
                 return True
             except Exception as e:
@@ -601,7 +610,7 @@ class ArchiveIOMixin:
                 )
                 imported_count = cursor.rowcount
                 self._conn.commit()
-                self._stats_cache = None
+                self._invalidate_stats_cache()
                 logger.info(f"📥 Successfully imported {imported_count} archive records from '{filepath}'", category="archive")
                 return imported_count
             except Exception as e:

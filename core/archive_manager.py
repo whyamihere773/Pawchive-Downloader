@@ -35,6 +35,7 @@ class ArchiveManager(
         self._enabled = bool(enabled)
         self._lock = threading.Lock()
         self._conn: Optional[sqlite3.Connection] = None
+        self._stats_cache_lock = threading.Lock()
         self._stats_cache: Optional[Dict[str, Any]] = None
         self._stats_cache_time: float = 0.0
         # The Archive tab reads through its own connection: in WAL mode it can read while downloads
@@ -307,12 +308,17 @@ class ArchiveManager(
                 logger.info(f"📦 Preparing the download archive for fast browsing and search "
                             f"({wm - done:,} records, in the background)…", category="archive")
             if archive_index.backfill(_step, should_stop=lambda: self._conn is None) and self._conn is not None:
-                self._stats_cache = None
+                self._invalidate_stats_cache()
                 if wm - done > 200_000:
                     logger.info(f"📦 Download archive ready for fast browsing ({time.time() - t0:.0f} s).",
                                 category="archive")
         self._backfill_thread = threading.Thread(target=_run, name="ArchiveSummaries", daemon=True)
         self._backfill_thread.start()
+
+    def _invalidate_stats_cache(self) -> None:
+        with self._stats_cache_lock:
+            self._stats_cache = None
+            self._stats_cache_time = 0.0
 
     def _close_unlocked(self) -> None:
         """Close database connection (must be called with self._lock held)."""

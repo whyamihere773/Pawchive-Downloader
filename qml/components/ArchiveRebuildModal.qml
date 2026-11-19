@@ -243,16 +243,16 @@ Item {
         width: Math.min(620, Math.max(320, parent.width - 32))
         implicitHeight: cardCol.implicitHeight + 44
         anchors.centerIn: parent
+        anchors.verticalCenterOffset: root.isOpen ? 0 : -28
         radius: 16
         color: "#131722"
         border.color: "#2D3748"
         border.width: 1.5
 
-        y: root.isOpen ? 0 : -28
         scale: root.isOpen ? 1.0 : 0.90
         opacity: root.isOpen ? 1.0 : 0.0
 
-        Behavior on y {
+        Behavior on anchors.verticalCenterOffset {
             NumberAnimation { duration: 320; easing.type: Easing.OutBack; easing.overshoot: 1.25 }
         }
         Behavior on scale {

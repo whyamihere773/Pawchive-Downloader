@@ -469,6 +469,63 @@ def backfill_step(conn: sqlite3.Connection, chunk: int = 2000) -> bool:
     return hi >= wm
 
 
+def recompute_creators(conn: sqlite3.Connection, creator_keys, done: int, wm: int) -> None:
+    """Recompute archive_posts / archive_creators / archive_post_cats / archive_creator_cats
+    for a set of (service, creator_id, creator_name) tuples inside an open transaction."""
+    if not creator_keys:
+        return
+    conn.execute("""
+        CREATE TEMP TABLE IF NOT EXISTS recompute_slice (
+            service TEXT, creator_id TEXT, creator_name TEXT, post_id TEXT, cat TEXT,
+            files INTEGER, missing INTEGER, verified INTEGER, newest TEXT, oldest TEXT,
+            max_id INTEGER, newest_id INTEGER);
+    """)
+    groups = f"""SUM(files), SUM(missing), SUM(verified), MAX(newest), MIN(oldest), MAX(max_id),
+                 {_NEWEST_ID_OF_GROUPS}"""
+    for svc, cid, cname in creator_keys:
+        key_params = (svc, cid, cname)
+        for table in ("archive_post_cats", "archive_creator_cats", "archive_posts", "archive_creators"):
+            conn.execute(
+                f"DELETE FROM {table} WHERE service = ? AND creator_id = ? AND creator_name = ?;",
+                key_params,
+            )
+        conn.execute("DELETE FROM temp.recompute_slice;")
+        conn.execute(f"""
+            INSERT INTO temp.recompute_slice
+            SELECT d.service, IFNULL(d.creator_id, ''), IFNULL(d.creator_name, ''), d.post_id, IFNULL(c.cat, ''),
+                   {_aggregate("d.")}
+            FROM downloaded_files d LEFT JOIN archive_ext_cats c ON c.ext = LOWER(IFNULL(d.file_ext, ''))
+            WHERE d.service = ? AND IFNULL(d.creator_id, '') = ? AND IFNULL(d.creator_name, '') = ?
+              AND (d.id <= ? OR d.id > ?)
+            GROUP BY 1, 2, 3, 4, 5;
+        """, (svc, cid, cname, done, wm))
+        conn.execute(f"""
+            INSERT INTO archive_posts (service, creator_id, creator_name, post_id, {_COUNT_COLS})
+            SELECT service, creator_id, creator_name, post_id, {groups}
+            FROM temp.recompute_slice WHERE true GROUP BY 1, 2, 3, 4
+            ON CONFLICT DO UPDATE SET {_UPSERT_COUNTS};
+        """)
+        conn.execute(f"""
+            INSERT INTO archive_creators (service, creator_id, creator_name, {_COUNT_COLS})
+            SELECT service, creator_id, creator_name, {groups}
+            FROM temp.recompute_slice WHERE true GROUP BY 1, 2, 3
+            ON CONFLICT DO UPDATE SET {_UPSERT_COUNTS};
+        """)
+        conn.execute(f"""
+            INSERT INTO archive_post_cats (service, creator_id, creator_name, cat, post_id, {_COUNT_COLS})
+            SELECT service, creator_id, creator_name, cat, post_id,
+                   files, missing, verified, newest, oldest, max_id, newest_id
+            FROM temp.recompute_slice WHERE cat != ''
+            ON CONFLICT DO UPDATE SET {_UPSERT_COUNTS};
+        """)
+        conn.execute(f"""
+            INSERT INTO archive_creator_cats (cat, service, creator_id, creator_name, {_COUNT_COLS})
+            SELECT cat, service, creator_id, creator_name, {groups}
+            FROM temp.recompute_slice WHERE cat != '' GROUP BY 1, 2, 3, 4
+            ON CONFLICT DO UPDATE SET {_UPSERT_COUNTS};
+        """)
+
+
 def backfill(run_step: Callable[[], bool], should_stop: Callable[[], bool] = lambda: False,
              pause: float = 0.01) -> bool:
     """Runs backfill steps until done (each step through run_step, which takes the writer's lock)."""

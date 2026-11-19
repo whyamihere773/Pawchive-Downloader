@@ -361,9 +361,9 @@ class ArchiveMixin(AppBridgeSignalsMixin):
         try:
             if self._watchlist_manager:
                 for item in self._watchlist_manager.get_all():
-                    df = getattr(item, "download_folder", None) or getattr(item, "folder_path", None)
-                    if df and os.path.isdir(df):
-                        candidates.append(os.path.normpath(df))
+                    for df in [getattr(item, "download_dir", None), *(getattr(item, "download_dirs", None) or [])]:
+                        if df and os.path.isdir(df):
+                            candidates.append(os.path.normpath(df))
         except Exception:
             pass
         return list(dict.fromkeys(candidates))
@@ -555,7 +555,8 @@ class ArchiveMixin(AppBridgeSignalsMixin):
             else:
                 import sys
                 if sys.platform == 'darwin':
-                    subprocess.Popen(["open", "-R" if os.path.isfile(clean_path) else "", clean_path], **subprocess_env_kwargs())
+                    cmd = ["open", "-R", clean_path] if os.path.isfile(clean_path) else ["open", clean_path]
+                    subprocess.Popen(cmd, **subprocess_env_kwargs())
                 else:
                     subprocess.Popen(["xdg-open", os.path.dirname(clean_path) if os.path.isfile(clean_path) else clean_path], **subprocess_env_kwargs())
                 return True

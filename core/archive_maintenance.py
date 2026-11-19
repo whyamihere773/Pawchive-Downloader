@@ -438,6 +438,7 @@ class ArchiveMaintenanceMixin:
                     updates
                 )
                 self._conn.commit()
+            self._invalidate_stats_cache()
 
             result["present"] = present_count
             result["missing"] = missing_count
@@ -499,7 +500,7 @@ class ArchiveMaintenanceMixin:
                 logger.error(f"Couldn't update the archive's file paths: {e}", category="archive")
                 self._note_error(e)
                 return 0
-        self._stats_cache = None
+        self._invalidate_stats_cache()
         return len(changes)
 
     def relocate_files(self, old_dirs: List[str], moves: Dict[str, str]) -> int:
@@ -529,7 +530,7 @@ class ArchiveMaintenanceMixin:
                 )
                 deleted = cursor.rowcount
                 self._conn.commit()
-                self._stats_cache = None
+                self._invalidate_stats_cache()
                 return deleted
             except Exception as e:
                 logger.error(f"Failed to remove missing records for creator {creator_id}: {e}", category="archive")

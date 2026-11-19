@@ -35,8 +35,9 @@ Item {
         title: dialogsRoot.view.tr("dialog_fingerprint_videos", "Select Folder to Fingerprint Existing Videos")
         onAccepted: {
             var raw = selectedFolder.toString()
-            var path = raw.replace(/^(file:\/{3}|file:\/{2}|file:\/)/i, "")
+            var path = raw.replace(/^file:\/\/\/([A-Za-z]:)/i, "$1").replace(/^file:\/\//i, "")
             if (Qt.platform.os === "windows") path = path.replace(/^\/+/g, "")
+            try { path = decodeURIComponent(path) } catch (e) {}
             if (path && dialogsRoot.view.bridge && dialogsRoot.view.bridge.fingerprintVideosAsync) {
                 dialogsRoot.view.showToast(dialogsRoot.view.tr("toast_fingerprinting_videos", "Fingerprinting existing videos…"))
                 dialogsRoot.view.archiveJob(function(id) { dialogsRoot.view.bridge.fingerprintVideosAsync(id, path, true) }, function(res) {
@@ -104,6 +105,14 @@ Item {
 
         Behavior on opacity { NumberAnimation { duration: 180 } }
 
+        MouseArea {
+            anchors.fill: parent
+            enabled: clearConfirmModal.isOpen
+            hoverEnabled: true
+            onClicked: clearConfirmModal.isOpen = false
+            onWheel: function(w) { w.accepted = true }
+        }
+
         Rectangle {
             anchors.centerIn: parent
             width: Math.min(parent.width - 40, 420)
@@ -112,6 +121,8 @@ Item {
             color: "#161B26"
             border.color: "#EF4444"
             border.width: 1
+
+            MouseArea { anchors.fill: parent }
 
             scale: clearConfirmModal.isOpen ? 1.0 : 0.86
             Behavior on scale {
@@ -194,6 +205,14 @@ Item {
 
         Behavior on opacity { NumberAnimation { duration: 180 } }
 
+        MouseArea {
+            anchors.fill: parent
+            enabled: deleteCreatorConfirmModal.isOpen
+            hoverEnabled: true
+            onClicked: deleteCreatorConfirmModal.isOpen = false
+            onWheel: function(w) { w.accepted = true }
+        }
+
         Rectangle {
             anchors.centerIn: parent
             width: Math.min(parent.width - 40, 420)
@@ -202,6 +221,8 @@ Item {
             color: "#161B26"
             border.color: "#EF4444"
             border.width: 1
+
+            MouseArea { anchors.fill: parent }
 
             scale: deleteCreatorConfirmModal.isOpen ? 1.0 : 0.86
             Behavior on scale {
@@ -287,6 +308,14 @@ Item {
 
         Behavior on opacity { NumberAnimation { duration: 180 } }
 
+        MouseArea {
+            anchors.fill: parent
+            enabled: removeMissingConfirmModal.isOpen
+            hoverEnabled: true
+            onClicked: removeMissingConfirmModal.isOpen = false
+            onWheel: function(w) { w.accepted = true }
+        }
+
         Rectangle {
             anchors.centerIn: parent
             width: Math.min(parent.width - 40, 420)
@@ -295,6 +324,8 @@ Item {
             color: "#161B26"
             border.color: "#F59E0B"
             border.width: 1
+
+            MouseArea { anchors.fill: parent }
 
             scale: removeMissingConfirmModal.isOpen ? 1.0 : 0.86
             Behavior on scale {
@@ -390,6 +421,14 @@ Item {
 
         Behavior on opacity { NumberAnimation { duration: 180 } }
 
+        MouseArea {
+            anchors.fill: parent
+            enabled: deletePostConfirmModal.isOpen
+            hoverEnabled: true
+            onClicked: deletePostConfirmModal.isOpen = false
+            onWheel: function(w) { w.accepted = true }
+        }
+
         Rectangle {
             anchors.centerIn: parent
             width: Math.min(parent.width - 40, 420)
@@ -398,6 +437,8 @@ Item {
             color: "#161B26"
             border.color: "#EF4444"
             border.width: 1
+
+            MouseArea { anchors.fill: parent }
 
             scale: deletePostConfirmModal.isOpen ? 1.0 : 0.86
             Behavior on scale {

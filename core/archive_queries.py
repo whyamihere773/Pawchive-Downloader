@@ -572,7 +572,7 @@ class ArchiveQueriesMixin:
     def get_statistics(self) -> Dict[str, Any]:
         """Return comprehensive telemetry regarding the archive database."""
         now = time.time()
-        with self._lock:
+        with self._stats_cache_lock:
             if self._stats_cache is not None and (now - self._stats_cache_time < 20.0):
                 return dict(self._stats_cache)
 
@@ -619,8 +619,9 @@ class ArchiveQueriesMixin:
             try:
                 if self._summaries_ready(conn):
                     self._statistics_from_index(conn, stats)
-                    self._stats_cache = dict(stats)
-                    self._stats_cache_time = now
+                    with self._stats_cache_lock:
+                        self._stats_cache = dict(stats)
+                        self._stats_cache_time = now
                     return stats
             except Exception as e:
                 logger.debug(f"Archive summaries not used for statistics: {e}", category="archive")
@@ -683,8 +684,9 @@ class ArchiveQueriesMixin:
                 stats["verified_files"] = int(cursor.fetchone()[0] or 0)
 
                 stats["total_links"] = stats["category_counts"].get("links", 0)
-                self._stats_cache = dict(stats)
-                self._stats_cache_time = now
+                with self._stats_cache_lock:
+                    self._stats_cache = dict(stats)
+                    self._stats_cache_time = now
                 return stats
             except Exception as e:
                 logger.error(f"Failed to calculate archive statistics: {e}", category="archive")

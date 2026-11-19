@@ -611,7 +611,7 @@ class StatisticsScannerMixin:
         )
 
         # File category breakdown (disk + archive)
-        category_order = ("images", "videos", "audio", "archives", "links", "other")
+        category_order = ("images", "videos", "audio", "archives", "graphics", "documents", "links", "other")
         category_rows: List[Dict[str, Any]] = []
         for cat in category_order:
             d_cnt, d_bytes = disk_cats.get(cat, [0, 0])
