@@ -416,9 +416,10 @@ class DownloaderTaskBuilderMixin:
                     continue
 
                 has_matching_video = False
+                probe_session = self._get_worker_session()
                 for vc in video_candidates:
                     v_url = self._resolve_candidate_video_url(vc, domain or "")
-                    dur = VideoProbe.get_video_duration(v_url, session=self.session)
+                    dur = VideoProbe.get_video_duration(v_url, session=probe_session)
                     vc["_probed_duration"] = dur
                     ok, _ = FilterEngine.should_keep_video_duration(dur, options)
                     if ok:
@@ -426,7 +427,7 @@ class DownloaderTaskBuilderMixin:
 
                 if not has_matching_video and embed_urls:
                     for eu in embed_urls:
-                        dur = VideoProbe.get_video_duration(eu, session=self.session)
+                        dur = VideoProbe.get_video_duration(eu, session=probe_session)
                         ok, _ = FilterEngine.should_keep_video_duration(dur, options)
                         if ok:
                             has_matching_video = True

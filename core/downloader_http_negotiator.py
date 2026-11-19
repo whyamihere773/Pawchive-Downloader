@@ -15,9 +15,34 @@ from core.filter_engine import FilterOptions
 from core.logger import logger
 from core.providers import cookie_for_url, provider_for_host
 
+_CACHED_PAWCHIVE_UA: Optional[str] = None
+
+
+def _pawchive_user_agent() -> str:
+    global _CACHED_PAWCHIVE_UA
+    if _CACHED_PAWCHIVE_UA is None:
+        ver = "1.4.2"
+        try:
+            from services.update_service import get_local_version_info
+            v = str((get_local_version_info() or {}).get("version") or "").strip().lstrip("v")
+            if v:
+                ver = v
+        except Exception:
+            pass
+        _CACHED_PAWCHIVE_UA = f"PawchiveDownloader/{ver} (https://github.com/whyamihere773/Pawchive-Downloader)"
+    return _CACHED_PAWCHIVE_UA
+
 
 class DownloaderHttpNegotiatorMixin:
     """Builds host-specific headers and negotiates HTTP responses across mirrors."""
+
+    def _new_cookieless_session(self) -> requests.Session:
+        """Create a fresh cookieless session that still honors self._proxy_url."""
+        sess = requests.Session()
+        proxy_url = getattr(self, "_proxy_url", "") or ""
+        if proxy_url:
+            sess.proxies = {"http": proxy_url, "https": proxy_url}
+        return sess
 
     def _build_request_headers(
         self,
@@ -50,7 +75,7 @@ class DownloaderHttpNegotiatorMixin:
             req_headers["Referer"] = "https://coomer.st/"
             req_headers["Accept"] = "*/*"
         elif "pawchive" in u_low:
-            req_headers["User-Agent"] = "PawchiveDownloader/1.3.5 (https://github.com/whyamihere773/Pawchive-Downloader)"
+            req_headers["User-Agent"] = _pawchive_user_agent()
             req_headers["Referer"] = "https://pawchive.pw/"
             req_headers["Accept"] = "*/*"
         elif "cum.st" in u_low:
@@ -209,7 +234,7 @@ class DownloaderHttpNegotiatorMixin:
                         try:
                             if "pawchive" in attempt_url.lower():
                                 clean_headers = {
-                                    "User-Agent": "PawchiveDownloader/1.3.5 (https://github.com/whyamihere773/Pawchive-Downloader)",
+                                    "User-Agent": _pawchive_user_agent(),
                                     "Referer": "https://pawchive.pw/",
                                     "Accept": "*/*",
                                     "X-Contact": "https://github.com/whyamihere773/Pawchive-Downloader",
@@ -224,33 +249,38 @@ class DownloaderHttpNegotiatorMixin:
                                     "Sec-Fetch-User": "?1",
                                     "Upgrade-Insecure-Requests": "1",
                                 }
-                            clean_resp = requests.get(attempt_url, stream=True, timeout=stream_timeout, headers=clean_headers)
-                            if clean_resp.status_code in (200, 206):
-                                resp.close()
-                                resp = clean_resp
-                                task.url = attempt_url
-                                mode = "wb"
-                                existing_size = 0
-                                break
-                            elif clean_resp.status_code == 403 and len(urls_to_try) == 1:
-                                # Single-mirror CDN transient burst 403 — progressive pause & retry
-                                clean_resp.close()
-                                for delay in (1.5, 3.0):
-                                    time.sleep(delay)
-                                    if self._cancel_event.is_set():
-                                        break
-                                    retry_resp = requests.get(attempt_url, stream=True, timeout=stream_timeout, headers=clean_headers)
-                                    if retry_resp.status_code in (200, 206):
-                                        resp.close()
-                                        resp = retry_resp
-                                        task.url = attempt_url
-                                        mode = "wb"
-                                        existing_size = 0
-                                        break
-                                    else:
-                                        retry_resp.close()
-                            else:
-                                clean_resp.close()
+                            clean_sess = self._new_cookieless_session()
+                            try:
+                                clean_resp = clean_sess.get(attempt_url, stream=True, timeout=stream_timeout, headers=clean_headers)
+                                if clean_resp.status_code in (200, 206):
+                                    resp.close()
+                                    resp = clean_resp
+                                    task.url = attempt_url
+                                    mode = "wb"
+                                    existing_size = 0
+                                    break
+                                elif clean_resp.status_code == 403 and len(urls_to_try) == 1:
+                                    # Single-mirror CDN transient burst 403 — progressive pause & retry
+                                    clean_resp.close()
+                                    for delay in (1.5, 3.0):
+                                        time.sleep(delay)
+                                        if self._cancel_event.is_set():
+                                            break
+                                        retry_resp = clean_sess.get(attempt_url, stream=True, timeout=stream_timeout, headers=clean_headers)
+                                        if retry_resp.status_code in (200, 206):
+                                            resp.close()
+                                            resp = retry_resp
+                                            task.url = attempt_url
+                                            mode = "wb"
+                                            existing_size = 0
+                                            break
+                                        else:
+                                            retry_resp.close()
+                                else:
+                                    clean_resp.close()
+                            finally:
+                                if resp is None or resp.status_code not in (200, 206):
+                                    clean_sess.close()
                             if resp and resp.status_code in (200, 206):
                                 break
                         except Exception:

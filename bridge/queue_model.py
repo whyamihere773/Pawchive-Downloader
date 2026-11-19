@@ -84,6 +84,8 @@ class QueueModel(QAbstractListModel, QueueModelOpsMixin):
         # the whole queue on every append made adding to a big queue slow)
         self._signatures: set = set()
         self._signatures_dirty = False
+        self._task_index_by_id: Dict[int, int] = {}
+        self._task_index_dirty = False
         # Rows that left the current filter, removed together a few times a second (removing one
         # renumbered every row below it: with a big filtered list, every status change stalled)
         self._pending_removals: set = set()
@@ -328,10 +330,10 @@ class QueueModel(QAbstractListModel, QueueModelOpsMixin):
         elif role == self.PercentageRole:
             return task.progress_pct
         elif role == self.OriginalIndexRole:
-            try:
-                return self._tasks.index(task)
-            except ValueError:
-                return index.row()
+            if self._task_index_dirty:
+                self._task_index_by_id = {id(t): i for i, t in enumerate(self._tasks)}
+                self._task_index_dirty = False
+            return self._task_index_by_id.get(id(task), index.row())
         elif role == self.FileIdRole:
             return task.file_id
         elif role == self.RetryCountRole:
@@ -431,6 +433,7 @@ class QueueModel(QAbstractListModel, QueueModelOpsMixin):
         self._removal_timer.stop()
         self._pending_removals = set()
         self._tasks = tasks
+        self._task_index_dirty = True
         self._task_last_emit.clear()
         self._task_last_status = {id(t): t.status for t in tasks}
         self._recalculate_counts()
@@ -480,7 +483,11 @@ class QueueModel(QAbstractListModel, QueueModelOpsMixin):
             return 0
 
         # Counted and shown incrementally: only the new tasks are looked at
+        base_idx = len(self._tasks)
         self._tasks.extend(deduped)
+        if not self._task_index_dirty:
+            for offset, t in enumerate(deduped):
+                self._task_index_by_id[id(t)] = base_idx + offset
         for t in deduped:
             st = t.status
             self._task_last_status[id(t)] = st
@@ -494,7 +501,7 @@ class QueueModel(QAbstractListModel, QueueModelOpsMixin):
                 self._failed_count += 1
                 if self._is_404(t):
                     self._failed_404[id(t)] = True
-            elif st == "pending":
+            elif st in ("pending", "paused"):
                 self._pending_count += 1
         self._last_counts = (self._pending_count, self._downloading_count, self._completed_count, self._skipped_count, self._failed_count)
         shown = [t for t in deduped if self._matches_filter(t)]
@@ -518,4 +525,22 @@ class QueueModel(QAbstractListModel, QueueModelOpsMixin):
 
     def add_tasks(self, tasks: List[DownloadTask]):
         return self.appendTasks(tasks)
+
+    @Slot()
+    def refreshActiveRows(self):
+        """Emit targeted dataChanged only for currently active visible rows (avoids O(N) full-model invalidation)."""
+        if self._off_gui_thread(self.refreshActiveRows):
+            return
+        active_statuses = ("downloading", "retrying", "converting", "extracting", "waiting")
+        roles = [self.ProgressRole, self.SpeedRole, self.EtaRole, self.PercentageRole, self.DownloadedBytesRole]
+        run_start = -1
+        for row, task in enumerate(self._visible_tasks):
+            if getattr(task, "status", "") in active_statuses:
+                if run_start < 0:
+                    run_start = row
+            elif run_start >= 0:
+                self.dataChanged.emit(self.index(run_start, 0), self.index(row - 1, 0), roles)
+                run_start = -1
+        if run_start >= 0:
+            self.dataChanged.emit(self.index(run_start, 0), self.index(len(self._visible_tasks) - 1, 0), roles)
 

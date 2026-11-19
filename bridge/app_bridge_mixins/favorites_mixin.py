@@ -329,19 +329,13 @@ class FavoritesMixin(AppBridgeSignalsMixin):
 
     def _on_scan_progress(self, page: int, count: int):
         """Callback from api_client during favorites scanning."""
-        self._status_text = f"Fetching favorites: Page {page} ({count} posts)..."
-        self.statusTextChanged.emit()
+        self._set_ui_state(status_text=f"Fetching favorites: Page {page} ({count} posts)...")
 
     def _start_favorites_download_worker(self, page_start: int = 1, page_end: int = 999999, download_dir: str = ""):
         """Worker thread to incrementally sync all favorited artists from connected providers."""
         self._scan_cancel_event.clear()
-        self._has_error = False
-        self.hasErrorChanged.emit()
-        self._is_downloading = True
-        self.isDownloadingChanged.emit()
+        self._set_ui_state(has_error=False, is_downloading=True, status_text="Fetching favorited artists...")
         self.isPausedChanged.emit()
-        self._status_text = "Fetching favorited artists..."
-        self.statusTextChanged.emit()
 
         def _worker():
             try:
@@ -352,8 +346,7 @@ class FavoritesMixin(AppBridgeSignalsMixin):
                 if auth_manager.is_logged_in("cumst"):
                     providers_to_sync.append(("cum.st", "cumst"))
 
-                self._creator_name = "Favorite Artists"
-                self.creatorNameChanged.emit()
+                self._set_ui_state(creator_name="Favorite Artists")
 
                 fav_artists = []
                 for p_domain, p_id in providers_to_sync:
@@ -371,17 +364,11 @@ class FavoritesMixin(AppBridgeSignalsMixin):
                         fav_artists.extend(p_res)
 
                 if self._scan_cancel_event.is_set():
-                    self._is_downloading = False
-                    self._status_text = "Progress: Cancelled"
-                    self.isDownloadingChanged.emit()
-                    self.statusTextChanged.emit()
+                    self._set_ui_state(is_downloading=False, status_text="Progress: Cancelled")
                     return
 
                 if not fav_artists:
-                    self._is_downloading = False
-                    self._status_text = "Progress: Idle (0 favorite artists found)"
-                    self.isDownloadingChanged.emit()
-                    self.statusTextChanged.emit()
+                    self._set_ui_state(is_downloading=False, status_text="Progress: Idle (0 favorite artists found)")
                     logger.warning("No favorited artists found on connected accounts.", category="api")
                     return
 
@@ -404,16 +391,17 @@ class FavoritesMixin(AppBridgeSignalsMixin):
                     )
                     entries_to_process.append(entry)
 
-                self._watchlist_model.refresh()
-                self._watchlist_model.countChanged.emit()
-                self.watchlistChanged.emit()
+                self._callOnGui.emit(lambda: (
+                    self._watchlist_model.refresh(),
+                    self._watchlist_model.countChanged.emit(),
+                    self.watchlistChanged.emit(),
+                ))
 
                 total_entries = len(entries_to_process)
                 for idx, entry in enumerate(entries_to_process, 1):
                     if self._scan_cancel_event.is_set():
                         break
-                    self._status_text = f"Syncing favorites ({idx}/{total_entries}): {entry.creator_name}..."
-                    self.statusTextChanged.emit()
+                    self._set_ui_state(status_text=f"Syncing favorites ({idx}/{total_entries}): {entry.creator_name}...")
                     try:
                         self._process_watchlist_entry_download(
                             entry,
@@ -425,19 +413,12 @@ class FavoritesMixin(AppBridgeSignalsMixin):
                         logger.error(f"Error syncing favorite artist {entry.creator_name!r}: {err}", category="downloader")
 
                 if not self.downloader.tasks and not self._queue_model.rowCount():
-                    self._is_downloading = False
-                    self._status_text = "Favorites: All artists are up to date"
-                    self.isDownloadingChanged.emit()
-                    self.statusTextChanged.emit()
+                    self._set_ui_state(is_downloading=False, status_text="Favorites: All artists are up to date")
                 else:
-                    self._status_text = "Queued updates for favorite artists. Downloading..."
-                    self.statusTextChanged.emit()
+                    self._set_ui_state(status_text="Queued updates for favorite artists. Downloading...")
 
             except Exception as e:
                 logger.error(f"Favorites sync failed: {e}", category="downloader")
-                self._is_downloading = False
-                self._status_text = f"Error: {e}"
-                self.isDownloadingChanged.emit()
-                self.statusTextChanged.emit()
+                self._set_ui_state(is_downloading=False, status_text=f"Error: {e}")
 
         threading.Thread(target=_worker, daemon=True, name="FavoritesDownloadWorker").start()

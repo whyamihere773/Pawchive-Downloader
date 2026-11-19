@@ -25,13 +25,12 @@ Rectangle {
         id: liveRefreshTimer
         interval: 1000
         repeat: true
-        running: root.bridge ? root.bridge.isDownloading : false
+        running: root.visible && (root.bridge ? root.bridge.isDownloading : false)
         onTriggered: {
             if (!root.bridge || !root.bridge.queueModel) return
             var model = root.bridge.queueModel
-            var count = model.rowCount()
-            if (count > 0) {
-                model.dataChanged(model.index(0, 0), model.index(count - 1, 0))
+            if (model.refreshActiveRows) {
+                model.refreshActiveRows()
             }
         }
     }

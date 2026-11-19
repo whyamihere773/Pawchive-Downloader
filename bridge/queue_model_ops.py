@@ -27,6 +27,7 @@ class QueueModelOpsMixin:
         self._counts_timer.stop()
         self._tasks = [t for t in self._tasks if (getattr(t, "batch_id", "") or f"{t.service}_{t.creator_name}_{t.post_id}".strip("_")) != batch_id or t.status == "downloading"]
         self._signatures_dirty = True
+        self._task_index_dirty = True
         self._recalculate_counts()
         self._last_counts = (self._pending_count, self._downloading_count, self._completed_count, self._skipped_count, self._failed_count)
         if self._selected_batch_id == batch_id:
@@ -84,9 +85,11 @@ class QueueModelOpsMixin:
                 new_tasks.extend(rep_by_batch.get(b, []))
 
         self._tasks = new_tasks
+        self._task_index_dirty = True
         self._task_last_emit.clear()
         self._task_last_status = {id(t): t.status for t in new_tasks}
         self._signatures_dirty = True
+        self._task_index_dirty = True
         self._recalculate_counts()
         self._last_counts = (
             self._pending_count,
@@ -371,9 +374,15 @@ class QueueModelOpsMixin:
         self._paused_batch_ids.clear()
         self.beginResetModel()
         self._counts_timer.stop()
+        self._removal_timer.stop()
+        self._pending_removals.clear()
         self._tasks.clear()
         self._visible_tasks.clear()
         self._visible_task_row.reset(())
+        self._signatures.clear()
+        self._signatures_dirty = False
+        self._task_index_by_id.clear()
+        self._task_index_dirty = False
         self._task_last_status.clear()
         self._task_last_emit.clear()
         self._last_counts = (0, 0, 0, 0, 0)
@@ -409,6 +418,7 @@ class QueueModelOpsMixin:
             self._tasks = [t for t in self._tasks if t.status not in ("failed", "cancelled")]
 
         self._signatures_dirty = True
+        self._task_index_dirty = True
         self._recalculate_counts()
         self._last_counts = (self._pending_count, self._downloading_count, self._completed_count, self._skipped_count, self._failed_count)
         self._rebuild_visible()

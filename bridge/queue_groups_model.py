@@ -343,10 +343,17 @@ class QueueGroupsModel(QAbstractListModel):
         for g in groups:
             bid = g["batchId"]
             self._calc_group_stats(g, tasks_by_id[bid])
-            emitted[bid] = (g["totalFiles"], g["completedFiles"], g["failedFiles"],
-                            g["downloadingFiles"], g["pendingFiles"], g["status"])
+            emitted[bid] = self._group_stats_key(g)
         return {"groups": groups, "row_by_id": row_by_id, "tasks_by_id": tasks_by_id,
                 "ids_by_group": ids_by_group, "last_status": last_status, "emitted": emitted}
+
+    @staticmethod
+    def _group_stats_key(g: Dict[str, Any]) -> tuple:
+        return (
+            g["totalFiles"], g["completedFiles"], g["skippedFiles"], g["failedFiles"],
+            g.get("unimportedFiles", 0), g["downloadingFiles"], g["pendingFiles"],
+            g["status"], g.get("isPaused", False),
+        )
 
     def rebuild(self, all_tasks: List[DownloadTask], background: bool = False):
         self._rebuild_gen += 1
@@ -450,10 +457,7 @@ class QueueGroupsModel(QAbstractListModel):
                     self._task_last_group_status[id(t)] = getattr(t, "status", "")
                 self._calc_group_stats(g, b_tasks)
                 self._groups.append(g)
-                self._last_emitted_stats[bid] = (
-                    g["totalFiles"], g["completedFiles"], g["skippedFiles"], g["failedFiles"],
-                    g["downloadingFiles"], g["pendingFiles"], g["status"], g.get("isPaused", False)
-                )
+                self._last_emitted_stats[bid] = self._group_stats_key(g)
             self.endInsertRows()
 
         if self._dirty_groups and not self._flush_timer.isActive():
@@ -489,10 +493,7 @@ class QueueGroupsModel(QAbstractListModel):
             }
             self._calc_group_stats(g, self._tasks_by_id[bid])
             self._groups.append(g)
-            self._last_emitted_stats[bid] = (
-                g["totalFiles"], g["completedFiles"], g["skippedFiles"], g["failedFiles"],
-                g["downloadingFiles"], g["pendingFiles"], g["status"], g.get("isPaused", False)
-            )
+            self._last_emitted_stats[bid] = self._group_stats_key(g)
             self.endInsertRows()
         else:
             row = self._row_by_id[bid]
@@ -522,11 +523,7 @@ class QueueGroupsModel(QAbstractListModel):
             g = self._groups[row]
             self._calc_group_stats(g, self._tasks_by_id.get(bid, []))
             old_stats = self._last_emitted_stats.get(bid)
-            new_stats = (
-                g["totalFiles"], g["completedFiles"], g["skippedFiles"], g["failedFiles"],
-                g.get("unimportedFiles", 0), g["downloadingFiles"], g["pendingFiles"],
-                g["status"], g.get("isPaused", False)
-            )
+            new_stats = self._group_stats_key(g)
             idx = self.index(row, 0)
             # If structural stats (counts, status) changed, emit full dataChanged
             if old_stats != new_stats:

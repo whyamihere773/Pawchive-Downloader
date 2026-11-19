@@ -399,7 +399,7 @@ Rectangle {
                         spacing: 10
 
                         Repeater {
-                    model: detailPanel.filesModel
+                    model: detailPanel.modal.visualGalleryMode ? detailPanel.filesModel : null
 
                     delegate: Rectangle {
                         id: galTile

@@ -42,7 +42,7 @@ Item {
                 spacing: 6
 
                 Repeater {
-            model: listViewWrap.filesModel
+            model: !listViewWrap.modal.visualGalleryMode ? listViewWrap.filesModel : null
 
             delegate: Item {
                 id: listRowItem

@@ -169,7 +169,7 @@ class MidDownloadMixin(AppBridgeSignalsMixin):
     @Slot()
     def _evaluate_pending_download_settings(self) -> None:
         unfinished_bids = set(self.downloader.active_unfinished_batch_ids())
-        if not unfinished_bids or not (self._is_downloading or self.downloader.is_running or unfinished_bids):
+        if not unfinished_bids or not (self._is_downloading or self.downloader.is_running):
             self._settings_dismissed_baseline = None
             self._set_pending_settings_state(False, "")
             return

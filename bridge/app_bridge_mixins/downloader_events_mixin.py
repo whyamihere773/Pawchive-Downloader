@@ -294,6 +294,40 @@ class DownloaderEventsMixin(AppBridgeSignalsMixin):
         paused_count = self.downloader.pause_batch(batch_id)
         logger.info(f"Paused batch '{batch_id}' ({paused_count} tasks paused).", category="downloader")
 
+    def _set_ui_state(
+        self,
+        *,
+        is_downloading=None,
+        status_text=None,
+        creator_name=None,
+        has_error=None,
+        last_error_message=None,
+    ) -> None:
+        """Safely update Qt backing fields & emit signals on the GUI thread."""
+        from PySide6.QtCore import QThread
+
+        def _apply():
+            if is_downloading is not None:
+                self._is_downloading = bool(is_downloading)
+                self.isDownloadingChanged.emit()
+            if status_text is not None:
+                self._status_text = str(status_text)
+                self.statusTextChanged.emit()
+            if creator_name is not None:
+                self._creator_name = str(creator_name)
+                self.creatorNameChanged.emit()
+            if has_error is not None:
+                self._has_error = bool(has_error)
+                self.hasErrorChanged.emit()
+            if last_error_message is not None:
+                self._last_error_message = str(last_error_message)
+                self.lastErrorMessageChanged.emit()
+
+        if QThread.currentThread() is self.thread():
+            _apply()
+        else:
+            self._callOnGui.emit(_apply)
+
     @Slot(str)
     def _handle_batch_resume(self, batch_id: str):
         if not batch_id:
@@ -304,7 +338,10 @@ class DownloaderEventsMixin(AppBridgeSignalsMixin):
         self._is_downloading = True
         self.isDownloadingChanged.emit()
         resumed_count = self.downloader.resume_batch(batch_id, options=options, cookie_str=self._cookie_string)
-        if resumed_count > 0:
+        if resumed_count == 0 and not self.downloader.is_running:
+            self._is_downloading = False
+            self.isDownloadingChanged.emit()
+        elif resumed_count > 0:
             logger.info(f"Resumed batch '{batch_id}' ({resumed_count} tasks restored).", category="downloader")
 
     @Slot(str)
@@ -480,8 +517,6 @@ class DownloaderEventsMixin(AppBridgeSignalsMixin):
         self._settings_apply_gen += 1
         self._scan_ui_gen += 1
         self._update_scan_progress("", 0, 0, force=True, active=False, update_status_text=False)
-        self._seen_session_archive_creators.clear()
-        self._dirty_archive_completed = 0
         self._settings_dismissed_baseline = None
         if self._has_pending_download_settings_changes:
             self._has_pending_download_settings_changes = False

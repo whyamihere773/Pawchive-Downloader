@@ -423,24 +423,37 @@ class PostSelectionQueueMixin(AppBridgeSignalsMixin):
                 self.downloader.append_tasks(queued_tasks, options=options, cookie_str=self._cookie_string)
                 logger.info(f"Appended {len(tasks)} tasks from {len(filtered_posts)} selected posts to active queue.", category="downloader")
             else:
-                self._queue_model.clear()
-                self._active_queue_model.clear()
-                self._queued_links.clear()
-                self._apply_cancel_event.set()
-                self._settings_apply_gen += 1
-                self._scan_ui_gen += 1
-                self._update_scan_progress("", 0, 0, force=True, active=False, update_status_text=False)
-                self._seen_session_archive_creators.clear()
-                self._dirty_archive_completed = 0
-                self._settings_dismissed_baseline = None
-                if self._has_pending_download_settings_changes:
-                    self._has_pending_download_settings_changes = False
-                    self._pending_settings_diff_summary = ""
-                    self.hasPendingDownloadSettingsChangesChanged.emit()
-                    self.pendingSettingsDiffSummaryChanged.emit()
-                self.downloader.reset_state()
-                self.downloader.tasks = list(queued_tasks)
-                self._handle_set_tasks(queued_tasks)
+                existing_tasks = list(self._queue_model.getTasks() if self._queue_model else [])
+                has_unfinished = any(
+                    getattr(t, "status", "") not in ("completed", "skipped")
+                    for t in existing_tasks
+                )
+                if has_unfinished:
+                    self._handle_append_tasks(queued_tasks)
+                    if not self.downloader.tasks and existing_tasks:
+                        self.downloader.tasks = list(existing_tasks)
+                    self.downloader.append_tasks(queued_tasks)
+                    tasks_to_run = list(self.downloader.tasks)
+                else:
+                    self._queue_model.clear()
+                    self._active_queue_model.clear()
+                    self._queued_links.clear()
+                    self._apply_cancel_event.set()
+                    self._settings_apply_gen += 1
+                    self._scan_ui_gen += 1
+                    self._update_scan_progress("", 0, 0, force=True, active=False, update_status_text=False)
+                    self._seen_session_archive_creators.clear()
+                    self._dirty_archive_completed = 0
+                    self._settings_dismissed_baseline = None
+                    if self._has_pending_download_settings_changes:
+                        self._has_pending_download_settings_changes = False
+                        self._pending_settings_diff_summary = ""
+                        self.hasPendingDownloadSettingsChangesChanged.emit()
+                        self.pendingSettingsDiffSummaryChanged.emit()
+                    self.downloader.reset_state()
+                    self.downloader.tasks = list(queued_tasks)
+                    self._handle_set_tasks(queued_tasks)
+                    tasks_to_run = queued_tasks
 
                 self._scan_cancel_event.clear()
                 self._has_error = False
@@ -453,7 +466,7 @@ class PostSelectionQueueMixin(AppBridgeSignalsMixin):
 
                 logger.info(f"Starting download for {len(tasks)} file(s) across {len(filtered_posts)} selected posts...", category="downloader")
                 self.downloader.start_download_queue(
-                    tasks=queued_tasks,
+                    tasks=tasks_to_run,
                     options=options,
                     cookie_str=self._cookie_string
                 )

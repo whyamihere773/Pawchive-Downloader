@@ -223,7 +223,7 @@ Item {
             var hasFiles = !!(p.files && p.files.length)
             if (hasFiles) {
                 for (var f = 0; f < p.files.length; f++) {
-                    var fp = String(p.files[f].path || f)
+                    var fp = String(p.files[f].path || p.files[f].url || f)
                     fileStates[fp] = !!p.files[f].selected
                 }
             }
@@ -435,7 +435,7 @@ Item {
 
             selF += pSelF
             p.selectedFileCount = pSelF
-            p.selected = (pSelF > 0)
+            p.selected = (nFiles > 0) ? (pSelF > 0) : !!p.selected
             if (p.selected) selP++
         }
 

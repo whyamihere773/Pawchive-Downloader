@@ -188,7 +188,7 @@ class DownloaderUrlPostprocessMixin:
         page_url = f"https://{eff_domain}/{service}/user/{user_id}/post/{post_id}"
         logger.debug(f"Fetching post HTML to resolve {len(deferred_items)} temporary oversized file(s): {page_url}", category="downloader")
 
-        session = requests.Session()
+        session = self._new_cookieless_session()
         session_headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             "Referer": f"https://{eff_domain}/",
@@ -267,7 +267,8 @@ class DownloaderUrlPostprocessMixin:
             "X-Contact": "https://github.com/whyamihere773/Pawchive-Downloader",
         }
         try:
-            r = requests.get(page_url, headers=headers, timeout=15)
+            sess = self._get_worker_session()
+            r = sess.get(page_url, headers=headers, timeout=15)
             if r.status_code != 200 or not r.text:
                 return None
             matches = re.findall(r'(?:href|src)=["\'](https://t\d+\.pawchive\.pw/(?:f|d)/[^"\']+)["\']', r.text)

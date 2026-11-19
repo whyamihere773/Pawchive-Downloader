@@ -624,21 +624,21 @@ class DownloadFetchMixin(AppBridgeSignalsMixin):
 
             if options.file_type == "links":
                 h_count = len(self.downloader.harvested_links_records)
-                self._is_downloading = bool(self.downloader._is_running)
-                self._status_text = f"Links extraction complete ({h_count} links found). Ready to download or export."
-                self.isDownloadingChanged.emit()
-                self.statusTextChanged.emit()
-                self.harvestedLinksChanged.emit()
+                self._set_ui_state(
+                    is_downloading=bool(self.downloader._is_running),
+                    status_text=f"Links extraction complete ({h_count} links found). Ready to download or export.",
+                )
+                self._callOnGui.emit(self.harvestedLinksChanged.emit)
                 return
 
             unimp_info = dict(getattr(self.downloader, "last_build_unimported", {}) or {})
             unimp_tasks = list(getattr(self.downloader, "last_build_unimported_tasks", []) or [])
             if not tasks:
                 if getattr(self.downloader, "last_build_cancelled", False):
-                    self._is_downloading = bool(self.downloader._is_running)
-                    self._status_text = "Progress: Cancelled"
-                    self.isDownloadingChanged.emit()
-                    self.statusTextChanged.emit()
+                    self._set_ui_state(
+                        is_downloading=bool(self.downloader._is_running),
+                        status_text="Progress: Cancelled",
+                    )
                     return
                 if int(unimp_info.get("files", 0) or 0) > 0:
                     if unimp_tasks:
@@ -667,13 +667,12 @@ class DownloadFetchMixin(AppBridgeSignalsMixin):
                     )
                     if keep_going:
                         if not self._is_downloading and (self.downloader._is_running or from_batch):
-                            self._is_downloading = True
-                            self.isDownloadingChanged.emit()
+                            self._set_ui_state(is_downloading=True)
                     else:
-                        self._is_downloading = False
-                        self._status_text = "Marked as Not Imported on Pawchive (full files aren't hosted on the site yet)"
-                        self.isDownloadingChanged.emit()
-                        self.statusTextChanged.emit()
+                        self._set_ui_state(
+                            is_downloading=False,
+                            status_text="Marked as Not Imported on Pawchive (full files aren't hosted on the site yet)",
+                        )
                     self._emit_unimported_notice_if_needed(
                         unimp_info,
                         queued_count=0,
@@ -682,10 +681,10 @@ class DownloadFetchMixin(AppBridgeSignalsMixin):
                     )
                     return
                 if not from_batch and not self.downloader._is_running and self._active_scan_jobs <= 1:
-                    self._is_downloading = False
-                    self._status_text = "Progress: Idle (All files filtered out)"
-                    self.isDownloadingChanged.emit()
-                    self.statusTextChanged.emit()
+                    self._set_ui_state(
+                        is_downloading=False,
+                        status_text="Progress: Idle (All files filtered out)",
+                    )
                 logger.warning("No files matched filtering criteria.", category="downloader")
                 return
             if int(unimp_info.get("files", 0) or 0) > 0 or int(unimp_info.get("queued_thumbnails", 0) or 0) > 0:
@@ -790,12 +789,10 @@ class DownloadFetchMixin(AppBridgeSignalsMixin):
                     self._appendTasksSignal.emit(queued_tasks)
                     self.downloader.append_tasks(queued_tasks, options=options, cookie_str=self._cookie_string, progress_callback=_append_prog)
                     if self.downloader._is_running:
-                        if not self._is_downloading:
-                            self._is_downloading = True
-                            self.isDownloadingChanged.emit()
-                        if self._has_error:
-                            self._has_error = False
-                            self.hasErrorChanged.emit()
+                        self._set_ui_state(
+                            is_downloading=True if not self._is_downloading else None,
+                            has_error=False if self._has_error else None,
+                        )
                 else:
                     self._setTasksSignal.emit(queued_tasks)
                     self.downloader.start_download_queue(
@@ -804,22 +801,19 @@ class DownloadFetchMixin(AppBridgeSignalsMixin):
                         cookie_str=self._cookie_string
                     )
                     if not self._is_downloading:
-                        self._is_downloading = True
-                        self.isDownloadingChanged.emit()
+                        self._set_ui_state(is_downloading=True)
             else:
                 self._appendTasksSignal.emit(queued_tasks)
                 self.downloader.append_tasks(queued_tasks, options=options, cookie_str=self._cookie_string, progress_callback=_append_prog)
-                self._status_text = f"Queued {len(tasks)} files ({creator_name})."
-                self.statusTextChanged.emit()
+                self._set_ui_state(status_text=f"Queued {len(tasks)} files ({creator_name}).")
 
         except Exception as e:
             logger.error(f"Error during task initialization: {e}", category="downloader")
-            self._is_downloading = bool(self.downloader._is_running)
-            self._has_error = True
-            self._last_error_message = str(e)
-            self.isDownloadingChanged.emit()
-            self.hasErrorChanged.emit()
-            self.lastErrorMessageChanged.emit()
+            self._set_ui_state(
+                is_downloading=bool(self.downloader._is_running),
+                has_error=True,
+                last_error_message=str(e),
+            )
         finally:
             should_hide = False
             with self._scan_jobs_lock:

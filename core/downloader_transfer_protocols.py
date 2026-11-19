@@ -38,7 +38,7 @@ class DownloaderTransferProtocolsMixin:
     def _download_ytdlp_task(self, task: DownloadTask, options: Optional[FilterOptions]) -> Tuple[bool, str]:
         """Execute a yt-dlp embedded media download task."""
         if options and getattr(options, "video_duration_filter_enabled", False):
-            dur = VideoProbe.get_video_duration(task.url, session=self.session)
+            dur = VideoProbe.get_video_duration(task.url, session=self._get_worker_session())
             keep_dur, dur_reason = FilterEngine.should_keep_video_duration(dur, options)
             if not keep_dur:
                 logger.info(f"⏭️ Skipping [yt-dlp] {task.url}: {dur_reason}", category="filter")
@@ -294,7 +294,7 @@ class DownloaderTransferProtocolsMixin:
 
                 stats = self._queue_stats(now_poll)
                 completed_c = int(stats.get("done_n", 0))
-                failed_c = sum(1 for t in self.tasks if t.status == "failed")
+                failed_c = int(self.status_counts().get("failed", 0))
                 self._emit_progress(completed_c, failed_c, len(self.tasks))
 
                 if self.on_task_status_changed:
@@ -392,12 +392,14 @@ class DownloaderTransferProtocolsMixin:
         try:
             resp = session.get(task.url, stream=True, timeout=(25, 60), headers=req_headers)
             if resp.status_code not in (200, 206):
-                clean_resp = requests.get(task.url, stream=True, timeout=(25, 60), headers=browser_headers)
+                clean_sess = self._new_cookieless_session()
+                clean_resp = clean_sess.get(task.url, stream=True, timeout=(25, 60), headers=browser_headers)
                 if clean_resp.status_code in (200, 206):
                     resp.close()
                     resp = clean_resp
                 else:
                     clean_resp.close()
+                    clean_sess.close()
             if resp.status_code not in (200, 206):
                 msg = f"HTTP {resp.status_code} on single-stream fallback"
                 logger.warning(f"  ✖ {task.filename}: {msg}", category="file", details=self._task_context(task))

@@ -52,7 +52,6 @@ class DownloaderLoopMixin:
         self._pause_start_time = 0.0
         self._first_byte_time = 0.0
         cpu_cores = max(4, os.cpu_count() or 16)
-        self.current_options = options
         is_locked = getattr(self.current_options or options, "threads_locked", False)
         # Adaptive threading tops out at 8: beyond that the file servers rate-limit and the app
         # mostly spends its time on bookkeeping (16 threads made the window stop responding, #24).

@@ -538,7 +538,6 @@ def classify_settings_change(
         ("skip_retry_404", "Skip retrying 404s"),
         ("fallback_to_thumbnails", "Thumbnail fallback"),
         ("redownload_small_files", "Re-download small files"),
-        ("compress_to_webp", "WebP compression"),
         ("webp_quality", "WebP quality"),
         ("write_audio_metadata", "Audio metadata tags"),
         ("min_file_size", "Minimum file size"),
