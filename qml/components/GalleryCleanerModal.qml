@@ -17,7 +17,9 @@ Item {
 
     property string activeTab: "broken" // "broken" | "duplicates" | "sort"
     property bool recursiveScan: false
-    property bool isScanning: false
+    readonly property bool isBrokenScanning: _brokenRequest.length > 0
+    readonly property bool isDupScanning: _dupRequest.length > 0
+    readonly property bool isScanning: isBrokenScanning || isDupScanning
     property bool isDeleting: false
 
     // Broken files state
@@ -85,6 +87,9 @@ Item {
     }
 
     function open(currentFolder) {
+        _brokenRequest = ""
+        _dupRequest = ""
+        _sortRequest = ""
         folderPath = currentFolder || ""
         activeTab = "broken"
         recursiveScan = false
@@ -106,13 +111,15 @@ Item {
     }
 
     function close() {
+        _brokenRequest = ""
+        _dupRequest = ""
+        _sortRequest = ""
         isOpen = false
     }
 
     // ── Tab 1: Broken Files ─────────────────────────────────────────────────
     function scanBroken() {
-        if (!bridge || !bridge.scanBrokenFilesAsync) return
-        isScanning = true
+        if (!bridge || !bridge.scanBrokenFilesAsync || root.isPathBlocked) return
         brokenItems = []
         _brokenRequest = _newRequest("broken")
         bridge.scanBrokenFilesAsync(_brokenRequest, folderPath, recursiveScan)
@@ -129,7 +136,6 @@ Item {
         }
         selectedBrokenPaths = sel
         selectedBrokenCount = cnt
-        isScanning = false
     }
 
     function toggleBrokenSelection(path) {
@@ -166,8 +172,7 @@ Item {
 
     // ── Tab 2: Duplicate Files ──────────────────────────────────────────────
     function scanDuplicates() {
-        if (!bridge || !bridge.scanDuplicatesAsync) return
-        isScanning = true
+        if (!bridge || !bridge.scanDuplicatesAsync || root.isPathBlocked) return
         duplicateGroups = []
         totalWastedBytes = 0
         _dupRequest = _newRequest("dup")
@@ -185,7 +190,6 @@ Item {
 
         // Default selection: select all copies except the oldest one
         selectDuplicatesStrategy("keep_oldest")
-        isScanning = false
     }
 
     function selectDuplicatesStrategy(strategy) {

@@ -156,12 +156,63 @@ function workingFolder(root, items) {
     return p.substring(0, Math.max(p.lastIndexOf("\\"), p.lastIndexOf("/")))
 }
 
-function doNavigateTo(root, targetPath, fromHistory, statsResortTimer, gridView, listView) {
+function _applyNavListing(root, targetPath, items, total, preserveOpts, gridView, listView) {
+    root.listingTotal = total
+    root.rawItems = items
+    root.updateCounts(items)
+    if (preserveOpts && preserveOpts.quiet) {
+        root.quietly(root.resort)
+    } else {
+        root.resort()
+    }
+    root.isLoading = false
+    if (preserveOpts && preserveOpts.preserveScroll) {
+        var gridY = preserveOpts.gridY || 0
+        var listY = preserveOpts.listY || 0
+        Qt.callLater(function() {
+            gridView.contentY = Math.min(gridY, Math.max(0, gridView.contentHeight - gridView.height))
+            listView.contentY = Math.min(listY, Math.max(0, listView.contentHeight - listView.height))
+        })
+    } else {
+        Qt.callLater(root.focusBrowser)
+        Qt.callLater(root._applyPendingReveal)
+    }
+    if (root.charMenuVisible) {
+        root.startTagging()
+    }
+    if (root.pendingSearch && root._samePlace(root.pendingSearch.path, targetPath)) {
+        var ps = root.pendingSearch
+        root.pendingSearch = null
+        root.searchSubfolders = !!ps.recursive
+        root.searchInput.text = ps.query
+    }
+}
+
+function _applyLiveListing(root, targetPath, items, total, gridY, listY, gridView, listView) {
+    if (!root._samePlace(root.currentPath, targetPath) || root.inFavorites) return
+    root.listingTotal = total
+    root.rawItems = items
+    var exists = {}
+    for (var i = 0; i < items.length; i++) exists[items[i].path] = true
+    var sel = {}
+    for (var k in root.selectedPaths) if (exists[k] || k.indexOf("post:") === 0) sel[k] = true
+    root._setSelection(sel)
+    root.quietly(root.resort)
+    if (root.characterFilter || root.charMenuVisible) root.startTagging()
+    Qt.callLater(function() {
+        gridView.contentY = Math.min(gridY, Math.max(0, gridView.contentHeight - gridView.height))
+        listView.contentY = Math.min(listY, Math.max(0, listView.contentHeight - listView.height))
+    })
+}
+
+function doNavigateTo(root, targetPath, fromHistory, statsResortTimer, gridView, listView, preserveOpts) {
     if (!root.bridge) return
     if (!fromHistory && root.currentPath && !root._samePlace(root.currentPath, targetPath)) {
         root.backStack = root.backStack.concat([root.currentPath]).slice(-50)
         root.forwardStack = []
     }
+    root._pendingDirReqId = ""
+    root._pendingDirCtx = null
     root.isLoading = true
     root.pathEditMode = false
     root.searchInput.text = ""
@@ -199,56 +250,60 @@ function doNavigateTo(root, targetPath, fromHistory, statsResortTimer, gridView,
     if (targetPath === root.favoritesPath) {
         var fav = root.tools ? root.tools.favoriteItems() : ({ items: [], missing: 0 })
         root.favoritesMissing = fav.missing
-        root.listingTotal = fav.items.length
-        root.rawItems = fav.items
-        root.updateCounts(fav.items)
-        root.resort()
-    } else if (root.bridge.listDirectory) {
-        var items = root.bridge.listDirectory(targetPath, root.listingCap) || []
-        root.listingTotal = root.bridge.getLastListingTotal ? root.bridge.getLastListingTotal() : items.length
-        root.rawItems = items
-        root.updateCounts(items)
-        root.resort()
+        _applyNavListing(root, targetPath, fav.items, fav.items.length, preserveOpts, gridView, listView)
+        return
     }
-    root.isLoading = false
-    Qt.callLater(root.focusBrowser)
-    Qt.callLater(root._applyPendingReveal)
-    if (root.pendingSearch && root._samePlace(root.pendingSearch.path, targetPath)) {
-        var ps = root.pendingSearch
-        root.pendingSearch = null
-        root.searchSubfolders = !!ps.recursive
-        root.searchInput.text = ps.query
+    if (root.bridge.listDirectoryAsync) {
+        root._dirReqSeq += 1
+        var reqId = "gallery-dir-" + root._dirReqSeq
+        root._pendingDirReqId = reqId
+        root._pendingDirCtx = {
+            mode: "nav",
+            targetPath: targetPath,
+            preserveOpts: preserveOpts || null
+        }
+        root.bridge.listDirectoryAsync(reqId, targetPath, root.listingCap)
+        return
+    }
+    if (root.bridge.listDirectory) {
+        var items = root.bridge.listDirectory(targetPath, root.listingCap) || []
+        var total = root.bridge.getLastListingTotal ? root.bridge.getLastListingTotal() : items.length
+        _applyNavListing(root, targetPath, items, total, preserveOpts, gridView, listView)
+    } else {
+        root.isLoading = false
     }
 }
 
 function refreshPreservingScroll(root, gridView, listView) {
-    var gridY = gridView.contentY
-    var listY = listView.contentY
-    root.quietly(function() { root._doNavigateTo(root.currentPath, true) })
-    Qt.callLater(function() {
-        gridView.contentY = Math.min(gridY, Math.max(0, gridView.contentHeight - gridView.height))
-        listView.contentY = Math.min(listY, Math.max(0, listView.contentHeight - listView.height))
-    })
+    var opts = {
+        preserveScroll: true,
+        gridY: gridView.contentY,
+        listY: listView.contentY,
+        quiet: true
+    }
+    root._doNavigateTo(root.currentPath, true, opts)
 }
 
 function liveRefresh(root, gridView, listView) {
     if (!root.bridge || root.inFavorites || root.internalDragActive || !root.currentPath) return
     var gridY = gridView.contentY
     var listY = listView.contentY
+    if (root.bridge.listDirectoryAsync) {
+        root._dirReqSeq += 1
+        var reqId = "gallery-dir-" + root._dirReqSeq
+        root._pendingDirReqId = reqId
+        root._pendingDirCtx = {
+            mode: "live",
+            targetPath: root.currentPath,
+            gridY: gridY,
+            listY: listY
+        }
+        root.bridge.listDirectoryAsync(reqId, root.currentPath, root.listingCap)
+        return
+    }
     var items = root.bridge.listDirectory(root.currentPath, root.listingCap) || []
-    root.listingTotal = root.bridge.getLastListingTotal ? root.bridge.getLastListingTotal() : items.length
-    root.rawItems = items
-    var exists = {}
-    for (var i = 0; i < items.length; i++) exists[items[i].path] = true
-    var sel = {}
-    for (var k in root.selectedPaths) if (exists[k] || k.indexOf("post:") === 0) sel[k] = true
-    root._setSelection(sel)
-    root.quietly(root.resort)
-    if (root.characterFilter) root.startTagging()
-    Qt.callLater(function() {
-        gridView.contentY = Math.min(gridY, Math.max(0, gridView.contentHeight - gridView.height))
-        listView.contentY = Math.min(listY, Math.max(0, listView.contentHeight - listView.height))
-    })
+    var total = root.bridge.getLastListingTotal ? root.bridge.getLastListingTotal() : items.length
+    _applyLiveListing(root, root.currentPath, items, total, gridY, listY, gridView, listView)
 }
 
 function togglePrivacy(root, modalHost) {
@@ -469,6 +524,24 @@ function handleTagsReady(root, menus, token, map) {
     root.tagging = false; root.taggingCurrent = 0; root.taggingTotal = 0
     if (menus.charMenu.visible) menus.charMenu.entries = root.characterCounts()
     if (root.characterFilter) root.applyFilter()
+}
+
+function handleAsyncResult(root, requestId, res, gridView, listView) {
+    if (requestId && requestId === root._pendingDirReqId) {
+        var ctx = root._pendingDirCtx
+        root._pendingDirReqId = ""
+        root._pendingDirCtx = null
+        if (!ctx) return
+        var items = (res && res.items) ? res.items : []
+        var total = (res && typeof res.total === "number") ? res.total : items.length
+        if (ctx.mode === "live") {
+            _applyLiveListing(root, ctx.targetPath, items, total, ctx.gridY, ctx.listY, gridView, listView)
+        } else {
+            _applyNavListing(root, ctx.targetPath, items, total, ctx.preserveOpts, gridView, listView)
+        }
+        return
+    }
+    handleMetaAsyncResult(root, requestId, res)
 }
 
 function handleMetaAsyncResult(root, requestId, res) {

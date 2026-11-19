@@ -28,7 +28,7 @@ Item {
             // Empty State
             Text {
                 anchors.centerIn: parent
-                visible: modal.isScanning && modal.activeTab === "broken"
+                visible: modal.isBrokenScanning && modal.activeTab === "broken"
                 text: "Scanning…"
                 font.family: "Segoe UI, sans-serif"
                 font.pixelSize: 12
@@ -36,7 +36,7 @@ Item {
             }
             Item {
                 anchors.centerIn: parent
-                visible: modal.brokenItems.length === 0 && !modal.isScanning
+                visible: modal.brokenItems.length === 0 && !modal.isBrokenScanning
                 ColumnLayout {
                     spacing: 6
                     anchors.centerIn: parent

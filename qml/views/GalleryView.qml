@@ -90,6 +90,9 @@ Item {
     property string viewMode: "grid"
     property bool pathEditMode: false
     property bool isLoading: false
+    property int _dirReqSeq: 0
+    property string _pendingDirReqId: ""
+    property var _pendingDirCtx: null
 
     // View preferences (persisted)
     property string sortKey: "name"
@@ -160,9 +163,11 @@ Item {
     readonly property var rootDiskSafetyLoader: modalHost.rootDiskSafetyLoader
     readonly property bool viewMenuVisible: menus.viewMenu.visible
     readonly property bool sortMenuVisible: menus.sortMenu.visible
+    readonly property bool charMenuVisible: menus.charMenu.visible
     function openViewMenu(anchorItem) { menus.openViewMenu(anchorItem) }
     function openSortMenu(anchorItem) { menus.openSortMenu(anchorItem) }
     function openMoreMenu(anchorItem) { menus.openMoreMenu(anchorItem) }
+    function openCharMenu(anchorItem) { menus.openCharMenu(anchorItem) }
 
     readonly property bool _textInputFocused: (
         (filterToolbar && filterToolbar.searchInput && filterToolbar.searchInput.activeFocus)
@@ -298,7 +303,7 @@ Item {
             if (isDir) root.navigateTo(path)
             else root.revealInGallery(path)
         }
-        function onAsyncResultReady(requestId, res) { A.handleMetaAsyncResult(root, requestId, res) }
+        function onAsyncResultReady(requestId, res) { A.handleAsyncResult(root, requestId, res, explorerGridView, explorerListView) }
     }
 
     Connections {
@@ -339,7 +344,7 @@ Item {
         var targetPath = path || (root.bridge.getDownloadDir ? root.bridge.getDownloadDir() : "")
         Qt.callLater(function() { root._doNavigateTo(targetPath, false) })
     }
-    function _doNavigateTo(targetPath, fromHistory) { A.doNavigateTo(root, targetPath, fromHistory, statsResortTimer, explorerGridView, explorerListView) }
+    function _doNavigateTo(targetPath, fromHistory, preserveOpts) { A.doNavigateTo(root, targetPath, fromHistory, statsResortTimer, explorerGridView, explorerListView, preserveOpts) }
     function goBack() { A.goBack(root) }
     function goForward() { A.goForward(root) }
     function refreshPreservingScroll() { A.refreshPreservingScroll(root, explorerGridView, explorerListView) }

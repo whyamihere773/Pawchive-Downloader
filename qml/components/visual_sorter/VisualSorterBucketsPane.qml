@@ -80,6 +80,7 @@ Rectangle {
                     anchors.fill: parent
                     anchors.margins: 8
                     spacing: 4
+                    z: 1
 
                     RowLayout {
                         Layout.fillWidth: true
@@ -250,7 +251,7 @@ Rectangle {
                     id: bktMouse
                     anchors.fill: parent
                     hoverEnabled: true
-                    z: 1
+                    z: 0
                     cursorShape: Qt.PointingHandCursor
                     onClicked: {
                         if (modal.vsBridge) modal.vsBridge.selectBucket(bktId)

@@ -30,6 +30,13 @@ Item {
         sortMenu.open()
     }
 
+    function openCharMenu(anchorItem) {
+        var p = anchorItem.mapToItem(galleryMenus.view, 0, anchorItem.height + 4)
+        charMenu.x = Math.max(4, Math.min(p.x, galleryMenus.view.width - charMenu.width - 4))
+        charMenu.y = p.y
+        charMenu.open()
+    }
+
     Popup {
         id: contextMenu
         // Springs open from its anchor, eases away

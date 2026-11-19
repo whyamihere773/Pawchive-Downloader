@@ -31,9 +31,9 @@ Item {
                 anchors.rightMargin: 12
                 spacing: 8
 
-                Text { text: modal.isScanning ? "⏳" : (modal.totalWastedBytes > 0 ? "⚠️" : "✨"); font.pixelSize: 14 }
+                Text { text: modal.isDupScanning ? "⏳" : (modal.totalWastedBytes > 0 ? "⚠️" : "✨"); font.pixelSize: 14 }
                 Text {
-                    text: modal.isScanning ? "Scanning for duplicates…" : (modal.totalWastedBytes > 0 ?
+                    text: modal.isDupScanning ? "Scanning for duplicates…" : (modal.totalWastedBytes > 0 ?
                           ("Found " + modal.duplicateGroups.length + " duplicate groups — Reclaim " + modal.formatBytes(modal.totalWastedBytes) + " of disk space") :
                           "No duplicate files detected in this folder!")
                     font.family: "Segoe UI, sans-serif"

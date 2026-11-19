@@ -160,6 +160,8 @@ RowLayout {
             Text {
                 id: destLabel
                 anchors.centerIn: parent
+                width: Math.min(implicitWidth, Math.max(0, parent.width - 14))
+                horizontalAlignment: Text.AlignHCenter
                 text: "📁 " + (modal.destinationFolder ? modal.destinationFolder : "Current Folder")
                 elide: Text.ElideMiddle
                 maximumLineCount: 1

@@ -237,6 +237,37 @@ RowLayout {
         }
     }
 
+    // Filter by character / series from the Known list
+    Rectangle {
+        id: charButton
+        objectName: "galleryCharFilterBtn"
+        visible: !!filterToolbar.view.tools
+        implicitWidth: 28
+        implicitHeight: 26
+        radius: 6
+        Layout.alignment: Qt.AlignVCenter
+        color: filterToolbar.view.characterFilter ? "#12302A" : (charBtnMouse.containsMouse ? "#1E293B" : "#121622")
+        border.color: filterToolbar.view.characterFilter ? "#34D399" : ((charBtnMouse.containsMouse || filterToolbar.view.charMenuVisible) ? "#38BDF8" : "#252D3E")
+        border.width: 1
+        Text { anchors.centerIn: parent; text: "👤"; font.pixelSize: 12; opacity: filterToolbar.view.characterFilter ? 1.0 : 0.75 }
+        Springy { hover: charBtnMouse.containsMouse; pressed: charBtnMouse.pressed }
+        MouseArea {
+            id: charBtnMouse
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: {
+                filterToolbar.view.startTagging()
+                filterToolbar.view.openCharMenu(charButton)
+            }
+            ToolTip.visible: containsMouse && !filterToolbar.view.charMenuVisible
+            ToolTip.delay: 250
+            ToolTip.text: filterToolbar.view.characterFilter
+                ? ("Filtering by: " + filterToolbar.view.characterFilter + " (click to change)")
+                : "Filter by character or series from your Known list"
+        }
+    }
+
 
     // Thumbnail size (grid view only); Ctrl + mouse wheel does the same
     Row {

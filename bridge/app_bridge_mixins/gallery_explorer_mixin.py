@@ -89,25 +89,14 @@ class GalleryExplorerMixin(AppBridgeSignalsMixin):
         """Return the user's active download directory."""
         return self._download_dir or os.path.expanduser("~")
 
-    @Slot(str, int, result='QVariantList')
-    def listDirectory(self, path: str = "", max_entries: int = 1500) -> list:
-        """
-        High-performance on-demand lazy directory listing.
-        Engineered for libraries with millions of files:
-        - Only scans immediate directory children (never recurses on main thread).
-        - Uses os.scandir for direct cached stat retrieval.
-        - Provides immediate shallow child counts.
-        - Asynchronously calculates deep recursive file count & size in background.
-        - Caps return count to max_entries to guarantee 0 UI lag; the full entry count
-          is still tallied (without stat calls) and exposed via getLastListingTotal().
-        """
+    def _list_directory_impl(self, path: str = "", max_entries: int = 1500) -> Tuple[List[dict], int]:
+        """Core directory listing implementation shared by sync listDirectory and listDirectoryAsync."""
         if not path:
             path = self._download_dir or os.path.expanduser("~")
 
-        self._last_listing_total = 0
         path = os.path.normpath(os.path.abspath(path))
         if not os.path.exists(path) or not os.path.isdir(path):
-            return []
+            return [], 0
 
         # Invalidate old background worker tasks
         self._folder_stats_worker_token += 1
@@ -116,6 +105,7 @@ class GalleryExplorerMixin(AppBridgeSignalsMixin):
         previews_to_scan = []
 
         items = []
+        total_entries = 0
         try:
             with os.scandir(path) as it:
                 count = 0
@@ -186,9 +176,9 @@ class GalleryExplorerMixin(AppBridgeSignalsMixin):
                         count += 1
                     except (PermissionError, OSError):
                         continue
-                self._last_listing_total = count + skipped
+                total_entries = count + skipped
         except (PermissionError, OSError):
-            return []
+            return [], 0
 
         # Launch background worker for un-cached folders
         if subfolders_to_scan or previews_to_scan:
@@ -200,6 +190,31 @@ class GalleryExplorerMixin(AppBridgeSignalsMixin):
 
         # Sort folders first, then alphabetical by name
         items.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
+        return items, total_entries
+
+    @Slot(str, str, int)
+    def listDirectoryAsync(self, request_id: str, path: str = "", max_entries: int = 1500) -> None:
+        """Non-blocking companion to listDirectory (answer: asyncResultReady(request_id, {'items', 'total'}))."""
+        def _job():
+            items, total = self._list_directory_impl(path, max_entries)
+            self._last_listing_total = total
+            return {"items": items, "total": total}
+        self._run_async(request_id, _job)
+
+    @Slot(str, int, result='QVariantList')
+    def listDirectory(self, path: str = "", max_entries: int = 1500) -> list:
+        """
+        High-performance on-demand lazy directory listing.
+        Engineered for libraries with millions of files:
+        - Only scans immediate directory children (never recurses on main thread).
+        - Uses os.scandir for direct cached stat retrieval.
+        - Provides immediate shallow child counts.
+        - Asynchronously calculates deep recursive file count & size in background.
+        - Caps return count to max_entries to guarantee 0 UI lag; the full entry count
+          is still tallied (without stat calls) and exposed via getLastListingTotal().
+        """
+        items, total = self._list_directory_impl(path, max_entries)
+        self._last_listing_total = total
         return items
 
     @Slot(result=int)
@@ -563,7 +578,7 @@ class GalleryExplorerMixin(AppBridgeSignalsMixin):
             "path": norm,
             "icon": "⭐"
         })
-        self.saveSettings()
+        self.scheduleSaveSettings()
         self.galleryBookmarksChanged.emit()
         return True
 
@@ -578,7 +593,7 @@ class GalleryExplorerMixin(AppBridgeSignalsMixin):
             if os.path.normcase(os.path.normpath(b.get("path", ""))) != norm_case
         ]
         if len(self._gallery_bookmarks) != before_len:
-            self.saveSettings()
+            self.scheduleSaveSettings()
             self.galleryBookmarksChanged.emit()
             return True
         return False

@@ -172,6 +172,7 @@ Rectangle {
                         anchors.fill: parent
                         anchors.margins: 6
                         spacing: 4
+                        z: 1
 
                         // Thumbnail Box
                         Rectangle {
@@ -286,7 +287,7 @@ Rectangle {
 
                     MouseArea {
                         anchors.fill: parent
-                        z: 1
+                        z: 0
                         cursorShape: Qt.PointingHandCursor
                         onClicked: modal.toggleSelectItem(itmKey)
                     }
