@@ -119,6 +119,38 @@ Rectangle {
         }
     }
 
+    function copyMessageOnly() {
+        var indices = Object.keys(selectedIndicesMap).map(Number)
+        if (indices.length === 1 && root.logModel) {
+            var idx = indices[0]
+            var full = root.logModel.getSelectedText([idx])
+            var parts = full.split("] ")
+            var msgOnly = parts.length >= 3 ? parts.slice(2).join("] ") : (root.contextRowMessage || full)
+            if (typeof appBridge !== "undefined" && appBridge && appBridge.copyToClipboard) {
+                appBridge.copyToClipboard(msgOnly)
+            }
+            clipHelper.text = msgOnly
+            clipHelper.selectAll()
+            clipHelper.copy()
+            root.showToast(root.tr("toast_copied_message", "Copied message to clipboard!"))
+        }
+    }
+
+    function copyAllLogs() {
+        if (root.logModel) {
+            var textToCopy = root.logModel.getAllText()
+            if (textToCopy) {
+                if (typeof appBridge !== "undefined" && appBridge && appBridge.copyToClipboard) {
+                    appBridge.copyToClipboard(textToCopy)
+                }
+                clipHelper.text = textToCopy
+                clipHelper.selectAll()
+                clipHelper.copy()
+                root.showToast(root.tr("toast_copied_all", "Copied all logs to clipboard!"))
+            }
+        }
+    }
+
     function tr(key, fallback) {
         if (typeof Lang === "undefined" || !Lang) return fallback !== undefined ? fallback : key
         var _ = Lang.activeLanguage
@@ -305,7 +337,15 @@ Rectangle {
                 focus: true
 
                 Keys.onPressed: (event) => {
-                    if (event.matches(StandardKey.Copy) || (event.key === Qt.Key_C && (event.modifiers & Qt.ControlModifier))) {
+                    if (event.key === Qt.Key_C && (event.modifiers & Qt.ControlModifier) && (event.modifiers & Qt.ShiftModifier)) {
+                        root.copyAllLogs()
+                        event.accepted = true
+                    } else if (event.key === Qt.Key_C && (event.modifiers & Qt.ShiftModifier) && !(event.modifiers & Qt.ControlModifier) && !(event.modifiers & Qt.AltModifier)) {
+                        if (root.selectedCount === 1) {
+                            root.copyMessageOnly()
+                            event.accepted = true
+                        }
+                    } else if (event.matches(StandardKey.Copy) || (event.key === Qt.Key_C && (event.modifiers & Qt.ControlModifier))) {
                         root.copySelectedLogs()
                         event.accepted = true
                     } else if (event.matches(StandardKey.SelectAll) || (event.key === Qt.Key_A && (event.modifiers & Qt.ControlModifier))) {

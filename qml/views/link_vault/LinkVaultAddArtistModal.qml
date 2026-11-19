@@ -290,6 +290,7 @@ Item {
                             radius: 4
                             color: "#34D399"
                             SequentialAnimation on opacity {
+                                running: addArtistModal.visible && !!(addArtistModal.view.bridge && addArtistModal.view.bridge.linkVaultHarvestingActive)
                                 loops: Animation.Infinite
                                 NumberAnimation { from: 1.0; to: 0.2; duration: 500 }
                                 NumberAnimation { from: 0.2; to: 1.0; duration: 500 }

@@ -541,243 +541,247 @@ Item {
                     }
                 }
 
-                // Artists Grid ScrollView
-                ScrollView {
+                // Virtualized Artists Grid (Rule 4 + safe division-by-zero clamp)
+                SmoothGridView {
                     id: gridScroll
                     anchors.fill: parent
-                    clip: true
                     visible: (!modalRoot.bridge || !modalRoot.bridge.favoriteArtistsLoading) && modalRoot.filteredArtists.length > 0
+                    model: modalRoot.filteredArtists
 
-                    Flow {
-                        id: artistsFlow
-                        width: gridScroll.width - 12
-                        spacing: 14
+                    readonly property real availW: Math.max(220, width - 12)
+                    readonly property int cols: Math.max(1, Math.floor((availW + 14) / 234))
+                    cellWidth: Math.max(220, Math.floor((availW + 14) / cols))
+                    cellHeight: 182
 
-                        Repeater {
-                            model: modalRoot.filteredArtists
+                    delegate: Item {
+                        width: gridScroll.cellWidth
+                        height: gridScroll.cellHeight
+                        readonly property var artist: modelData || ({})
 
-                            delegate: Rectangle {
-                                id: artistCard
-                                width: Math.max(220, (artistsFlow.width - (Math.floor(artistsFlow.width / 234) - 1) * 14) / Math.floor(artistsFlow.width / 234))
-                                height: 168
-                                radius: 10
-                                color: cardMouse.containsMouse ? "#182133" : "#131A29"
-                                border.color: cardMouse.containsMouse ? "#F59E0B" : "#242E44"
-                                border.width: 1
+                        Rectangle {
+                            id: artistCard
+                            anchors.fill: parent
+                            anchors.rightMargin: 14
+                            anchors.bottomMargin: 14
+                            radius: 10
+                            color: cardMouse.containsMouse ? "#182133" : "#131A29"
+                            border.color: cardMouse.containsMouse ? "#F59E0B" : "#242E44"
+                            border.width: 1
 
-                                Behavior on color { ColorAnimation { duration: 120 } }
-                                Behavior on border.color { ColorAnimation { duration: 120 } }
+                            Behavior on color { ColorAnimation { duration: 120 } }
+                            Behavior on border.color { ColorAnimation { duration: 120 } }
 
-                                ColumnLayout {
-                                    anchors.fill: parent
-                                    anchors.margins: 12
-                                    spacing: 8
+                            ColumnLayout {
+                                anchors.fill: parent
+                                anchors.margins: 12
+                                spacing: 8
 
-                                    // Top Row: Avatar + Name + Service + Star Badge
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        spacing: 10
+                                // Top Row: Avatar + Name + Service + Star Badge
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 10
 
-                                        // Avatar Container
-                                        Rectangle {
-                                            width: 44; height: 44; radius: 8
-                                            color: "#1E273A"
-                                            border.color: "#334155"
-                                            border.width: 1
-                                            clip: true
+                                    // Avatar Container
+                                    Rectangle {
+                                        width: 44; height: 44; radius: 8
+                                        color: "#1E273A"
+                                        border.color: "#334155"
+                                        border.width: 1
+                                        clip: true
 
-                                            Image {
-                                                anchors.fill: parent
-                                                source: modelData.avatar || ""
-                                                fillMode: Image.PreserveAspectCrop
-                                                visible: modelData.avatar && status === Image.Ready
-                                            }
-
-                                            Text {
-                                                anchors.centerIn: parent
-                                                text: (modelData.name && modelData.name.length > 0) ? modelData.name.charAt(0).toUpperCase() : "?"
-                                                font.pixelSize: 18
-                                                font.bold: true
-                                                color: "#94A3B8"
-                                                visible: !modelData.avatar || !parent.children[0].visible
-                                            }
+                                        Image {
+                                            id: avatarImg
+                                            anchors.fill: parent
+                                            source: artist.avatar || ""
+                                            fillMode: Image.PreserveAspectCrop
+                                            asynchronous: true
+                                            visible: !!artist.avatar && status === Image.Ready
                                         }
 
-                                        // Name and Service Badge
-                                        ColumnLayout {
-                                            Layout.fillWidth: true
-                                            spacing: 3
-
-                                            RowLayout {
-                                                Layout.fillWidth: true
-                                                spacing: 4
-
-                                                Text {
-                                                    text: modelData.name || modelData.userId || "Artist"
-                                                    font.family: "Segoe UI, sans-serif"
-                                                    font.pixelSize: 13
-                                                    font.weight: 600
-                                                    color: "#F1F5F9"
-                                                    Layout.fillWidth: true
-                                                    elide: Text.ElideRight
-                                                }
-
-                                                Text {
-                                                    text: "⭐"
-                                                    font.pixelSize: 12
-                                                    ToolTip.visible: starMouse.containsMouse
-                                                    ToolTip.text: modalRoot.tr("tip_favorited_platform", "Favorited on %1 & Watchlist").replace("%1", modalRoot.providerDisplayName(modelData))
-
-                                                    MouseArea {
-                                                        id: starMouse
-                                                        anchors.fill: parent
-                                                        hoverEnabled: true
-                                                    }
-                                                }
-                                            }
-
-                                            // Provider & Service Badges
-                                            RowLayout {
-                                                spacing: 6
-                                                Layout.fillWidth: true
-
-                                                ProviderBadge {
-                                                    provider: modelData.provider || "pawchive"
-                                                    domain: modelData.domain || ""
-                                                    badgeHeight: 18
-                                                }
-
-                                                ServiceBadge {
-                                                    service: modelData.service || "patreon"
-                                                    badgeHeight: 18
-                                                }
-
-                                                Item { Layout.fillWidth: true }
-                                            }
+                                        Text {
+                                            anchors.centerIn: parent
+                                            text: (artist.name && artist.name.length > 0) ? artist.name.charAt(0).toUpperCase() : "?"
+                                            font.pixelSize: 18
+                                            font.bold: true
+                                            color: "#94A3B8"
+                                            visible: !avatarImg.visible
                                         }
                                     }
 
-                                    // Status info row
-                                    RowLayout {
+                                    // Name and Service Badge
+                                    ColumnLayout {
                                         Layout.fillWidth: true
-                                        spacing: 6
+                                        spacing: 3
 
-                                        Rectangle {
-                                            implicitWidth: statusText.implicitWidth + 12
-                                            implicitHeight: 20
-                                            radius: 5
-                                            color: (modelData.newPostCount && modelData.newPostCount > 0)
-                                                   ? "#2E1E05"
-                                                   : (modelData.status === "Synced" ? "#064E3B" : "#1E293B")
-                                            border.color: (modelData.newPostCount && modelData.newPostCount > 0)
-                                                   ? "#F59E0B"
-                                                   : (modelData.status === "Synced" ? "#10B981" : "#334155")
-                                            border.width: 1
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 4
 
                                             Text {
-                                                id: statusText
-                                                anchors.centerIn: parent
-                                                text: {
-                                                    if (modelData.newPostCount && modelData.newPostCount > 0) {
-                                                        return "🔔 " + modelData.newPostCount + " new post" + (modelData.newPostCount > 1 ? "s" : "") + (modelData.lastPostDate ? " since " + modelData.lastPostDate : "")
-                                                    } else if (modelData.status === "Synced") {
-                                                        return modelData.lastPostDate ? "✓ Synced (" + modelData.lastPostDate + ")" : "✓ Synced"
-                                                    } else {
-                                                        return "✦ Not downloaded"
-                                                    }
-                                                }
+                                                text: artist.name || artist.userId || "Artist"
                                                 font.family: "Segoe UI, sans-serif"
-                                                font.pixelSize: 10
+                                                font.pixelSize: 13
                                                 font.weight: 600
-                                                color: (modelData.newPostCount && modelData.newPostCount > 0)
-                                                       ? "#FCD34D"
-                                                       : (modelData.status === "Synced" ? "#A7F3D0" : "#94A3B8")
+                                                color: "#F1F5F9"
+                                                Layout.fillWidth: true
+                                                elide: Text.ElideRight
                                             }
-                                        }
-
-                                        Item { Layout.fillWidth: true }
-                                    }
-
-                                    Item { Layout.fillHeight: true }
-
-                                    // Actions Bottom Row
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        spacing: 8
-
-                                        // Browse Posts Button
-                                        Rectangle {
-                                            Layout.fillWidth: true
-                                            height: 28
-                                            radius: 6
-                                            color: browseBtnMouse.containsMouse ? "#2A364F" : "#1A2234"
-                                            border.color: browseBtnMouse.containsMouse ? "#38BDF8" : "#2E3B56"
-                                            border.width: 1
-
-                                            Row {
-                                                anchors.centerIn: parent
-                                                spacing: 5
-                                                Text { text: "👁️"; font.pixelSize: 11; anchors.verticalCenter: parent.verticalCenter }
-                                                Text {
-                                                    text: modalRoot.tr("btn_browse_posts", "Browse Posts")
-                                                    font.family: "Segoe UI, sans-serif"
-                                                    font.pixelSize: 11
-                                                    font.weight: 600
-                                                    color: "#E2E8F0"
-                                                    anchors.verticalCenter: parent.verticalCenter
-                                                }
-                                            }
-
-                                            MouseArea {
-                                                id: browseBtnMouse
-                                                anchors.fill: parent
-                                                hoverEnabled: true
-                                                cursorShape: Qt.PointingHandCursor
-                                                onClicked: {
-                                                    modalRoot.startBrowsingArtist(modelData)
-                                                }
-                                            }
-                                        }
-
-                                        // Download Button
-                                        Rectangle {
-                                            width: 32
-                                            height: 28
-                                            radius: 6
-                                            color: dlBtnMouse.containsMouse ? "#D97706" : "#242010"
-                                            border.color: "#F59E0B"
-                                            border.width: 1
-                                            ToolTip.visible: dlBtnMouse.containsMouse
-                                            ToolTip.text: "Download updates for this creator"
 
                                             Text {
-                                                anchors.centerIn: parent
-                                                text: "⬇️"
+                                                text: "⭐"
                                                 font.pixelSize: 12
-                                            }
+                                                ToolTip.visible: starMouse.containsMouse
+                                                ToolTip.text: modalRoot.tr("tip_favorited_platform", "Favorited on %1 & Watchlist").replace("%1", modalRoot.providerDisplayName(artist))
 
-                                            MouseArea {
-                                                id: dlBtnMouse
-                                                anchors.fill: parent
-                                                hoverEnabled: true
-                                                cursorShape: Qt.PointingHandCursor
-                                                onClicked: {
-                                                    modalRoot.openDownloadDialogForArtist(modelData)
+                                                MouseArea {
+                                                    id: starMouse
+                                                    anchors.fill: parent
+                                                    hoverEnabled: true
                                                 }
                                             }
+                                        }
+
+                                        // Provider & Service Badges
+                                        RowLayout {
+                                            spacing: 6
+                                            Layout.fillWidth: true
+
+                                            ProviderBadge {
+                                                provider: artist.provider || "pawchive"
+                                                domain: artist.domain || ""
+                                                badgeHeight: 18
+                                            }
+
+                                            ServiceBadge {
+                                                service: artist.service || "patreon"
+                                                badgeHeight: 18
+                                            }
+
+                                            Item { Layout.fillWidth: true }
                                         }
                                     }
                                 }
 
-                                MouseArea {
-                                    id: cardMouse
-                                    anchors.fill: parent
-                                    hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor
-                                    z: -1
-                                    onClicked: {
-                                        modalRoot.startBrowsingArtist(modelData)
+                                // Status info row
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 6
+
+                                    Rectangle {
+                                        implicitWidth: statusText.implicitWidth + 12
+                                        implicitHeight: 20
+                                        radius: 5
+                                        color: (artist.newPostCount && artist.newPostCount > 0)
+                                               ? "#2E1E05"
+                                               : (artist.status === "Synced" ? "#064E3B" : "#1E293B")
+                                        border.color: (artist.newPostCount && artist.newPostCount > 0)
+                                               ? "#F59E0B"
+                                               : (artist.status === "Synced" ? "#10B981" : "#334155")
+                                        border.width: 1
+
+                                        Text {
+                                            id: statusText
+                                            anchors.centerIn: parent
+                                            text: {
+                                                if (artist.newPostCount && artist.newPostCount > 0) {
+                                                    return "🔔 " + artist.newPostCount + " new post" + (artist.newPostCount > 1 ? "s" : "") + (artist.lastPostDate ? " since " + artist.lastPostDate : "")
+                                                } else if (artist.status === "Synced") {
+                                                    return artist.lastPostDate ? "✓ Synced (" + artist.lastPostDate + ")" : "✓ Synced"
+                                                } else {
+                                                    return "✦ Not downloaded"
+                                                }
+                                            }
+                                            font.family: "Segoe UI, sans-serif"
+                                            font.pixelSize: 10
+                                            font.weight: 600
+                                            color: (artist.newPostCount && artist.newPostCount > 0)
+                                                   ? "#FCD34D"
+                                                   : (artist.status === "Synced" ? "#A7F3D0" : "#94A3B8")
+                                        }
                                     }
+
+                                    Item { Layout.fillWidth: true }
+                                }
+
+                                Item { Layout.fillHeight: true }
+
+                                // Actions Bottom Row
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 8
+
+                                    // Browse Posts Button
+                                    Rectangle {
+                                        Layout.fillWidth: true
+                                        height: 28
+                                        radius: 6
+                                        color: browseBtnMouse.containsMouse ? "#2A364F" : "#1A2234"
+                                        border.color: browseBtnMouse.containsMouse ? "#38BDF8" : "#2E3B56"
+                                        border.width: 1
+
+                                        Row {
+                                            anchors.centerIn: parent
+                                            spacing: 5
+                                            Text { text: "👁️"; font.pixelSize: 11; anchors.verticalCenter: parent.verticalCenter }
+                                            Text {
+                                                text: modalRoot.tr("btn_browse_posts", "Browse Posts")
+                                                font.family: "Segoe UI, sans-serif"
+                                                font.pixelSize: 11
+                                                font.weight: 600
+                                                color: "#E2E8F0"
+                                                anchors.verticalCenter: parent.verticalCenter
+                                            }
+                                        }
+
+                                        MouseArea {
+                                            id: browseBtnMouse
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                modalRoot.startBrowsingArtist(artist)
+                                            }
+                                        }
+                                    }
+
+                                    // Download Button
+                                    Rectangle {
+                                        width: 32
+                                        height: 28
+                                        radius: 6
+                                        color: dlBtnMouse.containsMouse ? "#D97706" : "#242010"
+                                        border.color: "#F59E0B"
+                                        border.width: 1
+                                        ToolTip.visible: dlBtnMouse.containsMouse
+                                        ToolTip.text: "Download updates for this creator"
+
+                                        Text {
+                                            anchors.centerIn: parent
+                                            text: "⬇️"
+                                            font.pixelSize: 12
+                                        }
+
+                                        MouseArea {
+                                            id: dlBtnMouse
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                modalRoot.openDownloadDialogForArtist(artist)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            MouseArea {
+                                id: cardMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                z: -1
+                                onClicked: {
+                                    modalRoot.startBrowsingArtist(artist)
                                 }
                             }
                         }

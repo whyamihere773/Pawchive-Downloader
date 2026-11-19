@@ -215,22 +215,7 @@ Popup {
             icon: "💬"
             label: consoleView.tr("menu_copy_message_only", "Copy Message Only")
             shortcut: "Shift+C"
-            onClicked: {
-                var indices = Object.keys(consoleView.selectedIndicesMap).map(Number)
-                if (indices.length === 1 && consoleView.logModel) {
-                    var idx = indices[0]
-                    var full = consoleView.logModel.getSelectedText([idx])
-                    var parts = full.split("] ")
-                    var msgOnly = parts.length >= 3 ? parts.slice(2).join("] ") : (consoleView.contextRowMessage || full)
-                    if (typeof appBridge !== "undefined" && appBridge && appBridge.copyToClipboard) {
-                        appBridge.copyToClipboard(msgOnly)
-                    }
-                    clipHelper.text = msgOnly
-                    clipHelper.selectAll()
-                    clipHelper.copy()
-                    consoleView.showToast(consoleView.tr("toast_copied_message", "Copied message to clipboard!"))
-                }
-            }
+            onClicked: consoleView.copyMessageOnly()
         }
 
         // 3. Copy All Visible Logs (when multi-row selection active)
@@ -239,20 +224,7 @@ Popup {
             icon: "📑"
             label: consoleView.tr("menu_copy_all_logs", "Copy All Logs") + " (" + logContextMenu.totalCount + ")"
             shortcut: "Ctrl+Shift+C"
-            onClicked: {
-                if (consoleView.logModel) {
-                    var textToCopy = consoleView.logModel.getAllText()
-                    if (textToCopy) {
-                        if (typeof appBridge !== "undefined" && appBridge && appBridge.copyToClipboard) {
-                            appBridge.copyToClipboard(textToCopy)
-                        }
-                        clipHelper.text = textToCopy
-                        clipHelper.selectAll()
-                        clipHelper.copy()
-                        consoleView.showToast(consoleView.tr("toast_copied_all", "Copied all logs to clipboard!"))
-                    }
-                }
-            }
+            onClicked: consoleView.copyAllLogs()
         }
 
         // Divider
