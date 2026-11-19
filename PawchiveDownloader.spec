@@ -118,6 +118,23 @@ hidden_imports = [
     'qrcode',
 ]
 
+# Automatically register all internal submodules across core/, bridge/, and services/ (Rule 1 plug-and-play)
+for _pkg_dir in ('core', 'bridge', 'services'):
+    _pkg_root = os.path.join(project_root, _pkg_dir)
+    if not os.path.isdir(_pkg_root):
+        continue
+    for _root, _dirs, _files in os.walk(_pkg_root):
+        _dirs[:] = [d for d in _dirs if d != '__pycache__']
+        for _fn in _files:
+            if not _fn.endswith('.py'):
+                continue
+            _rel = os.path.relpath(os.path.join(_root, _fn), project_root)
+            _mod = _rel[:-3].replace(os.sep, '.')
+            if _mod.endswith('.__init__'):
+                _mod = _mod[:-9]
+            if _mod and _mod not in hidden_imports:
+                hidden_imports.append(_mod)
+
 # Optional application icon
 icon_path = os.path.join(project_root, 'assets', 'icon.ico')
 if not os.path.exists(icon_path):

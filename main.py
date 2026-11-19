@@ -52,6 +52,14 @@ from core.logger import logger
 logger.start_session()
 logger.install_crash_handlers()
 
+# Dedicate the GUI main thread to Performance Cores (P-Cores) & above-normal priority (AGENTS.md Rule 2)
+try:
+    from core.thread_affinity import prioritize_main_thread_pcore
+    _affinity_res = prioritize_main_thread_pcore()
+    logger.debug(f"[MainThreadAffinity] {_affinity_res.get('detail', '')}", category="system")
+except Exception:
+    pass
+
 from PySide6.QtWidgets import QApplication  # noqa: E402
 from PySide6.QtQml import QQmlApplicationEngine  # noqa: E402
 from PySide6.QtCore import QUrl, QTimer, QtMsgType, qInstallMessageHandler  # noqa: E402

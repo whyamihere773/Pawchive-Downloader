@@ -212,16 +212,20 @@ class AppLogger:
                 last = f.read().strip()
             if not last or not os.path.isfile(last):
                 return ""
-            crash = last[:-4] + ".crash.log"
-            if os.path.isfile(crash) and os.path.getsize(crash) == 0:
-                os.remove(crash)        # the unused placeholder of a session that didn't crash hard
+            crash = ""
+            for cand in (last[:-4] + "_CRASH.log", last[:-4] + ".crash.log"):
+                if os.path.isfile(cand):
+                    if os.path.getsize(cand) == 0:
+                        os.remove(cand)        # the unused placeholder of a session that didn't crash hard
+                    elif not crash:
+                        crash = cand
             with open(last, "rb") as f:
                 f.seek(max(0, os.path.getsize(last) - 4096))
                 tail = f.read().decode("utf-8", "replace")
             if SESSION_END_MARKER in tail:
                 return ""
             note = f"⚠ The previous session ({os.path.basename(os.path.dirname(last))}/{os.path.basename(last)}) didn't close normally: it crashed, was force-closed, or the PC shut down."
-            if os.path.isfile(crash) and os.path.getsize(crash) > 0:
+            if crash and os.path.isfile(crash) and os.path.getsize(crash) > 0:
                 note += f" Crash details: {os.path.basename(crash)}"
             return note
         except (OSError, ValueError):
@@ -231,20 +235,43 @@ class AppLogger:
         try:
             with open(os.path.join(root, ".last_session"), "w", encoding="utf-8") as f:
                 f.write(path)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except OSError:
+                    pass
         except OSError:
             pass
 
     # ── Hard crashes (Python/Qt dying in native code) ───────────────────────
     def _enable_fault_dump(self) -> None:
-        """A hard crash (segfault, abort) can't run Python code, so faulthandler writes the stack of
-        every thread straight into <session>.crash.log. The file is removed again after a normal exit."""
+        """A hard crash (SIGSEGV, SIGABRT, SIGILL, SIGFPE) can't run Python code, so faulthandler
+        writes the stack of every thread straight into <session>_CRASH.log. Removed on clean exit."""
         try:
             import faulthandler
-            self._crash_path = self._current_log_path[:-4] + ".crash.log"
+            self._crash_path = self._current_log_path[:-4] + "_CRASH.log"
             self._crash_file = open(self._crash_path, "w", encoding="utf-8")
             faulthandler.enable(file=self._crash_file, all_threads=True)
         except Exception:
             self._crash_path, self._crash_file = "", None
+
+    def _write_crash_dump(self, title: str, tb_text: str) -> None:
+        """Atomically persist an unhandled fatal exception into *_CRASH.log with flush + fsync."""
+        if not self._crash_path:
+            return
+        try:
+            with self._file_lock:
+                stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                payload = f"=== {title} ({stamp}) ===\n{redact(tb_text)}\n"
+                with open(self._crash_path, "a", encoding="utf-8", errors="replace") as cf:
+                    cf.write(payload)
+                    cf.flush()
+                    try:
+                        os.fsync(cf.fileno())
+                    except OSError:
+                        pass
+        except Exception:
+            pass
 
     def _close_fault_dump(self, keep: bool) -> None:
         if not self._crash_file:
@@ -253,8 +280,9 @@ class AppLogger:
             import faulthandler
             faulthandler.disable()
             self._crash_file.close()
-            # Only an empty file, or noise from errors the app survived, is removed after a clean exit
-            if not keep and os.path.exists(self._crash_path):
+            # Keep non-empty crash dumps even if the app survived an unhandled background exception
+            has_content = os.path.exists(self._crash_path) and os.path.getsize(self._crash_path) > 0
+            if not keep and not has_content and os.path.exists(self._crash_path):
                 os.remove(self._crash_path)
         except Exception:
             pass
@@ -263,20 +291,25 @@ class AppLogger:
     # ── Errors nobody caught ────────────────────────────────────────────────
     def install_crash_handlers(self) -> None:
         """Log every error nobody caught (main thread, background threads, Qt slots, __del__)
-        with its full traceback. Release builds have no console, so without this they vanish."""
+        with its full traceback and write a dedicated *_CRASH.log dump."""
         def _excepthook(exc_type, exc, tb):
             if issubclass(exc_type, KeyboardInterrupt):
                 sys.__excepthook__(exc_type, exc, tb)
                 return
-            self.log(f"Unexpected error: {exc_type.__name__}: {exc}", LogLevel.ERROR, "crash",
-                     details="".join(traceback.format_exception(exc_type, exc, tb)))
+            tb_text = "".join(traceback.format_exception(exc_type, exc, tb))
+            self._write_crash_dump(f"Unhandled Main Thread Exception: {exc_type.__name__}", tb_text)
+            self.log(f"Unexpected error: {exc_type.__name__}: {exc}", LogLevel.ERROR, "crash", details=tb_text)
+            self.flush()
 
         def _thread_hook(args):
             if args.exc_type is SystemExit:
                 return
             name = args.thread.name if args.thread else "background task"
+            tb_text = "".join(traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback))
+            self._write_crash_dump(f"Unhandled Thread Exception ({name}): {args.exc_type.__name__}", tb_text)
             self.log(f"Unexpected error in '{name}': {args.exc_type.__name__}: {args.exc_value}", LogLevel.ERROR, "crash",
-                     details="".join(traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback)))
+                     details=tb_text)
+            self.flush()
 
         def _unraisable_hook(u):
             where = f" in {u.object!r}" if u.object is not None else ""
@@ -366,6 +399,11 @@ class AppLogger:
             with self._file_lock:
                 with open(self._current_log_path, "a", encoding="utf-8", errors="replace") as f:
                     f.write(text)
+                    f.flush()
+                    try:
+                        os.fsync(f.fileno())
+                    except OSError:
+                        pass
         except Exception:
             pass
 

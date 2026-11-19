@@ -12486,7 +12486,7 @@ class AppBridge(QObject):
                     "message": f"Operations are permanently disabled on the Users directory ({drive_letter}\\Users) to protect user account data."
                 }
 
-            # Check if target is directly a User profile root (e.g. C:\Users\silvi or C:\Users\Public)
+            # Check if target is directly a User profile root (e.g. C:\Users\User or C:\Users\Public)
             if os.path.normcase(os.path.dirname(norm)) == users_dir_case:
                 return {
                     "is_blocked": True,
