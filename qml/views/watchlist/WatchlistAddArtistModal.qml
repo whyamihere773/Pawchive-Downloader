@@ -18,8 +18,8 @@ Item {
     }
     anchors.fill: parent
     z: 9999
-    visible: addArtistModal.view.showAddDialog
-    opacity: visible ? 1.0 : 0.0
+    opacity: addArtistModal.view.showAddDialog ? 1.0 : 0.0
+    visible: opacity > 0.01
     Behavior on opacity { NumberAnimation { duration: 180 } }
 
     // Backdrop
@@ -29,6 +29,7 @@ Item {
 
         MouseArea {
             anchors.fill: parent
+            enabled: addArtistModal.view.showAddDialog
             onClicked: {
                 addErrorText.text = ""
                 addArtistModal.view.showAddDialog = false

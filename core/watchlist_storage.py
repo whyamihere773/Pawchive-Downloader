@@ -238,12 +238,13 @@ class WatchlistStorageMixin:
             if full:
                 self._write_all = True
             self._save_gen += 1
-        if not self.background_saves:
+            bg = bool(self.background_saves)
+            if bg and (self._writer is None or not self._writer.is_alive()):
+                self._writer = threading.Thread(target=self._writer_loop, name="WatchlistWriter", daemon=True)
+                self._writer.start()
+        if not bg:
             self._write_pending()
             return
-        if self._writer is None or not self._writer.is_alive():
-            self._writer = threading.Thread(target=self._writer_loop, name="WatchlistWriter", daemon=True)
-            self._writer.start()
         self._save_wanted.set()
 
     def flush(self) -> None:

@@ -140,13 +140,32 @@ class WatchlistManager(WatchlistStorageMixin, WatchlistPostsMixin):
                         from core.filter_engine import FilterEngine
                         clean_c = FilterEngine.clean_filesystem_text(creator_name, max_len=80, fallback="creator")
                         new_dir = os.path.join(parent_dir, creator_folder(clean_c, service))
-                        if os.path.exists(existing.download_dir) and not os.path.exists(new_dir):
+                        old_dir = existing.download_dir
+                        if os.path.exists(old_dir) and not os.path.exists(new_dir):
                             try:
-                                os.rename(existing.download_dir, new_dir)
+                                os.rename(old_dir, new_dir)
                                 logger.info(f"Auto-migrated folder '{base}' -> '{os.path.basename(new_dir)}'", category="watchlist")
                             except Exception as e:
                                 logger.debug(f"Could not rename folder on disk: {e}", category="watchlist")
                         existing.download_dir = new_dir
+                        if hasattr(existing, "download_dirs") and isinstance(existing.download_dirs, list):
+                            old_key = os.path.normcase(os.path.normpath(old_dir))
+                            norm_new = os.path.normpath(new_dir)
+                            new_key = os.path.normcase(norm_new)
+                            updated_dirs = []
+                            seen_keys = set()
+                            for d in existing.download_dirs:
+                                if not d:
+                                    continue
+                                d_key = os.path.normcase(os.path.normpath(d))
+                                rep = norm_new if d_key == old_key else d
+                                rep_key = new_key if d_key == old_key else d_key
+                                if rep_key not in seen_keys:
+                                    seen_keys.add(rep_key)
+                                    updated_dirs.append(rep)
+                            if new_key not in seen_keys:
+                                updated_dirs.insert(0, norm_new)
+                            existing.download_dirs = updated_dirs
                 elif download_dir and not existing.download_dir:
                     existing.download_dir = download_dir
             elif download_dir and not existing.download_dir:
@@ -336,9 +355,11 @@ class WatchlistManager(WatchlistStorageMixin, WatchlistPostsMixin):
 
     def set_auto_check(self, user_id: str, service: str, enabled: bool):
         """Toggle the per-entry auto_check flag."""
-        existing = self._find(user_id, service)
+        with self._lock:
+            existing = self._find(user_id, service)
+            if existing:
+                existing.auto_check = enabled
         if existing:
-            existing.auto_check = enabled
             self.save(existing)
 
     def set_all_auto_check(self, enabled: bool) -> int:
@@ -422,8 +443,12 @@ class WatchlistManager(WatchlistStorageMixin, WatchlistPostsMixin):
 
     def add_download_dir(self, user_id: str, service: str, new_dir: str) -> bool:
         """Add a path to an artist's download_dirs list if not present."""
-        existing = self._find(user_id, service)
-        if existing and new_dir:
+        if not new_dir:
+            return False
+        with self._lock:
+            existing = self._find(user_id, service)
+            if not existing:
+                return False
             norm = os.path.normpath(new_dir)
             if not hasattr(existing, "download_dirs") or not isinstance(existing.download_dirs, list):
                 existing.download_dirs = [existing.download_dir] if existing.download_dir else []
@@ -431,32 +456,35 @@ class WatchlistManager(WatchlistStorageMixin, WatchlistPostsMixin):
                 existing.download_dirs.append(norm)
             if not existing.download_dir:
                 existing.download_dir = norm
-            self.save(existing)
-            return True
-        return False
+        self.save(existing)
+        return True
 
     def remove_download_dir(self, user_id: str, service: str, target_dir: str) -> bool:
         """Remove a path from an artist's download_dirs list (e.g. when consolidated by user)."""
-        existing = self._find(user_id, service)
-        if existing and target_dir:
+        if not target_dir:
+            return False
+        with self._lock:
+            existing = self._find(user_id, service)
+            if not existing:
+                return False
             norm = os.path.normpath(target_dir).lower()
             if hasattr(existing, "download_dirs") and isinstance(existing.download_dirs, list):
                 existing.download_dirs = [d for d in existing.download_dirs if os.path.normpath(d).lower() != norm]
             if existing.download_dir and os.path.normpath(existing.download_dir).lower() == norm:
                 existing.download_dir = existing.download_dirs[0] if existing.download_dirs else ""
-            self.save(existing)
-            return True
-        return False
+        self.save(existing)
+        return True
 
     def get_download_dirs(self, user_id: str, service: str) -> List[str]:
         """Returns all registered paths for an artist."""
-        existing = self._find(user_id, service)
-        if existing:
-            dirs = list(getattr(existing, "download_dirs", []) or [])
-            if existing.download_dir and existing.download_dir not in dirs:
-                dirs.insert(0, existing.download_dir)
-            return dirs
-        return []
+        with self._lock:
+            existing = self._find(user_id, service)
+            if existing:
+                dirs = list(getattr(existing, "download_dirs", []) or [])
+                if existing.download_dir and existing.download_dir not in dirs:
+                    dirs.insert(0, existing.download_dir)
+                return dirs
+            return []
 
     @staticmethod
     def normalize_date(s: str) -> Optional[str]:
@@ -527,57 +555,59 @@ class WatchlistManager(WatchlistStorageMixin, WatchlistPostsMixin):
         Normalizes any input format into canonical 'YYYY-MM-DD' (or '' if cleared).
         Returns (success: bool, normalized_date_or_error: str).
         """
-        existing = self._find(user_id, service)
-        if not existing:
-            return False, "Artist not found in watchlist"
-
         normalized = self.normalize_date(raw_date_str)
-        if normalized is None:
-            return False, f"Invalid date format: '{raw_date_str}'. Please use YYYY-MM-DD (e.g. 2024-05-18), DD/MM/YYYY, or Month DD, YYYY."
-
-        existing.last_post_date = normalized
-        existing.last_post_id = ""  # Reset cutoff post id
-        existing.cutoff_day_ids = []
-        existing.new_post_count = 0
-        existing.cached_new_posts = []
-        self.save()
+        with self._lock:
+            existing = self._find(user_id, service)
+            if not existing:
+                return False, "Artist not found in watchlist"
+            if normalized is None:
+                return False, f"Invalid date format: '{raw_date_str}'. Please use YYYY-MM-DD (e.g. 2024-05-18), DD/MM/YYYY, or Month DD, YYYY."
+            existing.last_post_date = normalized
+            existing.last_post_id = ""  # Reset cutoff post id
+            existing.cutoff_day_ids = []
+            existing.new_post_count = 0
+            existing.cached_new_posts = []
+            cname = existing.creator_name
+        self.save(existing)
         logger.info(
-            f"Watchlist: updated last download date for {existing.creator_name!r} [{service}] to {normalized or 'Never'}.",
+            f"Watchlist: updated last download date for {cname!r} [{service}] to {normalized or 'Never'}.",
             category="watchlist"
         )
         return True, normalized
-
 
     def ignore_post(self, user_id: str, service: str, post_id: str) -> bool:
         """Add post_id to ignored list for an entry."""
         pid = str(post_id).strip()
         if not pid:
             return False
-        existing = self._find(user_id, service)
-        if existing:
+        with self._lock:
+            existing = self._find(user_id, service)
+            if not existing:
+                return False
             if pid not in existing.ignored_post_ids:
                 existing.ignored_post_ids.append(pid)
             existing.cached_new_posts = [p for p in existing.cached_new_posts if str(p.get("id")) != pid]
             existing.new_post_count = len(existing.cached_new_posts)
-            self.save(existing)
-            return True
-        return False
+        self.save(existing)
+        return True
 
     def unignore_post(self, user_id: str, service: str, post_id: str) -> bool:
         """Remove post_id from ignored list for an entry."""
         pid = str(post_id).strip()
-        existing = self._find(user_id, service)
-        if existing and pid in existing.ignored_post_ids:
+        with self._lock:
+            existing = self._find(user_id, service)
+            if not (existing and pid in existing.ignored_post_ids):
+                return False
             existing.ignored_post_ids.remove(pid)
-            self.save(existing)
-            return True
-        return False
+        self.save(existing)
+        return True
 
     def unignore_all(self, user_id: str, service: str) -> bool:
         """Clear all ignored posts for an entry."""
-        existing = self._find(user_id, service)
-        if existing and existing.ignored_post_ids:
+        with self._lock:
+            existing = self._find(user_id, service)
+            if not (existing and existing.ignored_post_ids):
+                return False
             existing.ignored_post_ids = []
-            self.save(existing)
-            return True
-        return False
+        self.save(existing)
+        return True

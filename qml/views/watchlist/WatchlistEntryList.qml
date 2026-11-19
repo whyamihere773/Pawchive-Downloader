@@ -502,6 +502,7 @@ SmoothListView {
                         anchors.centerIn: parent
                         spacing: 5
                         Text {
+                            id: checkArtistIcon
                             text: entryCard.isArtistChecking ? "\u21BB" : "\uD83D\uDD0D"
                             font.pixelSize: entryCard.isArtistChecking ? 12 : 10
                             color: entryCard.isArtistChecking ? "#C4B5FD" : "#A78BFA"
@@ -511,6 +512,7 @@ SmoothListView {
                                 duration: 800
                                 loops: Animation.Infinite
                                 running: entryCard.isArtistChecking
+                                onRunningChanged: if (!running) checkArtistIcon.rotation = 0
                             }
                         }
                         Text {

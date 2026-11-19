@@ -84,7 +84,7 @@ def _app_bridge_mod():
 
 
 class WatchlistEntriesMixin(AppBridgeSignalsMixin):
-    @Slot(str, result=bool)
+    @Slot(str, str)
     @Slot(str, str, str)
     def addArtistToWatchlistAsync(self, request_id: str, url: str, custom_download_dir: str = ""):
         """addArtistToWatchlist in the background (answer: asyncResultReady(request_id, bool)).
@@ -92,6 +92,7 @@ class WatchlistEntriesMixin(AppBridgeSignalsMixin):
         when the site was slow."""
         self._run_async(request_id, self.addArtistToWatchlist, url, custom_download_dir)
 
+    @Slot(str, result=bool)
     @Slot(str, str, result=bool)
     def addArtistToWatchlist(self, url: str, custom_download_dir: str = "") -> bool:
         """

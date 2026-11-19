@@ -54,9 +54,10 @@ class WatchlistPostsMixin:
             known_day_ids.add(cutoff_id)
 
         # Auto-heal creator name if missing, numeric, or if duplicate names exist across distinct accounts
+        snapshot_entries = self.get_all() if hasattr(self, "get_all") else list(self.entries)
         has_duplicate_name = any(
             e is not entry and e.service.lower() == entry.service.lower() and e.creator_name and e.creator_name.lower() == entry.creator_name.lower()
-            for e in self.entries
+            for e in snapshot_entries
         )
         if (entry.creator_name == entry.user_id or not entry.creator_name or has_duplicate_name) and hasattr(api_client, "resolve_creator_name"):
             try:
@@ -195,11 +196,21 @@ class WatchlistPostsMixin:
 
             current_page += 1
 
-        # Sort oldest first for ordered downloading
-        new_posts.sort(key=lambda p: (
-            p.get("published") or p.get("added") or "0",
-            str(p.get("id", "0"))
-        ))
+        # Sort oldest first for ordered downloading (normalize mixed int/float timestamps and ISO strings)
+        def _post_sort_key(p: Dict[str, Any]):
+            raw_d = p.get("published") or p.get("added") or ""
+            if isinstance(raw_d, (int, float)):
+                try:
+                    d_norm = datetime.datetime.fromtimestamp(raw_d).strftime("%Y-%m-%dT%H:%M:%S")
+                except Exception:
+                    d_norm = "0"
+            else:
+                d_norm = str(raw_d).strip() or "0"
+            raw_id = str(p.get("id", "0") or "0")
+            id_key = (0, int(raw_id), raw_id) if raw_id.isdigit() else (1, 0, raw_id)
+            return (d_norm, id_key)
+
+        new_posts.sort(key=_post_sort_key)
 
         # Filter out ignored posts and update cached_new_posts
         ignored_set = set(str(pid) for pid in getattr(entry, "ignored_post_ids", []))
@@ -222,7 +233,8 @@ class WatchlistPostsMixin:
             return unique or (1 if f else len(atts))
 
         data = []
-        for e in self.entries:
+        snapshot_entries = self.get_all() if hasattr(self, "get_all") else list(self.entries)
+        for e in snapshot_entries:
             data.append({
                 "url": e.url,
                 "creatorName": e.creator_name,

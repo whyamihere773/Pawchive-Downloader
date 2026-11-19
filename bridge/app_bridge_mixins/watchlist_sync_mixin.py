@@ -412,7 +412,6 @@ class WatchlistSyncMixin(AppBridgeSignalsMixin):
             return pick_creator_folder(fallback_dir, clean_c, service)
         return os.path.dirname(sample_path) if sample_path else pick_creator_folder(self._download_dir, clean_c, service)
 
-    @Slot(str, str)
     def _get_effective_watchlist_options(self, entry) -> FilterOptions:
         """
         Determines the FilterOptions to use for a watchlist download:

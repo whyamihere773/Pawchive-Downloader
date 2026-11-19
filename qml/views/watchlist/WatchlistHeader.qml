@@ -450,6 +450,7 @@ Rectangle {
                 spacing: 5
 
                 Text {
+                    id: checkAllIcon
                     anchors.verticalCenter: parent.verticalCenter
                     text: headerRect.view.isChecking ? "\u21BB" : "\uD83D\uDD0D"
                     font.pixelSize: headerRect.view.isChecking ? 13 : 11
@@ -460,6 +461,7 @@ Rectangle {
                         duration: 900
                         loops: Animation.Infinite
                         running: headerRect.view.isChecking
+                        onRunningChanged: if (!running) checkAllIcon.rotation = 0
                     }
                 }
                 Text {
