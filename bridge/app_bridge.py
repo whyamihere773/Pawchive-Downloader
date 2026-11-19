@@ -124,6 +124,16 @@ class AppBridge(
         init_bridge_runtime_and_signals(self)
 
     @Slot()
+    def scheduleSaveSettings(self):
+        """Debounced settings save on the GUI thread (avoids synchronous os.fsync() stalls on toggles).
+        Flushed synchronously by onAppClosing() and restartApplication()."""
+        timer = getattr(self, "_settings_save_timer", None)
+        if timer is not None:
+            timer.start()
+        else:
+            self.saveSettings()
+
+    @Slot()
     @Slot(bool)
     def saveSettings(self, explicit_save: bool = False):
         settings_dict = {
@@ -155,6 +165,8 @@ class AppBridge(
             "webp_quality": self._webp_quality,
             "keep_duplicates": self._keep_duplicates,
             "scan_content_images": self._scan_content_images,
+            "auto_sync_known": self._auto_sync_known,
+            "show_console_links": self._show_console_links,
             "download_dms": self._download_dms,
             "download_delay": self._download_delay,
             "save_post_metadata": self._save_post_metadata,

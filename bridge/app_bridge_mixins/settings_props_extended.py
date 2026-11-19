@@ -104,7 +104,7 @@ class SettingsPropsExtendedMixin(AppBridgeSignalsMixin):
         if self._date_prefix != val:
             self._date_prefix = val
             self.datePrefixChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(bool, notify=AppBridgeSignalsMixin.siteInFolderNameChanged)
     def siteInFolderName(self) -> bool:
@@ -116,7 +116,7 @@ class SettingsPropsExtendedMixin(AppBridgeSignalsMixin):
         if folder_naming.include_service != bool(val):
             folder_naming.include_service = bool(val)
             self.siteInFolderNameChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(bool, notify=AppBridgeSignalsMixin.fileIndexPrefixChanged)
     def fileIndexPrefix(self) -> bool:
@@ -127,7 +127,7 @@ class SettingsPropsExtendedMixin(AppBridgeSignalsMixin):
         if self._file_index_prefix != val:
             self._file_index_prefix = val
             self.fileIndexPrefixChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(bool, notify=AppBridgeSignalsMixin.separateFoldersByKnownChanged)
     def separateFoldersByKnown(self) -> bool:
@@ -163,7 +163,7 @@ class SettingsPropsExtendedMixin(AppBridgeSignalsMixin):
         if self._adaptive_threading != val:
             self._adaptive_threading = val
             self.adaptiveThreadingChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(bool, notify=AppBridgeSignalsMixin.threadsLockedChanged)
     def threadsLocked(self) -> bool:
@@ -180,7 +180,7 @@ class SettingsPropsExtendedMixin(AppBridgeSignalsMixin):
                 self.adaptiveThreading = False
             if hasattr(self.downloader, "current_options") and self.downloader.current_options:
                 self.downloader.current_options.threads_locked = val
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(bool, notify=AppBridgeSignalsMixin.autoRetryAtEndChanged)
     def autoRetryAtEnd(self) -> bool:
@@ -191,7 +191,7 @@ class SettingsPropsExtendedMixin(AppBridgeSignalsMixin):
         if self._auto_retry_at_end != val:
             self._auto_retry_at_end = val
             self.autoRetryAtEndChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
             if hasattr(self.downloader, "current_options") and self.downloader.current_options:
                 self.downloader.current_options.auto_retry_at_end = val
             if val and not self._is_downloading and self._has_failed_tasks():
@@ -220,7 +220,7 @@ class SettingsPropsExtendedMixin(AppBridgeSignalsMixin):
         if self._skip_retry_404 != val:
             self._skip_retry_404 = val
             self.skipRetry404Changed.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
             if hasattr(self.downloader, "current_options") and self.downloader.current_options:
                 self.downloader.current_options.skip_retry_404 = val
             if val:
@@ -259,7 +259,7 @@ class SettingsPropsExtendedMixin(AppBridgeSignalsMixin):
         if self._filename_style != val:
             self._filename_style = val
             self.filenameStyleChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(str, notify=AppBridgeSignalsMixin.filenameTemplateChanged)
     def filenameTemplate(self) -> str:
@@ -270,7 +270,7 @@ class SettingsPropsExtendedMixin(AppBridgeSignalsMixin):
         if self._filename_template != val:
             self._filename_template = val
             self.filenameTemplateChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(bool, notify=AppBridgeSignalsMixin.postSelectionLoadingChanged)
     def postSelectionLoading(self) -> bool:
@@ -332,7 +332,7 @@ class SettingsPropsExtendedMixin(AppBridgeSignalsMixin):
             from services import update_service as us
             us.apply_proxy(val)
             self.proxyUrlChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(bool, notify=AppBridgeSignalsMixin.bandwidthLimitEnabledChanged)
     def bandwidthLimitEnabled(self) -> bool:
@@ -346,7 +346,7 @@ class SettingsPropsExtendedMixin(AppBridgeSignalsMixin):
             bandwidth_limiter.update(self._bandwidth_limit_enabled, self._bandwidth_limit_value, self._bandwidth_limit_unit)
             self.bandwidthLimitEnabledChanged.emit()
             self.bandwidthLimitSummaryChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(float, notify=AppBridgeSignalsMixin.bandwidthLimitValueChanged)
     def bandwidthLimitValue(self) -> float:
@@ -363,7 +363,7 @@ class SettingsPropsExtendedMixin(AppBridgeSignalsMixin):
             bandwidth_limiter.update(self._bandwidth_limit_enabled, self._bandwidth_limit_value, self._bandwidth_limit_unit)
             self.bandwidthLimitValueChanged.emit()
             self.bandwidthLimitSummaryChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(str, notify=AppBridgeSignalsMixin.bandwidthLimitUnitChanged)
     def bandwidthLimitUnit(self) -> str:
@@ -377,7 +377,7 @@ class SettingsPropsExtendedMixin(AppBridgeSignalsMixin):
             bandwidth_limiter.update(self._bandwidth_limit_enabled, self._bandwidth_limit_value, self._bandwidth_limit_unit)
             self.bandwidthLimitUnitChanged.emit()
             self.bandwidthLimitSummaryChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(str, notify=AppBridgeSignalsMixin.bandwidthLimitSummaryChanged)
     def bandwidthLimitSummary(self) -> str:
@@ -396,7 +396,7 @@ class SettingsPropsExtendedMixin(AppBridgeSignalsMixin):
         self.bandwidthLimitValueChanged.emit()
         self.bandwidthLimitUnitChanged.emit()
         self.bandwidthLimitSummaryChanged.emit()
-        self.saveSettings()
+        self.scheduleSaveSettings()
 
     @Property(int, notify=AppBridgeSignalsMixin.threadsCountChanged)
     def threadsCount(self) -> int:
@@ -558,7 +558,7 @@ class SettingsPropsExtendedMixin(AppBridgeSignalsMixin):
         if self._language != val:
             self._language = val
             self.languageChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(float, notify=AppBridgeSignalsMixin.uiScaleChanged)
     def uiScale(self) -> float:
@@ -610,6 +610,30 @@ class SettingsPropsExtendedMixin(AppBridgeSignalsMixin):
             logger.error(f"Failed to restart application: {e}", category="system")
         QTimer.singleShot(150, QCoreApplication.quit)
 
+    @Property(bool, notify=AppBridgeSignalsMixin.autoSyncKnownChanged)
+    def autoSyncKnown(self) -> bool:
+        return bool(getattr(self, "_auto_sync_known", True))
+
+    @autoSyncKnown.setter
+    def autoSyncKnown(self, val: bool):
+        b = bool(val)
+        if getattr(self, "_auto_sync_known", True) != b:
+            self._auto_sync_known = b
+            self.autoSyncKnownChanged.emit()
+            self.scheduleSaveSettings()
+
+    @Property(bool, notify=AppBridgeSignalsMixin.showConsoleLinksChanged)
+    def showConsoleLinks(self) -> bool:
+        return bool(getattr(self, "_show_console_links", True))
+
+    @showConsoleLinks.setter
+    def showConsoleLinks(self, val: bool):
+        b = bool(val)
+        if getattr(self, "_show_console_links", True) != b:
+            self._show_console_links = b
+            self.showConsoleLinksChanged.emit()
+            self.scheduleSaveSettings()
+
     @Property(float, notify=AppBridgeSignalsMixin.downloadDelayChanged)
     def downloadDelay(self) -> float:
         return self._download_delay
@@ -620,7 +644,7 @@ class SettingsPropsExtendedMixin(AppBridgeSignalsMixin):
         if self._download_delay != val:
             self._download_delay = val
             self.downloadDelayChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(bool, notify=AppBridgeSignalsMixin.savePostMetadataChanged)
     def savePostMetadata(self) -> bool:
@@ -631,7 +655,7 @@ class SettingsPropsExtendedMixin(AppBridgeSignalsMixin):
         if self._save_post_metadata != val:
             self._save_post_metadata = val
             self.savePostMetadataChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(bool, notify=AppBridgeSignalsMixin.writeSidecarsChanged)
     def writeSidecars(self) -> bool:
@@ -643,7 +667,7 @@ class SettingsPropsExtendedMixin(AppBridgeSignalsMixin):
         if self._write_sidecars != val:
             self._write_sidecars = val
             self.writeSidecarsChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(str, notify=AppBridgeSignalsMixin.sidecarFormatChanged)
     def sidecarFormat(self) -> str:
@@ -655,7 +679,7 @@ class SettingsPropsExtendedMixin(AppBridgeSignalsMixin):
         if self._sidecar_format != val:
             self._sidecar_format = val
             self.sidecarFormatChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(str, notify=AppBridgeSignalsMixin.sidecarScopeChanged)
     def sidecarScope(self) -> str:
@@ -667,7 +691,7 @@ class SettingsPropsExtendedMixin(AppBridgeSignalsMixin):
         if self._sidecar_scope != val:
             self._sidecar_scope = val
             self.sidecarScopeChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(bool, notify=AppBridgeSignalsMixin.downloadEmbedsChanged)
     def downloadEmbeds(self) -> bool:
@@ -678,7 +702,7 @@ class SettingsPropsExtendedMixin(AppBridgeSignalsMixin):
         if self._download_embeds != val:
             self._download_embeds = val
             self.downloadEmbedsChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(str, notify=AppBridgeSignalsMixin.embedCookiesBrowserChanged)
     def embedCookiesBrowser(self) -> str:
@@ -691,7 +715,7 @@ class SettingsPropsExtendedMixin(AppBridgeSignalsMixin):
             self._embed_cookies_browser = val
             self.downloader.ytdlp_manager.set_cookies_browser(val)
             self.embedCookiesBrowserChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(bool, notify=AppBridgeSignalsMixin.openFolderOnCompleteChanged)
     def openFolderOnComplete(self) -> bool:
@@ -702,7 +726,7 @@ class SettingsPropsExtendedMixin(AppBridgeSignalsMixin):
         if self._open_folder_on_complete != val:
             self._open_folder_on_complete = val
             self.openFolderOnCompleteChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(bool, notify=AppBridgeSignalsMixin.playCompletionSoundChanged)
     def playCompletionSound(self) -> bool:
@@ -713,7 +737,7 @@ class SettingsPropsExtendedMixin(AppBridgeSignalsMixin):
         if self._play_completion_sound != val:
             self._play_completion_sound = val
             self.playCompletionSoundChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(bool, notify=AppBridgeSignalsMixin.generateDesktopReportChanged)
     def generateDesktopReport(self) -> bool:
@@ -725,7 +749,7 @@ class SettingsPropsExtendedMixin(AppBridgeSignalsMixin):
             self._generate_desktop_report = val
             self.generateDesktopReportChanged.emit()
             self.saveDesktopReportChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(bool, notify=AppBridgeSignalsMixin.saveDesktopReportChanged)
     def saveDesktopReport(self) -> bool:
@@ -747,7 +771,7 @@ class SettingsPropsExtendedMixin(AppBridgeSignalsMixin):
             self.archive_manager.set_enabled(val)
             self.enableDownloadArchiveChanged.emit()
             self.archiveRecordCountChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(int, notify=AppBridgeSignalsMixin.archiveRecordCountChanged)
     def archiveRecordCount(self) -> int:

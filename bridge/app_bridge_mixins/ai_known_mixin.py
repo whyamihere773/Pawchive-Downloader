@@ -97,7 +97,7 @@ class AiKnownMixin(AppBridgeSignalsMixin):
             self._known_recognition_mode = val
             self.known_manager.set_mode(val)
             self.knownRecognitionModeChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(bool, notify=AppBridgeSignalsMixin.aiRecognitionEnabledChanged)
     def aiRecognitionEnabled(self) -> bool:
@@ -110,7 +110,7 @@ class AiKnownMixin(AppBridgeSignalsMixin):
             self._ai_recognition_enabled = val
             self.known_manager.enable_ai(val, model_manager=self.model_manager)
             self.aiRecognitionEnabledChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(str, notify=AppBridgeSignalsMixin.aiEngineModeChanged)
     def aiEngineMode(self) -> str:
@@ -123,7 +123,7 @@ class AiKnownMixin(AppBridgeSignalsMixin):
             self._ai_engine_mode = val
             self.known_manager.set_ai_engine_mode(val)
             self.aiEngineModeChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(str, notify=AppBridgeSignalsMixin.aiHardwareInfoChanged)
     def aiHardwareBadge(self) -> str:
@@ -159,7 +159,7 @@ class AiKnownMixin(AppBridgeSignalsMixin):
         if val in allowed and self._ai_deep_reasoner_variant != val:
             self._ai_deep_reasoner_variant = val
             self.aiRecognitionEnabledChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(bool, notify=AppBridgeSignalsMixin.aiRecognitionEnabledChanged)
     def aiDeepReasonerLightReady(self) -> bool:
@@ -197,6 +197,11 @@ class AiKnownMixin(AppBridgeSignalsMixin):
         res = self.model_manager.delete_model(model_key)
         self.aiRecognitionEnabledChanged.emit()
         return res
+
+    @Slot(str, str)
+    def testAiRecognitionAsync(self, request_id: str, test_title: str):
+        """Non-blocking companion to testAiRecognition (answer: asyncResultReady(request_id, dict))."""
+        self._run_async(request_id, self.testAiRecognition, test_title)
 
     @Slot(str, result="QVariant")
     def testAiRecognition(self, test_title: str):

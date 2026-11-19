@@ -215,6 +215,7 @@ class SessionManager:
             "redownload_small_files": False,
             "dark_theme": True,
             "auto_sync_known": True,
+            "show_console_links": True,
             "open_folder_on_complete": False,
             "play_completion_sound": False,
             "post_download_action": "none",

@@ -74,7 +74,7 @@ class DecompressorExtractionMixin(DecompressorSignalsMixin):
 
         # Reset the prompt semaphore to ensure a clean state for this run
         # (guards against a previous cancelled run leaving the semaphore at 0)
-        self._prompt_serial_sem = threading.Semaphore(1)
+        self._prompt_serial_sem = threading.BoundedSemaphore(1)
 
         self._is_extracting = True
         self._extract_cancel_event.clear()

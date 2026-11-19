@@ -93,7 +93,10 @@ class DecompressorCompressionMixin(DecompressorSignalsMixin):
         if self._loading_settings or not self._app_bridge or not hasattr(self._app_bridge, "saveSettings"):
             return
         try:
-            self._app_bridge.saveSettings()
+            if hasattr(type(self._app_bridge), "scheduleSaveSettings"):
+                self._app_bridge.scheduleSaveSettings()
+            else:
+                self._app_bridge.saveSettings()
         except Exception as e:
             logger.debug(f"Couldn't save the Decompressor settings: {e}", category="decompressor")
 
@@ -216,6 +219,17 @@ class DecompressorCompressionMixin(DecompressorSignalsMixin):
         ok, msg = validate_ffmpeg_settings(s.ffmpeg, s)
         return {"success": ok, "message": msg}
 
+    @Slot()
+    def testCompressionPresetAsync(self) -> None:
+        """Non-blocking companion to testCompressionPreset (answer: presetTestFinished(dict))."""
+        def _worker():
+            try:
+                res = self.testCompressionPreset()
+            except Exception as e:
+                res = {"success": False, "message": f"Validation error: {e}"}
+            self._guiCall.emit(lambda: self.presetTestFinished.emit(res))
+        threading.Thread(target=_worker, daemon=True, name="DecompressorPresetTest").start()
+
     @Property(str, notify=DecompressorSignalsMixin.settingsChanged)
     def animatedFormat(self) -> str:
         """Animated pictures: "same" (each keeps its format), gif / png / webp / avif, or "keep"."""
@@ -309,6 +323,8 @@ class DecompressorCompressionMixin(DecompressorSignalsMixin):
         return CompressSettings(image_format=self._image_format, image_quality=self._image_quality,
                                 video_format=self._video_format, video_quality=self._video_quality,
                                 video_hwaccel=self._video_hwaccel,
+                                video_preset=self._video_preset, audio_codec=self._audio_codec,
+                                custom_video_args=self._custom_video_args,
                                 animated_format=self._animated_format, animated_quality=self._animated_quality,
                                 ffmpeg=self._ffmpeg_path if self.ffmpegAvailable else "")
 

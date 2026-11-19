@@ -109,14 +109,14 @@ class SettingsPropsMiscMixin(AppBridgeSignalsMixin):
             changed = True
         if changed:
             self.disabledTabsChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Slot()
     def resetDisabledTabs(self) -> None:
         if self._disabled_tabs:
             self._disabled_tabs = []
             self.disabledTabsChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(bool, notify=AppBridgeSignalsMixin.privacyModeActiveChanged)
     def privacyModeActive(self) -> bool:
@@ -257,7 +257,7 @@ class SettingsPropsMiscMixin(AppBridgeSignalsMixin):
         if self._console_width != val:
             self._console_width = val
             self.consoleWidthChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(str, notify=AppBridgeSignalsMixin.postDownloadActionChanged)
     def postDownloadAction(self) -> str:
@@ -312,7 +312,7 @@ class SettingsPropsMiscMixin(AppBridgeSignalsMixin):
         if self._watchlist_apply_global_settings != b_val:
             self._watchlist_apply_global_settings = b_val
             self.watchlistApplyGlobalSettingsChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(bool, notify=AppBridgeSignalsMixin.watchlistCheckOnStartupChanged)
     def watchlistCheckOnStartup(self) -> bool:
@@ -343,7 +343,7 @@ class SettingsPropsMiscMixin(AppBridgeSignalsMixin):
         if self._tag_folder_mode != val:
             self._tag_folder_mode = val
             self.tagFolderModeChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(str, notify=AppBridgeSignalsMixin.groupFileTypeChanged)
     def groupFileType(self) -> str:
@@ -357,7 +357,7 @@ class SettingsPropsMiscMixin(AppBridgeSignalsMixin):
         if self._group_file_type != val:
             self._group_file_type = val
             self.groupFileTypeChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(str, notify=AppBridgeSignalsMixin.fileOrderChanged)
     def fileOrder(self) -> str:
@@ -558,7 +558,7 @@ class SettingsPropsMiscMixin(AppBridgeSignalsMixin):
         if self._telegram_safety_acknowledged != val:
             self._telegram_safety_acknowledged = val
             self.telegramSafetyAcknowledgedChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(bool, notify=AppBridgeSignalsMixin.telegramLiabilityAcknowledgedChanged)
     def telegramLiabilityAcknowledged(self) -> bool:
@@ -569,7 +569,7 @@ class SettingsPropsMiscMixin(AppBridgeSignalsMixin):
         if self._telegram_liability_acknowledged != val:
             self._telegram_liability_acknowledged = val
             self.telegramLiabilityAcknowledgedChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Slot(bool)
     def setTelegramSafetyAcknowledged(self, val: bool):
@@ -585,5 +585,5 @@ class SettingsPropsMiscMixin(AppBridgeSignalsMixin):
         self._telegram_liability_acknowledged = False
         self.telegramSafetyAcknowledgedChanged.emit()
         self.telegramLiabilityAcknowledgedChanged.emit()
-        self.saveSettings()
+        self.scheduleSaveSettings()
         logger.info("Telegram warning modals reset.", category="telegram")

@@ -443,6 +443,21 @@ class DecompressorItemsGroupsMixin(DecompressorSignalsMixin):
         return res_json
 
     @Slot()
+    def checkDiskSpaceAsync(self) -> None:
+        """Non-blocking companion to checkDiskSpace (answer: diskCheckCompleted(json))."""
+        with self._items_lock:
+            items_copy = list(self._items)
+        delete_after = self._delete_after
+
+        def _worker():
+            results = self.engine.check_disk_space(items_copy, delete_after=delete_after)
+            data = [r.to_dict() for r in results]
+            res_json = json.dumps(data, ensure_ascii=False)
+            self._guiCall.emit(lambda: self.diskCheckCompleted.emit(res_json))
+
+        threading.Thread(target=_worker, daemon=True, name="DecompressorDiskCheck").start()
+
+    @Slot()
     def clearFinished(self):
         """Remove completed entries from the list."""
         with self._items_lock:

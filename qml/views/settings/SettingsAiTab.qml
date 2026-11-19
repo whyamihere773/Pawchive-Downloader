@@ -475,14 +475,36 @@ CardSection {
 
                                 StyledButton {
                                     id: testAiBtn
+                                    property string _pendingAiReq: ""
                                     variant: "primary"
-                                    text: tr("btn_test_ai", "Test Match")
+                                    text: _pendingAiReq ? tr("btn_testing_ai", "Testing…") : tr("btn_test_ai", "Test Match")
                                     iconText: "🔍"
                                     implicitHeight: 34
+                                    enabled: !_pendingAiReq
                                     onClicked: {
-                                        if (subTab3Content.view.bridge && aiTestInput.text.trim().length > 0) {
-                                            var res = subTab3Content.view.bridge.testAiRecognition(aiTestInput.text.trim())
+                                        var query = aiTestInput.text.trim()
+                                        if (!subTab3Content.view.bridge || query.length === 0) return
+                                        if (subTab3Content.view.bridge.testAiRecognitionAsync) {
+                                            var reqId = "ai-test-" + Date.now()
+                                            _pendingAiReq = reqId
+                                            aiResultText.text = tr("sandbox_testing", "Running heuristic & AI semantic check…")
+                                            subTab3Content.view.bridge.testAiRecognitionAsync(reqId, query)
+                                        } else {
+                                            var res = subTab3Content.view.bridge.testAiRecognition(query)
                                             aiResultText.text = "Heuristic: " + res.tier0 + "  |  AI Semantic: " + res.tier1 + "  ➔  Final Folder: " + res.final
+                                        }
+                                    }
+
+                                    Connections {
+                                        target: subTab3Content.view.bridge
+                                        function onAsyncResultReady(reqId, res) {
+                                            if (reqId !== testAiBtn._pendingAiReq) return
+                                            testAiBtn._pendingAiReq = ""
+                                            if (res && !res.error) {
+                                                aiResultText.text = "Heuristic: " + res.tier0 + "  |  AI Semantic: " + res.tier1 + "  ➔  Final Folder: " + res.final
+                                            } else {
+                                                aiResultText.text = (res && res.error) ? String(res.error) : "No result"
+                                            }
                                         }
                                     }
                                 }

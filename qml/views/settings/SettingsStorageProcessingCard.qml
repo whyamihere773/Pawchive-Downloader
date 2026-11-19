@@ -20,12 +20,14 @@ CardSection {
 
         StyledCheckBox {
             text: tr("opt_auto_sync_known", "Auto-sync Known.txt on startup")
-            checked: true
+            checked: storageProcCard.view.bridge ? storageProcCard.view.bridge.autoSyncKnown : true
+            onCheckedChanged: if (storageProcCard.view.bridge) storageProcCard.view.bridge.autoSyncKnown = checked
         }
 
         StyledCheckBox {
             text: tr("opt_show_console_links", "Show external links & media URLs in live console")
-            checked: true
+            checked: storageProcCard.view.bridge ? storageProcCard.view.bridge.showConsoleLinks : true
+            onCheckedChanged: if (storageProcCard.view.bridge) storageProcCard.view.bridge.showConsoleLinks = checked
         }
 
         StyledCheckBox {

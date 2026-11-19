@@ -207,7 +207,7 @@ SmoothFlickable {
         var count = 0
         if (root.providersList) {
             for (var i = 0; i < root.providersList.length; i++) {
-                if (root.providersList[i].has_session || root.providersList[i].logged_in) count++
+                if (root.providersList[i].is_logged_in) count++
             }
         }
         if (typeof telegramBridge !== "undefined" && telegramBridge && telegramBridge.isLoggedIn) count++

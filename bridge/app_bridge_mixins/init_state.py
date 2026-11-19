@@ -149,6 +149,8 @@ def init_bridge_core_state(self) -> None:
     self._hide_unimported_notice = bool(saved_settings.get("hide_unimported_notice", False))
     self._redownload_small_files = bool(saved_settings.get("redownload_small_files", False))
     self._skip_post_covers = bool(saved_settings.get("skip_post_covers", False))
+    self._auto_sync_known = bool(saved_settings.get("auto_sync_known", True))
+    self._show_console_links = bool(saved_settings.get("show_console_links", True))
     self._scan_content_images = saved_settings.get("scan_content_images", True)
     self._download_dms = bool(saved_settings.get("download_dms", False))
     self._download_pawchive_temporary_files = saved_settings.get("download_pawchive_temporary_files", True)

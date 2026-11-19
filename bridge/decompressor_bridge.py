@@ -8,7 +8,7 @@ import os
 import threading
 from typing import Any, Dict, List, Tuple
 
-from PySide6.QtCore import QObject, Qt, QTimer
+from PySide6.QtCore import QObject, Qt, QTimer, Slot
 
 from bridge.archive_creators_model import RecordListModel
 from bridge.decompressor_mixins import (
@@ -73,7 +73,8 @@ class DecompressorBridge(
         self._prompt_lock = threading.Lock()
         # Semaphore: ensures only one password prompt is shown at a time.
         # Parallel workers block here until the current prompt is dismissed.
-        self._prompt_serial_sem = threading.Semaphore(1)
+        self._prompt_serial_sem = threading.BoundedSemaphore(1)
+        self._guiCall.connect(self._run_gui_call, Qt.QueuedConnection)
 
         # Configurable Settings
         self._max_parallel = 2
@@ -138,6 +139,12 @@ class DecompressorBridge(
         # Reactive password bank binding: selection changes update matched status
         self.selectedStatsChanged.connect(self.passwordBankChanged)
         self.isExtractingChanged.connect(self.passwordBankChanged)
+
+    @Slot(object)
+    def _run_gui_call(self, fn) -> None:
+        """Executes callables marshaled from background workers on the Qt GUI thread."""
+        if callable(fn):
+            fn()
 
     def _ensure_hwaccel_probed(self) -> None:
         ffmpeg_path = self._ffmpeg_path

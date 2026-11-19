@@ -430,7 +430,7 @@ class SettingsPropsCoreMixin(AppBridgeSignalsMixin):
         if self._date_auto_scan_pages != val:
             self._date_auto_scan_pages = val
             self.dateAutoScanPagesChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(str, notify=AppBridgeSignalsMixin.minFileSizeChanged)
     def minFileSize(self) -> str:
@@ -441,7 +441,7 @@ class SettingsPropsCoreMixin(AppBridgeSignalsMixin):
         if self._min_file_size != val:
             self._min_file_size = val
             self.minFileSizeChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(str, notify=AppBridgeSignalsMixin.maxFileSizeChanged)
     def maxFileSize(self) -> str:
@@ -452,7 +452,7 @@ class SettingsPropsCoreMixin(AppBridgeSignalsMixin):
         if self._max_file_size != val:
             self._max_file_size = val
             self.maxFileSizeChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(bool, notify=AppBridgeSignalsMixin.videoDurationFilterEnabledChanged)
     def videoDurationFilterEnabled(self) -> bool:
@@ -464,7 +464,7 @@ class SettingsPropsCoreMixin(AppBridgeSignalsMixin):
             self._video_duration_filter_enabled = bool(val)
             self.videoDurationFilterEnabledChanged.emit()
             self.videoDurationSummaryChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(str, notify=AppBridgeSignalsMixin.minVideoDurationChanged)
     def minVideoDuration(self) -> str:
@@ -476,7 +476,7 @@ class SettingsPropsCoreMixin(AppBridgeSignalsMixin):
             self._min_video_duration = val
             self.minVideoDurationChanged.emit()
             self.videoDurationSummaryChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(str, notify=AppBridgeSignalsMixin.maxVideoDurationChanged)
     def maxVideoDuration(self) -> str:
@@ -488,7 +488,7 @@ class SettingsPropsCoreMixin(AppBridgeSignalsMixin):
             self._max_video_duration = val
             self.maxVideoDurationChanged.emit()
             self.videoDurationSummaryChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(str, notify=AppBridgeSignalsMixin.videoDurationSummaryChanged)
     def videoDurationSummary(self) -> str:
@@ -546,7 +546,7 @@ class SettingsPropsCoreMixin(AppBridgeSignalsMixin):
         if self._exact_extensions != val_clean:
             self._exact_extensions = val_clean
             self.exactExtensionsChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Slot(str)
     def toggleExactExtension(self, ext: str):
@@ -612,7 +612,7 @@ class SettingsPropsCoreMixin(AppBridgeSignalsMixin):
                 self.toggleExactExtension(t)
         if changed:
             self.savedCustomExtensionsChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Slot(str)
     def removeSavedCustomExtension(self, ext: str):
@@ -625,7 +625,7 @@ class SettingsPropsCoreMixin(AppBridgeSignalsMixin):
         if ext in self._saved_custom_extensions:
             self._saved_custom_extensions.remove(ext)
             self.savedCustomExtensionsChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
         if self.isExactExtensionActive(ext):
             self.toggleExactExtension(ext)
 
@@ -648,7 +648,7 @@ class SettingsPropsCoreMixin(AppBridgeSignalsMixin):
         if self._download_thumbnails_only != val:
             self._download_thumbnails_only = val
             self.downloadThumbnailsOnlyChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(bool, notify=AppBridgeSignalsMixin.fallbackToThumbnailsChanged)
     def fallbackToThumbnails(self) -> bool:
@@ -659,7 +659,7 @@ class SettingsPropsCoreMixin(AppBridgeSignalsMixin):
         if self._fallback_to_thumbnails != val:
             self._fallback_to_thumbnails = val
             self.fallbackToThumbnailsChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(bool, notify=AppBridgeSignalsMixin.hideUnimportedNoticeChanged)
     def hideUnimportedNotice(self) -> bool:
@@ -671,7 +671,7 @@ class SettingsPropsCoreMixin(AppBridgeSignalsMixin):
         if self._hide_unimported_notice != val_b:
             self._hide_unimported_notice = val_b
             self.hideUnimportedNoticeChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(bool, notify=AppBridgeSignalsMixin.redownloadSmallFilesChanged)
     def redownloadSmallFiles(self) -> bool:
@@ -682,7 +682,7 @@ class SettingsPropsCoreMixin(AppBridgeSignalsMixin):
         if self._redownload_small_files != val:
             self._redownload_small_files = val
             self.redownloadSmallFilesChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(bool, notify=AppBridgeSignalsMixin.skipPostCoversChanged)
     def skipPostCovers(self) -> bool:
@@ -693,7 +693,7 @@ class SettingsPropsCoreMixin(AppBridgeSignalsMixin):
         if self._skip_post_covers != val:
             self._skip_post_covers = val
             self.skipPostCoversChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(bool, notify=AppBridgeSignalsMixin.scanContentImagesChanged)
     def scanContentImages(self) -> bool:
@@ -726,7 +726,7 @@ class SettingsPropsCoreMixin(AppBridgeSignalsMixin):
         if self._download_pawchive_temporary_files != val:
             self._download_pawchive_temporary_files = val
             self.downloadPawchiveTemporaryFilesChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(bool, notify=AppBridgeSignalsMixin.compressWebpChanged)
     def compressWebp(self) -> bool:
@@ -764,7 +764,7 @@ class SettingsPropsCoreMixin(AppBridgeSignalsMixin):
         if self._write_audio_metadata != val:
             self._write_audio_metadata = val
             self.writeAudioMetadataChanged.emit()
-            self.saveSettings()
+            self.scheduleSaveSettings()
 
     @Property(bool, notify=AppBridgeSignalsMixin.keepDuplicatesChanged)
     def keepDuplicates(self) -> bool:

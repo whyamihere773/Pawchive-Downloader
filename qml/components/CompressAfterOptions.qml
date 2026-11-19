@@ -400,9 +400,23 @@ ColumnLayout {
                     root.validationStatus = ""
                     // Flush input text first
                     root.decompressor.customVideoArgs = customArgsInput.text
-                    var res = root.decompressor.testCompressionPreset()
+                    if (root.decompressor.testCompressionPresetAsync) {
+                        root.decompressor.testCompressionPresetAsync()
+                    } else {
+                        var res = root.decompressor.testCompressionPreset()
+                        root.isValidating = false
+                        root.validationOk = res && res.success
+                        root.validationStatus = res ? res.message : "Test finished"
+                    }
+                }
+            }
+
+            Connections {
+                target: root.decompressor
+                function onPresetTestFinished(res) {
+                    if (!root.isValidating) return
                     root.isValidating = false
-                    root.validationOk = res && res.success
+                    root.validationOk = !!(res && res.success)
                     root.validationStatus = res ? res.message : "Test finished"
                 }
             }

@@ -704,7 +704,8 @@ Item {
                         enabled: parent.enabled
                         onClicked: {
                             if (decompressor) {
-                                decompressor.checkDiskSpace();
+                                if (decompressor.checkDiskSpaceAsync) decompressor.checkDiskSpaceAsync();
+                                else decompressor.checkDiskSpace();
                             }
                         }
                     }

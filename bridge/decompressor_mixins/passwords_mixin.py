@@ -258,6 +258,22 @@ class DecompressorPasswordsMixin(DecompressorSignalsMixin):
             mock_id, mock_filename, mock_creator, mock_directory, mock_error, mock_size
         )
 
+    @Slot(str, str, bool)
+    def retryItemWithPasswordAsync(self, itemId: str, password: str, remember: bool = True) -> None:
+        """Non-blocking companion to retryItemWithPassword (signals: passwordWrong / passwordPromptDismissed)."""
+        def _worker():
+            try:
+                self.retryItemWithPassword(itemId, password, remember)
+            except Exception as e:
+                logger.error(f"Async password retry failed for {itemId}: {e}", category="decompressor")
+                self.passwordWrong.emit(itemId)
+
+        threading.Thread(
+            target=_worker,
+            daemon=True,
+            name="DecompressorRetryPassword",
+        ).start()
+
     @Slot(str, str, bool, result=bool)
     def retryItemWithPassword(self, itemId: str, password: str, remember: bool = True) -> bool:
         p = str(password or "").strip()
@@ -358,6 +374,7 @@ class DecompressorPasswordsMixin(DecompressorSignalsMixin):
 
         # ── Real archive path ─────────────────────────────────────────────────
         if not target_item or not os.path.exists(target_item.path):
+            self.passwordWrong.emit(itemId)
             return False
 
         # If waiting in bulk extraction flow, validate password and wake up worker

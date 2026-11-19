@@ -113,12 +113,17 @@ class QueueCloudMixin(AppBridgeSignalsMixin):
                 lines.append("")
             lines.append(f"Total: {total} unique link(s)")
 
-            try:
-                with open(save_path, "w", encoding="utf-8") as f:
-                    f.write("\n".join(lines))
-                logger.success(f"🔗 Exported {total} harvested link(s) to: {save_path}", category="session")
-            except Exception as e:
-                logger.error(f"Failed to export harvested links: {e}", category="session")
+            payload = "\n".join(lines)
+
+            def _write_harvested():
+                try:
+                    with open(save_path, "w", encoding="utf-8") as f:
+                        f.write(payload)
+                    logger.success(f"🔗 Exported {total} harvested link(s) to: {save_path}", category="session")
+                except Exception as e:
+                    logger.error(f"Failed to export harvested links: {e}", category="session")
+
+            threading.Thread(target=_write_harvested, daemon=True, name="ExportHarvestedLinks").start()
             return
 
         # Fallback: export raw download task URLs from the queue
@@ -135,7 +140,12 @@ class QueueCloudMixin(AppBridgeSignalsMixin):
             "Text Files (*.txt);;All Files (*)"
         )
         if save_path:
-            self.session_manager.export_links_to_file(links, save_path)
+            threading.Thread(
+                target=self.session_manager.export_links_to_file,
+                args=(links, save_path),
+                daemon=True,
+                name="ExportQueueLinks",
+            ).start()
 
     @Slot("QVariantList", str)
     def startCloudDownloads(self, selected_links: list, dest_folder: str = ""):

@@ -14,6 +14,11 @@ Item {
         pwInput.text = "";
         pwPromptCard.inputText = "";
         pwShakeAnim.restart();
+        Qt.callLater(function() {
+            if (passwordPromptOverlay.view.showPasswordPrompt && pwPromptCard.visible) {
+                pwInput.forceActiveFocus();
+            }
+        });
     }
     anchors.fill: parent
     // Visibility gate driven by opacity so exit animation runs before hide
@@ -64,26 +69,54 @@ Item {
         property string inputText: ""
         property bool showPlain: false
 
+        function resetAndFocusInput() {
+            pwInput.text = "";
+            inputText = "";
+            showPlain = false;
+            Qt.callLater(function() {
+                if (passwordPromptOverlay.view.showPasswordPrompt && pwPromptCard.visible) {
+                    pwInput.forceActiveFocus();
+                }
+            });
+        }
+
         function tryExtract() {
             var pw = inputText.trim();
             if (!pw || passwordPromptOverlay.view.promptTesting) return;
             if (passwordPromptOverlay.view.decompressor) {
                 passwordPromptOverlay.view.promptWrongPw = false;
                 passwordPromptOverlay.view.promptTesting = true;
-                var ok = passwordPromptOverlay.view.decompressor.retryItemWithPassword(passwordPromptOverlay.view.promptItemId, pw, passwordPromptOverlay.view.promptRemember);
-                if (!ok) {
-                    passwordPromptOverlay.view.promptTesting = false;
-                    passwordPromptOverlay.view.promptWrongPw = true;
-                    pwInput.text = "";
-                    inputText = "";
-                    pwShakeAnim.restart();
+                if (passwordPromptOverlay.view.decompressor.retryItemWithPasswordAsync) {
+                    passwordPromptOverlay.view.decompressor.retryItemWithPasswordAsync(
+                        passwordPromptOverlay.view.promptItemId,
+                        pw,
+                        passwordPromptOverlay.view.promptRemember
+                    );
+                } else {
+                    var ok = passwordPromptOverlay.view.decompressor.retryItemWithPassword(
+                        passwordPromptOverlay.view.promptItemId,
+                        pw,
+                        passwordPromptOverlay.view.promptRemember
+                    );
+                    if (!ok) {
+                        passwordPromptOverlay.view.promptTesting = false;
+                        passwordPromptOverlay.view.promptWrongPw = true;
+                        passwordPromptOverlay.handleWrongPassword();
+                    }
                 }
             }
         }
         onVisibleChanged: {
             if (visible) {
-                inputText = "";
-                showPlain = false;
+                resetAndFocusInput();
+            }
+        }
+        Connections {
+            target: passwordPromptOverlay.view
+            function onShowPasswordPromptChanged() {
+                if (passwordPromptOverlay.view.showPasswordPrompt) {
+                    pwPromptCard.resetAndFocusInput();
+                }
             }
         }
 

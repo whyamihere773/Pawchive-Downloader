@@ -38,3 +38,5 @@ class DecompressorSignalsMixin:
     galleryOriginalsHandled = Signal(str)
     compressingPathsChanged = Signal()
     groupCountChanged = Signal()
+    presetTestFinished = Signal("QVariantMap")
+    _guiCall = Signal(object)

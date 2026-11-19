@@ -205,6 +205,8 @@ class AppBridgeSignalsMixin:
     providerDisabled = Signal(str, str, str)
     unimportedNotice = Signal(str, str, bool)
     browserLastDownloadDirChanged = Signal()
+    autoSyncKnownChanged = Signal()
+    showConsoleLinksChanged = Signal()
 
     # Shared class-level synchronization & constants
     _watchlist_check_lock = threading.Lock()
