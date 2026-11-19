@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import "gallery_archive"
 
 // ── Gallery Archive Modal ───────────────────────────────────────────────────
 // Compress selected files/folders into one archive or one archive per item,
@@ -337,180 +338,11 @@ Item {
     }
 
     // ── Reusable bits ───────────────────────────────────────────────────────
-    component Segmented: Rectangle {
-        id: seg
-        property var options: []     // [{ value, label, tip }]
-        property string value: ""
-        signal picked(string choice)
-        implicitHeight: 26
-        implicitWidth: segRow.implicitWidth + 4
-        radius: 6
-        color: "#0D1018"
-        border.color: "#252D3E"
-        border.width: 1
-        Row {
-            id: segRow
-            anchors.centerIn: parent
-            spacing: 2
-            Repeater {
-                model: seg.options
-                delegate: Rectangle {
-                    readonly property bool active: seg.value === modelData.value
-                    implicitHeight: 22
-                    implicitWidth: segText.implicitWidth + 18
-                    radius: 4
-                    color: active ? "#1E3A5F" : (segMouse.containsMouse ? "#182030" : "transparent")
-                    border.color: active ? "#38BDF8" : "transparent"
-                    border.width: 1
-                    Text {
-                        id: segText
-                        anchors.centerIn: parent
-                        text: modelData.label
-                        font.family: "Segoe UI, sans-serif"
-                        font.pixelSize: 10
-                        font.weight: active ? 700 : 600
-                        color: active ? "#38BDF8" : "#94A3B8"
-                    }
-                    Springy { hover: segMouse.containsMouse; pressed: segMouse.pressed }
-                    MouseArea {
-                        id: segMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: seg.picked(modelData.value)
-                        ToolTip.visible: containsMouse && !!modelData.tip
-                        ToolTip.delay: 300
-                        ToolTip.text: modelData.tip || ""
-                    }
-                }
-            }
-        }
-    }
-
-    component CheckRow: Item {
-        id: chk
-        property string label: ""
-        property bool checked: false
-        signal toggled()
-        implicitHeight: 20
-        implicitWidth: chkRow.implicitWidth
-        Row {
-            id: chkRow
-            spacing: 8
-            anchors.verticalCenter: parent.verticalCenter
-            Rectangle {
-                width: 15; height: 15; radius: 3
-                anchors.verticalCenter: parent.verticalCenter
-                color: chk.checked ? "#38BDF8" : "transparent"
-                border.color: chk.checked ? "#38BDF8" : (chkMouse.containsMouse ? "#38BDF8" : "#64748B")
-                border.width: 1
-                Text { anchors.centerIn: parent; visible: chk.checked; text: "✓"; font.pixelSize: 10; font.weight: 800; color: "#0F172A" }
-            }
-            Text {
-                text: chk.label
-                anchors.verticalCenter: parent.verticalCenter
-                font.family: "Segoe UI, sans-serif"
-                font.pixelSize: 11
-                color: "#CBD5E1"
-            }
-        }
-        MouseArea {
-            id: chkMouse
-            anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            onClicked: chk.toggled()
-        }
-    }
-
-    component DialogButton: Rectangle {
-        id: btn
-        property string label: ""
-        property bool primary: false
-        property bool danger: false
-        property bool enabledState: true
-        signal clicked()
-        implicitHeight: 30
-        implicitWidth: btnText.implicitWidth + 26
-        radius: 6
-        opacity: enabledState ? 1.0 : 0.45
-        color: primary ? (btnMouse.containsMouse && enabledState ? "#0EA5E9" : "#0284C7")
-                       : (btnMouse.containsMouse && enabledState ? (danger ? "#3A1620" : "#1E293B") : "#141720")
-        border.color: primary ? "#38BDF8" : (danger ? "#EF4444" : "#2E384D")
-        border.width: 1
-        Text {
-            id: btnText
-            anchors.centerIn: parent
-            text: btn.label
-            font.family: "Segoe UI, sans-serif"
-            font.pixelSize: 11
-            font.weight: 700
-            color: primary ? "#FFFFFF" : (danger ? "#F87171" : "#E2E8F0")
-        }
-        Springy { hover: btnMouse.containsMouse; pressed: btnMouse.pressed }
-        MouseArea {
-            id: btnMouse
-            anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: btn.enabledState ? Qt.PointingHandCursor : Qt.ForbiddenCursor
-            onClicked: if (btn.enabledState) btn.clicked()
-        }
-    }
-
     component FieldLabel: Text {
         font.family: "Segoe UI, sans-serif"
         font.pixelSize: 10
         font.weight: 700
         color: "#64748B"
-    }
-
-    component InputBox: Rectangle {
-        id: box
-        property alias text: inner.text
-        property alias echoMode: inner.echoMode
-        property string placeholder: ""
-        property bool error: false
-        signal accepted()
-        function forceActiveFocus() { inner.forceActiveFocus() }
-        function selectAll() { inner.selectAll() }
-        implicitHeight: 30
-        radius: 6
-        color: inner.activeFocus ? "#0B0D12" : "#0D1018"
-        border.color: error ? "#EF4444" : (inner.activeFocus ? "#38BDF8" : (innerBoxMouse.containsMouse ? "#475569" : "#252D3E"))
-        border.width: inner.activeFocus ? 1.5 : 1
-
-        TextBarContextArea {
-            id: innerBoxMouse
-            target: inner
-            focusOnLeftClick: true
-        }
-
-        TextInput {
-            id: inner
-            anchors.fill: parent
-            anchors.leftMargin: 10
-            anchors.rightMargin: 10
-            verticalAlignment: TextInput.AlignVCenter
-            color: "#F8FAFC"
-            selectionColor: "#0284C7"
-            selectedTextColor: "#FFFFFF"
-            font.family: "Segoe UI, sans-serif"
-            font.pixelSize: 12
-            selectByMouse: true
-            clip: true
-            onAccepted: box.accepted()
-            TextBarContextArea {}
-            Text {
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                elide: Text.ElideRight
-                visible: !inner.text && !inner.activeFocus
-                text: box.placeholder
-                color: "#475569"
-                font.pixelSize: 11
-            }
-        }
     }
 
     // ── Backdrop ────────────────────────────────────────────────────────────
@@ -600,7 +432,7 @@ Item {
                         spacing: 5
                         visible: root.items.length > 1
                         FieldLabel { text: "HOW TO PACK" }
-                        Segmented {
+                        ArchiveSegmented {
                             options: [
                                 { value: "single", label: "One archive with everything", tip: "Put all selected files and folders into a single archive" },
                                 { value: "each", label: "One archive per item", tip: "Make a separate archive for each selected file or folder, named after it" }
@@ -618,7 +450,7 @@ Item {
                         RowLayout {
                             Layout.fillWidth: true
                             spacing: 6
-                            InputBox {
+                            ArchiveInputBox {
                                 id: nameField
                                 Layout.fillWidth: true
                                 error: root.nameError.length > 0
@@ -655,7 +487,7 @@ Item {
                         ColumnLayout {
                             spacing: 5
                             FieldLabel { text: "FORMAT" }
-                            Segmented {
+                            ArchiveSegmented {
                                 options: [
                                     { value: "zip", label: "ZIP", tip: "Opens everywhere, including Windows and phones without extra apps" },
                                     { value: "7z", label: "7Z", tip: "Usually smaller, needs 7-Zip or a similar app to open" }
@@ -667,7 +499,7 @@ Item {
                         ColumnLayout {
                             spacing: 5
                             FieldLabel { text: "COMPRESSION" }
-                            Segmented {
+                            ArchiveSegmented {
                                 options: [
                                     { value: "store", label: "None", tip: "Fastest, no size reduction" },
                                     { value: "fast", label: "Fast", tip: "Quick, slightly larger. Good for images and videos, which barely shrink anyway" },
@@ -687,13 +519,13 @@ Item {
                         RowLayout {
                             Layout.fillWidth: true
                             spacing: 6
-                            InputBox {
+                            ArchiveInputBox {
                                 id: passwordField
                                 Layout.fillWidth: true
                                 placeholder: "Leave empty for no password"
                                 echoMode: root.showPassword ? TextInput.Normal : TextInput.Password
                             }
-                            DialogButton {
+                            ArchiveDialogButton {
                                 label: root.showPassword ? "Hide" : "Show"
                                 implicitHeight: 30
                                 onClicked: root.showPassword = !root.showPassword
@@ -749,20 +581,20 @@ Item {
                         RowLayout {
                             Layout.fillWidth: true
                             spacing: 6
-                            InputBox {
+                            ArchiveInputBox {
                                 id: extractPasswordField
                                 Layout.fillWidth: true
                                 placeholder: "Saved passwords from the Password Bank are tried automatically"
                                 echoMode: root.showPassword ? TextInput.Normal : TextInput.Password
                                 onAccepted: root.startJob()
                             }
-                            DialogButton {
+                            ArchiveDialogButton {
                                 label: root.showPassword ? "Hide" : "Show"
                                 implicitHeight: 30
                                 onClicked: root.showPassword = !root.showPassword
                             }
                         }
-                        CheckRow {
+                        ArchiveCheckRow {
                             visible: extractPasswordField.text.length > 0
                             label: "Save this password to the Password Bank if it works"
                             checked: root.rememberPassword
@@ -792,12 +624,12 @@ Item {
                                 color: "#E2E8F0"
                                 elide: Text.ElideMiddle
                             }
-                            DialogButton { label: "Change…"; implicitHeight: 26; onClicked: root.chooseDestination() }
-                            DialogButton { visible: root.destDir.length > 0; label: "Reset"; implicitHeight: 26; onClicked: root.destDir = "" }
+                            ArchiveDialogButton { label: "Change…"; implicitHeight: 26; onClicked: root.chooseDestination() }
+                            ArchiveDialogButton { visible: root.destDir.length > 0; label: "Reset"; implicitHeight: 26; onClicked: root.destDir = "" }
                         }
                     }
 
-                    CheckRow {
+                    ArchiveCheckRow {
                         label: root.mode === "compress" ? "Move the originals to the Recycle Bin after archiving" : "Move the archives to the Recycle Bin after extracting"
                         checked: root.mode === "compress" ? root.deleteOriginals : root.deleteArchives
                         onToggled: {
@@ -835,126 +667,8 @@ Item {
                 }
 
                 // ── RUNNING ─────────────────────────────────────────────────
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    spacing: 8
-                    visible: root.stage === "running"
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 8
-                        Text {
-                            Layout.fillWidth: true
-                            text: root.progressStatus
-                            font.family: "Segoe UI, sans-serif"
-                            font.pixelSize: 11
-                            color: "#CBD5E1"
-                            elide: Text.ElideMiddle
-                        }
-                        Text {
-                            visible: root.itemCount > 1
-                            text: (root.itemIndex + 1) + " of " + root.itemCount
-                            font.family: "Segoe UI, sans-serif"
-                            font.pixelSize: 10
-                            font.weight: 600
-                            color: "#94A3B8"
-                        }
-                    }
-
-                    // Progress bar with a moving shimmer, so it visibly keeps working
-                    // even while 7-Zip is between percentage updates.
-                    Rectangle {
-                        id: track
-                        Layout.fillWidth: true
-                        implicitHeight: 10
-                        radius: 5
-                        color: "#1E2536"
-                        clip: true
-                        Rectangle {
-                            id: fill
-                            width: track.width * Math.max(0.02, Math.min(1, root.progress / 100))
-                            height: parent.height
-                            radius: 5
-                            color: root.mode === "compress" ? "#A78BFA" : (root.mode === "copy" ? "#34D399" : "#38BDF8")
-                            Behavior on width { NumberAnimation { duration: 250 } }
-                        }
-                        Rectangle {
-                            id: shimmer
-                            width: 60
-                            height: parent.height
-                            opacity: 0.55
-                            gradient: Gradient {
-                                orientation: Gradient.Horizontal
-                                GradientStop { position: 0.0; color: "#00FFFFFF" }
-                                GradientStop { position: 0.5; color: "#AAFFFFFF" }
-                                GradientStop { position: 1.0; color: "#00FFFFFF" }
-                            }
-                            NumberAnimation on x {
-                                running: root.stage === "running"
-                                loops: Animation.Infinite
-                                from: -60
-                                to: Math.max(track.width, 60)
-                                duration: 1400
-                            }
-                        }
-                    }
-
-                    // 45%  •  128 MB of 400 MB  •  23.4 MB/s  •  about 12s left        0:34
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 6
-                        Text {
-                            text: Math.floor(root.progress) + "%"
-                            font.family: "Segoe UI, monospace"
-                            font.pixelSize: 12
-                            font.weight: 700
-                            color: "#F8FAFC"
-                        }
-                        Text {
-                            Layout.fillWidth: true
-                            elide: Text.ElideRight
-                            text: {
-                                var parts = []
-                                if (root.totalBytes > 0) parts.push(root.formatBytes(root.doneBytes) + " of " + root.formatBytes(root.totalBytes))
-                                if (root.speed > 0) parts.push(root.formatBytes(root.speed) + "/s")
-                                if (root.eta >= 0) parts.push(root.eta < 1.5 ? "almost done" : ("about " + root.formatDuration(root.eta) + " left"))
-                                else if (root.elapsedSec >= 1) parts.push("estimating time…")
-                                return parts.length ? "•  " + parts.join("  •  ") : ""
-                            }
-                            font.family: "Segoe UI, sans-serif"
-                            font.pixelSize: 11
-                            color: "#94A3B8"
-                        }
-                        Text {
-                            text: "⏱ " + root.formatClock(root.elapsedSec)
-                            font.family: "Segoe UI, monospace"
-                            font.pixelSize: 11
-                            color: "#64748B"
-                            ToolTip.visible: clockMouse.containsMouse
-                            ToolTip.delay: 300
-                            ToolTip.text: "Time elapsed"
-                            MouseArea { id: clockMouse; anchors.fill: parent; hoverEnabled: true }
-                        }
-                    }
-
-                    Text {
-                        Layout.fillWidth: true
-                        text: "You can keep browsing: \"Run in background\" (or Esc) hides this window and shows the progress in the status bar."
-                        font.family: "Segoe UI, sans-serif"
-                        font.pixelSize: 10
-                        color: "#475569"
-                        wrapMode: Text.WordWrap
-                    }
-
-                    Text {
-                        Layout.fillWidth: true
-                        visible: root.looksQuiet
-                        text: "Still working… 7-Zip reports progress in steps, so big files can sit on one number for a while."
-                        font.family: "Segoe UI, sans-serif"
-                        font.pixelSize: 10
-                        color: "#F59E0B"
-                        wrapMode: Text.WordWrap
-                    }
+                ArchiveRunningPane {
+                    modal: root
                 }
 
                 // ── RESULT ──────────────────────────────────────────────────
@@ -1033,17 +747,17 @@ Item {
                         RowLayout {
                             Layout.fillWidth: true
                             spacing: 6
-                            InputBox {
+                            ArchiveInputBox {
                                 id: retryPasswordField
                                 Layout.fillWidth: true
                                 placeholder: "Enter the password"
                                 echoMode: root.showPassword ? TextInput.Normal : TextInput.Password
                                 onAccepted: root.retryLocked()
                             }
-                            DialogButton { label: root.showPassword ? "Hide" : "Show"; onClicked: root.showPassword = !root.showPassword }
-                            DialogButton { label: "Try password"; primary: true; enabledState: retryPasswordField.text.length > 0; onClicked: root.retryLocked() }
+                            ArchiveDialogButton { label: root.showPassword ? "Hide" : "Show"; onClicked: root.showPassword = !root.showPassword }
+                            ArchiveDialogButton { label: "Try password"; primary: true; enabledState: retryPasswordField.text.length > 0; onClicked: root.retryLocked() }
                         }
-                        CheckRow {
+                        ArchiveCheckRow {
                             label: "Save this password to the Password Bank if it works"
                             checked: root.rememberPassword
                             onToggled: root.rememberPassword = !root.rememberPassword
@@ -1058,12 +772,12 @@ Item {
                     spacing: 8
                     Item { Layout.fillWidth: true }
 
-                    DialogButton {
+                    ArchiveDialogButton {
                         visible: root.stage === "setup"
                         label: "Cancel"
                         onClicked: root.close()
                     }
-                    DialogButton {
+                    ArchiveDialogButton {
                         visible: root.stage === "setup"
                         primary: true
                         label: root.mode === "compress"
@@ -1074,23 +788,23 @@ Item {
                             : root.supportedArchiveCount > 0)
                         onClicked: root.startJob()
                     }
-                    DialogButton {
+                    ArchiveDialogButton {
                         visible: root.stage === "running"
                         label: "Run in background"
                         onClicked: root.hideToBackground()
                     }
-                    DialogButton {
+                    ArchiveDialogButton {
                         visible: root.stage === "running"
                         danger: true
                         label: "Cancel"
                         onClicked: if (root.archiver) root.archiver.cancel()
                     }
-                    DialogButton {
+                    ArchiveDialogButton {
                         visible: root.stage === "result" && (root.result.outputs || []).length > 0
                         label: "Show in Explorer"
                         onClicked: if (root.bridge && root.bridge.revealFileInExplorer) root.bridge.revealFileInExplorer(root.result.outputs[0])
                     }
-                    DialogButton {
+                    ArchiveDialogButton {
                         visible: root.stage === "result"
                         primary: (root.result.needsPassword || []).length === 0
                         label: "Close"
