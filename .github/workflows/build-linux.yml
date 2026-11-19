@@ -9,19 +9,21 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Attach the Linux build to this existing release (e.g. v1.2.2); leave empty to only build"
+        description: "Attach the Linux builds to this existing release (e.g. v1.4.2); leave empty to only build"
         required: false
         default: ""
 
 permissions:
-  contents: write      # attach the Linux build to tagged releases
+  contents: write      # attach the Linux builds to tagged releases
 
 jobs:
+  # 1. Core portable Linux x86_64 build (Ubuntu 22.04 / glibc 2.35 floor).
+  #    Filenames intentionally start with "Pawchive-Linux-..." so GitHub's alphabetical
+  #    release asset sorting always displays "Pawchive-Downloader-v*-Windows.zip" first.
   build-linux:
-    # Build on an older base: the binaries need the glibc they were built against (or newer), so
-    # Ubuntu 22.04 (glibc 2.35) makes one build run on Ubuntu 22.04+, Debian 12+, Fedora, Arch,
-    # openSUSE Tumbleweed, Mint 21+, CachyOS... (ubuntu-latest would exclude many of them).
     runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
 
     steps:
     - name: Checkout repository
@@ -35,7 +37,7 @@ jobs:
 
     - name: Install system dependencies (OpenGL, Qt6 X11/Wayland libs, 7zip, ffmpeg)
       run: |
-        # The libxcb-* libraries get bundled into the build, so users don't need them installed
+        # The libxcb-* helpers get bundled into the build, so users don't need them installed
         # (Qt 6.5+ can't open a window on X11 without libxcb-cursor0, which many distros lack).
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends \
@@ -69,41 +71,208 @@ jobs:
     - name: Compile Standalone Linux Binary via PyInstaller
       run: |
         python -m PyInstaller --noconfirm PawchiveDownloader_linux.spec
-        mkdir -p "dist/Pawchive Downloader/config" "dist/Pawchive Downloader/data" "dist/Pawchive Downloader/dependencies"
-        cp config/settings.example.json "dist/Pawchive Downloader/config/" 2>/dev/null || true
-        cp assets/pawchive.png "dist/Pawchive Downloader/" 2>/dev/null || true
-        cp assets/icon.png "dist/Pawchive Downloader/" 2>/dev/null || true
-        cp pawchive.desktop "dist/Pawchive Downloader/" 2>/dev/null || true
-        cp version.json "dist/Pawchive Downloader/"     # the app and the updater read their version from it
-        test -x "dist/Pawchive Downloader/updater" || { echo "updater binary missing"; exit 1; }
-        chmod +x "dist/Pawchive Downloader/pawchive"
-        chmod +x "dist/Pawchive Downloader/updater" 2>/dev/null || true
-        chmod +x "dist/Pawchive Downloader/pawchive.desktop" 2>/dev/null || true
+        OUT="dist/pawchive-downloader"
+        mkdir -p "${OUT}/config" "${OUT}/data" "${OUT}/dependencies"
+        cp config/settings.example.json "${OUT}/config/" 2>/dev/null || true
+        cp assets/pawchive.png "${OUT}/" 2>/dev/null || true
+        cp assets/icon.png "${OUT}/" 2>/dev/null || true
+        cp pawchive.desktop "${OUT}/" 2>/dev/null || true
+        cp install.sh "${OUT}/"
+        cp uninstall.sh "${OUT}/"
+        cp README-LINUX.txt "${OUT}/"
+        cp LICENSE "${OUT}/" 2>/dev/null || true
+        cp version.json "${OUT}/"     # the app and the updater read their version from it
+        # Guarantee Unix LF line endings on shell scripts / desktop file even if edited on Windows
+        sed -i 's/\r$//' "${OUT}/install.sh" "${OUT}/uninstall.sh" "${OUT}/pawchive.desktop" "${OUT}/README-LINUX.txt" 2>/dev/null || true
+        test -x "${OUT}/updater" || { echo "updater binary missing"; exit 1; }
+        chmod +x "${OUT}/pawchive" "${OUT}/updater" "${OUT}/install.sh" "${OUT}/uninstall.sh"
+        chmod 644 "${OUT}/pawchive.desktop" 2>/dev/null || true
 
+        # Verify host-ABI-sensitive system libraries did NOT leak into _internal/
+        # (Bundling Ubuntu 22.04 libstdc++/libEGL/libfontconfig/libgtk-3 breaks Mesa/EGL & Fontconfig on Arch/CachyOS)
+        LEAKED=$(find "${OUT}/_internal" -maxdepth 2 -type f \( \
+          -name 'libstdc++.so*' -o -name 'libgcc_s.so*' -o \
+          -name 'libEGL*.so*' -o -name 'libGL.so*' -o -name 'libGLX*.so*' -o \
+          -name 'libfontconfig.so*' -o -name 'libgtk-3.so*' -o -name 'libgdk-3.so*' -o \
+          -name 'libsystemd.so*' -o -name 'libgssapi_krb5.so*' \
+        \) || true)
+        if [ -n "${LEAKED}" ]; then
+          echo "ERROR: Conflicting host system libraries leaked into _internal/:"
+          echo "${LEAKED}"
+          exit 1
+        fi
 
-
-    - name: Package Linux Distribution Tarball
+    - name: Package Portable Linux Tarball
+      id: meta
       run: |
         VERSION=$(python -c "import json; print(json.load(open('version.json'))['version'])")
+        echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
         cd dist
-        tar -czvf "Pawchive-Downloader-v${VERSION}-Linux-x86_64.tar.gz" "Pawchive Downloader"
+        tar -czvf "Pawchive-Linux-v${VERSION}-Portable-x86_64.tar.gz" "pawchive-downloader"
         cd ..
 
-    - name: Upload Linux Build Artifact
+    - name: Upload Portable Linux Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: Pawchive-Downloader-Linux-x86_64
-        path: |
-          dist/Pawchive-Downloader-v*-Linux-x86_64.tar.gz
-          dist/Pawchive Downloader/
+        name: pawchive-linux-portable
+        path: dist/Pawchive-Linux-v*-Portable-x86_64.tar.gz
         retention-days: 14
 
-    # Tagged releases get the Linux build attached, so the in-app updater can find it
-    # (or, started by hand with a tag, to that existing release)
-    - name: Attach to GitHub release
-      if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.tag != '')
+  # 2. Universal Flatpak bundle (Experimental) — wraps the portable Linux build inside org.freedesktop.Platform 25.08
+  build-flatpak:
+    needs: build-linux
+    runs-on: ubuntu-22.04
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08
+      options: --privileged
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Download portable Linux tarball
+      uses: actions/download-artifact@v4
+      with:
+        name: pawchive-linux-portable
+        path: flatpak-in
+
+    - name: Build Experimental Flatpak bundle
+      run: |
+        VERSION="${{ needs.build-linux.outputs.version }}"
+        REL_DATE="$(date -u +%Y-%m-%d)"
+        STAGE="packaging/flatpak/stage"
+        rm -rf "${STAGE}" flatpak-build flatpak-repo dist
+        mkdir -p "${STAGE}" dist
+
+        tar -xzf "flatpak-in/Pawchive-Linux-v${VERSION}-Portable-x86_64.tar.gz" -C "${STAGE}"
+        cp packaging/flatpak/pawchive-flatpak-launcher.sh "${STAGE}/"
+        cp packaging/flatpak/io.github.whyamihere773.PawchiveDownloader.desktop "${STAGE}/"
+        cp packaging/flatpak/io.github.whyamihere773.PawchiveDownloader.metainfo.xml "${STAGE}/"
+        cp assets/pawchive.png "${STAGE}/pawchive.png"
+
+        # Guarantee Unix LF and stamp release version/date in AppStream metadata
+        sed -i 's/\r$//' \
+          packaging/flatpak/io.github.whyamihere773.PawchiveDownloader.yml \
+          "${STAGE}/pawchive-flatpak-launcher.sh" \
+          "${STAGE}/io.github.whyamihere773.PawchiveDownloader.desktop" \
+          "${STAGE}/io.github.whyamihere773.PawchiveDownloader.metainfo.xml"
+        sed -i "s/<release version=\"[^\"]*\" date=\"[^\"]*\"/<release version=\"${VERSION}\" date=\"${REL_DATE}\"/" \
+          "${STAGE}/io.github.whyamihere773.PawchiveDownloader.metainfo.xml"
+        chmod +x "${STAGE}/pawchive-flatpak-launcher.sh"
+
+        flatpak-builder --force-clean --disable-rofiles-fuse \
+          --repo=flatpak-repo flatpak-build \
+          packaging/flatpak/io.github.whyamihere773.PawchiveDownloader.yml
+
+        flatpak build-bundle \
+          --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo \
+          flatpak-repo \
+          "dist/Pawchive-Linux-v${VERSION}-Flatpak-Experimental-x86_64.flatpak" \
+          io.github.whyamihere773.PawchiveDownloader
+
+        ls -lh dist/*.flatpak
+
+    - name: Upload Experimental Flatpak Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: pawchive-linux-flatpak-experimental
+        path: dist/Pawchive-Linux-v*-Flatpak-Experimental-x86_64.flatpak
+        retention-days: 14
+
+  # 3. Arch / CachyOS pacman package & AUR PKGBUILD (Experimental)
+  build-arch:
+    needs: build-linux
+    runs-on: ubuntu-22.04
+    container:
+      image: archlinux:base-devel
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Download portable Linux tarball
+      uses: actions/download-artifact@v4
+      with:
+        name: pawchive-linux-portable
+        path: arch-in
+
+    - name: Build Experimental Arch pacman package (.pkg.tar.zst)
+      run: |
+        VERSION="${{ needs.build-linux.outputs.version }}"
+        TARBALL="Pawchive-Linux-v${VERSION}-Portable-x86_64.tar.gz"
+        SHA256="$(sha256sum "arch-in/${TARBALL}" | awk '{print $1}')"
+
+        BUILD_DIR="/tmp/pawchive-aur-build"
+        rm -rf "${BUILD_DIR}" dist
+        mkdir -p "${BUILD_DIR}" dist/aur
+
+        cp "arch-in/${TARBALL}" "${BUILD_DIR}/${TARBALL}"
+        cp packaging/aur/PKGBUILD "${BUILD_DIR}/PKGBUILD"
+        sed -i 's/\r$//' "${BUILD_DIR}/PKGBUILD"
+        sed -i "s/^pkgver=.*/pkgver=${VERSION}/" "${BUILD_DIR}/PKGBUILD"
+        sed -i "s/^sha256sums=.*/sha256sums=('${SHA256}')/" "${BUILD_DIR}/PKGBUILD"
+
+        id -u builder >/dev/null 2>&1 || useradd -m builder
+        chown -R builder:builder "${BUILD_DIR}"
+
+        su -s /bin/bash builder -c "cd '${BUILD_DIR}' && makepkg -f --nodeps --noconfirm && makepkg --printsrcinfo > .SRCINFO"
+
+        PKG_FILE="$(find "${BUILD_DIR}" -maxdepth 1 -name 'pawchive-downloader-bin-*.pkg.tar.zst' | head -n 1)"
+        test -n "${PKG_FILE}" || { echo "ERROR: .pkg.tar.zst was not created"; exit 1; }
+        cp "${PKG_FILE}" "dist/Pawchive-Linux-v${VERSION}-Arch-Experimental-x86_64.pkg.tar.zst"
+        cp "${BUILD_DIR}/PKGBUILD" "${BUILD_DIR}/.SRCINFO" dist/aur/
+
+        ls -lh dist/*.pkg.tar.zst dist/aur/
+
+    - name: Upload Experimental Arch Package & AUR Metadata
+      uses: actions/upload-artifact@v4
+      with:
+        name: pawchive-linux-arch-experimental
+        path: |
+          dist/Pawchive-Linux-v*-Arch-Experimental-x86_64.pkg.tar.zst
+          dist/aur/PKGBUILD
+          dist/aur/.SRCINFO
+        retention-days: 14
+
+  # 4. Attach all produced Linux builds to the GitHub Release (tagged releases or manual dispatch)
+  publish-release:
+    needs: [ build-linux, build-flatpak, build-arch ]
+    if: >-
+      always() &&
+      needs.build-linux.result == 'success' &&
+      (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.tag != ''))
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Download Portable Linux tarball
+      uses: actions/download-artifact@v4
+      with:
+        name: pawchive-linux-portable
+        path: release-assets
+
+    - name: Download Experimental Flatpak bundle
+      if: needs.build-flatpak.result == 'success'
+      uses: actions/download-artifact@v4
+      with:
+        name: pawchive-linux-flatpak-experimental
+        path: release-assets
+
+    - name: Download Experimental Arch package
+      if: needs.build-arch.result == 'success'
+      uses: actions/download-artifact@v4
+      with:
+        name: pawchive-linux-arch-experimental
+        path: release-assets
+
+    - name: List assets to attach
+      run: ls -lh release-assets/Pawchive-Linux-*
+
+    - name: Attach Linux builds to GitHub Release
       uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ inputs.tag || github.ref_name }}
         body_path: RELEASE_NOTES.md
-        files: dist/Pawchive-Downloader-v*-Linux-x86_64.tar.gz
+        files: release-assets/Pawchive-Linux-*

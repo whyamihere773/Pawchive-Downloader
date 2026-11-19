@@ -365,8 +365,16 @@ Item {
                         Layout.fillWidth: true
                         implicitHeight: 30
                         radius: 6
-                        color: "#0D1018"
-                        border.color: passwordInput.activeFocus ? "#38BDF8" : "#252D3E"
+                        color: passwordInput.activeFocus ? "#0B0D12" : "#0D1018"
+                        border.color: passwordInput.activeFocus ? "#38BDF8" : (passwordBoxMouse.containsMouse ? "#475569" : "#252D3E")
+                        border.width: passwordInput.activeFocus ? 1.5 : 1
+
+                        TextBarContextArea {
+                            id: passwordBoxMouse
+                            target: passwordInput
+                            focusOnLeftClick: true
+                        }
+
                         TextInput {
                             id: passwordInput
                             anchors.fill: parent
@@ -375,10 +383,13 @@ Item {
                             verticalAlignment: TextInput.AlignVCenter
                             echoMode: TextInput.Password
                             color: "#F8FAFC"
+                            selectionColor: "#0284C7"
+                            selectedTextColor: "#FFFFFF"
                             font.pixelSize: 12
                             selectByMouse: true
                             clip: true
                             onAccepted: root.submitPassword()
+                            TextBarContextArea {}
                             Text {
                                 anchors.verticalCenter: parent.verticalCenter
                                 visible: !passwordInput.text && !passwordInput.activeFocus

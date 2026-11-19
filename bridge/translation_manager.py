@@ -34,7 +34,7 @@ class TranslationManager(QObject):
         {"code": "tr", "name": "Turkish", "native": "Türkçe"},
     ]
 
-    def __init__(self, locales_dir: str = None, parent: QObject = None):
+    def __init__(self, locales_dir: str = None, parent: QObject = None, initial_language: str = "auto"):
         super().__init__(parent)
 
         if not locales_dir:
@@ -50,13 +50,15 @@ class TranslationManager(QObject):
         else:
             self._locales_dir = locales_dir
 
-        self._selected_code: str = "auto"
+        self._selected_code: str = ""
         self._active_code: str = "en"
         self._translations: Dict[str, str] = {}
         self._fallback_en: Dict[str, str] = {}
+        self._initialized: bool = False
 
         self._load_fallback()
-        self.setLanguage("auto")
+        self.setLanguage(initial_language)
+        self._initialized = True
 
     def _load_fallback(self):
         en_path = os.path.join(self._locales_dir, "en.json")
@@ -168,6 +170,8 @@ class TranslationManager(QObject):
     def setLanguage(self, code: str):
         if not code or code not in [l["code"] for l in self.SUPPORTED_LANGUAGES]:
             code = "auto"
+        if getattr(self, "_initialized", False) and code == self._selected_code and self._translations:
+            return
         self._selected_code = code
         self._load_language(code)
         logger.info(f"Language set to: '{code}' (Active: '{self._active_code}')", category="i18n")
@@ -203,8 +207,8 @@ class TranslationManager(QObject):
         ("log_queue_cleared", re.compile(r"^Queue cleared\.$")),
         ("log_history_cleared", re.compile(r"^History cleared\.$")),
         ("log_rate_limit_encountered", re.compile(r"^⚡ \[Rate Limit Cooldown\] HTTP 429 encountered! Threads locked at (\d+) \(cooldown (\d+)s\)\.\.\.$")),
-        ("log_ytdlp_downloading", re.compile(r"^Downloading latest yt-dlp\.exe from GitHub to (.+?)\.\.\.$")),
-        ("log_ytdlp_installed", re.compile(r"^yt-dlp\.exe successfully installed \((.+?)\)$")),
+        ("log_ytdlp_downloading", re.compile(r"^Downloading latest yt-dlp(?:\.exe)? from GitHub to (.+?)\.\.\.$")),
+        ("log_ytdlp_installed", re.compile(r"^yt-dlp(?:\.exe)? successfully installed \((.+?)\)$")),
         ("log_loading_qml", re.compile(r"^Loading QML interface from: (.+)$")),
         ("log_char_filter_scope_default", re.compile(r"^Character filter scope set to default: '(.+?)'$")),
         ("log_filename_style_loaded", re.compile(r"^filename style loaded: '(.+?)'$")),

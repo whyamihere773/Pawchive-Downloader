@@ -5,26 +5,67 @@ import QtQuick.Layouts
 Popup {
     id: textContextMenu
     parent: Overlay.overlay
+    z: 1000000
     width: 175
     padding: 6
     closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
     transformOrigin: Popup.TopLeft
 
     property var target: null
+    property int _savedSelStart: 0
+    property int _savedSelEnd: 0
+    property bool _savedHasSelection: false
+
+    readonly property bool _isPasswordMasked: (
+        target !== null
+        && target !== undefined
+        && target.echoMode !== undefined
+        && target.echoMode === TextInput.Password
+    )
+
+    readonly property bool _hasSelection: (
+        (target && target.selectedText && target.selectedText.length > 0)
+        || _savedHasSelection
+    )
+
+    function _restoreSelectionIfNeeded() {
+        if (!target) return
+        if (_savedHasSelection && (!target.selectedText || target.selectedText.length === 0)) {
+            if (typeof target.select === "function") {
+                target.select(_savedSelStart, _savedSelEnd)
+            }
+        }
+    }
 
     function showAt(item, mouseX, mouseY) {
         target = item
-        if (target && typeof target.forceActiveFocus === "function") {
-            target.forceActiveFocus()
+        _savedSelStart = 0
+        _savedSelEnd = 0
+        _savedHasSelection = false
+
+        if (target) {
+            if (target.selectedText && target.selectedText.length > 0
+                    && typeof target.selectionStart === "number"
+                    && typeof target.selectionEnd === "number") {
+                _savedSelStart = target.selectionStart
+                _savedSelEnd = target.selectionEnd
+                _savedHasSelection = true
+            }
+            if (!target.activeFocus && typeof target.forceActiveFocus === "function") {
+                target.forceActiveFocus()
+            }
         }
 
         // Map position from target to parent of popup if needed
-        var mapped = target ? target.mapToItem(textContextMenu.parent, mouseX, mouseY) : { x: mouseX, y: mouseY }
+        var mapped = (target && textContextMenu.parent)
+            ? target.mapToItem(textContextMenu.parent, mouseX, mouseY)
+            : { x: mouseX, y: mouseY }
         var parentWidth = textContextMenu.parent ? textContextMenu.parent.width : 800
         var parentHeight = textContextMenu.parent ? textContextMenu.parent.height : 600
+        var menuHeight = Math.max(textContextMenu.implicitHeight, 170)
 
         textContextMenu.x = Math.max(8, Math.min(mapped.x, parentWidth - textContextMenu.width - 8))
-        textContextMenu.y = Math.max(8, Math.min(mapped.y, parentHeight - textContextMenu.implicitHeight - 8))
+        textContextMenu.y = Math.max(8, Math.min(mapped.y, parentHeight - menuHeight - 8))
         textContextMenu.open()
     }
 
@@ -128,10 +169,14 @@ Popup {
             icon: "📋"
             label: "Paste"
             shortcut: "Ctrl+V"
-            active: textContextMenu.target && !textContextMenu.target.readOnly
+            active: Boolean(textContextMenu.target && !textContextMenu.target.readOnly)
             onTriggered: {
                 if (textContextMenu.target) {
-                    textContextMenu.target.paste()
+                    var t = textContextMenu.target
+                    if (!t.activeFocus && typeof t.forceActiveFocus === "function") t.forceActiveFocus()
+                    textContextMenu._restoreSelectionIfNeeded()
+                    t.paste()
+                    if (typeof t.forceActiveFocus === "function") t.forceActiveFocus()
                 }
                 textContextMenu.close()
             }
@@ -142,9 +187,10 @@ Popup {
             icon: "📄"
             label: "Copy"
             shortcut: "Ctrl+C"
-            active: textContextMenu.target && textContextMenu.target.selectedText && textContextMenu.target.selectedText.length > 0
+            active: Boolean(textContextMenu.target && !textContextMenu._isPasswordMasked && textContextMenu._hasSelection)
             onTriggered: {
                 if (textContextMenu.target) {
+                    textContextMenu._restoreSelectionIfNeeded()
                     textContextMenu.target.copy()
                 }
                 textContextMenu.close()
@@ -156,10 +202,13 @@ Popup {
             icon: "✂️"
             label: "Cut"
             shortcut: "Ctrl+X"
-            active: textContextMenu.target && !textContextMenu.target.readOnly && textContextMenu.target.selectedText && textContextMenu.target.selectedText.length > 0
+            active: Boolean(textContextMenu.target && !textContextMenu.target.readOnly && !textContextMenu._isPasswordMasked && textContextMenu._hasSelection)
             onTriggered: {
                 if (textContextMenu.target) {
-                    textContextMenu.target.cut()
+                    var t = textContextMenu.target
+                    textContextMenu._restoreSelectionIfNeeded()
+                    t.cut()
+                    if (typeof t.forceActiveFocus === "function") t.forceActiveFocus()
                 }
                 textContextMenu.close()
             }
@@ -178,10 +227,12 @@ Popup {
             icon: "🔲"
             label: "Select All"
             shortcut: "Ctrl+A"
-            active: textContextMenu.target && textContextMenu.target.text && textContextMenu.target.text.length > 0
+            active: Boolean(textContextMenu.target && textContextMenu.target.text && textContextMenu.target.text.length > 0)
             onTriggered: {
                 if (textContextMenu.target) {
-                    textContextMenu.target.selectAll()
+                    var t = textContextMenu.target
+                    if (typeof t.forceActiveFocus === "function") t.forceActiveFocus()
+                    t.selectAll()
                 }
                 textContextMenu.close()
             }
@@ -192,12 +243,17 @@ Popup {
             icon: "🗑️"
             label: "Clear"
             danger: true
-            active: textContextMenu.target && !textContextMenu.target.readOnly && textContextMenu.target.text && textContextMenu.target.text.length > 0
+            active: Boolean(textContextMenu.target && !textContextMenu.target.readOnly && textContextMenu.target.text && textContextMenu.target.text.length > 0)
             onTriggered: {
                 if (textContextMenu.target) {
-                    textContextMenu.target.text = ""
-                    if (typeof textContextMenu.target.editingFinished === "function") {
-                        textContextMenu.target.editingFinished()
+                    var t = textContextMenu.target
+                    if (typeof t.forceActiveFocus === "function") t.forceActiveFocus()
+                    t.text = ""
+                    if (typeof t.textEdited === "function") {
+                        t.textEdited()
+                    }
+                    if (typeof t.editingFinished === "function") {
+                        t.editingFinished()
                     }
                 }
                 textContextMenu.close()

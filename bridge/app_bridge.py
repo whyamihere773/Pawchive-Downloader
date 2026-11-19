@@ -61,7 +61,9 @@ from core.filter_engine import (
 )
 from core.file_order import normalize_file_order, order_files
 from core.api_client import KemonoApiClient
-from core.downloader import KemonoDownloader, DownloadTask, BatchBuildContext, is_permanent_failure
+from core.downloader import (
+    KemonoDownloader, DownloadTask, BatchBuildContext, is_permanent_failure, is_task_non_retryable
+)
 from core.session_manager import SessionManager
 from core.known_manager import KnownManager
 from bridge.log_model import LogModel
@@ -105,6 +107,7 @@ from core.path_utils import (
 from core.post_metadata_index import parse_post_info_content
 from core.archive_manager import ArchiveManager
 from core.archive_rebuilder import ArchiveRebuilder, ArchiveRebuildOptions
+from core.archive_rebuild_journal import ArchiveRebuildJournal
 from services.model_manager import ModelManager, MODEL_CATALOG
 from core.hardware_detector import HardwareDetector
 
@@ -140,6 +143,7 @@ class AppBridge(QObject):
     skipArchivesChanged = Signal()
     downloadThumbnailsOnlyChanged = Signal()
     fallbackToThumbnailsChanged = Signal()
+    hideUnimportedNoticeChanged = Signal()
     redownloadSmallFilesChanged = Signal()
     skipPostCoversChanged = Signal()
     scanContentImagesChanged = Signal()
@@ -239,6 +243,7 @@ class AppBridge(QObject):
     archiveRebuildProgress             = Signal('QVariant')
     archiveRebuildFinished            = Signal('QVariant')
     archiveRebuildStatusChanged        = Signal()
+    archiveRebuildRecoveryChanged      = Signal()
 
     tagFolderModeChanged      = Signal()
     groupFileTypeChanged      = Signal()
@@ -337,6 +342,9 @@ class AppBridge(QObject):
     _callOnGui = Signal(object)      # a function to run on the window thread (from background jobs)
     # A switched-off site (Kemono / Coomer) was used: (message, same link on the replacement site or "", context)
     providerDisabled = Signal(str, str, str)
+    # Pawchive posts haven't been imported onto Pawchive's file servers yet: (title, message, showModal)
+    unimportedNotice = Signal(str, str, bool)
+    browserLastDownloadDirChanged = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -403,6 +411,7 @@ class AppBridge(QObject):
         self._skip_archives = False
         self._download_thumbnails_only = bool(saved_settings.get("download_thumbnails_only", False))
         self._fallback_to_thumbnails = bool(saved_settings.get("fallback_to_thumbnails", False))
+        self._hide_unimported_notice = bool(saved_settings.get("hide_unimported_notice", False))
         self._redownload_small_files = bool(saved_settings.get("redownload_small_files", False))
         self._skip_post_covers = bool(saved_settings.get("skip_post_covers", False))
         self._scan_content_images = saved_settings.get("scan_content_images", True)
@@ -532,6 +541,7 @@ class AppBridge(QObject):
             if str(t).strip().lower() and str(t).strip().lower() not in ("downloader", "settings")
         ]
         self._local_library_roots = list(saved_settings.get("local_library_roots") or [])
+        self._browser_last_download_dir = str(saved_settings.get("browser_last_download_dir") or "").strip()
 
         self._language = str(saved_settings.get("language", "auto"))
         raw_scale = saved_settings.get("ui_scale", 1.0)
@@ -666,6 +676,18 @@ class AppBridge(QObject):
         self._has_saved_session = bool(saved_sess) or self._has_recovery_session
         if self._has_recovery_session:
             logger.warning("Unfinished download session detected from previous crash. Ready for recovery.", category="session")
+
+        # Check crash-proof SQLite WAL journal for any interrupted Archive Rebuild
+        self.archive_rebuild_journal = ArchiveRebuildJournal(self.session_manager.config_dir)
+        self._has_saved_archive_rebuild = self.archive_rebuild_journal.has_unfinished_session()
+        self._archive_rebuild_recovery_summary = (
+            self.archive_rebuild_journal.get_summary() if self._has_saved_archive_rebuild else {}
+        )
+        if self._has_saved_archive_rebuild:
+            logger.warning(
+                "Unfinished archive rebuild detected from previous session. Ready to resume from checkpoint.",
+                category="archive",
+            )
 
         # Hook downloader callbacks — they emit our private signals (thread-safe)
         def _safe_emit(sig, *args):
@@ -1338,6 +1360,18 @@ class AppBridge(QObject):
         if self._fallback_to_thumbnails != val:
             self._fallback_to_thumbnails = val
             self.fallbackToThumbnailsChanged.emit()
+            self.saveSettings()
+
+    @Property(bool, notify=hideUnimportedNoticeChanged)
+    def hideUnimportedNotice(self) -> bool:
+        return self._hide_unimported_notice
+
+    @hideUnimportedNotice.setter
+    def hideUnimportedNotice(self, val: bool):
+        val_b = bool(val)
+        if self._hide_unimported_notice != val_b:
+            self._hide_unimported_notice = val_b
+            self.hideUnimportedNoticeChanged.emit()
             self.saveSettings()
 
     @Property(bool, notify=redownloadSmallFilesChanged)
@@ -2580,6 +2614,14 @@ class AppBridge(QObject):
     def isArchiveRebuildPaused(self) -> bool:
         return self._is_archive_rebuild_paused
 
+    @Property(bool, notify=archiveRebuildRecoveryChanged)
+    def hasSavedArchiveRebuild(self) -> bool:
+        return bool(getattr(self, "_has_saved_archive_rebuild", False))
+
+    @Property("QVariantMap", notify=archiveRebuildRecoveryChanged)
+    def archiveRebuildRecoverySummary(self) -> dict:
+        return dict(getattr(self, "_archive_rebuild_recovery_summary", {}) or {})
+
     @Slot(result="QVariantList")
     def getSuggestedRebuildDirectories(self) -> list:
         """Returns candidate download folders across active settings, storage pools, and watchlist."""
@@ -2604,6 +2646,35 @@ class AppBridge(QObject):
             pass
         return list(dict.fromkeys(candidates))
 
+    @Property(str, notify=browserLastDownloadDirChanged)
+    def browserLastDownloadDir(self) -> str:
+        return getattr(self, "_browser_last_download_dir", "") or ""
+
+    @browserLastDownloadDir.setter
+    def browserLastDownloadDir(self, val: str):
+        clean = os.path.normpath(str(val or "").strip()) if str(val or "").strip() else ""
+        if getattr(self, "_browser_last_download_dir", "") != clean:
+            self._browser_last_download_dir = clean
+            self.browserLastDownloadDirChanged.emit()
+            self.saveSettings()
+
+    @Slot(str, result=str)
+    @Slot(result=str)
+    def browseBrowserDownloadDir(self, initialDir: str = "") -> str:
+        """Open native directory picker for Browser downloads starting at the last remembered Browser path."""
+        start_dir = ""
+        for cand in (initialDir, getattr(self, "_browser_last_download_dir", ""), self._download_dir, os.path.expanduser("~")):
+            c = str(cand or "").strip()
+            if c and os.path.isdir(c):
+                start_dir = c
+                break
+        folder = QFileDialog.getExistingDirectory(None, "Select Browser Download Folder", start_dir)
+        if not folder:
+            return ""
+        norm = os.path.normpath(folder)
+        self.browserLastDownloadDir = norm
+        return norm
+
     @Slot(str, str, result=str)
     @Slot(str, result=str)
     @Slot(result=str)
@@ -2612,6 +2683,50 @@ class AppBridge(QObject):
         start_dir = initialDir if (initialDir and os.path.isdir(initialDir)) else (self._download_dir or os.path.expanduser("~"))
         folder = QFileDialog.getExistingDirectory(None, title or "Select Directory", start_dir)
         return os.path.normpath(folder) if folder else ""
+
+    def _launch_archive_rebuilder(
+        self,
+        directories: list,
+        opts: ArchiveRebuildOptions,
+        resume_state: Optional[dict] = None,
+    ) -> bool:
+        def _on_progress(data: dict):
+            self._is_archive_rebuild_paused = data.get("is_paused", False)
+            self.archiveRebuildProgress.emit(data)
+
+        def _on_finished(stats: dict):
+            self._is_archive_rebuilding = False
+            self._is_archive_rebuild_paused = False
+            self._archive_rebuilder = None
+            self._has_saved_archive_rebuild = self.archive_rebuild_journal.has_unfinished_session()
+            self._archive_rebuild_recovery_summary = (
+                self.archive_rebuild_journal.get_summary() if self._has_saved_archive_rebuild else {}
+            )
+            self.archiveRecordCountChanged.emit()
+            self.archiveUpdated.emit()
+            self.archiveRebuildRecoveryChanged.emit()
+            self.archiveRebuildStatusChanged.emit()
+            self.archiveRebuildFinished.emit(stats)
+
+        self._archive_rebuilder = ArchiveRebuilder(
+            archive_manager=self.archive_manager,
+            directories=directories,
+            options=opts,
+            on_progress=_on_progress,
+            on_finished=_on_finished,
+            journal=self.archive_rebuild_journal,
+            resume_state=resume_state,
+        )
+
+        started = self._archive_rebuilder.start()
+        if started:
+            self._is_archive_rebuilding = True
+            self._is_archive_rebuild_paused = False
+            self._has_saved_archive_rebuild = False
+            self._archive_rebuild_recovery_summary = {}
+            self.archiveRebuildRecoveryChanged.emit()
+            self.archiveRebuildStatusChanged.emit()
+        return started
 
     @Slot("QVariantList", str, bool, bool, result=bool)
     @Slot(list, str, bool, bool, result=bool)
@@ -2626,7 +2741,8 @@ class AppBridge(QObject):
     ) -> bool:
         """
         Asynchronously scans and rebuilds the archive database from multiple directories.
-        Completely non-blocking to the Qt main thread with live telemetry streaming.
+        Completely non-blocking to the Qt main thread with live telemetry streaming and
+        crash-proof SQLite WAL checkpointing.
         """
         if self._is_archive_rebuilding:
             return False
@@ -2640,34 +2756,40 @@ class AppBridge(QObject):
             detect_post_info=detectPostInfo,
             skip_existing=skipExisting
         )
+        return self._launch_archive_rebuilder(valid_dirs, opts, resume_state=None)
 
-        def _on_progress(data: dict):
-            self._is_archive_rebuild_paused = data.get("is_paused", False)
-            self.archiveRebuildProgress.emit(data)
+    @Slot(result=bool)
+    def resumeSavedArchiveRebuild(self) -> bool:
+        """Resumes an interrupted Archive Rebuild directly from its SQLite WAL checkpoint."""
+        if self._is_archive_rebuilding:
+            return False
+        summary = self.archive_rebuild_journal.get_summary()
+        if not summary:
+            self._has_saved_archive_rebuild = False
+            self._archive_rebuild_recovery_summary = {}
+            self.archiveRebuildRecoveryChanged.emit()
+            return False
 
-        def _on_finished(stats: dict):
-            self._is_archive_rebuilding = False
-            self._is_archive_rebuild_paused = False
-            self._archive_rebuilder = None
-            self.archiveRecordCountChanged.emit()
-            self.archiveUpdated.emit()
-            self.archiveRebuildStatusChanged.emit()
-            self.archiveRebuildFinished.emit(stats)
-
-        self._archive_rebuilder = ArchiveRebuilder(
-            archive_manager=self.archive_manager,
-            directories=valid_dirs,
-            options=opts,
-            on_progress=_on_progress,
-            on_finished=_on_finished
+        dirs = [os.path.normpath(d) for d in (summary.get("directories") or []) if d and os.path.isdir(d)]
+        raw_opts = summary.get("options") or {}
+        opts = ArchiveRebuildOptions(
+            hash_mode=str(raw_opts.get("hash_mode", "full")),
+            detect_post_info=bool(raw_opts.get("detect_post_info", True)),
+            skip_existing=bool(raw_opts.get("skip_existing", True)),
+            exclude_temp=bool(raw_opts.get("exclude_temp", True)),
         )
+        if not dirs and summary.get("status") == "discovering":
+            self.discardSavedArchiveRebuild()
+            return False
+        return self._launch_archive_rebuilder(dirs, opts, resume_state=summary)
 
-        started = self._archive_rebuilder.start()
-        if started:
-            self._is_archive_rebuilding = True
-            self._is_archive_rebuild_paused = False
-            self.archiveRebuildStatusChanged.emit()
-        return started
+    @Slot()
+    def discardSavedArchiveRebuild(self) -> None:
+        """Clears the saved Archive Rebuild checkpoint without resuming."""
+        self.archive_rebuild_journal.clear()
+        self._has_saved_archive_rebuild = False
+        self._archive_rebuild_recovery_summary = {}
+        self.archiveRebuildRecoveryChanged.emit()
 
     @Slot()
     def pauseArchiveRebuild(self) -> None:
@@ -3532,17 +3654,25 @@ class AppBridge(QObject):
                     continue
 
                 self._queued_links.add(identity_key)
-                self._async_fetch_and_start(parsed, auto_start=False)
+                self._async_fetch_and_start(parsed, auto_start=False, from_batch=(len(raw_urls) > 1))
 
         threading.Thread(
             target=_batch_queue_worker,
             daemon=True
         ).start()
 
+    @Slot("QVariantList", bool, bool, str, bool)
     @Slot("QVariantList", bool, bool)
     @Slot("QVariantList", bool)
     @Slot("QVariantList")
-    def enqueueBatchUrls(self, urls: list, autoStart: bool = True, forceRedownload: bool = False) -> None:
+    def enqueueBatchUrls(
+        self,
+        urls: list,
+        autoStart: bool = True,
+        forceRedownload: bool = False,
+        downloadDir: str = "",
+        createCreatorFolder: bool = True,
+    ) -> None:
         """
         Enqueues a batch of creator or post URLs (e.g. from the Browser selection cart)
         directly into the normal Downloader & Queue pipeline.
@@ -3550,6 +3680,7 @@ class AppBridge(QObject):
         raw_urls = [str(u or "").strip() for u in (urls or []) if str(u or "").strip()]
         if not raw_urls:
             return
+        clean_dir = os.path.normpath(str(downloadDir or "").strip()) if str(downloadDir or "").strip() else ""
 
         self._scan_cancel_event.clear()
         if autoStart:
@@ -3562,27 +3693,42 @@ class AppBridge(QObject):
             self.statusTextChanged.emit()
 
         def _batch_worker():
-            for u in raw_urls:
-                if self._scan_cancel_event.is_set():
-                    break
-                parsed = KemonoURLParser.parse(u)
-                if not parsed.is_valid:
-                    logger.error(f"Invalid URL: {parsed.error_msg} ({u})", category="parser")
-                    continue
-                if self._refuse_if_disabled(u):
-                    continue
-
-                link_type, identity_key, parent_artist_key, display_name = self._get_link_identity(parsed)
-                if not forceRedownload:
-                    if identity_key in self._queued_links:
-                        logger.info(f"Skipping duplicate {link_type}: {display_name} is already in queue.", category="queue")
+            is_multi = len(raw_urls) > 1
+            try:
+                for u in raw_urls:
+                    if self._scan_cancel_event.is_set():
+                        break
+                    parsed = KemonoURLParser.parse(u)
+                    if not parsed.is_valid:
+                        logger.error(f"Invalid URL: {parsed.error_msg} ({u})", category="parser")
                         continue
-                    if parent_artist_key and parent_artist_key in self._queued_links:
-                        logger.info(f"Skipping post: entire artist ({parsed.user_id}) is already in queue.", category="queue")
+                    if self._refuse_if_disabled(u):
                         continue
 
-                self._queued_links.add(identity_key)
-                self._async_fetch_and_start(parsed, auto_start=autoStart, force_redownload=bool(forceRedownload))
+                    link_type, identity_key, parent_artist_key, display_name = self._get_link_identity(parsed)
+                    if not forceRedownload:
+                        if identity_key in self._queued_links:
+                            logger.info(f"Skipping duplicate {link_type}: {display_name} is already in queue.", category="queue")
+                            continue
+                        if parent_artist_key and parent_artist_key in self._queued_links:
+                            logger.info(f"Skipping post: entire artist ({parsed.user_id}) is already in queue.", category="queue")
+                            continue
+
+                    self._queued_links.add(identity_key)
+                    self._async_fetch_and_start(
+                        parsed,
+                        auto_start=autoStart,
+                        force_redownload=bool(forceRedownload),
+                        override_download_dir=clean_dir,
+                        create_creator_folder=bool(createCreatorFolder),
+                        from_batch=is_multi,
+                    )
+            finally:
+                if autoStart and not self.downloader._is_running:
+                    has_pending = any(t.status == "pending" for t in (self.downloader.tasks or []))
+                    if not has_pending and self._is_downloading:
+                        self._is_downloading = False
+                        self.isDownloadingChanged.emit()
 
         threading.Thread(target=_batch_worker, daemon=True, name="BrowserBatchQueueWorker").start()
 
@@ -4714,9 +4860,55 @@ class AppBridge(QObject):
             user_id=parsed.user_id if not parsed.is_external_provider else ""
         )
 
+        unimp_info = dict(getattr(self.downloader, "last_build_unimported", {}) or {})
+        unimp_tasks = list(getattr(self.downloader, "last_build_unimported_tasks", []) or [])
         if not tasks:
-            logger.warning("No downloadable files found matching active filters in selected posts.", category="downloader")
+            if int(unimp_info.get("files", 0) or 0) > 0:
+                if unimp_tasks:
+                    # Place pre-failed non-retryable entries into the queue & Retry Modal
+                    # without stopping any active or pending downloads.
+                    if self._is_downloading or self.downloader.tasks:
+                        self._handle_append_tasks(unimp_tasks)
+                        self.downloader.append_tasks(unimp_tasks, options=None)
+                    else:
+                        self._queue_model.clear()
+                        self._active_queue_model.clear()
+                        self.downloader.reset_state()
+                        self.downloader.tasks = list(unimp_tasks)
+                        self._handle_set_tasks(unimp_tasks)
+                    if self._queue_model:
+                        self._queue_model.failedCountChanged.emit()
+                has_pending_existing = any(t.status == "pending" for t in (self.downloader.tasks or []))
+                if has_pending_existing and not self.downloader._is_running:
+                    self.downloader.start_download_queue(
+                        tasks=self.downloader.tasks,
+                        options=options,
+                        cookie_str=self._cookie_string,
+                    )
+                    if not self._is_downloading:
+                        self._is_downloading = True
+                        self.isDownloadingChanged.emit()
+                if not self.downloader._is_running and not has_pending_existing:
+                    self._status_text = "Marked as Not Imported on Pawchive (full files aren't hosted on the site yet)"
+                    self.statusTextChanged.emit()
+                self._emit_unimported_notice_if_needed(
+                    unimp_info,
+                    queued_count=0,
+                    is_single_post=(len(filtered_posts) == 1),
+                    allow_modal=True,
+                )
+            else:
+                logger.warning("No downloadable files found matching active filters in selected posts.", category="downloader")
             return
+        if int(unimp_info.get("files", 0) or 0) > 0 or int(unimp_info.get("queued_thumbnails", 0) or 0) > 0:
+            self._emit_unimported_notice_if_needed(
+                unimp_info,
+                queued_count=len(tasks),
+                is_single_post=(len(filtered_posts) == 1),
+                allow_modal=False,
+            )
+
+        queued_tasks = list(tasks) + unimp_tasks
 
         self.downloader.register_batch_context(
             BatchBuildContext(
@@ -4742,8 +4934,8 @@ class AppBridge(QObject):
 
         if autoStart:
             if self._is_downloading:
-                self._handle_append_tasks(tasks)
-                self.downloader.append_tasks(tasks, options=options, cookie_str=self._cookie_string)
+                self._handle_append_tasks(queued_tasks)
+                self.downloader.append_tasks(queued_tasks, options=options, cookie_str=self._cookie_string)
                 logger.info(f"Appended {len(tasks)} tasks from {len(filtered_posts)} selected posts to active queue.", category="downloader")
             else:
                 self._queue_model.clear()
@@ -4762,8 +4954,8 @@ class AppBridge(QObject):
                     self.hasPendingDownloadSettingsChangesChanged.emit()
                     self.pendingSettingsDiffSummaryChanged.emit()
                 self.downloader.reset_state()
-                self.downloader.tasks = list(tasks)
-                self._handle_set_tasks(tasks)
+                self.downloader.tasks = list(queued_tasks)
+                self._handle_set_tasks(queued_tasks)
 
                 self._scan_cancel_event.clear()
                 self._has_error = False
@@ -4776,13 +4968,13 @@ class AppBridge(QObject):
 
                 logger.info(f"Starting download for {len(tasks)} file(s) across {len(filtered_posts)} selected posts...", category="downloader")
                 self.downloader.start_download_queue(
-                    tasks=tasks,
+                    tasks=queued_tasks,
                     options=options,
                     cookie_str=self._cookie_string
                 )
         else:
-            self._handle_append_tasks(tasks)
-            self.downloader.append_tasks(tasks)
+            self._handle_append_tasks(queued_tasks)
+            self.downloader.append_tasks(queued_tasks)
             self._status_text = f"Queued {len(tasks)} files ({creator_name})."
             self.statusTextChanged.emit()
             logger.success(f"Added {len(tasks)} tasks from {len(filtered_posts)} selected posts to queue.", category="queue")
@@ -4861,6 +5053,9 @@ class AppBridge(QObject):
         *,
         from_watchlist: bool = False,
         watchlist_entry=None,
+        override_download_dir: str = "",
+        create_creator_folder: bool = True,
+        from_batch: bool = False,
     ):
         scan_gen = self._scan_ui_gen
         with self._scan_jobs_lock:
@@ -4894,7 +5089,13 @@ class AppBridge(QObject):
             options = FilterOptions.from_dict(options.to_dict())
             if force_redownload:
                 options.force_redownload = True
-            baseline_download_dir = str(self._download_dir or "")
+            has_override_dir = bool(str(override_download_dir or "").strip())
+            effective_download_dir = (
+                os.path.normpath(str(override_download_dir).strip())
+                if has_override_dir
+                else str(self._download_dir or "")
+            )
+            baseline_download_dir = effective_download_dir
             baseline_site_in_name = bool(folder_naming.include_service)
 
             raw_posts_for_ctx: List[Dict[str, Any]] = []
@@ -4920,7 +5121,11 @@ class AppBridge(QObject):
                     album_title, files = fetch_bunkr_album(parsed.raw_url, resolve_files=True)
                     creator_name = clean_text(album_title) or "Bunkr Album"
                     folder_name = sanitize_filesystem_name(creator_name, fallback="Bunkr Album")
-                    folder = os.path.join(self._download_dir, f"Bunkr - {folder_name}")
+                    folder = (
+                        os.path.join(effective_download_dir, f"Bunkr - {folder_name}")
+                        if create_creator_folder
+                        else effective_download_dir
+                    )
                     batch_id = f"bunkr_{parsed.post_id or creator_name or 'bunkr'}"
                     external_files_for_ctx = list(files or [])
                     ctx_artist_dir = folder
@@ -4945,7 +5150,11 @@ class AppBridge(QObject):
                     album_title, files = fetch_erome_album(parsed.raw_url)
                     creator_name = clean_text(album_title) or "Erome Album"
                     folder_name = sanitize_filesystem_name(creator_name, fallback="Erome Album")
-                    folder = os.path.join(self._download_dir, f"Erome - {folder_name}")
+                    folder = (
+                        os.path.join(effective_download_dir, f"Erome - {folder_name}")
+                        if create_creator_folder
+                        else effective_download_dir
+                    )
                     batch_id = f"erome_{parsed.post_id or creator_name or 'erome'}"
                     external_files_for_ctx = list(files or [])
                     ctx_artist_dir = folder
@@ -4969,7 +5178,11 @@ class AppBridge(QObject):
                     gallery_title, files = fetch_nhentai_gallery(parsed.post_id or parsed.raw_url)
                     creator_name = clean_text(gallery_title) or f"Gallery {parsed.post_id}"
                     folder_name = sanitize_filesystem_name(creator_name, fallback=f"Gallery {parsed.post_id}")
-                    folder = os.path.join(self._download_dir, f"nHentai - {folder_name}")
+                    folder = (
+                        os.path.join(effective_download_dir, f"nHentai - {folder_name}")
+                        if create_creator_folder
+                        else effective_download_dir
+                    )
                     batch_id = f"nhentai_{parsed.post_id or creator_name or 'nhentai'}"
                     external_files_for_ctx = list(files or [])
                     ctx_artist_dir = folder
@@ -5001,7 +5214,11 @@ class AppBridge(QObject):
                         if post:
                             creator_name = clean_text(post.get("channel_title", parsed.user_id))
                             folder_name = sanitize_filesystem_name(creator_name, fallback="Telegram")
-                            folder = os.path.join(self._download_dir, f"Telegram - {folder_name}")
+                            folder = (
+                                os.path.join(effective_download_dir, f"Telegram - {folder_name}")
+                                if create_creator_folder
+                                else effective_download_dir
+                            )
                             os.makedirs(folder, exist_ok=True)
                             fn = safe_file_name(post.get("filename"), fallback=f"file_{post['id']}")
                             t = DownloadTask(
@@ -5182,9 +5399,26 @@ class AppBridge(QObject):
                     return
 
                 # 3. Build tasks
-                if parsed.is_single_post and parsed.post_id:
+                if has_override_dir:
+                    from core.filter_engine import FilterEngine
+                    batch_id = (
+                        f"post_{parsed.service}_{parsed.user_id}_{parsed.post_id}"
+                        if (parsed.is_single_post and parsed.post_id)
+                        else f"artist_{parsed.service}_{parsed.user_id}"
+                    )
+                    if create_creator_folder:
+                        clean_c = FilterEngine.clean_filesystem_text(creator_name or parsed.user_id, max_len=80, fallback="creator")
+                        if is_creator_folder(os.path.basename(effective_download_dir), clean_c, parsed.service):
+                            artist_dir = effective_download_dir
+                        else:
+                            artist_dir = pick_creator_folder(effective_download_dir, clean_c, parsed.service)
+                    else:
+                        artist_dir = effective_download_dir
+                    tasks_base_dir = effective_download_dir
+                elif parsed.is_single_post and parsed.post_id:
                     batch_id = f"post_{parsed.service}_{parsed.user_id}_{parsed.post_id}"
                     artist_dir = None
+                    tasks_base_dir = effective_download_dir
                 else:
                     batch_id = f"artist_{parsed.service}_{parsed.user_id}"
                     existing_entry = wl_entry or (
@@ -5209,7 +5443,7 @@ class AppBridge(QObject):
                         from core.filter_engine import FilterEngine
                         clean_c = FilterEngine.clean_filesystem_text(creator_name or parsed.user_id, max_len=80, fallback="creator")
                         norm_existing = os.path.normpath(existing_entry.download_dir)
-                        norm_base = os.path.normpath(self._download_dir) if self._download_dir else ""
+                        norm_base = os.path.normpath(effective_download_dir) if effective_download_dir else ""
                         if getattr(existing_entry, "custom_folder", False):
                             artist_dir = norm_existing           # chosen by the user: never overridden by downloader path
                             try:
@@ -5247,11 +5481,11 @@ class AppBridge(QObject):
                             else:
                                 artist_dir = norm_existing
 
-                tasks_base_dir = (
-                    os.path.dirname(os.path.abspath(artist_dir))
-                    if (from_watchlist and artist_dir)
-                    else self._download_dir
-                )
+                    tasks_base_dir = (
+                        os.path.dirname(os.path.abspath(artist_dir))
+                        if (from_watchlist and artist_dir)
+                        else effective_download_dir
+                    )
                 ctx_base_dir = tasks_base_dir
                 ctx_artist_dir = artist_dir
                 tasks = self.downloader.build_tasks_from_posts(
@@ -5292,18 +5526,72 @@ class AppBridge(QObject):
                 self.harvestedLinksChanged.emit()
                 return
 
+            unimp_info = dict(getattr(self.downloader, "last_build_unimported", {}) or {})
+            unimp_tasks = list(getattr(self.downloader, "last_build_unimported_tasks", []) or [])
             if not tasks:
-                self._is_downloading = bool(self.downloader._is_running)
                 if getattr(self.downloader, "last_build_cancelled", False):
+                    self._is_downloading = bool(self.downloader._is_running)
                     self._status_text = "Progress: Cancelled"
                     self.isDownloadingChanged.emit()
                     self.statusTextChanged.emit()
                     return
+                if int(unimp_info.get("files", 0) or 0) > 0:
+                    if unimp_tasks:
+                        # Surface pre-failed non-retryable entries marked as Not Imported in Queue & Retry Modal
+                        # without interrupting any active or queued downloads.
+                        if self.downloader._is_running or self.downloader.tasks:
+                            self._appendTasksSignal.emit(unimp_tasks)
+                            self.downloader.append_tasks(unimp_tasks, options=None)
+                        else:
+                            self.downloader.tasks = list(unimp_tasks)
+                            self._setTasksSignal.emit(unimp_tasks)
+                        if self._queue_model:
+                            self._callOnGui.emit(lambda: self._queue_model.failedCountChanged.emit())
+                    has_pending_existing = any(t.status == "pending" for t in (self.downloader.tasks or []))
+                    if auto_start and has_pending_existing and not self.downloader._is_running:
+                        self.downloader.start_download_queue(
+                            tasks=self.downloader.tasks,
+                            options=options,
+                            cookie_str=self._cookie_string,
+                        )
+                    keep_going = bool(
+                        from_batch
+                        or self.downloader._is_running
+                        or has_pending_existing
+                        or self._active_scan_jobs > 1
+                    )
+                    if keep_going:
+                        if not self._is_downloading and (self.downloader._is_running or from_batch):
+                            self._is_downloading = True
+                            self.isDownloadingChanged.emit()
+                    else:
+                        self._is_downloading = False
+                        self._status_text = "Marked as Not Imported on Pawchive (full files aren't hosted on the site yet)"
+                        self.isDownloadingChanged.emit()
+                        self.statusTextChanged.emit()
+                    self._emit_unimported_notice_if_needed(
+                        unimp_info,
+                        queued_count=0,
+                        is_single_post=bool(getattr(parsed, "is_single_post", False)),
+                        allow_modal=True,
+                    )
+                    return
+                if not from_batch and not self.downloader._is_running and self._active_scan_jobs <= 1:
+                    self._is_downloading = False
+                    self._status_text = "Progress: Idle (All files filtered out)"
+                    self.isDownloadingChanged.emit()
+                    self.statusTextChanged.emit()
                 logger.warning("No files matched filtering criteria.", category="downloader")
-                self._status_text = "Progress: Idle (All files filtered out)"
-                self.isDownloadingChanged.emit()
-                self.statusTextChanged.emit()
                 return
+            if int(unimp_info.get("files", 0) or 0) > 0 or int(unimp_info.get("queued_thumbnails", 0) or 0) > 0:
+                self._emit_unimported_notice_if_needed(
+                    unimp_info,
+                    queued_count=len(tasks),
+                    is_single_post=bool(getattr(parsed, "is_single_post", False)),
+                    allow_modal=False,
+                )
+
+            queued_tasks = list(tasks) + unimp_tasks
 
             # Record to history for History tab
             self.session_manager.record_download_session(
@@ -5329,12 +5617,12 @@ class AppBridge(QObject):
                             tasks[0].target_path,
                             creator_name or parsed.user_id,
                             parsed.service,
-                            fallback_dir=self._download_dir
+                            fallback_dir=effective_download_dir
                         )
                     else:
                         from core.filter_engine import FilterEngine
                         clean_c = FilterEngine.clean_filesystem_text(creator_name or parsed.user_id, max_len=80, fallback="creator")
-                        target_download_dir = pick_creator_folder(self._download_dir, clean_c, parsed.service)
+                        target_download_dir = pick_creator_folder(effective_download_dir, clean_c, parsed.service)
 
                     track_entry = wl_entry or self._watchlist_manager._find(parsed.user_id, parsed.service)
                     keep_custom_opts = from_watchlist or bool(
@@ -5394,12 +5682,19 @@ class AppBridge(QObject):
             if auto_start:
                 if self.downloader._is_running or self.downloader.tasks:
                     # Running, or files kept in the queue: add to it (starts the queue when idle)
-                    self._appendTasksSignal.emit(tasks)
-                    self.downloader.append_tasks(tasks, options=options, cookie_str=self._cookie_string, progress_callback=_append_prog)
+                    self._appendTasksSignal.emit(queued_tasks)
+                    self.downloader.append_tasks(queued_tasks, options=options, cookie_str=self._cookie_string, progress_callback=_append_prog)
+                    if self.downloader._is_running:
+                        if not self._is_downloading:
+                            self._is_downloading = True
+                            self.isDownloadingChanged.emit()
+                        if self._has_error:
+                            self._has_error = False
+                            self.hasErrorChanged.emit()
                 else:
-                    self._setTasksSignal.emit(tasks)
+                    self._setTasksSignal.emit(queued_tasks)
                     self.downloader.start_download_queue(
-                        tasks=tasks,
+                        tasks=queued_tasks,
                         options=options,
                         cookie_str=self._cookie_string
                     )
@@ -5407,8 +5702,8 @@ class AppBridge(QObject):
                         self._is_downloading = True
                         self.isDownloadingChanged.emit()
             else:
-                self._appendTasksSignal.emit(tasks)
-                self.downloader.append_tasks(tasks, options=options, cookie_str=self._cookie_string, progress_callback=_append_prog)
+                self._appendTasksSignal.emit(queued_tasks)
+                self.downloader.append_tasks(queued_tasks, options=options, cookie_str=self._cookie_string, progress_callback=_append_prog)
                 self._status_text = f"Queued {len(tasks)} files ({creator_name})."
                 self.statusTextChanged.emit()
 
@@ -5703,7 +5998,10 @@ class AppBridge(QObject):
         batches = list(self._queue_model.groups) if tasks else None
         settings = vars(self._get_filter_options()) if tasks else None
         all_tasks = self._queue_model.getTasks() if self._queue_model else (self.downloader.tasks if self.downloader else [])
-        failed_or_cancelled = [t for t in all_tasks if t.status in ("failed", "cancelled")]
+        failed_or_cancelled = [
+            t for t in all_tasks
+            if t.status in ("failed", "cancelled") and not is_task_non_retryable(t)
+        ]
 
         if was_downloading:
             logger.info("Application closing: stopping downloads and saving the session...", category="system")
@@ -5721,6 +6019,10 @@ class AppBridge(QObject):
             mover = getattr(self, "_folder_move_thread", None)
             if mover is not None:
                 mover.join(timeout=10)
+
+        rebuilder = getattr(self, "_archive_rebuilder", None)
+        if rebuilder is not None and rebuilder.is_running:
+            rebuilder.stop_and_preserve(timeout=3.5)
 
         def _persist():
             try:
@@ -5764,15 +6066,19 @@ class AppBridge(QObject):
             logger.info("Still saving the session in the background (slow drive)…", category="system")
 
     def _has_failed_tasks(self) -> bool:
-        """True if any task actually failed. Tasks the user cancelled don't count."""
+        """True if any retryable task actually failed. Cancelled and unimported Pawchive placeholders don't count."""
         tasks = self.downloader.tasks or (self._queue_model.tasks if self._queue_model else [])
-        if any(t.status == "failed" for t in tasks):
+        if any(t.status == "failed" and not is_task_non_retryable(t) for t in tasks):
             return True
         try:
             spilled = self.recovery_manager.load_retries() or []
         except Exception:
             spilled = []
-        return any((d.get("status") if isinstance(d, dict) else getattr(d, "status", "")) == "failed" for d in spilled)
+        return any(
+            (d.get("status") if isinstance(d, dict) else getattr(d, "status", "")) == "failed"
+            and not is_task_non_retryable(d)
+            for d in spilled
+        )
 
     @Slot()
     def retryFailed(self):
@@ -5785,26 +6091,40 @@ class AppBridge(QObject):
 
     @Slot("QVariantList")
     def retrySelectedTasks(self, selected_ids: list):
-        """Retries only selected failed tasks."""
+        """Retries only selected failed tasks (strictly excluding non-retryable unimported files)."""
         ids = [str(i) for i in (selected_ids or []) if i]
-        if self._skip_retry_404 and ids:
+        if ids:
             queue_tasks = self._queue_model.getTasks() if self._queue_model else []
+            all_known = queue_tasks or self.downloader.tasks
             key = KemonoDownloader.task_key
-            non_404_ids = set()
-            for t in (queue_tasks or self.downloader.tasks):
+            non_retryable_keys = set()
+            blocked_404_keys = set()
+            for t in all_known:
                 k = key(t)
-                if k in ids:
+                if is_task_non_retryable(t):
+                    non_retryable_keys.add(k)
+                    if getattr(t, "file_id", ""):
+                        non_retryable_keys.add(str(t.file_id))
+                    continue
+                if self._skip_retry_404:
                     is_404 = "404" in str(getattr(t, "error_msg", "")).lower() or getattr(t, "http_status", 0) == 404
-                    if not is_404:
-                        non_404_ids.add(k)
-            ids = [i for i in ids if i in non_404_ids]
+                    if is_404:
+                        blocked_404_keys.add(k)
+            ids = [i for i in ids if i not in non_retryable_keys and i not in blocked_404_keys]
+        if not ids:
+            return
         self._start_retry(ids, True)
 
     @Slot(str)
     def retrySingleTask(self, file_id: str):
-        """Retries only a single specific failed task."""
-        if file_id:
-            self._start_retry([file_id], True)
+        """Retries only a single specific failed task (blocked for unimported Pawchive files)."""
+        if not file_id:
+            return
+        all_known = (self._queue_model.getTasks() if self._queue_model else []) or self.downloader.tasks
+        for t in all_known:
+            if (getattr(t, "file_id", "") == file_id or KemonoDownloader.task_key(t) == file_id) and is_task_non_retryable(t):
+                return
+        self._start_retry([file_id], True)
 
     def _start_retry(self, selected: Optional[list], include_cancelled: bool):
         """Gets failed files ready for a retry (selected: their names in the Retry Failed list; None:
@@ -5831,7 +6151,10 @@ class AppBridge(QObject):
                     base = queue_tasks
                 key = KemonoDownloader.task_key
                 if selected is None:
-                    need_saved = not any(t.status in ("failed", "cancelled") for t in base)
+                    need_saved = not any(
+                        t.status in ("failed", "cancelled") and not is_task_non_retryable(t)
+                        for t in base
+                    )
                 else:
                     have = {key(t) for t in base}
                     wanted = set(selected)
@@ -5891,8 +6214,11 @@ class AppBridge(QObject):
         gone = {id(t): t for t in queue_tasks if cleared(t)}
         if self.downloader:
             gone.update((id(t), t) for t in self.downloader.tasks if cleared(t))
-        # What the Retry Failed list holds after this: the queue's failed files, else the saved ones
-        left_in_queue = [t for t in queue_tasks if t.status in ("failed", "cancelled") and id(t) not in gone]
+        # What the Retry Failed list holds after this: the queue's retryable failed files, else the saved ones
+        left_in_queue = [
+            t for t in queue_tasks
+            if t.status in ("failed", "cancelled") and id(t) not in gone and not is_task_non_retryable(t)
+        ]
 
         if self.recovery_manager:
             if left_in_queue:
@@ -5999,9 +6325,9 @@ class AppBridge(QObject):
         self.hasRecoverySessionChanged.emit()
         self.hasSavedSessionChanged.emit()
 
-        # Dump any genuine failed tasks to retries file (in background thread) so they are preserved
+        # Dump any genuine retryable failed tasks to retries file (in background thread) so they are preserved
         all_tasks = self._queue_model.getTasks() if self._queue_model else list(self.downloader.tasks)
-        failed_tasks = [t for t in all_tasks if t.status == "failed"]
+        failed_tasks = [t for t in all_tasks if t.status == "failed" and not is_task_non_retryable(t)]
         if failed_tasks:
             self.recovery_manager.dump_retries(failed_tasks, async_write=True)
         else:
@@ -6540,6 +6866,7 @@ class AppBridge(QObject):
                 threading.Thread(
                     target=self._async_fetch_and_start,
                     args=(parsed, True),
+                    kwargs={"from_batch": len(urls) > 1},
                     daemon=True
                 ).start()
             else:
@@ -6737,6 +7064,7 @@ class AppBridge(QObject):
             "skip_post_covers": self._skip_post_covers,
             "download_thumbnails_only": self._download_thumbnails_only,
             "fallback_to_thumbnails": self._fallback_to_thumbnails,
+            "hide_unimported_notice": self._hide_unimported_notice,
             "redownload_small_files": self._redownload_small_files,
             "date_auto_scan_pages": self._date_auto_scan_pages,
             "enable_download_archive": self._enable_download_archive,
@@ -6764,7 +7092,8 @@ class AppBridge(QObject):
             "pending_pin_reset": self._pending_pin_reset,
             "privacy_idle_minutes": self._privacy_idle_minutes,
             "disabled_tabs": list(self._disabled_tabs),
-            "local_library_roots": list(getattr(self, "_local_library_roots", []))
+            "local_library_roots": list(getattr(self, "_local_library_roots", [])),
+            "browser_last_download_dir": str(getattr(self, "_browser_last_download_dir", "") or ""),
         }
         self.session_manager.save_settings(settings_dict, silent=True)
         self._evaluate_pending_download_settings()
@@ -8105,19 +8434,27 @@ class AppBridge(QObject):
         tasks = self._queue_model.getTasks()
         if tasks:
             completed_c = sum(1 for t in tasks if t.status == "completed")
-            failed_c = sum(1 for t in tasks if t.status in ("failed", "cancelled"))
+            unimp_c = sum(1 for t in tasks if t.status == "failed" and is_task_non_retryable(t))
+            retryable_failed_tasks = [
+                t for t in tasks
+                if t.status in ("failed", "cancelled") and not is_task_non_retryable(t)
+            ]
+            retryable_failed_c = len(retryable_failed_tasks)
             if self.recovery_manager:
                 completed_tasks = [t for t in tasks if t.status == "completed"]
                 if completed_tasks:
                     self.recovery_manager.remove_completed_tasks(completed_tasks, async_write=False)
-                if failed_c > 0:
-                    failed_tasks = [t for t in tasks if t.status in ("failed", "cancelled")]
-                    self.recovery_manager.dump_retries(failed_tasks, async_write=True)
+                if retryable_failed_c > 0:
+                    self.recovery_manager.dump_retries(retryable_failed_tasks, async_write=True)
                 elif not self.recovery_manager.load_retries():
                     self.recovery_manager.clear_retries()
             self._overall_progress = int(completed_c / len(tasks) * 100)
-            if failed_c > 0:
-                self._status_text = f"Finished with {failed_c} error(s) ({completed_c}/{len(tasks)} completed)"
+            if retryable_failed_c > 0 and unimp_c > 0:
+                self._status_text = f"Finished with {retryable_failed_c} error(s) and {unimp_c} not imported ({completed_c}/{len(tasks)} completed)"
+            elif retryable_failed_c > 0:
+                self._status_text = f"Finished with {retryable_failed_c} error(s) ({completed_c}/{len(tasks)} completed)"
+            elif unimp_c > 0:
+                self._status_text = f"Finished — {unimp_c} file(s) not imported on Pawchive ({completed_c}/{len(tasks)} completed)"
             else:
                 self._overall_progress = 100
                 self._status_text = f"Completed ({completed_c}/{len(tasks)} files)"
@@ -8399,7 +8736,23 @@ class AppBridge(QObject):
                 artist_dir=artist_folder,
                 user_id=entry.user_id
             )
+            unimp_info = dict(getattr(self.downloader, "last_build_unimported", {}) or {})
+            unimp_post_ids = {str(pid) for pid in (unimp_info.get("post_ids") or [])}
+            unimp_files = int(unimp_info.get("files", 0) or 0)
             if not tasks:
+                if unimp_files > 0:
+                    # Unimported posts aren't physically hosted on Pawchive yet: clear the badge so
+                    # Watchlist doesn't nag or loop on them, but do NOT advance last_post_date/id
+                    # so Watchlist picks them up automatically as soon as Pawchive imports them.
+                    entry.new_post_count = 0
+                    entry.cached_new_posts = []
+                    self._watchlist_manager.save()
+                    logger.info(
+                        f"Watchlist: skipped {len(unimp_post_ids) or len(new_posts)} unimported post(s) for "
+                        f"{entry.creator_name!r} (not imported on Pawchive yet — will be detected automatically once imported).",
+                        category="watchlist",
+                    )
+                    return []
                 # All files across new_posts were already archived, on disk, or filtered
                 latest_p = new_posts[-1]
                 latest_pid = str(latest_p.get("id", ""))
@@ -8422,8 +8775,12 @@ class AppBridge(QObject):
             with_work = {str(getattr(t, "post_id", "") or "") for t in tasks}
             remaining = [p for p in new_posts if str(p.get("id", "")) in with_work]
             if remaining and len(remaining) < len(new_posts):
-                done_ids = [str(p.get("id", "")) for p in new_posts if str(p.get("id", "")) not in with_work]
-                self._watchlist_manager.resolve_posts(entry.user_id, entry.service, post_ids=done_ids)
+                done_ids = [
+                    str(p.get("id", "")) for p in new_posts
+                    if str(p.get("id", "")) not in with_work and str(p.get("id", "")) not in unimp_post_ids
+                ]
+                if done_ids:
+                    self._watchlist_manager.resolve_posts(entry.user_id, entry.service, post_ids=done_ids)
                 entry.cached_new_posts = remaining
                 entry.new_post_count = len(remaining)
                 return remaining
@@ -8716,7 +9073,8 @@ class AppBridge(QObject):
         postIds: Optional[list] = None,
         page_start: int = 1,
         page_end: int = 999999,
-        custom_dir: str = ""
+        custom_dir: str = "",
+        allow_modal: bool = True,
     ):
         """Worker logic to fetch, structure, and append download tasks for a single watchlist entry."""
         from core.providers import is_disabled
@@ -8833,6 +9191,10 @@ class AppBridge(QObject):
             service=entry.service,
             user_id=entry.user_id
         )
+        unimp_info = dict(getattr(self.downloader, "last_build_unimported", {}) or {})
+        unimp_tasks = list(getattr(self.downloader, "last_build_unimported_tasks", []) or [])
+        unimp_post_ids = {str(pid) for pid in (unimp_info.get("post_ids") or [])}
+        unimp_files = int(unimp_info.get("files", 0) or 0)
         if tasks:
             self.downloader.register_batch_context(
                 BatchBuildContext(
@@ -8856,23 +9218,56 @@ class AppBridge(QObject):
                 )
             )
             post_ids_with_files = {str(t.post_id) for t in tasks}
-            no_file_posts = [(self._post_day(p), str(p.get("id", ""))) for p in new_posts
-                             if str(p.get("id", "")) not in post_ids_with_files]
+            no_file_posts = [
+                (self._post_day(p), str(p.get("id", ""))) for p in new_posts
+                if str(p.get("id", "")) not in post_ids_with_files and str(p.get("id", "")) not in unimp_post_ids
+            ]
             if no_file_posts:
                 key = (entry.service.lower(), entry.user_id.lower())
                 self._watchlist_pending_updates.setdefault(key, []).extend(no_file_posts)
-            self._appendTasksSignal.emit(tasks)
-            self.downloader.append_tasks(tasks, options=options, cookie_str=self._cookie_string, progress_callback=wl_prog)
+            queued_tasks = list(tasks) + unimp_tasks
+            self._appendTasksSignal.emit(queued_tasks)
+            self.downloader.append_tasks(queued_tasks, options=options, cookie_str=self._cookie_string, progress_callback=wl_prog)
             if not self._is_downloading and self.downloader._is_running:
                 self._is_downloading = True
                 self.isDownloadingChanged.emit()
                 self._status_text = f"Downloading updates for {entry.creator_name}..."
                 self.statusTextChanged.emit()
+            if unimp_files > 0 or int(unimp_info.get("queued_thumbnails", 0) or 0) > 0:
+                self._emit_unimported_notice_if_needed(
+                    unimp_info,
+                    queued_count=len(tasks),
+                    is_single_post=(len(new_posts) == 1),
+                    allow_modal=False,
+                )
             logger.success(
                 f"Watchlist: queued {len(tasks)} new file(s) for {entry.creator_name!r} at {artist_folder}.",
                 category="watchlist"
             )
         else:
+            if unimp_files > 0:
+                if unimp_tasks:
+                    # Surface pre-failed non-retryable entries in Queue & Retry Modal
+                    # without starting workers (0 download requests).
+                    self._appendTasksSignal.emit(unimp_tasks)
+                    self.downloader.append_tasks(unimp_tasks, options=None)
+                    if self._queue_model:
+                        self._callOnGui.emit(lambda: self._queue_model.failedCountChanged.emit())
+                # Don't advance last_post_date/id past unimported posts so Watchlist will
+                # automatically pick them up once Pawchive imports their full-size files.
+                entry.new_post_count = 0
+                entry.cached_new_posts = []
+                self._watchlist_manager.save()
+                self._watchlist_model.update_new_counts()
+                self._watchlist_model.refresh()
+                self.watchlistChanged.emit()
+                self._emit_unimported_notice_if_needed(
+                    unimp_info,
+                    queued_count=0,
+                    is_single_post=(len(new_posts) == 1),
+                    allow_modal=allow_modal,
+                )
+                return
             # All files across new_posts were already archived, already exist on disk, or were filtered out.
             req_pids = [str(pid) for pid in postIds] if postIds else None
             self._watchlist_manager.resolve_posts(
@@ -8930,7 +9325,7 @@ class AppBridge(QObject):
         def _run_batch():
             for e in updated_entries:
                 try:
-                    self._process_watchlist_entry_download(e)
+                    self._process_watchlist_entry_download(e, allow_modal=False)
                 except Exception as err:
                     logger.error(f"Error downloading updates for {e.creator_name!r}: {err}", category="watchlist")
 
@@ -12246,6 +12641,44 @@ class AppBridge(QObject):
             "path": norm,
             "message": msg
         }
+
+    def _emit_unimported_notice_if_needed(
+        self,
+        unimp_info: Optional[Dict[str, Any]],
+        queued_count: int = 0,
+        is_single_post: bool = False,
+        allow_modal: bool = True,
+    ) -> bool:
+        """Emits a clear UI explanation (modal when nothing could be downloaded, toast otherwise)
+        whenever Pawchive posts haven't been imported onto Pawchive's storage servers yet."""
+        if not isinstance(unimp_info, dict):
+            return False
+        unimp_files = int(unimp_info.get("files", 0) or 0)
+        queued_thumbs = int(unimp_info.get("queued_thumbnails", 0) or 0)
+        unimp_posts = int(unimp_info.get("posts", 0) or 0)
+        if unimp_files <= 0 and queued_thumbs <= 0:
+            return False
+        from core.downloader import format_unimported_explanation
+        all_unimported = (queued_count == 0 and unimp_files > 0)
+        title, message = format_unimported_explanation(
+            creator_name=str(unimp_info.get("creator_name") or ""),
+            unimported_posts=max(1, unimp_posts),
+            unimported_files=unimp_files,
+            queued_thumbnails=queued_thumbs,
+            is_single_post=bool(is_single_post),
+            all_unimported=all_unimported,
+        )
+        show_modal = bool(allow_modal and all_unimported)
+        if show_modal:
+            if self._hide_unimported_notice:
+                # User opted into "Do not show again": suppress modal while Progress Log keeps the warning.
+                return False
+            self.unimportedNotice.emit(title, message, True)
+        else:
+            # Keep toast concise on a single line
+            toast_msg = message.split("\n\n")[0]
+            self.unimportedNotice.emit(title, toast_msg, False)
+        return True
 
     def _refuse_if_disabled(self, url_or_domain: str, context: str = "link") -> bool:
         """True (after telling the user) when the link belongs to a switched-off site.

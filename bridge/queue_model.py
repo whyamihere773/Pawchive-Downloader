@@ -8,7 +8,7 @@ import time
 from bisect import bisect_left, insort
 from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt, Signal, Slot, Property, QObject, QTimer, QThread
 from typing import List, Dict, Any, Optional, Set
-from core.downloader import DownloadTask
+from core.downloader import DownloadTask, is_task_non_retryable
 from core.logger import logger
 
 
@@ -89,6 +89,8 @@ class QueueGroupsModel(QAbstractListModel):
     ActiveFileSpeedRole = Qt.UserRole + 21
     IsPausedRole = Qt.UserRole + 22
     PausedFilesRole = Qt.UserRole + 23
+    UnimportedFilesRole = Qt.UserRole + 24
+    RetryableFailedFilesRole = Qt.UserRole + 25
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -171,6 +173,8 @@ class QueueGroupsModel(QAbstractListModel):
             self.ActiveFileSpeedRole: "activeFileSpeed",
             self.IsPausedRole: "isPaused",
             self.PausedFilesRole: "pausedFiles",
+            self.UnimportedFilesRole: "unimportedFiles",
+            self.RetryableFailedFilesRole: "retryableFailedFiles",
         }
         key = role_map.get(role)
         if key:
@@ -202,6 +206,8 @@ class QueueGroupsModel(QAbstractListModel):
             self.ActiveFileSpeedRole: b"activeFileSpeed",
             self.IsPausedRole: b"isPaused",
             self.PausedFilesRole: b"pausedFiles",
+            self.UnimportedFilesRole: b"unimportedFiles",
+            self.RetryableFailedFilesRole: b"retryableFailedFiles",
         }
 
     @staticmethod
@@ -220,6 +226,7 @@ class QueueGroupsModel(QAbstractListModel):
         completed_files = 0
         skipped_files = 0
         failed_files = 0
+        unimported_files = 0
         downloading_files = 0
         pending_files = 0
         paused_files = 0
@@ -238,6 +245,8 @@ class QueueGroupsModel(QAbstractListModel):
                 skipped_files += 1
             elif t.status == "failed":
                 failed_files += 1
+                if is_task_non_retryable(t):
+                    unimported_files += 1
             elif t.status in ("downloading", "retrying"):
                 downloading_files += 1
                 if active_task is None:
@@ -249,6 +258,7 @@ class QueueGroupsModel(QAbstractListModel):
             else:
                 pending_files += 1
 
+        retryable_failed_files = max(0, failed_files - unimported_files)
         batch_id = g.get("batchId", "")
         is_paused = (batch_id in self._paused_batch_ids) or (paused_files > 0 and downloading_files == 0)
 
@@ -276,6 +286,8 @@ class QueueGroupsModel(QAbstractListModel):
         g["completedFiles"] = completed_files
         g["skippedFiles"] = skipped_files
         g["failedFiles"] = failed_files
+        g["unimportedFiles"] = unimported_files
+        g["retryableFailedFiles"] = retryable_failed_files
         g["downloadingFiles"] = downloading_files
         g["pendingFiles"] = pending_files
         g["pausedFiles"] = paused_files
@@ -511,7 +523,8 @@ class QueueGroupsModel(QAbstractListModel):
             old_stats = self._last_emitted_stats.get(bid)
             new_stats = (
                 g["totalFiles"], g["completedFiles"], g["skippedFiles"], g["failedFiles"],
-                g["downloadingFiles"], g["pendingFiles"], g["status"], g.get("isPaused", False)
+                g.get("unimportedFiles", 0), g["downloadingFiles"], g["pendingFiles"],
+                g["status"], g.get("isPaused", False)
             )
             idx = self.index(row, 0)
             # If structural stats (counts, status) changed, emit full dataChanged
@@ -583,6 +596,7 @@ class QueueModel(QAbstractListModel):
     RetryCountRole = Qt.UserRole + 16
     BatchIdRole = Qt.UserRole + 17
     TargetPathRole = Qt.UserRole + 18
+    IsUnimportedRole = Qt.UserRole + 19
 
     countChanged = Signal()
     filterStatusChanged = Signal()
@@ -683,6 +697,10 @@ class QueueModel(QAbstractListModel):
 
     @staticmethod
     def _is_404(t) -> bool:
+        # Unimported Pawchive placeholders stay visible in Failed / Retry Modal even when
+        # "Skip 404s" is active, so users always see which files aren't hosted on Pawchive yet.
+        if is_task_non_retryable(t):
+            return False
         return "404" in str(getattr(t, "error_msg", "") or "").lower() or getattr(t, "http_status", 0) == 404
 
     @staticmethod
@@ -884,6 +902,8 @@ class QueueModel(QAbstractListModel):
             return getattr(task, "batch_id", "") or f"{task.service}_{task.creator_name}_{task.post_id}"
         elif role == self.TargetPathRole:
             return getattr(task, "target_path", "") or ""
+        elif role == self.IsUnimportedRole:
+            return is_task_non_retryable(task)
 
         return None
 
@@ -906,7 +926,8 @@ class QueueModel(QAbstractListModel):
             self.FileIdRole: b"fileId",
             self.RetryCountRole: b"retryCount",
             self.BatchIdRole: b"batchId",
-            self.TargetPathRole: b"targetPath"
+            self.TargetPathRole: b"targetPath",
+            self.IsUnimportedRole: b"isUnimported"
         }
 
     # ── Grouping & Batch View Properties ──────────────────────────────────────
@@ -1283,17 +1304,21 @@ class QueueModel(QAbstractListModel):
             self._groups_model.resume_batch(batch_id)
         p = self.parent()
         skip_404 = bool(getattr(p, "skipRetry404", False)) if p else False
+        changed = 0
         self.beginResetModel()
         self._counts_timer.stop()
         for t in self._tasks:
             bid = getattr(t, "batch_id", "") or f"{t.service}_{t.creator_name}_{t.post_id}".strip("_")
             if bid == batch_id and (t.status in ("failed", "cancelled") or t.status == "pending"):
+                if is_task_non_retryable(t):
+                    continue
                 if skip_404 and self._is_404(t):
                     continue
                 t.status = "pending"
                 t.error_msg = ""
                 t.retry_count = getattr(t, "retry_count", 0) + 1
                 self._task_last_status[id(t)] = "pending"
+                changed += 1
         self._recalculate_counts()
         self._last_counts = (self._pending_count, self._downloading_count, self._completed_count, self._skipped_count, self._failed_count)
         self._rebuild_visible()
@@ -1304,7 +1329,8 @@ class QueueModel(QAbstractListModel):
         if self._groups_model:
             self._groups_model.rebuild(self._tasks)
             self.groupsChanged.emit()
-        self.batchRetryRequested.emit(batch_id)
+        if changed > 0:
+            self.batchRetryRequested.emit(batch_id)
 
     def updateTask(self, task: DownloadTask):
         try:
@@ -1462,13 +1488,14 @@ class QueueModel(QAbstractListModel):
 
     @Slot()
     def retryFailed(self):
-        """Flags all failed and cancelled tasks as pending and emits retryRequested."""
+        """Flags all retryable failed and cancelled tasks as pending and emits retryRequested."""
         p = self.parent()
         skip_404 = bool(getattr(p, "skipRetry404", False)) if p else False
         failed = [
             t for t in self._tasks
             if (t.status in ("failed", "cancelled")
                 or (t.status == "pending" and (getattr(t, "retry_count", 0) > 0 or getattr(t, "error_msg", ""))))
+            and not is_task_non_retryable(t)
             and not (skip_404 and self._is_404(t))
         ]
         if not failed:
@@ -1497,9 +1524,11 @@ class QueueModel(QAbstractListModel):
 
     @Slot(int)
     def retryTaskAt(self, visible_index: int):
-        """Flags a single task at visible_index as pending and triggers single retry."""
+        """Flags a single retryable task at visible_index as pending and triggers single retry."""
         if 0 <= visible_index < len(self._visible_tasks):
             t = self._visible_tasks[visible_index]
+            if is_task_non_retryable(t):
+                return
             t.retry_count = getattr(t, "retry_count", 0) + 1
             t.retry_capped = False
             t.status = "pending"
@@ -1552,8 +1581,9 @@ class QueueModel(QAbstractListModel):
         for t in tasks:
             if t.status in ("failed", "cancelled") or (t.status == "pending" and (getattr(t, "retry_count", 0) > 0 or getattr(t, "error_msg", ""))):
                 has_failed_in_queue = True
+                unimp = is_task_non_retryable(t)
                 err_msg = t.error_msg or ("Download cancelled by user" if t.status == "cancelled" else "Download failed")
-                if skip_404 and ("404" in str(err_msg).lower() or getattr(t, "http_status", 0) == 404):
+                if skip_404 and not unimp and ("404" in str(err_msg).lower() or getattr(t, "http_status", 0) == 404):
                     continue
 
                 p_url = getattr(t, "post_url", "") or ""
@@ -1572,7 +1602,8 @@ class QueueModel(QAbstractListModel):
                     "errorMsg": err_msg,
                     "fileSize": self._format_size(t.file_size),
                     "retryCount": getattr(t, "retry_count", 0),
-                    "retryCapped": getattr(t, "retry_capped", False) or getattr(t, "retry_count", 0) >= 5
+                    "retryCapped": getattr(t, "retry_capped", False) or getattr(t, "retry_count", 0) >= 5,
+                    "isUnimported": unimp,
                 })
 
         if not has_failed_in_queue:
@@ -1582,8 +1613,9 @@ class QueueModel(QAbstractListModel):
                     if spilled:
                         for item in spilled:
                             d = item.to_dict() if hasattr(item, "to_dict") else (item if isinstance(item, dict) else vars(item))
+                            unimp = is_task_non_retryable(d)
                             err_msg = d.get("error_msg") or "Download failed"
-                            if skip_404 and ("404" in str(err_msg).lower() or d.get("http_status") == 404):
+                            if skip_404 and not unimp and ("404" in str(err_msg).lower() or d.get("http_status") == 404):
                                 continue
 
                             p_url = d.get("post_url") or ""
@@ -1601,7 +1633,8 @@ class QueueModel(QAbstractListModel):
                                 "errorMsg": err_msg,
                                 "fileSize": self._format_size(d.get("file_size", 0)),
                                 "retryCount": d.get("retry_count", 0),
-                                "retryCapped": d.get("retry_capped", False) or d.get("retry_count", 0) >= 5
+                                "retryCapped": d.get("retry_capped", False) or d.get("retry_count", 0) >= 5,
+                                "isUnimported": unimp,
                             })
             except Exception as e:
                 logger.debug(f"Error loading retries from recovery_manager in getFailedTasksList: {e}")
@@ -1610,13 +1643,21 @@ class QueueModel(QAbstractListModel):
 
     @Slot("QVariantList")
     def retrySelected(self, selected_file_ids: List[str]):
-        """Flags only the user-selected failed/cancelled tasks for retry."""
+        """Flags only the user-selected retryable failed/cancelled tasks for retry."""
         p = self.parent()
         skip_404 = bool(getattr(p, "skipRetry404", False)) if p else False
-        selected_set = set(selected_file_ids)
+        selected_set = set(selected_file_ids or [])
+        blocked_keys = set()
         for t in self._tasks:
-            if (t.status in ("failed", "cancelled") or t.status == "pending") and ((t.file_id or t.url or t.filename) in selected_set):
+            key = t.file_id or t.url or t.filename
+            if is_task_non_retryable(t):
+                blocked_keys.add(key)
+                if t.file_id:
+                    blocked_keys.add(t.file_id)
+                continue
+            if (t.status in ("failed", "cancelled") or t.status == "pending") and (key in selected_set):
                 if skip_404 and self._is_404(t):
+                    blocked_keys.add(key)
                     continue
                 t.retry_count = getattr(t, "retry_count", 0) + 1
                 t.retry_capped = False
@@ -1625,7 +1666,9 @@ class QueueModel(QAbstractListModel):
                 t.progress_pct = 0
                 self.updateTask(t)
 
-        self.retrySelectedRequested.emit(selected_file_ids)
+        retryable_ids = [i for i in (selected_file_ids or []) if i not in blocked_keys]
+        if retryable_ids:
+            self.retrySelectedRequested.emit(retryable_ids)
 
     def getTasks(self) -> List[DownloadTask]:
         return list(self._tasks)

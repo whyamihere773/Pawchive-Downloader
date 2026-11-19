@@ -511,7 +511,7 @@ def install_files(stage_root: str, plan: Dict[str, Any], rep: Reporter, log: Upd
         for rel in stale:
             tx.remove(os.path.join(target, *rel.split("/")))
         if sys.platform != "win32":
-            for name in ("pawchive", "updater", "Pawchive Downloader", "7za", "yt-dlp"):
+            for name in ("pawchive", "updater", "Pawchive Downloader", "install.sh", "uninstall.sh", "7za", "yt-dlp"):
                 p = os.path.join(target, name)
                 if os.path.isfile(p) and not os.path.islink(p):
                     os.chmod(p, os.stat(p).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)

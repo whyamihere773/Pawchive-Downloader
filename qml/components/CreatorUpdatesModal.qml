@@ -192,8 +192,16 @@ Item {
                     Layout.fillWidth: true
                     implicitHeight: 32
                     radius: 6
-                    color: "#0B0F18"
-                    border.color: linkInput.activeFocus ? "#38BDF8" : "#2A364E"
+                    color: linkInput.activeFocus ? "#0B0D12" : "#0B0F18"
+                    border.color: linkInput.activeFocus ? "#38BDF8" : (linkBoxMouse.containsMouse ? "#475569" : "#2A364E")
+                    border.width: linkInput.activeFocus ? 1.5 : 1
+
+                    TextBarContextArea {
+                        id: linkBoxMouse
+                        target: linkInput
+                        focusOnLeftClick: true
+                    }
+
                     TextInput {
                         id: linkInput
                         anchors.fill: parent
@@ -201,14 +209,20 @@ Item {
                         anchors.rightMargin: 10
                         verticalAlignment: TextInput.AlignVCenter
                         color: "#F8FAFC"
+                        selectionColor: "#0284C7"
+                        selectedTextColor: "#FFFFFF"
                         font.family: "Segoe UI"; font.pixelSize: 12
                         selectByMouse: true
                         clip: true
                         onAccepted: root.saveLink()
                         onTextChanged: root.linkError = ""
+                        TextBarContextArea {}
                         Text {
                             visible: !linkInput.text
+                            anchors.left: parent.left
+                            anchors.right: parent.right
                             anchors.verticalCenter: parent.verticalCenter
+                            elide: Text.ElideRight
                             text: "https://kemono.cr/patreon/user/12345"
                             color: "#475569"; font.family: "Segoe UI"; font.pixelSize: 12
                         }

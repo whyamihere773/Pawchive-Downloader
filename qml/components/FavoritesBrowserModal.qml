@@ -341,9 +341,15 @@ Item {
                     Layout.preferredWidth: 240
                     Layout.preferredHeight: 32
                     radius: 7
-                    color: "#182030"
-                    border.color: searchInput.activeFocus ? "#38BDF8" : "#2B354D"
-                    border.width: 1
+                    color: searchInput.activeFocus ? "#0B0D12" : "#182030"
+                    border.color: searchInput.activeFocus ? "#38BDF8" : (favSearchBoxMouse.containsMouse ? "#475569" : "#2B354D")
+                    border.width: searchInput.activeFocus ? 1.5 : 1
+
+                    TextBarContextArea {
+                        id: favSearchBoxMouse
+                        target: searchInput
+                        focusOnLeftClick: true
+                    }
 
                     RowLayout {
                         anchors.fill: parent
@@ -360,18 +366,27 @@ Item {
                         TextInput {
                             id: searchInput
                             Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            verticalAlignment: TextInput.AlignVCenter
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
                             color: "#F1F5F9"
+                            selectionColor: "#0284C7"
+                            selectedTextColor: "#FFFFFF"
                             selectByMouse: true
                             clip: true
+
+                            TextBarContextArea {}
 
                             Text {
                                 text: modalRoot.tr("ph_search_artists", "Search artists…")
                                 font: parent.font
                                 color: "#64748B"
                                 visible: !parent.text && !parent.activeFocus
+                                anchors.left: parent.left
+                                anchors.right: parent.right
                                 anchors.verticalCenter: parent.verticalCenter
+                                elide: Text.ElideRight
                             }
 
                             onTextChanged: {
@@ -956,9 +971,15 @@ Item {
                                 Layout.fillWidth: true
                                 height: 34
                                 radius: 6
-                                color: "#1F2937"
-                                border.color: startPageInput.activeFocus ? "#F59E0B" : "#374151"
-                                border.width: 1
+                                color: startPageInput.activeFocus ? "#111827" : "#1F2937"
+                                border.color: startPageInput.activeFocus ? "#F59E0B" : (startPageBoxMouse.containsMouse ? "#475569" : "#374151")
+                                border.width: startPageInput.activeFocus ? 1.5 : 1
+
+                                TextBarContextArea {
+                                    id: startPageBoxMouse
+                                    target: startPageInput
+                                    focusOnLeftClick: true
+                                }
 
                                 TextInput {
                                     id: startPageInput
@@ -969,10 +990,14 @@ Item {
                                     font.family: "Segoe UI, sans-serif"
                                     font.pixelSize: 12
                                     color: "#F8FAFC"
+                                    selectionColor: "#0284C7"
+                                    selectedTextColor: "#FFFFFF"
+                                    clip: true
                                     selectByMouse: true
                                     text: modalRoot.downloadDialogStartPage
                                     validator: IntValidator { bottom: 1; top: 99999 }
                                     onTextChanged: modalRoot.downloadDialogStartPage = text
+                                    TextBarContextArea {}
                                 }
                             }
                         }
@@ -993,9 +1018,15 @@ Item {
                                 Layout.fillWidth: true
                                 height: 34
                                 radius: 6
-                                color: "#1F2937"
-                                border.color: endPageInput.activeFocus ? "#F59E0B" : "#374151"
-                                border.width: 1
+                                color: endPageInput.activeFocus ? "#111827" : "#1F2937"
+                                border.color: endPageInput.activeFocus ? "#F59E0B" : (endPageBoxMouse.containsMouse ? "#475569" : "#374151")
+                                border.width: endPageInput.activeFocus ? 1.5 : 1
+
+                                TextBarContextArea {
+                                    id: endPageBoxMouse
+                                    target: endPageInput
+                                    focusOnLeftClick: true
+                                }
 
                                 TextInput {
                                     id: endPageInput
@@ -1006,17 +1037,24 @@ Item {
                                     font.family: "Segoe UI, sans-serif"
                                     font.pixelSize: 12
                                     color: "#F8FAFC"
+                                    selectionColor: "#0284C7"
+                                    selectedTextColor: "#FFFFFF"
+                                    clip: true
                                     selectByMouse: true
                                     text: modalRoot.downloadDialogEndPage
                                     validator: IntValidator { bottom: 1; top: 99999 }
                                     onTextChanged: modalRoot.downloadDialogEndPage = text
+                                    TextBarContextArea {}
 
                                     Text {
                                         text: modalRoot.tr("ph_all_pages", "All pages (blank)")
                                         font: parent.font
                                         color: "#64748B"
                                         visible: !parent.text && !parent.activeFocus
+                                        anchors.left: parent.left
+                                        anchors.right: parent.right
                                         anchors.verticalCenter: parent.verticalCenter
+                                        elide: Text.ElideRight
                                     }
                                 }
                             }
@@ -1052,9 +1090,15 @@ Item {
                             Layout.fillWidth: true
                             height: 34
                             radius: 6
-                            color: "#1F2937"
-                            border.color: locInput.activeFocus ? "#F59E0B" : "#374151"
-                            border.width: 1
+                            color: locInput.activeFocus ? "#111827" : "#1F2937"
+                            border.color: locInput.activeFocus ? "#F59E0B" : (locBoxMouse.containsMouse ? "#475569" : "#374151")
+                            border.width: locInput.activeFocus ? 1.5 : 1
+
+                            TextBarContextArea {
+                                id: locBoxMouse
+                                target: locInput
+                                focusOnLeftClick: true
+                            }
 
                             TextInput {
                                 id: locInput
@@ -1065,16 +1109,23 @@ Item {
                                 font.family: "Segoe UI, sans-serif"
                                 font.pixelSize: 12
                                 color: "#F8FAFC"
+                                selectionColor: "#0284C7"
+                                selectedTextColor: "#FFFFFF"
+                                clip: true
                                 selectByMouse: true
                                 text: modalRoot.downloadDialogLocation
                                 onTextChanged: modalRoot.downloadDialogLocation = text
+                                TextBarContextArea {}
 
                                 Text {
                                     text: modalRoot.tr("ph_default_location", "Default downloads folder")
                                     font: parent.font
                                     color: "#64748B"
                                     visible: !parent.text && !parent.activeFocus
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
                                     anchors.verticalCenter: parent.verticalCenter
+                                    elide: Text.ElideRight
                                 }
                             }
                         }

@@ -94,7 +94,7 @@ class YtDlpManager:
 
         os.makedirs(self.dependencies_dir, exist_ok=True)
         temp_exe = f"{self.exe_path}.{os.getpid()}_{threading.get_ident()}_{time.time_ns()}.tmp"
-        logger.info(f"Downloading latest yt-dlp.exe from GitHub to {self.dependencies_dir}...", category="ytdlp")
+        logger.info(f"Downloading latest {self.binary_name} from GitHub to {self.dependencies_dir}...", category="ytdlp")
 
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -136,7 +136,7 @@ class YtDlpManager:
 
         except Exception as e:
             if not self.is_binary_available():
-                logger.error(f"Failed to download yt-dlp.exe: {e}", category="ytdlp")
+                logger.error(f"Failed to download {self.binary_name}: {e}", category="ytdlp")
             if os.path.exists(temp_exe):
                 try:
                     os.remove(temp_exe)
@@ -276,7 +276,7 @@ class YtDlpManager:
         if not self.is_binary_available():
             ok = self.download_latest_binary()
             if not ok or not self.is_binary_available():
-                return False, "yt-dlp.exe is missing and could not be downloaded."
+                return False, f"{self.binary_name} is missing and could not be downloaded."
 
         browser = self.cookies_browser
         if browser and self._cookies_failed != browser:

@@ -13,6 +13,9 @@ Rectangle {
     property var browserBridge: null
     property bool expanded: false
     property string filterKind: "all" // "all" | "creator" | "post"
+    property bool useDownloadModal: false
+
+    signal downloadRequested(bool autoStart)
 
     readonly property int markedCount: browserBridge ? browserBridge.markedCount : 0
     readonly property int creatorsCount: browserBridge ? browserBridge.markedCreatorsCount : 0
@@ -22,23 +25,23 @@ Rectangle {
     readonly property int collapsedHeight: Math.max(54, trayTopFlow.implicitHeight + 20)
     readonly property int expandedHeight: Math.min(320, Math.max(collapsedHeight + 100, Math.floor((parent ? parent.height : 720) * 0.34)))
 
-    visible: height > 0.5
+    property real animatedHeight: markedCount > 0 ? (expanded ? expandedHeight : collapsedHeight) : 0
+    Behavior on animatedHeight {
+        NumberAnimation { duration: 140; easing.type: Easing.OutCubic }
+    }
+
+    visible: animatedHeight > 0.5
     clip: true
-    height: markedCount > 0 ? (expanded ? expandedHeight : collapsedHeight) : 0
-    implicitHeight: height
-    Layout.preferredHeight: height
+    implicitHeight: animatedHeight
+    Layout.preferredHeight: animatedHeight
     Layout.minimumHeight: 0
-    Layout.maximumHeight: height
+    Layout.maximumHeight: animatedHeight
     opacity: markedCount > 0 ? 1.0 : 0.0
     radius: 12
     color: "#111622"
     border.color: expanded ? "#38BDF8" : "#243049"
     border.width: expanded ? 1.5 : 1
 
-    // Newtonian Fluid Weight-Based Drawer Physics (Heavy Drawer Mass = 1.55)
-    Behavior on height {
-        NumberAnimation { duration: 140; easing.type: Easing.OutCubic }
-    }
     Behavior on opacity {
         NumberAnimation { duration: 200; easing.type: Easing.OutCubic }
     }
@@ -275,7 +278,10 @@ Rectangle {
                     ToolTip.visible: containsMouse
                     ToolTip.delay: 300
                     ToolTip.text: "Send all marked items into the normal Downloader Queue without starting immediately"
-                    onClicked: if (trayRoot.browserBridge) trayRoot.browserBridge.dispatchMarkedToDownloader(false, false)
+                    onClicked: {
+                        if (trayRoot.useDownloadModal) trayRoot.downloadRequested(false)
+                        else if (trayRoot.browserBridge) trayRoot.browserBridge.dispatchMarkedToDownloader(false, false)
+                    }
                 }
             }
 
@@ -311,8 +317,11 @@ Rectangle {
                     cursorShape: Qt.PointingHandCursor
                     ToolTip.visible: containsMouse
                     ToolTip.delay: 300
-                    ToolTip.text: "Pass all marked creators & posts to the normal Downloader and start downloading immediately"
-                    onClicked: if (trayRoot.browserBridge) trayRoot.browserBridge.dispatchMarkedToDownloader(true, false)
+                    ToolTip.text: "Choose destination folder & download settings for all marked creators & posts"
+                    onClicked: {
+                        if (trayRoot.useDownloadModal) trayRoot.downloadRequested(true)
+                        else if (trayRoot.browserBridge) trayRoot.browserBridge.dispatchMarkedToDownloader(true, false)
+                    }
                 }
             }
 

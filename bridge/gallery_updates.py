@@ -473,9 +473,19 @@ class GalleryUpdates(QObject):
                 user_id=str(parsed.user_id),
             )
             if not tasks:
+                unimp = dict(getattr(app.downloader, "last_build_unimported", {}) or {})
+                if int(unimp.get("files", 0) or 0) > 0:
+                    u_posts = max(1, int(unimp.get("posts", 0) or 0))
+                    u_files = int(unimp.get("files", 0) or 0)
+                    msg = (
+                        f"Not imported on Pawchive yet: {u_posts} post(s) ({u_files} file(s)) don't have full-size "
+                        f"files hosted on Pawchive's servers yet (previews only), so nothing can be downloaded until Pawchive imports them."
+                    )
+                else:
+                    msg = "Nothing to download: those files are already here or your download filters skip them."
                 self.downloadQueued.emit(token, {
                     "ok": False, "files": 0, "posts": len(posts), "folder": artist_dir,
-                    "message": "Nothing to download: those files are already here or your download filters skip them.",
+                    "message": msg,
                 })
                 return
             app._appendTasksSignal.emit(tasks)

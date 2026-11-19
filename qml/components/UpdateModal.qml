@@ -17,6 +17,7 @@ Rectangle {
 
     readonly property bool hasUpdate: !!updater && updater.updateAvailable
     readonly property bool checking: !!updater && updater.isChecking
+    readonly property bool canSelfUpdate: !updater || updater.canSelfUpdate
     readonly property bool downloadsRunning: (typeof appBridge !== "undefined") && !!appBridge && appBridge.isDownloading
     readonly property string ff: Qt.platform.os === "windows" ? "Segoe UI" : ""
 
@@ -260,7 +261,7 @@ Rectangle {
             Rectangle {
                 Layout.fillWidth: true
                 Layout.preferredHeight: warnText.implicitHeight + 22
-                visible: root.hasUpdate && root.downloadsRunning
+                visible: root.hasUpdate && root.canSelfUpdate && root.downloadsRunning
                 radius: 10
                 color: root.confirmStop ? "#2A1F0A" : "#1A1710"
                 border.color: root.confirmStop ? "#F59E0B" : "#5B4512"
@@ -279,7 +280,11 @@ Rectangle {
                 Layout.fillWidth: true
                 visible: root.hasUpdate
                 wrapMode: Text.WordWrap
-                text: "Pawchive closes, the updater installs the new version (your settings, downloads and logs are never touched), and Pawchive opens again."
+                text: root.canSelfUpdate
+                    ? "Pawchive closes, the updater installs the new version (your settings, downloads and logs are never touched), and Pawchive opens again."
+                    : (root.updater && root.updater.updateHint.length > 0
+                        ? root.updater.updateHint
+                        : "This install is managed externally. Open the Release page to install the latest package.")
                 font.family: root.ff; font.pixelSize: 12; color: "#64748B"
             }
 
@@ -289,7 +294,7 @@ Rectangle {
                 spacing: 10
                 Btn { label: root.hasUpdate ? "Later" : "Close"; onClicked: root.isOpen = false }
                 Text {
-                    visible: !!root.updater && root.updater.releaseUrl.length > 0
+                    visible: !!root.updater && root.updater.releaseUrl.length > 0 && (root.canSelfUpdate || !root.hasUpdate)
                     text: "Release page"
                     font.family: root.ff; font.pixelSize: 12; font.underline: rpm.containsMouse
                     color: "#64748B"
@@ -302,7 +307,13 @@ Rectangle {
                     onClicked: root.updater.checkForUpdates(false)
                 }
                 Btn {
-                    visible: root.hasUpdate
+                    visible: root.hasUpdate && !root.canSelfUpdate
+                    primary: true
+                    label: "Open release page"
+                    onClicked: root.updater.openReleasePage()
+                }
+                Btn {
+                    visible: root.hasUpdate && root.canSelfUpdate
                     primary: true
                     warn: root.confirmStop
                     label: root.updater && root.updater.isLaunching ? "Starting the updater…"

@@ -23,6 +23,10 @@ Item {
     property bool isPaused: bridge ? bridge.isArchiveRebuildPaused : false
     property bool isFinished: false
     property string finishStatus: "complete" // "complete" or "cancelled"
+    property bool backgroundActive: false
+    readonly property bool hasSavedRebuild: Boolean(bridge && bridge.hasSavedArchiveRebuild)
+    readonly property var savedRebuildSummary: (bridge && bridge.archiveRebuildRecoverySummary) ? bridge.archiveRebuildRecoverySummary : ({})
+    readonly property bool showBackgroundBar: !isOpen && (isRunning || (isFinished && backgroundActive) || hasSavedRebuild)
 
     property var progressData: ({
         phase: "idle",
@@ -86,6 +90,7 @@ Item {
         if (!bridge || scanDirectories.length === 0) return
         root.isFinished = false
         root.finishStatus = ""
+        root.backgroundActive = false
         root.progressData = {
             phase: "discovering",
             percentage: 0.0,
@@ -121,12 +126,58 @@ Item {
         bridge.cancelArchiveRebuild()
     }
 
+    function resumeSavedRebuild(inBackground) {
+        if (!bridge || typeof bridge.resumeSavedArchiveRebuild !== "function") return
+        var s = root.savedRebuildSummary || ({})
+        root.isFinished = false
+        root.finishStatus = ""
+        root.backgroundActive = Boolean(inBackground)
+        root.progressData = {
+            phase: (s.status === "discovering") ? "discovering" : "indexing",
+            percentage: s.percent || 0.0,
+            total_files: s.total_files || 0,
+            processed_files: s.processed_files || 0,
+            added_count: s.added_count || 0,
+            skipped_count: s.skipped_count || 0,
+            error_count: s.error_count || 0,
+            total_creators: s.total_creators || 0,
+            total_posts: s.total_posts || 0,
+            files_per_sec: 0.0,
+            mb_per_sec: 0.0,
+            elapsed_seconds: s.elapsed_prior || 0.0,
+            current_file: "",
+            current_path: ""
+        }
+        var ok = bridge.resumeSavedArchiveRebuild()
+        if (ok && inBackground) {
+            root.isOpen = false
+        }
+    }
+
+    function discardSavedRebuild() {
+        if (!bridge || typeof bridge.discardSavedArchiveRebuild !== "function") return
+        bridge.discardSavedArchiveRebuild()
+    }
+
+    function minimizeToBackground() {
+        root.backgroundActive = true
+        root.isOpen = false
+    }
+
+    function dismissBackgroundBanner() {
+        if (root.isRunning) return
+        root.backgroundActive = false
+        root.isFinished = false
+    }
+
     function close() {
         if (root.isRunning) {
-            cancelRebuild()
+            minimizeToBackground()
+            return
         }
         root.isOpen = false
         root.isFinished = false
+        root.backgroundActive = false
     }
 
     onIsOpenChanged: {
@@ -134,7 +185,7 @@ Item {
             if (scanDirectories.length === 0) {
                 initDirectories()
             }
-            if (!isRunning) {
+            if (!isRunning && !backgroundActive) {
                 root.isFinished = false
             }
         }
@@ -152,6 +203,9 @@ Item {
         function onArchiveRebuildFinished(stats) {
             root.isFinished = true
             root.finishStatus = (root.finishStatus === "cancelled") ? "cancelled" : "complete"
+            if (!root.isOpen) {
+                root.backgroundActive = true
+            }
             root.rebuildCompleted()
         }
     }
@@ -173,7 +227,9 @@ Item {
         MouseArea {
             anchors.fill: parent
             onClicked: {
-                if (!root.isRunning) {
+                if (root.isRunning) {
+                    root.minimizeToBackground()
+                } else {
                     root.close()
                 }
             }
@@ -268,7 +324,37 @@ Item {
                     }
                 }
 
-                // Close Button
+                // Minimize to Background Button (visible while running)
+                Rectangle {
+                    visible: root.isRunning
+                    width: 28
+                    height: 28
+                    radius: 14
+                    color: minHover.containsMouse ? "#1E2F47" : "transparent"
+                    border.color: minHover.containsMouse ? "#38BDF8" : "transparent"
+                    border.width: 1
+
+                    Text {
+                        anchors.centerIn: parent
+                        text: "—"
+                        font.pixelSize: 12
+                        font.weight: 700
+                        color: minHover.containsMouse ? "#7DD3FC" : "#94A3B8"
+                    }
+
+                    MouseArea {
+                        id: minHover
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 300
+                        ToolTip.text: root.tr("rebuild_btn_background_tip", "Minimize to bottom progress bar and keep rebuilding in the background")
+                        onClicked: root.minimizeToBackground()
+                    }
+                }
+
+                // Close / Minimize Button
                 Rectangle {
                     width: 28
                     height: 28
@@ -290,6 +376,9 @@ Item {
                         anchors.fill: parent
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
+                        ToolTip.visible: containsMouse && root.isRunning
+                        ToolTip.delay: 300
+                        ToolTip.text: root.tr("rebuild_btn_background_tip", "Minimize to bottom progress bar and keep rebuilding in the background")
                         onClicked: root.close()
                     }
                 }
@@ -307,6 +396,106 @@ Item {
                 Layout.fillWidth: true
                 spacing: 14
                 visible: !root.isRunning && !root.isFinished
+
+                // Interrupted Rebuild Recovery Banner (Crash / Power-Loss / Close Resume)
+                Rectangle {
+                    visible: root.hasSavedRebuild
+                    Layout.fillWidth: true
+                    implicitHeight: recoveryCol.implicitHeight + 20
+                    radius: 10
+                    color: "#1B160B"
+                    border.color: "#B45309"
+                    border.width: 1.2
+
+                    ColumnLayout {
+                        id: recoveryCol
+                        anchors {
+                            left: parent.left
+                            right: parent.right
+                            verticalCenter: parent.verticalCenter
+                            leftMargin: 12
+                            rightMargin: 12
+                        }
+                        spacing: 8
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            Text {
+                                text: "🔄"
+                                font.pixelSize: 15
+                                Layout.alignment: Qt.AlignVCenter
+                            }
+
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                spacing: 2
+
+                                Text {
+                                    text: root.tr("rebuild_recovery_title", "Interrupted Archive Rebuild Detected")
+                                    font.family: "Segoe UI, Inter, sans-serif"
+                                    font.pixelSize: 12
+                                    font.weight: 700
+                                    color: "#FCD34D"
+                                    Layout.fillWidth: true
+                                    elide: Text.ElideRight
+                                }
+
+                                Text {
+                                    text: {
+                                        var s = root.savedRebuildSummary || ({})
+                                        var tot = s.total_files || 0
+                                        var proc = s.processed_files || 0
+                                        var pct = s.percent || 0
+                                        var added = s.added_count || 0
+                                        var savedAt = s.saved_at ? (" • " + s.saved_at) : ""
+                                        if (tot > 0) {
+                                            return proc + " / " + tot + " files (" + pct + "%) • +" + added + " added" + savedAt
+                                        }
+                                        return root.tr("rebuild_recovery_discover_desc", "Saved during folder scan — resume to pick up without re-configuring.") + savedAt
+                                    }
+                                    font.family: "Segoe UI, sans-serif"
+                                    font.pixelSize: 11
+                                    color: "#FDE68A"
+                                    Layout.fillWidth: true
+                                    wrapMode: Text.WordWrap
+                                }
+                            }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            StyledButton {
+                                text: root.tr("rebuild_recovery_btn_resume", "Resume Where It Left Off")
+                                iconText: "▶️"
+                                variant: "success"
+                                implicitHeight: 28
+                                onClicked: root.resumeSavedRebuild(false)
+                            }
+
+                            StyledButton {
+                                text: root.tr("rebuild_recovery_btn_resume_bg", "Resume in Background")
+                                iconText: "⬇"
+                                variant: "outline"
+                                implicitHeight: 28
+                                onClicked: root.resumeSavedRebuild(true)
+                            }
+
+                            Item { Layout.fillWidth: true }
+
+                            StyledButton {
+                                text: root.tr("rebuild_recovery_btn_discard", "Discard")
+                                variant: "ghost"
+                                implicitHeight: 28
+                                onClicked: root.discardSavedRebuild()
+                            }
+                        }
+                    }
+                }
 
                 // Section: Directories to Scan
                 ColumnLayout {
@@ -498,7 +687,9 @@ Item {
                               : (root.isPaused
                                  ? root.tr("rebuild_status_paused", "Rebuild Paused")
                                  : (root.progressData.phase === "discovering"
-                                    ? root.tr("rebuild_status_discovering", "Discovering files across directories...")
+                                    ? ((root.progressData.total_files || 0) > 0
+                                       ? root.tr("rebuild_status_discovering_count", "Discovering files across directories… (%1 found)").replace("%1", root.progressData.total_files)
+                                       : root.tr("rebuild_status_discovering", "Discovering files across directories..."))
                                     : root.tr("rebuild_status_indexing", "Scanning and cataloging files...")))
                         font.family: "Segoe UI, Inter, sans-serif"
                         font.pixelSize: 13
@@ -561,6 +752,7 @@ Item {
 
                 // Sleek Animated Progress Bar
                 Rectangle {
+                    id: modalProgressTrack
                     Layout.fillWidth: true
                     height: 14
                     radius: 7
@@ -569,19 +761,41 @@ Item {
                     border.width: 1
                     clip: true
 
+                    readonly property bool isDiscovering: root.isRunning && !root.isPaused && root.progressData.phase === "discovering"
+
                     Rectangle {
+                        visible: !modalProgressTrack.isDiscovering
                         height: parent.height
                         width: Math.max(8, parent.width * (Math.min(100, Math.max(0, root.progressData.percentage || 0)) / 100.0))
                         radius: 7
 
                         gradient: Gradient {
                             orientation: Gradient.Horizontal
-                            GradientStop { position: 0.0; color: root.isFinished ? "#10B981" : "#0284C7" }
-                            GradientStop { position: 1.0; color: root.isFinished ? "#34D399" : "#38BDF8" }
+                            GradientStop { position: 0.0; color: root.isFinished ? (root.finishStatus === "cancelled" ? "#D97706" : "#10B981") : "#0284C7" }
+                            GradientStop { position: 1.0; color: root.isFinished ? (root.finishStatus === "cancelled" ? "#FBBF24" : "#34D399") : "#38BDF8" }
                         }
 
                         Behavior on width {
                             NumberAnimation { duration: 140; easing.type: Easing.OutCubic }
+                        }
+                    }
+
+                    Rectangle {
+                        id: modalShimmer
+                        visible: modalProgressTrack.isDiscovering
+                        width: Math.max(64, parent.width * 0.28)
+                        height: parent.height
+                        radius: 7
+                        gradient: Gradient {
+                            orientation: Gradient.Horizontal
+                            GradientStop { position: 0.0; color: "transparent" }
+                            GradientStop { position: 0.5; color: "#38BDF8" }
+                            GradientStop { position: 1.0; color: "transparent" }
+                        }
+                        SequentialAnimation on x {
+                            running: root.isOpen && modalProgressTrack.isDiscovering
+                            loops: Animation.Infinite
+                            NumberAnimation { from: -modalShimmer.width; to: modalProgressTrack.width; duration: 1200; easing.type: Easing.InOutSine }
                         }
                     }
                 }
@@ -813,6 +1027,16 @@ Item {
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 10
+
+                // Send active rebuild to bottom progress bar
+                StyledButton {
+                    text: root.tr("rebuild_btn_background", "Run in Background")
+                    iconText: "⬇"
+                    variant: "outline"
+                    visible: root.isRunning
+                    tooltip: root.tr("rebuild_btn_background_tip", "Minimize to bottom progress bar and keep rebuilding in the background")
+                    onClicked: root.minimizeToBackground()
+                }
 
                 Item { Layout.fillWidth: true }
 

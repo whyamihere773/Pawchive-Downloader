@@ -262,14 +262,24 @@ Rectangle {
         return !!(url && root.queuedDownloadUrls && root.queuedDownloadUrls[url])
     }
 
-    function triggerItemDownload(url, autoStart, label) {
+    function triggerItemDownload(url, autoStart, label, itemMeta) {
         if (!root.bBridge) return
         if (!url) {
             root.bBridge.downloadSingleUrl("", autoStart, label || "")
             return
         }
-        root.markUrlDispatched(url)
-        root.bBridge.downloadSingleUrl(url, autoStart, label || "")
+        var meta = itemMeta || ({})
+        var itemObj = {
+            url: String(url),
+            title: String(meta.title || label || meta.name || meta.creator_name || url),
+            creator_name: String(meta.creator_name || meta.name || label || ""),
+            creator_id: String(meta.creator_id || meta.id || ""),
+            service: String(meta.service || ""),
+            service_label: String(meta.service_label || meta.service || ""),
+            item_type: String(meta.item_type || (meta.post_id ? "post" : "creator"))
+        }
+        var heading = label ? ("Download: " + label) : "Download Item"
+        browserDownloadModal.openForItems([itemObj], heading, autoStart, "single")
     }
 
     function browserThumbUrl(rawUrl, providerId) {
@@ -1014,9 +1024,15 @@ Rectangle {
                             }
                             height: 32
                             radius: 7
-                            color: "#090C12"
-                            border.color: mainSearchInput.activeFocus ? "#38BDF8" : "#1E293B"
-                            border.width: 1
+                            color: mainSearchInput.activeFocus ? "#0B0D12" : "#090C12"
+                            border.color: mainSearchInput.activeFocus ? "#38BDF8" : (mainSearchBoxMouse.containsMouse ? "#475569" : "#1E293B")
+                            border.width: mainSearchInput.activeFocus ? 1.5 : 1
+
+                            TextBarContextArea {
+                                id: mainSearchBoxMouse
+                                target: mainSearchInput
+                                focusOnLeftClick: true
+                            }
 
                             RowLayout {
                                 anchors.fill: parent
@@ -1030,15 +1046,22 @@ Rectangle {
                                     id: mainSearchInput
                                     Layout.fillWidth: true
                                     Layout.fillHeight: true
+                                    verticalAlignment: TextInput.AlignVCenter
+                                    leftPadding: 2
+                                    rightPadding: 2
                                     placeholderText: root.isLocalMode ? "Search local creators on disk…" : ("Search " + (root.activeManifest.name || "creators") + "…")
                                     placeholderTextColor: "#64748B"
                                     color: "#F8FAFC"
+                                    selectionColor: "#0284C7"
+                                    selectedTextColor: "#FFFFFF"
                                     font.family: "Segoe UI, sans-serif"
                                     font.pixelSize: 12
                                     background: Item {}
+                                    clip: true
                                     selectByMouse: true
                                     onAccepted: if (root.bBridge) root.bBridge.search(text)
                                     onTextChanged: searchDebounce.restart()
+                                    TextBarContextArea {}
                                 }
 
                                 Timer {
@@ -1059,6 +1082,7 @@ Rectangle {
                                         onClicked: {
                                             mainSearchInput.text = ""
                                             if (root.bBridge) root.bBridge.search("")
+                                            mainSearchInput.forceActiveFocus()
                                         }
                                     }
                                 }
@@ -1071,9 +1095,15 @@ Rectangle {
                             width: Math.min(150, searchTagFlow.width)
                             height: 32
                             radius: 7
-                            color: "#090C12"
-                            border.color: tagInput.activeFocus ? "#38BDF8" : "#1E293B"
-                            border.width: 1
+                            color: tagInput.activeFocus ? "#0B0D12" : "#090C12"
+                            border.color: tagInput.activeFocus ? "#38BDF8" : (tagBoxMouse.containsMouse ? "#475569" : "#1E293B")
+                            border.width: tagInput.activeFocus ? 1.5 : 1
+
+                            TextBarContextArea {
+                                id: tagBoxMouse
+                                target: tagInput
+                                focusOnLeftClick: true
+                            }
 
                             RowLayout {
                                 anchors.fill: parent
@@ -1086,14 +1116,21 @@ Rectangle {
                                     id: tagInput
                                     Layout.fillWidth: true
                                     Layout.fillHeight: true
+                                    verticalAlignment: TextInput.AlignVCenter
+                                    leftPadding: 2
+                                    rightPadding: 2
                                     placeholderText: "Tag (e.g. cosplay)"
                                     placeholderTextColor: "#64748B"
                                     color: "#38BDF8"
+                                    selectionColor: "#0284C7"
+                                    selectedTextColor: "#FFFFFF"
                                     font.family: "Segoe UI, sans-serif"
                                     font.pixelSize: 11
                                     background: Item {}
+                                    clip: true
                                     selectByMouse: true
                                     onAccepted: if (root.bBridge) root.bBridge.setTagFilter(text)
+                                    TextBarContextArea {}
                                 }
                                 Text {
                                     visible: tagInput.text.length > 0
@@ -1106,6 +1143,7 @@ Rectangle {
                                         onClicked: {
                                             tagInput.text = ""
                                             if (root.bBridge) root.bBridge.setTagFilter("")
+                                            tagInput.forceActiveFocus()
                                         }
                                     }
                                 }
@@ -1549,6 +1587,53 @@ Rectangle {
                                         }
                                     }
                                 }
+
+                                // Online-mode On-Disk Post Completeness Summary Chips (current page)
+                                Rectangle {
+                                    visible: !root.isLocalMode && !!root.selectedCreator.is_on_disk && Number(root.selectedCreator.page_disk_complete || 0) > 0
+                                    height: 20
+                                    width: Math.min(creatorNameBadgesFlow.width, diskFullChipTxt.implicitWidth + 12)
+                                    radius: 5
+                                    color: "#064E3B"
+                                    border.color: "#10B981"
+                                    border.width: 1
+                                    Text {
+                                        id: diskFullChipTxt
+                                        anchors.centerIn: parent
+                                        text: "✓ " + Number(root.selectedCreator.page_disk_complete || 0) + " Complete"
+                                        font.family: "Segoe UI, sans-serif"
+                                        font.pixelSize: 9
+                                        font.weight: Font.Bold
+                                        color: "#6EE7B7"
+                                    }
+                                    HoverHandler { id: diskFullChipHover }
+                                    ToolTip.visible: diskFullChipHover.hovered
+                                    ToolTip.delay: 250
+                                    ToolTip.text: "Green-outlined posts have all files physically present on disk"
+                                }
+
+                                Rectangle {
+                                    visible: !root.isLocalMode && !!root.selectedCreator.is_on_disk && Number(root.selectedCreator.page_disk_partial || 0) > 0
+                                    height: 20
+                                    width: Math.min(creatorNameBadgesFlow.width, diskPartChipTxt.implicitWidth + 12)
+                                    radius: 5
+                                    color: "#451A03"
+                                    border.color: "#F59E0B"
+                                    border.width: 1
+                                    Text {
+                                        id: diskPartChipTxt
+                                        anchors.centerIn: parent
+                                        text: "◐ " + Number(root.selectedCreator.page_disk_partial || 0) + " Partial"
+                                        font.family: "Segoe UI, sans-serif"
+                                        font.pixelSize: 9
+                                        font.weight: Font.Bold
+                                        color: "#FCD34D"
+                                    }
+                                    HoverHandler { id: diskPartChipHover }
+                                    ToolTip.visible: diskPartChipHover.hovered
+                                    ToolTip.delay: 250
+                                    ToolTip.text: "Yellow-outlined posts have some files on disk (others were pruned or skipped)"
+                                }
                             }
 
                             Text {
@@ -1573,9 +1658,15 @@ Rectangle {
                         width: creatorHeaderFlow.searchFitsInline ? 195 : creatorHeaderFlow.width
                         height: 32
                         radius: 7
-                        color: "#090C12"
-                        border.color: creatorPostSearchInput.activeFocus ? "#38BDF8" : "#1E293B"
-                        border.width: 1
+                        color: creatorPostSearchInput.activeFocus ? "#0B0D12" : "#090C12"
+                        border.color: creatorPostSearchInput.activeFocus ? "#38BDF8" : (creatorPostSearchBoxMouse.containsMouse ? "#475569" : "#1E293B")
+                        border.width: creatorPostSearchInput.activeFocus ? 1.5 : 1
+
+                        TextBarContextArea {
+                            id: creatorPostSearchBoxMouse
+                            target: creatorPostSearchInput
+                            focusOnLeftClick: true
+                        }
 
                         RowLayout {
                             anchors.fill: parent
@@ -1587,14 +1678,36 @@ Rectangle {
                                 id: creatorPostSearchInput
                                 Layout.fillWidth: true
                                 Layout.fillHeight: true
+                                verticalAlignment: TextInput.AlignVCenter
+                                leftPadding: 2
+                                rightPadding: 2
                                 placeholderText: (root.bBridge && root.bBridge.creatorSection === "dms") ? "Filter creator's DMs…" : "Filter creator's posts…"
                                 placeholderTextColor: "#64748B"
                                 color: "#F8FAFC"
+                                selectionColor: "#0284C7"
+                                selectedTextColor: "#FFFFFF"
                                 font.family: "Segoe UI, sans-serif"
                                 font.pixelSize: 11
                                 background: Item {}
+                                clip: true
                                 selectByMouse: true
                                 onAccepted: if (root.bBridge) root.bBridge.loadCreatorPosts(0, text)
+                                TextBarContextArea {}
+                            }
+                            Text {
+                                visible: creatorPostSearchInput.text.length > 0
+                                text: "✕"
+                                font.pixelSize: 10
+                                color: "#94A3B8"
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        creatorPostSearchInput.text = ""
+                                        if (root.bBridge) root.bBridge.loadCreatorPosts(0, "")
+                                        creatorPostSearchInput.forceActiveFocus()
+                                    }
+                                }
                             }
                         }
                     }
@@ -1713,7 +1826,25 @@ Rectangle {
                             anchors.fill: parent
                             hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
-                            onClicked: if (root.bBridge) root.bBridge.queueAllCreatorDms()
+                            onClicked: {
+                                if (!root.bBridge) return
+                                var dmsUrl = root.bBridge.getSelectedCreatorDmsUrl ? root.bBridge.getSelectedCreatorDmsUrl() : ""
+                                if (dmsUrl) {
+                                    var c = root.selectedCreator || ({})
+                                    var cname = String(c.name || c.creator_name || "Creator")
+                                    browserDownloadModal.openForItems([{
+                                        url: dmsUrl,
+                                        title: cname + " — All DMs",
+                                        creator_name: cname,
+                                        creator_id: String(c.creator_id || c.id || ""),
+                                        service: String(c.service || ""),
+                                        service_label: String(c.service_label || c.service || ""),
+                                        item_type: "creator"
+                                    }], "Download All DMs (" + cname + ")", true, "dms")
+                                } else {
+                                    root.bBridge.queueAllCreatorDms()
+                                }
+                            }
                         }
                     }
 
@@ -1929,7 +2060,8 @@ Rectangle {
                             onClicked: root.triggerItemDownload(
                                 root.selectedCreator.url,
                                 true,
-                                root.selectedCreator.name || root.selectedCreator.creator_name || ""
+                                root.selectedCreator.name || root.selectedCreator.creator_name || "",
+                                root.selectedCreator
                             )
                         }
                     }
@@ -2118,8 +2250,8 @@ Rectangle {
                     property bool markAnchorState: true
                     anchors.fill: parent
                     visible: !parent.parent.showingPostsGrid
-                    cellWidth: width > 0 ? Math.min(width, Math.max(220, Math.floor(width / Math.max(1, Math.floor(width / 260))))) : 240
-                    cellHeight: 164
+                    cellWidth: width > 0 ? Math.min(width, Math.max(270, Math.floor(width / Math.max(1, Math.floor(width / 290))))) : 280
+                    cellHeight: 176
                     cacheBuffer: 640
                     model: root.bBridge ? root.bBridge.creatorsModel : null
 
@@ -2147,17 +2279,20 @@ Rectangle {
                                 z: 1
                                 anchors.fill: parent
                                 anchors.margins: 10
-                                spacing: 8
+                                spacing: 7
 
-                                // Top Row: Avatar + Name + Service + Mark Button
+                                // Top Row: Avatar + Name/Service + Right Action Buttons (strictly bounded, never overflows)
                                 RowLayout {
                                     Layout.fillWidth: true
-                                    spacing: 10
+                                    Layout.minimumWidth: 0
+                                    spacing: 8
 
                                     Rectangle {
-                                        Layout.preferredWidth: 46
-                                        Layout.preferredHeight: 46
-                                        radius: 23
+                                        Layout.preferredWidth: 44
+                                        Layout.preferredHeight: 44
+                                        Layout.minimumWidth: 44
+                                        Layout.maximumWidth: 44
+                                        radius: 22
                                         color: "#1E293B"
                                         border.color: onDisk ? "#10B981" : "#334155"
                                         border.width: 1
@@ -2168,7 +2303,7 @@ Rectangle {
                                             visible: cardAvatarImg.status !== Image.Ready || cardAvatarImg.implicitWidth <= 2
                                             text: ((cData.name || cData.creator_name || "?").trim().charAt(0) || "?").toUpperCase()
                                             font.family: "Segoe UI, sans-serif"
-                                            font.pixelSize: 17
+                                            font.pixelSize: 16
                                             font.weight: Font.Bold
                                             color: "#7DD3FC"
                                         }
@@ -2187,10 +2322,12 @@ Rectangle {
 
                                     ColumnLayout {
                                         Layout.fillWidth: true
-                                        spacing: 2
+                                        Layout.minimumWidth: 0
+                                        spacing: 3
 
                                         Text {
                                             Layout.fillWidth: true
+                                            Layout.minimumWidth: 0
                                             text: cData.name || cData.creator_name || "Unknown"
                                             font.family: "Segoe UI, sans-serif"
                                             font.pixelSize: 13
@@ -2200,15 +2337,22 @@ Rectangle {
                                         }
 
                                         RowLayout {
+                                            Layout.fillWidth: true
+                                            Layout.minimumWidth: 0
                                             spacing: 5
                                             Rectangle {
-                                                height: 18
-                                                implicitWidth: svcBadgeTxt.implicitWidth + 10
+                                                Layout.preferredHeight: 18
+                                                Layout.preferredWidth: Math.min(82, svcBadgeTxt.implicitWidth + 10)
+                                                Layout.minimumWidth: 0
+                                                clip: true
                                                 radius: 4
                                                 color: "#1E293B"
                                                 Text {
                                                     id: svcBadgeTxt
                                                     anchors.centerIn: parent
+                                                    width: Math.min(implicitWidth, parent.width - 6)
+                                                    horizontalAlignment: Text.AlignHCenter
+                                                    elide: Text.ElideRight
                                                     text: (cData.service_label || cData.service || "").toUpperCase()
                                                     font.family: "Segoe UI, sans-serif"
                                                     font.pixelSize: 9
@@ -2217,109 +2361,119 @@ Rectangle {
                                                 }
                                             }
                                             Text {
+                                                Layout.fillWidth: true
+                                                Layout.minimumWidth: 0
                                                 visible: !!(cData.updated_at)
                                                 text: cData.updated_at || ""
                                                 font.family: "Segoe UI, sans-serif"
                                                 font.pixelSize: 10
                                                 color: "#64748B"
+                                                elide: Text.ElideRight
                                             }
                                         }
                                     }
 
-                                    UnimportedTriangleBadge {
-                                        objectName: "creatorUnimportedBadge"
-                                        visible: !root.isLocalMode && !!cData.is_unimported
-                                        Layout.preferredWidth: 24
-                                        Layout.preferredHeight: 24
-                                        width: 24
-                                        height: 24
+                                    Row {
+                                        spacing: 4
+                                        Layout.alignment: Qt.AlignVCenter
                                         z: 3
-                                        tooltipText: "Previews only (creator not yet imported)"
-                                    }
 
-                                    // Favorite / Unfavorite Creator Button (Online Mode)
-                                    Rectangle {
-                                        objectName: "creatorFavBtn"
-                                        visible: !root.isLocalMode && !!root.activeCaps.supportsFavorites
-                                        readonly property bool isFav: !!cData.is_favorited
-                                        Layout.preferredWidth: 30
-                                        Layout.preferredHeight: 30
-                                        radius: 7
-                                        z: 3
-                                        color: isFav ? "#422006" : (creatorFavMouse.containsMouse ? "#1E293B" : "#151C2B")
-                                        border.color: isFav ? "#F59E0B" : "#334155"
-                                        border.width: 1
-                                        Springy { hover: creatorFavMouse.containsMouse; pressed: creatorFavMouse.pressed }
-
-                                        Text {
-                                            id: creatorFavStarTxt
-                                            objectName: "creatorFavStarTxt"
-                                            anchors.centerIn: parent
-                                            text: parent.isFav ? "★" : "☆"
-                                            font.pixelSize: 14
-                                            font.weight: Font.Bold
-                                            color: parent.isFav ? "#FBBF24" : "#94A3B8"
+                                        UnimportedTriangleBadge {
+                                            objectName: "creatorUnimportedBadge"
+                                            visible: !root.isLocalMode && !!cData.is_unimported
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            width: 22
+                                            height: 22
+                                            tooltipText: "Previews only (creator not yet imported)"
                                         }
-                                        MouseArea {
-                                            id: creatorFavMouse
-                                            objectName: "creatorFavMouse"
-                                            anchors.fill: parent
-                                            hoverEnabled: true
-                                            preventStealing: true
-                                            cursorShape: Qt.PointingHandCursor
-                                            ToolTip.visible: containsMouse
-                                            ToolTip.text: parent.isFav
-                                                          ? "Remove from " + root.activeProviderDisplayName + " favorites"
-                                                          : "Add to " + root.activeProviderDisplayName + " favorites"
-                                            onClicked: {
-                                                if (root.bBridge && cData) {
-                                                    root.bBridge.toggleFavoriteCreator(cData)
+
+                                        // Favorite / Unfavorite Creator Button (Online Mode)
+                                        Rectangle {
+                                            objectName: "creatorFavBtn"
+                                            visible: !root.isLocalMode && !!root.activeCaps.supportsFavorites
+                                            readonly property bool isFav: !!cData.is_favorited
+                                            width: 28
+                                            height: 28
+                                            radius: 7
+                                            color: isFav ? "#422006" : (creatorFavMouse.containsMouse ? "#1E293B" : "#151C2B")
+                                            border.color: isFav ? "#F59E0B" : "#334155"
+                                            border.width: 1
+                                            Springy { hover: creatorFavMouse.containsMouse; pressed: creatorFavMouse.pressed }
+
+                                            Text {
+                                                id: creatorFavStarTxt
+                                                objectName: "creatorFavStarTxt"
+                                                anchors.centerIn: parent
+                                                text: parent.isFav ? "★" : "☆"
+                                                font.pixelSize: 13
+                                                font.weight: Font.Bold
+                                                color: parent.isFav ? "#FBBF24" : "#94A3B8"
+                                            }
+                                            MouseArea {
+                                                id: creatorFavMouse
+                                                objectName: "creatorFavMouse"
+                                                anchors.fill: parent
+                                                hoverEnabled: true
+                                                preventStealing: true
+                                                cursorShape: Qt.PointingHandCursor
+                                                ToolTip.visible: containsMouse
+                                                ToolTip.text: parent.isFav
+                                                              ? "Remove from " + root.activeProviderDisplayName + " favorites"
+                                                              : "Add to " + root.activeProviderDisplayName + " favorites"
+                                                onClicked: {
+                                                    if (root.bBridge && cData) {
+                                                        root.bBridge.toggleFavoriteCreator(cData)
+                                                    }
                                                 }
                                             }
                                         }
-                                    }
 
-                                    // Mark / Unmark Creator Button (Online Mode)
-                                    Rectangle {
-                                        visible: !root.isLocalMode
-                                        Layout.preferredWidth: 30
-                                        Layout.preferredHeight: 30
-                                        radius: 7
-                                        z: 3
-                                        color: isMarked ? "#4C1D95" : (mkMouse.containsMouse ? "#1E293B" : "#151C2B")
-                                        border.color: isMarked ? "#A78BFA" : "#334155"
-                                        border.width: 1
-                                        Springy { hover: mkMouse.containsMouse; pressed: mkMouse.pressed }
+                                        // Mark / Unmark Creator Button (Online Mode)
+                                        Rectangle {
+                                            visible: !root.isLocalMode
+                                            width: 28
+                                            height: 28
+                                            radius: 7
+                                            color: isMarked ? "#4C1D95" : (mkMouse.containsMouse ? "#1E293B" : "#151C2B")
+                                            border.color: isMarked ? "#A78BFA" : "#334155"
+                                            border.width: 1
+                                            Springy { hover: mkMouse.containsMouse; pressed: mkMouse.pressed }
 
-                                        Text {
-                                            anchors.centerIn: parent
-                                            text: isMarked ? "✔" : "🛒"
-                                            font.pixelSize: 12
-                                            color: isMarked ? "#DDD6FE" : "#94A3B8"
-                                        }
-                                        MouseArea {
-                                            id: mkMouse
-                                            objectName: "creatorMarkMouse"
-                                            anchors.fill: parent
-                                            hoverEnabled: true
-                                            cursorShape: Qt.PointingHandCursor
-                                            ToolTip.visible: containsMouse
-                                            ToolTip.delay: 300
-                                            ToolTip.text: (isMarked ? "Remove creator from Download Cart" : "Mark creator for Download Cart") + "\nShift+click to mark/unmark a range"
-                                            onClicked: (mouse) => root.handleRangeMarkClick("creators", creatorsGrid, index, cData, (mouse.modifiers & Qt.ShiftModifier) !== 0)
+                                            Text {
+                                                anchors.centerIn: parent
+                                                text: isMarked ? "✔" : "🛒"
+                                                font.pixelSize: 11
+                                                color: isMarked ? "#DDD6FE" : "#94A3B8"
+                                            }
+                                            MouseArea {
+                                                id: mkMouse
+                                                objectName: "creatorMarkMouse"
+                                                anchors.fill: parent
+                                                hoverEnabled: true
+                                                cursorShape: Qt.PointingHandCursor
+                                                ToolTip.visible: containsMouse
+                                                ToolTip.delay: 300
+                                                ToolTip.text: (isMarked ? "Remove creator from Download Cart" : "Mark creator for Download Cart") + "\nShift+click to mark/unmark a range"
+                                                onClicked: (mouse) => root.handleRangeMarkClick("creators", creatorsGrid, index, cData, (mouse.modifiers & Qt.ShiftModifier) !== 0)
+                                            }
                                         }
                                     }
                                 }
 
                                 // Middle Row: Telemetry Chips (Posts / Videos / Images / Disk Size / Drives)
                                 Flow {
+                                    id: cTelemetryFlow
                                     Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
+                                    Layout.maximumHeight: 46
+                                    clip: true
                                     spacing: 5
 
                                     Rectangle {
                                         visible: Number(cData.post_count || 0) > 0
                                         height: 20
-                                        width: pCntTxt.implicitWidth + 12
+                                        width: Math.min(cTelemetryFlow.width, pCntTxt.implicitWidth + 10)
+                                        clip: true
                                         radius: 5
                                         color: "#0F172A"
                                         Text {
@@ -2335,7 +2489,8 @@ Rectangle {
                                     Rectangle {
                                         visible: !root.isLocalMode && Number(cData.video_count || 0) > 0
                                         height: 20
-                                        width: vCntTxt.implicitWidth + 12
+                                        width: Math.min(cTelemetryFlow.width, vCntTxt.implicitWidth + 10)
+                                        clip: true
                                         radius: 5
                                         color: "#0F172A"
                                         Text {
@@ -2351,7 +2506,8 @@ Rectangle {
                                     Rectangle {
                                         visible: !root.isLocalMode && Number(cData.image_count || 0) > 0
                                         height: 20
-                                        width: iCntTxt.implicitWidth + 12
+                                        width: Math.min(cTelemetryFlow.width, iCntTxt.implicitWidth + 10)
+                                        clip: true
                                         radius: 5
                                         color: "#0F172A"
                                         Text {
@@ -2367,7 +2523,8 @@ Rectangle {
                                     Rectangle {
                                         visible: !root.isLocalMode && Number(cData.dm_count || 0) > 0
                                         height: 20
-                                        width: dmCntTxt.implicitWidth + 12
+                                        width: Math.min(cTelemetryFlow.width, dmCntTxt.implicitWidth + 10)
+                                        clip: true
                                         radius: 5
                                         color: "#2E1065"
                                         Text {
@@ -2385,12 +2542,15 @@ Rectangle {
                                     Rectangle {
                                         visible: root.isLocalMode
                                         height: 20
-                                        width: locSzTxt.implicitWidth + 12
+                                        width: Math.min(cTelemetryFlow.width, locSzTxt.implicitWidth + 10)
+                                        clip: true
                                         radius: 5
                                         color: "#0F172A"
                                         Text {
                                             id: locSzTxt
                                             anchors.centerIn: parent
+                                            width: Math.min(implicitWidth, parent.width - 8)
+                                            elide: Text.ElideRight
                                             text: "📁 " + Number(cData.local_file_count || 0) + " files • " + root.formatBytes(cData.local_size_bytes)
                                             font.family: "Segoe UI, sans-serif"
                                             font.pixelSize: 10
@@ -2403,7 +2563,8 @@ Rectangle {
                                         model: cData.local_drives || []
                                         delegate: Rectangle {
                                             height: 20
-                                            width: dTxt.implicitWidth + 10
+                                            width: Math.min(cTelemetryFlow.width, dTxt.implicitWidth + 10)
+                                            clip: true
                                             radius: 5
                                             color: "#064E3B"
                                             border.color: "#10B981"
@@ -2423,10 +2584,11 @@ Rectangle {
 
                                 Item { Layout.fillHeight: true }
 
-                                // Bottom Row: Action Strip
+                                // Bottom Row: Action Strip (strictly bounded inside card width)
                                 RowLayout {
                                     id: cCardActionRow
                                     Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
                                     spacing: 6
 
                                     TextMetrics {
@@ -2442,7 +2604,7 @@ Rectangle {
                                         visible: !root.isLocalMode && onDisk
                                         Layout.preferredHeight: 24
                                         Layout.fillWidth: true
-                                        Layout.minimumWidth: 64
+                                        Layout.minimumWidth: 48
                                         Layout.maximumWidth: onDiskMetrics.width + 32
                                         radius: 5
                                         z: 3
@@ -2460,6 +2622,7 @@ Rectangle {
                                             Text { text: "💾"; font.pixelSize: 10 }
                                             Text {
                                                 Layout.fillWidth: true
+                                                Layout.minimumWidth: 0
                                                 text: onDiskMetrics.text
                                                 font: onDiskMetrics.font
                                                 color: "#A7F3D0"
@@ -2488,7 +2651,7 @@ Rectangle {
                                         visible: root.isLocalMode
                                         Layout.preferredHeight: 24
                                         Layout.fillWidth: true
-                                        Layout.minimumWidth: 64
+                                        Layout.minimumWidth: 48
                                         Layout.maximumWidth: mvCardMetrics.width + 32
                                         radius: 5
                                         z: 3
@@ -2507,6 +2670,7 @@ Rectangle {
                                             Text { text: "💽"; font.pixelSize: 10 }
                                             Text {
                                                 Layout.fillWidth: true
+                                                Layout.minimumWidth: 0
                                                 text: mvCardMetrics.text
                                                 font: mvCardMetrics.font
                                                 color: "#7DD3FC"
@@ -2525,7 +2689,7 @@ Rectangle {
                                         }
                                     }
 
-                                    Item { Layout.fillWidth: true }
+                                    Item { Layout.fillWidth: true; Layout.minimumWidth: 0 }
 
                                     Rectangle {
                                         id: cCardCopyBtn
@@ -2533,6 +2697,7 @@ Rectangle {
                                         property bool justCopied: false
                                         Layout.preferredWidth: 24
                                         Layout.preferredHeight: 22
+                                        Layout.minimumWidth: 24
                                         radius: 5
                                         z: 3
                                         color: justCopied
@@ -2573,11 +2738,13 @@ Rectangle {
 
                                     Text {
                                         id: browsePostsTxt
+                                        Layout.minimumWidth: 0
                                         text: "Browse Posts →"
                                         font.family: "Segoe UI, sans-serif"
                                         font.pixelSize: 11
                                         font.weight: 600
                                         color: "#38BDF8"
+                                        elide: Text.ElideRight
                                     }
                                 }
                             }
@@ -2724,15 +2891,27 @@ Rectangle {
 
                         readonly property var pData: model.creator || modelData || ({})
                         readonly property bool isMarked: !!pData.is_marked
+                        readonly property string diskStatus: (!root.isLocalMode && pData.disk_status) ? String(pData.disk_status) : "none"
+                        readonly property bool isDiskComplete: diskStatus === "complete"
+                        readonly property bool isDiskPartial: diskStatus === "partial"
+                        readonly property int localFileCnt: Number(pData.local_file_count || 0)
+                        readonly property int expectedFileCnt: Number(pData.expected_file_count || pData.file_count || 0)
 
                         Rectangle {
                             id: pCard
+                            objectName: "postCardRect"
                             anchors.fill: parent
                             anchors.margins: 5
                             radius: 10
                             color: pCardHover.hovered ? "#161E2E" : "#111622"
-                            border.color: isMarked ? "#38BDF8" : (pCardHover.hovered ? "#38BDF8" : "#1E293B")
-                            border.width: isMarked ? 1.5 : 1
+                            border.color: isMarked
+                                ? "#38BDF8"
+                                : (isDiskComplete
+                                    ? "#10B981"
+                                    : (isDiskPartial
+                                        ? "#F59E0B"
+                                        : (pCardHover.hovered ? "#38BDF8" : "#1E293B")))
+                            border.width: (isMarked || isDiskComplete || isDiskPartial) ? (pCardHover.hovered ? 2 : 1.75) : 1
                             clip: true
 
                             HoverHandler { id: pCardHover }
@@ -2768,12 +2947,16 @@ Rectangle {
                                         color: "#334155"
                                     }
 
-                                    // Attachment count & DM pills (top-left)
+                                    // Attachment count & DM pills (top-left, clipped before right-side buttons)
                                     Row {
                                         anchors.top: parent.top
                                         anchors.left: parent.left
-                                        anchors.margins: 6
+                                        anchors.right: parent.right
+                                        anchors.topMargin: 6
+                                        anchors.leftMargin: 6
+                                        anchors.rightMargin: (!root.isLocalMode && !!pData.is_unimported) ? 72 : 42
                                         spacing: 5
+                                        clip: true
 
                                         Rectangle {
                                             height: 22
@@ -2812,6 +2995,49 @@ Rectangle {
                                                 color: "#FFFFFF"
                                             }
                                         }
+                                    }
+
+                                    // Local Disk Completeness Pill (bottom-left of thumbnail, Online Mode only)
+                                    Rectangle {
+                                        id: diskStatusBadge
+                                        objectName: "postDiskStatusBadge"
+                                        visible: !root.isLocalMode && (isDiskComplete || isDiskPartial)
+                                        anchors.left: parent.left
+                                        anchors.bottom: parent.bottom
+                                        anchors.margins: 6
+                                        height: 20
+                                        width: Math.min(parent.width - 12, diskBadgeTxt.implicitWidth + 12)
+                                        radius: 5
+                                        z: 2
+                                        color: isDiskComplete ? "#E6064E3B" : "#E6451A03"
+                                        border.color: isDiskComplete ? "#10B981" : "#F59E0B"
+                                        border.width: 1
+
+                                        Text {
+                                            id: diskBadgeTxt
+                                            anchors.centerIn: parent
+                                            width: parent.width - 10
+                                            horizontalAlignment: Text.AlignHCenter
+                                            elide: Text.ElideRight
+                                            text: isDiskComplete
+                                                ? (expectedFileCnt > 0 ? ("✓ " + localFileCnt + "/" + expectedFileCnt) : "✓ On Disk")
+                                                : (expectedFileCnt > 0 ? ("◐ " + localFileCnt + "/" + expectedFileCnt) : "◐ Partial")
+                                            font.family: "Segoe UI, sans-serif"
+                                            font.pixelSize: 10
+                                            font.weight: Font.Bold
+                                            color: isDiskComplete ? "#6EE7B7" : "#FCD34D"
+                                        }
+
+                                        HoverHandler { id: diskBadgeHover }
+                                        ToolTip.visible: diskBadgeHover.hovered
+                                        ToolTip.delay: 250
+                                        ToolTip.text: isDiskComplete
+                                            ? (expectedFileCnt > 0
+                                                ? ("Complete on disk (" + localFileCnt + " of " + expectedFileCnt + " files present)")
+                                                : "Complete on disk")
+                                            : (expectedFileCnt > 0
+                                                ? ("Partial on disk (" + localFileCnt + " of " + expectedFileCnt + " files present — some files pruned or deselected)")
+                                                : "Partial on disk — some files missing or pruned")
                                     }
 
                                     UnimportedTriangleBadge {
@@ -2931,20 +3157,24 @@ Rectangle {
 
                                     RowLayout {
                                         Layout.fillWidth: true
+                                        Layout.minimumWidth: 0
                                         spacing: 6
                                         Text {
+                                            Layout.fillWidth: true
+                                            Layout.minimumWidth: 0
                                             text: pData.published_at || ""
                                             font.family: "Segoe UI, sans-serif"
                                             font.pixelSize: 10
                                             color: "#64748B"
+                                            elide: Text.ElideRight
                                         }
-                                        Item { Layout.fillWidth: true }
                                         Rectangle {
                                             id: pCardCopyBtn
                                             objectName: "postCardCopyLinkBtn"
                                             property bool justCopied: false
                                             Layout.preferredWidth: 24
                                             Layout.preferredHeight: 20
+                                            Layout.minimumWidth: 24
                                             radius: 5
                                             z: 3
                                             color: justCopied
@@ -2983,11 +3213,13 @@ Rectangle {
                                             }
                                         }
                                         Text {
+                                            Layout.minimumWidth: 0
                                             text: "View Media →"
                                             font.family: "Segoe UI, sans-serif"
                                             font.pixelSize: 10
                                             font.weight: 600
                                             color: "#38BDF8"
+                                            elide: Text.ElideRight
                                         }
                                     }
                                 }
@@ -3214,7 +3446,8 @@ Rectangle {
                                 onClicked: root.triggerItemDownload(
                                     root.selectedPost.url,
                                     true,
-                                    root.selectedPost.title || root.selectedPost.creator_name || ""
+                                    root.selectedPost.title || root.selectedPost.creator_name || "",
+                                    root.selectedPost
                                 )
                             }
                         }
@@ -3306,7 +3539,32 @@ Rectangle {
                     Flow {
                         Layout.fillWidth: true
                         spacing: 5
-                        visible: (root.selectedPost.tags && root.selectedPost.tags.length > 0) || !!(root.selectedPost.published_at)
+                        readonly property string postDiskStatus: (!root.isLocalMode && root.selectedPost && root.selectedPost.disk_status) ? String(root.selectedPost.disk_status) : "none"
+                        visible: (root.selectedPost.tags && root.selectedPost.tags.length > 0) || !!(root.selectedPost.published_at) || postDiskStatus === "complete" || postDiskStatus === "partial"
+
+                        Rectangle {
+                            visible: parent.postDiskStatus === "complete" || parent.postDiskStatus === "partial"
+                            readonly property bool isFull: parent.postDiskStatus === "complete"
+                            readonly property int locCnt: Number(root.selectedPost.local_file_count || 0)
+                            readonly property int expCnt: Number(root.selectedPost.expected_file_count || root.selectedPost.file_count || 0)
+                            height: 20
+                            width: detailDiskTxt.implicitWidth + 12
+                            radius: 4
+                            color: isFull ? "#064E3B" : "#451A03"
+                            border.color: isFull ? "#10B981" : "#F59E0B"
+                            border.width: 1
+                            Text {
+                                id: detailDiskTxt
+                                anchors.centerIn: parent
+                                text: parent.isFull
+                                    ? (parent.expCnt > 0 ? ("✓ Complete on Disk (" + parent.locCnt + "/" + parent.expCnt + ")") : "✓ Complete on Disk")
+                                    : (parent.expCnt > 0 ? ("◐ Partial on Disk (" + parent.locCnt + "/" + parent.expCnt + ")") : "◐ Partial on Disk")
+                                font.family: "Segoe UI, sans-serif"
+                                font.pixelSize: 10
+                                font.weight: Font.Bold
+                                color: parent.isFull ? "#6EE7B7" : "#FCD34D"
+                            }
+                        }
 
                         Rectangle {
                             visible: !!(root.selectedPost.published_at)
@@ -3365,11 +3623,14 @@ Rectangle {
                                 width: parent.width
                                 readOnly: true
                                 selectByMouse: true
+                                selectionColor: "#0284C7"
+                                selectedTextColor: "#FFFFFF"
                                 text: root.selectedPost.content_full || root.selectedPost.content_snippet || ""
                                 font.family: "Segoe UI, sans-serif"
                                 font.pixelSize: 12
                                 color: "#CBD5E1"
                                 wrapMode: TextEdit.Wrap
+                                TextBarContextArea {}
                             }
                         }
                     }
@@ -3804,6 +4065,24 @@ Rectangle {
             id: markTray
             Layout.fillWidth: true
             browserBridge: root.bBridge
+            useDownloadModal: true
+            onDownloadRequested: (autoStart) => {
+                browserDownloadModal.openForMarked(autoStart)
+            }
+        }
+    }
+
+    // ── Browser Download Destination & Full Settings Modal ──────────────────
+    BrowserDownloadModal {
+        id: browserDownloadModal
+        objectName: "browserDownloadModal"
+        appBridge: root.bridge
+        browserBridge: root.bBridge
+        onDownloadDispatched: (urls, autoStart, folder) => {
+            var arr = urls || []
+            for (var i = 0; i < arr.length; i++) {
+                root.markUrlDispatched(arr[i])
+            }
         }
     }
 
@@ -4147,7 +4426,27 @@ Rectangle {
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
                             if (root.bBridge) {
-                                root.bBridge.downloadNewPosts([], true)
+                                var nList = root.bBridge.newPostsList || []
+                                var items = []
+                                var selC = root.selectedCreator || ({})
+                                for (var i = 0; i < nList.length; i++) {
+                                    var np = nList[i]
+                                    if (np && np.url) {
+                                        items.push({
+                                            url: String(np.url),
+                                            title: String(np.title || ("Post #" + (np.post_id || ""))),
+                                            creator_name: String(np.creator_name || selC.name || selC.creator_name || ""),
+                                            creator_id: String(np.creator_id || selC.creator_id || selC.id || ""),
+                                            service: String(np.service || selC.service || ""),
+                                            service_label: String(np.service_label || selC.service_label || np.service || ""),
+                                            item_type: "post"
+                                        })
+                                    }
+                                }
+                                if (items.length > 0) {
+                                    newPostsModal.close()
+                                    browserDownloadModal.openForItems(items, "Download " + items.length + " Newer Post(s)", true, "new_posts")
+                                }
                             }
                         }
                     }
@@ -4208,9 +4507,11 @@ Rectangle {
 
                         ColumnLayout {
                             Layout.fillWidth: true
+                            Layout.minimumWidth: 0
                             spacing: 3
                             Text {
                                 Layout.fillWidth: true
+                                Layout.minimumWidth: 0
                                 text: (npItem.is_dm ? "💬 DM  •  " : "") + (npItem.title || ("Post #" + (npItem.post_id || "")))
                                 font.family: "Segoe UI, sans-serif"
                                 font.pixelSize: 12
@@ -4220,6 +4521,7 @@ Rectangle {
                             }
                             Text {
                                 Layout.fillWidth: true
+                                Layout.minimumWidth: 0
                                 text: (npItem.published_at || "No date") + "  •  " + Number(npItem.file_count || 0) + " file(s)"
                                 font.family: "Segoe UI, sans-serif"
                                 font.pixelSize: 10
@@ -4279,7 +4581,17 @@ Rectangle {
                                 cursorShape: Qt.PointingHandCursor
                                 onClicked: {
                                     if (root.bBridge && npItem.url) {
-                                        root.bBridge.downloadNewPosts([npItem.url], true)
+                                        var selC = root.selectedCreator || ({})
+                                        newPostsModal.close()
+                                        browserDownloadModal.openForItems([{
+                                            url: String(npItem.url),
+                                            title: String(npItem.title || ("Post #" + (npItem.post_id || ""))),
+                                            creator_name: String(npItem.creator_name || selC.name || selC.creator_name || ""),
+                                            creator_id: String(npItem.creator_id || selC.creator_id || selC.id || ""),
+                                            service: String(npItem.service || selC.service || ""),
+                                            service_label: String(npItem.service_label || selC.service_label || npItem.service || ""),
+                                            item_type: "post"
+                                        }], "Download: " + String(npItem.title || "Post"), true, "new_posts")
                                     }
                                 }
                             }
@@ -4556,12 +4868,18 @@ Rectangle {
                         placeholderText: "Username or email"
                         color: "#F8FAFC"
                         placeholderTextColor: "#64748B"
+                        selectionColor: "#0284C7"
+                        selectedTextColor: "#FFFFFF"
+                        selectByMouse: true
+                        clip: true
+                        verticalAlignment: TextInput.AlignVCenter
                         background: Rectangle {
                             radius: 6
-                            color: "#121722"
-                            border.color: loginUserField.activeFocus ? "#38BDF8" : "#1E293B"
-                            border.width: 1
+                            color: loginUserField.activeFocus ? "#0B0D12" : "#121722"
+                            border.color: loginUserField.activeFocus ? "#38BDF8" : (loginUserField.hovered ? "#475569" : "#1E293B")
+                            border.width: loginUserField.activeFocus ? 1.5 : 1
                         }
+                        TextBarContextArea {}
                     }
 
                     TextField {
@@ -4572,11 +4890,16 @@ Rectangle {
                         placeholderText: "Password"
                         color: "#F8FAFC"
                         placeholderTextColor: "#64748B"
+                        selectionColor: "#0284C7"
+                        selectedTextColor: "#FFFFFF"
+                        selectByMouse: true
+                        clip: true
+                        verticalAlignment: TextInput.AlignVCenter
                         background: Rectangle {
                             radius: 6
-                            color: "#121722"
-                            border.color: loginPassField.activeFocus ? "#38BDF8" : "#1E293B"
-                            border.width: 1
+                            color: loginPassField.activeFocus ? "#0B0D12" : "#121722"
+                            border.color: loginPassField.activeFocus ? "#38BDF8" : (loginPassField.hovered ? "#475569" : "#1E293B")
+                            border.width: loginPassField.activeFocus ? 1.5 : 1
                         }
                         onAccepted: {
                             if (root.bBridge && !(root.bBridge.isLoggingInProvider)) {
@@ -4584,6 +4907,7 @@ Rectangle {
                                 root.bBridge.loginProvider(providerLoginModal.targetPid, loginUserField.text, loginPassField.text)
                             }
                         }
+                        TextBarContextArea {}
                     }
 
                     Rectangle {
@@ -4679,13 +5003,19 @@ Rectangle {
                             placeholderText: "Or paste Cookie header (e.g. session=...)"
                             color: "#F8FAFC"
                             placeholderTextColor: "#64748B"
+                            selectionColor: "#0284C7"
+                            selectedTextColor: "#FFFFFF"
+                            selectByMouse: true
+                            clip: true
+                            verticalAlignment: TextInput.AlignVCenter
                             font.pixelSize: 11
                             background: Rectangle {
                                 radius: 6
-                                color: "#121722"
-                                border.color: loginCookieField.activeFocus ? "#38BDF8" : "#1E293B"
-                                border.width: 1
+                                color: loginCookieField.activeFocus ? "#0B0D12" : "#121722"
+                                border.color: loginCookieField.activeFocus ? "#38BDF8" : (loginCookieField.hovered ? "#475569" : "#1E293B")
+                                border.width: loginCookieField.activeFocus ? 1.5 : 1
                             }
+                            TextBarContextArea {}
                         }
                         Rectangle {
                             Layout.preferredHeight: 32

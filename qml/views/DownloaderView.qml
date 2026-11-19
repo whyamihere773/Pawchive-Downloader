@@ -8,10 +8,60 @@ SmoothFlickable {
 
     property var bridge: null
     property int currentSubTab: 0
+    property bool embeddedInModal: false
 
     // Fluid Newtonian Entrance parameters triggered on sub-tab switch
     property real tabEntranceOffsetY: 0
     property real tabEntranceOpacity: 1.0
+    property real fallbackThumbGlowAlpha: 0.0
+
+    function focusFallbackToThumbnailsSetting() {
+        root.currentSubTab = 0
+        focusFallbackThumbTimer.restart()
+    }
+
+    NumberAnimation {
+        id: scrollToFallbackThumbAnim
+        target: root
+        property: "contentY"
+        duration: 340
+        easing.type: Easing.OutCubic
+    }
+
+    SequentialAnimation {
+        id: fallbackThumbGlowAnim
+        loops: 1
+        NumberAnimation { target: root; property: "fallbackThumbGlowAlpha"; from: 0.0; to: 1.0; duration: 220; easing.type: Easing.OutCubic }
+        NumberAnimation { target: root; property: "fallbackThumbGlowAlpha"; from: 1.0; to: 0.32; duration: 360; easing.type: Easing.InOutSine }
+        NumberAnimation { target: root; property: "fallbackThumbGlowAlpha"; from: 0.32; to: 1.0; duration: 320; easing.type: Easing.InOutSine }
+        NumberAnimation { target: root; property: "fallbackThumbGlowAlpha"; from: 1.0; to: 0.32; duration: 360; easing.type: Easing.InOutSine }
+        NumberAnimation { target: root; property: "fallbackThumbGlowAlpha"; from: 0.32; to: 1.0; duration: 320; easing.type: Easing.InOutSine }
+        PauseAnimation { duration: 260 }
+        NumberAnimation { target: root; property: "fallbackThumbGlowAlpha"; from: 1.0; to: 0.0; duration: 750; easing.type: Easing.OutCubic }
+    }
+
+    Timer {
+        id: focusFallbackThumbTimer
+        interval: 75
+        repeat: false
+        onTriggered: {
+            if (typeof fallbackThumbHighlightContainer === "undefined" || !fallbackThumbHighlightContainer)
+                return
+            var pt = fallbackThumbHighlightContainer.mapToItem(root.contentItem, 0, 0)
+            var itemTop = pt.y
+            var itemBottom = pt.y + fallbackThumbHighlightContainer.height
+            var maxScroll = Math.max(0, root.contentHeight - root.height)
+            if (maxScroll > 0 && (itemTop < root.contentY + 24 || itemBottom > root.contentY + root.height - 24)) {
+                var targetY = Math.max(0, Math.min(maxScroll, itemTop - Math.max(24, (root.height - fallbackThumbHighlightContainer.height) * 0.42)))
+                root.cancelFlick()
+                scrollToFallbackThumbAnim.stop()
+                scrollToFallbackThumbAnim.from = root.contentY
+                scrollToFallbackThumbAnim.to = targetY
+                scrollToFallbackThumbAnim.start()
+            }
+            fallbackThumbGlowAnim.restart()
+        }
+    }
 
     // Buttons that cycle through labels are as wide as their longest one, so long translations
     // (Russian, German…) fit and the button doesn't change size when clicked. Same font as StyledButton.
@@ -175,6 +225,7 @@ SmoothFlickable {
         spacing: 12
 
         PendingSettingsBanner {
+            visible: !root.embeddedInModal
             Layout.fillWidth: true
             bridge: root.bridge
         }
@@ -182,7 +233,7 @@ SmoothFlickable {
         // Live Large-Creator Scan Progress Banner
         Rectangle {
             id: liveScanBanner
-            readonly property bool scanningActive: Boolean(root.bridge && root.bridge.isScanning)
+            readonly property bool scanningActive: !root.embeddedInModal && Boolean(root.bridge && root.bridge.isScanning)
             readonly property int progCurrent: (root.bridge && root.bridge.scanProgressCurrent !== undefined) ? root.bridge.scanProgressCurrent : 0
             readonly property int progTotal: (root.bridge && root.bridge.scanProgressTotal !== undefined) ? root.bridge.scanProgressTotal : 0
             Layout.fillWidth: true
@@ -286,6 +337,7 @@ SmoothFlickable {
         // ALWAYS VISIBLE: Download Destination Card
         // ====================================================================
         CardSection {
+            visible: !root.embeddedInModal
             Layout.fillWidth: true
             title: root.tr("section_destination", "Download Destination")
             iconText: "📁"
@@ -627,7 +679,8 @@ SmoothFlickable {
                 // Tab 3: Batch Importer
                 Item {
                     id: tabBtn3
-                    Layout.fillWidth: true
+                    visible: !root.embeddedInModal
+                    Layout.fillWidth: !root.embeddedInModal
                     Layout.fillHeight: true
 
                     scale: tabMouse3.pressed ? 0.93 : (tabMouse3.containsMouse ? 1.025 : 1.0)
@@ -1318,11 +1371,50 @@ SmoothFlickable {
                         onCheckedChanged: if (root.bridge) root.bridge.downloadThumbnailsOnly = checked
                     }
 
-                    StyledCheckBox {
-                        text: root.tr("opt_fallback_to_thumbnails", "Fallback to thumbnails if full-size missing")
-                        tooltip: root.tr("opt_fallback_to_thumbnails_tip", "If the original full-resolution file is missing on the server (404), allow downloading the preview thumbnail instead")
-                        checked: root.bridge ? root.bridge.fallbackToThumbnails : false
-                        onCheckedChanged: if (root.bridge) root.bridge.fallbackToThumbnails = checked
+                    Item {
+                        id: fallbackThumbHighlightContainer
+                        objectName: "fallbackThumbHighlightContainer"
+                        implicitWidth: fallbackThumbCheck.implicitWidth
+                        implicitHeight: fallbackThumbCheck.implicitHeight
+                        z: root.fallbackThumbGlowAlpha > 0.01 ? 10 : 0
+
+                        // Outer soft luminous halo
+                        Rectangle {
+                            anchors.fill: parent
+                            anchors.leftMargin: -10
+                            anchors.rightMargin: -10
+                            anchors.topMargin: -7
+                            anchors.bottomMargin: -7
+                            radius: 10
+                            visible: root.fallbackThumbGlowAlpha > 0.01
+                            color: Qt.rgba(56 / 255, 189 / 255, 248 / 255, 0.16 * root.fallbackThumbGlowAlpha)
+                            border.color: Qt.rgba(56 / 255, 189 / 255, 248 / 255, 0.42 * root.fallbackThumbGlowAlpha)
+                            border.width: 2
+                        }
+
+                        // Inner crisp glow highlight
+                        Rectangle {
+                            anchors.fill: parent
+                            anchors.leftMargin: -6
+                            anchors.rightMargin: -6
+                            anchors.topMargin: -4
+                            anchors.bottomMargin: -4
+                            radius: 7
+                            visible: root.fallbackThumbGlowAlpha > 0.01
+                            color: Qt.rgba(56 / 255, 189 / 255, 248 / 255, 0.22 * root.fallbackThumbGlowAlpha)
+                            border.color: Qt.rgba(125 / 255, 211 / 255, 252 / 255, 0.95 * root.fallbackThumbGlowAlpha)
+                            border.width: 1.5
+                        }
+
+                        StyledCheckBox {
+                            id: fallbackThumbCheck
+                            objectName: "fallbackToThumbnailsCheck"
+                            anchors.fill: parent
+                            text: root.tr("opt_fallback_to_thumbnails", "Fallback to thumbnails if full-size missing")
+                            tooltip: root.tr("opt_fallback_to_thumbnails_tip", "If the original full-resolution file is missing on the server (404), allow downloading the preview thumbnail instead")
+                            checked: root.bridge ? root.bridge.fallbackToThumbnails : false
+                            onCheckedChanged: if (root.bridge) root.bridge.fallbackToThumbnails = checked
+                        }
                     }
 
                     StyledCheckBox {
@@ -3548,7 +3640,7 @@ SmoothFlickable {
         // ====================================================================
         ColumnLayout {
             id: subTab3Content
-            visible: root.currentSubTab === 3
+            visible: !root.embeddedInModal && root.currentSubTab === 3
             Layout.fillWidth: true
             spacing: 12
 
@@ -3657,17 +3749,22 @@ SmoothFlickable {
                         TextArea {
                             id: batchInput
                             placeholderText: "https://kemono.cr/patreon/user/12345\nhttps://coomer.st/onlyfans/user/67890\nhttps://cum.st/creators/onlyfans/32696630\nhttps://bunkr.cr/a/example"
+                            placeholderTextColor: "#64748B"
                             background: Rectangle {
-                                color: "#141922"
-                                border.color: batchInput.activeFocus ? "#7C3AED" : "#1E2433"
-                                border.width: 1
+                                color: batchInput.activeFocus ? "#0E1118" : "#141922"
+                                border.color: batchInput.activeFocus ? "#38BDF8" : (batchInput.hovered ? "#475569" : "#1E2433")
+                                border.width: batchInput.activeFocus ? 1.5 : 1
                                 radius: 6
                             }
                             color: "#E2E8F0"
+                            selectionColor: "#0284C7"
+                            selectedTextColor: "#FFFFFF"
+                            selectByMouse: true
                             font.family: "Consolas, monospace"
                             font.pixelSize: 11
                             wrapMode: TextArea.Wrap
                             padding: 10
+                            TextBarContextArea {}
                         }
                     }
 

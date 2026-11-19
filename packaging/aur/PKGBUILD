@@ -1,0 +1,90 @@
+# Maintainer: whyamihere773 <https://github.com/whyamihere773/Pawchive-Downloader>
+# Experimental Arch / CachyOS / AUR binary package wrapping the portable Linux release.
+
+pkgname=pawchive-downloader-bin
+pkgver=1.4.2
+pkgrel=1
+pkgdesc="Media Downloader & Archival Suite for Pawchive, Kemono, Coomer, Bunkr & Fanbox (Experimental)"
+arch=('x86_64')
+url="https://github.com/whyamihere773/Pawchive-Downloader"
+license=('MIT')
+depends=(
+    'glibc'
+    'gcc-libs'
+    'libglvnd'
+    'fontconfig'
+    'freetype2'
+    'dbus'
+    'libxkbcommon'
+    'libxkbcommon-x11'
+    'wayland'
+    'libx11'
+    'libxcb'
+    'xcb-util-cursor'
+    'xcb-util-wm'
+    'xcb-util-keysyms'
+    'xcb-util-image'
+    'xcb-util-renderutil'
+    'hicolor-icon-theme'
+)
+optdepends=(
+    'ffmpeg: media conversion and thumbnail generation'
+    '7zip: archive decompression in Bulk Decompressor'
+    'yt-dlp: system yt-dlp binary (auto-downloaded if absent)'
+    'xdg-desktop-portal: native desktop file picker dialogs'
+)
+provides=('pawchive-downloader')
+conflicts=('pawchive-downloader')
+# CRITICAL: never strip PyInstaller ELF binaries or their embedded Python archive is destroyed
+options=('!strip' '!debug')
+source=("Pawchive-Linux-v${pkgver}-Portable-x86_64.tar.gz::https://github.com/whyamihere773/Pawchive-Downloader/releases/download/v${pkgver}/Pawchive-Linux-v${pkgver}-Portable-x86_64.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+    install -dm755 "${pkgdir}/opt/pawchive-downloader"
+    cp -a "${srcdir}/pawchive-downloader/." "${pkgdir}/opt/pawchive-downloader/"
+    chmod 755 "${pkgdir}/opt/pawchive-downloader/pawchive"
+
+    # Remove portable self-updater/installer scripts; pacman manages upgrades
+    rm -f \
+        "${pkgdir}/opt/pawchive-downloader/updater" \
+        "${pkgdir}/opt/pawchive-downloader/install.sh" \
+        "${pkgdir}/opt/pawchive-downloader/uninstall.sh"
+
+    # Marker read by Pawchive to identify a pacman-managed install and disable self-update
+    touch "${pkgdir}/opt/pawchive-downloader/.pacman-managed"
+
+    install -dm755 "${pkgdir}/usr/bin"
+    cat > "${pkgdir}/usr/bin/pawchive" <<'EOF'
+#!/bin/sh
+exec /opt/pawchive-downloader/pawchive "$@"
+EOF
+    chmod 755 "${pkgdir}/usr/bin/pawchive"
+
+    install -dm755 "${pkgdir}/usr/share/applications"
+    cat > "${pkgdir}/usr/share/applications/pawchive.desktop" <<'EOF'
+[Desktop Entry]
+Name=Pawchive Downloader
+GenericName=Media Downloader & Archival Suite
+Comment=Cross-Platform Pawchive, Kemono, Coomer, Bunkr & Fanbox Archival Suite
+Exec=/usr/bin/pawchive %U
+Icon=pawchive
+Terminal=false
+Type=Application
+Categories=Network;FileTransfer;Utility;Archiving;
+StartupNotify=true
+StartupWMClass=PawchiveDownloader
+MimeType=x-scheme-handler/pawchive;
+Keywords=pawchive;kemono;coomer;bunkr;fanbox;downloader;archival;
+EOF
+
+    if [ -f "${srcdir}/pawchive-downloader/pawchive.png" ]; then
+        install -Dm644 "${srcdir}/pawchive-downloader/pawchive.png" \
+            "${pkgdir}/usr/share/icons/hicolor/512x512/apps/pawchive.png"
+    fi
+
+    if [ -f "${srcdir}/pawchive-downloader/LICENSE" ]; then
+        install -Dm644 "${srcdir}/pawchive-downloader/LICENSE" \
+            "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+    fi
+}

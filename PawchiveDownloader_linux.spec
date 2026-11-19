@@ -19,9 +19,9 @@ datas = [
     (os.path.join(project_root, 'config', 'settings.example.json'), 'config'),
 ]
 
-# Explicitly add Linux binaries from dependencies/ if present
+# Explicitly add Linux binaries from dependencies/ if present (never bundle Windows .exe tools on Linux)
 deps_src = os.path.join(project_root, 'dependencies')
-for bin_name in ['7za', 'yt-dlp', '7za.exe', 'yt-dlp.exe']:
+for bin_name in ['7za', 'yt-dlp']:
     bin_path = os.path.join(deps_src, bin_name)
     if os.path.exists(bin_path):
         datas.append((bin_path, 'dependencies'))
@@ -77,6 +77,10 @@ hidden_imports = [
     'core.task_scheduler',
     'core.known_manager',
     'core.archive_manager',
+    'core.archive_rebuilder',
+    'core.archive_rebuild_journal',
+    'core.graphics_backend',
+    'core.local_library',
     'core.hardware_detector',
     'core.ai_semantic_matcher',
     'core.ai_reasoner',
@@ -161,6 +165,54 @@ a.datas = [
             d[0].lower().endswith('.onnx') or d[0].lower().endswith('.gguf'))
 ]
 
+# Strip host-ABI-sensitive Linux system libraries from _internal/ so the host distro
+# (CachyOS, Arch, Fedora, Debian, Ubuntu, openSUSE) provides its own matching Mesa/NVIDIA
+# OpenGL/EGL drivers, libstdc++/libgcc_s, Fontconfig, GTK/GLib, D-Bus, systemd, and Kerberos.
+# Bundling Ubuntu 22.04 copies causes EGL SIGABRT crashes and 40+ Fontconfig errors on newer distros.
+_HOST_SYSTEM_LIB_PREFIXES = (
+    # C / C++ runtime (must match host Mesa/DRI drivers)
+    'libstdc++.so', 'libgcc_s.so', 'libc.so', 'libm.so', 'libdl.so', 'librt.so',
+    'libpthread.so', 'ld-linux',
+    # GPU / OpenGL / EGL / Vulkan / DRM / GBM / Wayland / core X11
+    'libgl.so', 'libglx.so', 'libglx_mesa.so', 'libgldispatch.so',
+    'libegl.so', 'libegl_mesa.so', 'libglesv1_cm.so', 'libglesv2.so', 'libopengl.so',
+    'libdrm', 'libgbm.so', 'libvulkan.so',
+    'libwayland-client.so', 'libwayland-cursor.so', 'libwayland-egl.so', 'libwayland-server.so',
+    'libx11.so', 'libx11-xcb.so', 'libxcb.so.', 'libxcb-glx.so', 'libxcb-dri',
+    # Fontconfig / Freetype / Expat / HarfBuzz (fixes Fontconfig xsi:nil warnings)
+    'libfontconfig.so', 'libfreetype.so', 'libexpat.so', 'libharfbuzz.so',
+    # Desktop / Portal / Systemd / Kerberos / Audio / Core OS libraries
+    'libgtk-3.so', 'libgdk-3.so', 'libgtk-4.so', 'libgdk_pixbuf',
+    'libglib-2.0.so', 'libgio-2.0.so', 'libgobject-2.0.so', 'libgmodule-2.0.so', 'libgthread-2.0.so',
+    'libpango', 'libcairo', 'libatk',
+    'libdbus-1.so', 'libsystemd.so', 'libudev.so',
+    'libgssapi_krb5.so', 'libkrb5', 'libk5crypto.so', 'libcom_err.so', 'libkeyutils.so',
+    'libresolv.so', 'libselinux.so', 'libmount.so', 'libblkid.so', 'libuuid.so',
+    'libasound.so', 'libpulse', 'libpipewire',
+    'libreadline.so', 'libtinfo.so', 'libncurses', 'libz.so', 'libzstd.so',
+)
+
+
+def _keep_linux_binary(entry):
+    dest_name = str(entry[0] or '').replace('\\', '/')
+    src_path = str(entry[1] or '').replace('\\', '/')
+    base = os.path.basename(dest_name).lower()
+    # Always preserve PySide6 / shiboken6 / Qt6 / bundled FFmpeg libs inside PySide6
+    if dest_name.startswith(('PySide6/', 'shiboken6/')) or '/PySide6/' in src_path or '/shiboken6/' in src_path:
+        return True
+    if base.startswith(('libqt6', 'libpyside6', 'libshiboken6', 'libpython', 'libxkbcommon')):
+        return True
+    # Keep Qt XCB extension helpers (many distros lack libxcb-cursor0 out of the box)
+    if base.startswith((
+        'libxcb-cursor', 'libxcb-icccm', 'libxcb-keysyms', 'libxcb-image',
+        'libxcb-render-util', 'libxcb-xinerama', 'libxcb-shape', 'libxcb-xkb',
+    )):
+        return True
+    return not any(base.startswith(pref) for pref in _HOST_SYSTEM_LIB_PREFIXES)
+
+
+a.binaries = [b for b in a.binaries if _keep_linux_binary(b)]
+
 pyz = PYZ(
     a.pure,
     a.zipped_data,
@@ -193,7 +245,7 @@ a_updater = Analysis(
     pathex=[project_root],
     binaries=[],
     datas=[],
-    hiddenimports=['services.update_installer', 'services.update_service',
+    hiddenimports=['services.update_installer', 'services.update_service', 'core.graphics_backend',
                    'PySide6.QtGui', 'PySide6.QtQml', 'PySide6.QtQuick'],
     hookspath=[],
     hooksconfig={},
@@ -206,6 +258,8 @@ a_updater = Analysis(
     cipher=block_cipher,
     noarchive=False,
 )
+
+a_updater.binaries = [b for b in a_updater.binaries if _keep_linux_binary(b)]
 
 pyz_updater = PYZ(
     a_updater.pure,
@@ -244,6 +298,6 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name='Pawchive Downloader',
+    name='pawchive-downloader',
 )
 

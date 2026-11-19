@@ -262,7 +262,14 @@ Item {
     property string toastText: ""
     property bool toastIsError: false
 
+    readonly property bool _textInputFocused: (
+        searchInput.activeFocus
+        || renameField.activeFocus
+        || (typeof appWindow !== "undefined" && appWindow && appWindow.activeFocusItem && typeof appWindow.activeFocusItem.selectAll === "function")
+    )
+
     readonly property bool shortcutsEnabled: (typeof appWindow !== "undefined" ? appWindow.currentTab === 7 : root.visible)
+        && !_textInputFocused
         && !isModalOpen(lightboxLoader) && !isModalOpen(batchRenameLoader) && !isModalOpen(galleryCleanerLoader)
         && !isModalOpen(rootDiskSafetyLoader) && !deleteConfirm.isOpen && !renameDialog.isOpen && !archiveModal.isOpen && !isModalOpen(archiveViewerLoader)
         && !isModalOpen(creatorUpdatesLoader) && !isModalOpen(storageLoader) && !isModalOpen(mediaCompressLoader)
@@ -3614,9 +3621,15 @@ Item {
                 implicitHeight: 28
                 implicitWidth: root.searchBoxWidth
                 radius: 6
-                color: "#121622"
-                border.color: searchInput.activeFocus ? "#38BDF8" : "#252D3E"
-                border.width: 1
+                color: searchInput.activeFocus ? "#0B0D12" : "#121622"
+                border.color: searchInput.activeFocus ? "#38BDF8" : (gallerySearchBoxMouse.containsMouse ? "#475569" : "#252D3E")
+                border.width: searchInput.activeFocus ? 1.5 : 1
+
+                TextBarContextArea {
+                    id: gallerySearchBoxMouse
+                    target: searchInput
+                    focusOnLeftClick: true
+                }
 
                 RowLayout {
                     anchors.fill: parent
@@ -3628,11 +3641,16 @@ Item {
                     TextInput {
                         id: searchInput
                         Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        verticalAlignment: TextInput.AlignVCenter
                         color: "#F8FAFC"
+                        selectionColor: "#0284C7"
+                        selectedTextColor: "#FFFFFF"
                         font.family: "Segoe UI, sans-serif"
                         font.pixelSize: 11
                         selectByMouse: true
                         clip: true
+                        TextBarContextArea {}
                         onTextChanged: root.searchFilter = text
                         Keys.onDownPressed: root.focusBrowser()
                         Keys.onEscapePressed: root.focusBrowser()
@@ -3642,7 +3660,10 @@ Item {
                             text: root.searchSubfolders ? "Search all subfolders…  (.png, .mp4)" : "Search this folder…  (.png, .mp4)"
                             color: "#64748B"
                             font.pixelSize: 11
+                            anchors.left: parent.left
+                            anchors.right: parent.right
                             anchors.verticalCenter: parent.verticalCenter
+                            elide: Text.ElideRight
                         }
                     }
                     // Toggle: also search inside subfolders
@@ -6322,9 +6343,15 @@ Click to open the Downloader"
                     Layout.fillWidth: true
                     implicitHeight: 32
                     radius: 6
-                    color: "#0D1018"
-                    border.color: renameDialog.errorText ? "#EF4444" : (renameField.activeFocus ? "#38BDF8" : "#252D3E")
-                    border.width: 1
+                    color: renameField.activeFocus ? "#0B0D12" : "#0D1018"
+                    border.color: renameDialog.errorText ? "#EF4444" : (renameField.activeFocus ? "#38BDF8" : (renameBoxMouse.containsMouse ? "#475569" : "#252D3E"))
+                    border.width: renameField.activeFocus ? 1.5 : 1
+
+                    TextBarContextArea {
+                        id: renameBoxMouse
+                        target: renameField
+                        focusOnLeftClick: true
+                    }
 
                     TextInput {
                         id: renameField
@@ -6333,12 +6360,13 @@ Click to open the Downloader"
                         anchors.rightMargin: 10
                         verticalAlignment: TextInput.AlignVCenter
                         color: "#F8FAFC"
-                        selectionColor: "#2563EB"
+                        selectionColor: "#0284C7"
                         selectedTextColor: "#FFFFFF"
                         font.family: "Segoe UI, sans-serif"
                         font.pixelSize: 12
                         selectByMouse: true
                         clip: true
+                        TextBarContextArea {}
                         onTextChanged: renameDialog.errorText = ""
                         Keys.onReturnPressed: renameDialog.confirm()
                         Keys.onEnterPressed: renameDialog.confirm()

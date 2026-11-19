@@ -23,10 +23,12 @@ TextField {
     selectByMouse: true
     selectedTextColor: "#FFFFFF"
     selectionColor: "#0284C7"
+    verticalAlignment: TextInput.AlignVCenter
+    clip: true
     implicitHeight: 34
 
     leftPadding: leadingIcon.length > 0 ? 32 : 12
-    rightPadding: (showClearButton && control.text.length > 0) ? 30 : 12
+    rightPadding: (showClearButton && !control.readOnly && control.text.length > 0) ? 30 : 12
 
     // Leading icon
     Text {
@@ -49,7 +51,7 @@ TextField {
         anchors.right: parent.right
         anchors.rightMargin: 8
         anchors.verticalCenter: parent.verticalCenter
-        visible: control.showClearButton && control.text.length > 0
+        visible: control.showClearButton && !control.readOnly && control.text.length > 0
 
         scale: clearMouse.pressed ? 0.85 : (clearMouse.containsMouse ? 1.15 : 1.0)
         transformOrigin: Item.Center
@@ -76,26 +78,18 @@ TextField {
             cursorShape: Qt.PointingHandCursor
             onClicked: {
                 control.text = ""
+                control.textEdited()
                 control.editingFinished()
+                control.forceActiveFocus()
             }
         }
     }
 
     // Right-click context menu handler
-    MouseArea {
+    TextBarContextArea {
         id: rightClickArea
-        anchors.fill: parent
-        anchors.rightMargin: (showClearButton && control.text.length > 0) ? 30 : 0
-        acceptedButtons: Qt.RightButton
-        hoverEnabled: false
-        cursorShape: Qt.IBeamCursor
-        onClicked: function(mouse) {
-            if (typeof appWindow !== "undefined" && appWindow && typeof appWindow.openTextContextMenu === "function") {
-                appWindow.openTextContextMenu(control, mouse.x, mouse.y)
-            } else if (typeof globalTextContextMenu !== "undefined" && globalTextContextMenu) {
-                globalTextContextMenu.showAt(control, mouse.x, mouse.y)
-            }
-        }
+        target: control
+        anchors.rightMargin: (showClearButton && !control.readOnly && control.text.length > 0) ? 30 : 0
     }
 
     background: Rectangle {

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.whyamihere773.PawchiveDownloader</id>
+  <name>Pawchive Downloader</name>
+  <summary>Media Downloader &amp; Archival Suite</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <developer id="io.github.whyamihere773">
+    <name>whyamihere773</name>
+  </developer>
+  <description>
+    <p>
+      Pawchive Downloader is a cross-platform archival and media downloading suite
+      with built-in creator browsing, gallery management, archive deduplication,
+      watchlist tracking, and resumable multi-threaded downloads.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.whyamihere773.PawchiveDownloader.desktop</launchable>
+  <url type="homepage">https://github.com/whyamihere773/Pawchive-Downloader</url>
+  <url type="bugtracker">https://github.com/whyamihere773/Pawchive-Downloader/issues</url>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="1.4.2" date="2026-11-19" />
+  </releases>
+</component>

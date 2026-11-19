@@ -118,22 +118,10 @@ Rectangle {
 
             Behavior on border.color { ColorAnimation { duration: 150 } }
 
-            MouseArea {
+            TextBarContextArea {
                 id: urlMouse
-                anchors.fill: parent
-                hoverEnabled: true
-                cursorShape: Qt.IBeamCursor
-                acceptedButtons: Qt.LeftButton | Qt.RightButton
-                onClicked: function(mouse) {
-                    if (mouse.button === Qt.RightButton) {
-                        if (typeof appWindow !== "undefined" && appWindow && typeof appWindow.openTextContextMenu === "function") {
-                            var pt = mapToItem(urlInput, mouse.x, mouse.y)
-                            appWindow.openTextContextMenu(urlInput, pt.x, pt.y)
-                        }
-                    } else {
-                        urlInput.forceActiveFocus()
-                    }
-                }
+                target: urlInput
+                focusOnLeftClick: true
             }
 
             RowLayout {
@@ -197,10 +185,14 @@ Rectangle {
                 TextInput {
                     id: urlInput
                     Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    verticalAlignment: TextInput.AlignVCenter
                     text: root.bridge ? root.bridge.currentUrl : ""
                     font.family: "Segoe UI, Inter, sans-serif"
                     font.pixelSize: 12
                     color: "#F1F5F9"
+                    selectionColor: "#0284C7"
+                    selectedTextColor: "#FFFFFF"
                     clip: true
                     selectByMouse: true
                     onTextChanged: {
@@ -210,17 +202,7 @@ Rectangle {
                     }
                     onAccepted: root.startRequested()
 
-                    MouseArea {
-                        anchors.fill: parent
-                        acceptedButtons: Qt.RightButton
-                        hoverEnabled: false
-                        cursorShape: Qt.IBeamCursor
-                        onClicked: function(mouse) {
-                            if (typeof appWindow !== "undefined" && appWindow && typeof appWindow.openTextContextMenu === "function") {
-                                appWindow.openTextContextMenu(urlInput, mouse.x, mouse.y)
-                            }
-                        }
-                    }
+                    TextBarContextArea {}
 
                     Text {
                         anchors.left: parent.left
@@ -364,12 +346,10 @@ Rectangle {
                         delay: 400
                     }
 
-                    MouseArea {
+                    TextBarContextArea {
                         id: pStartMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.IBeamCursor
-                        onClicked: pStartInput.forceActiveFocus()
+                        target: pStartInput
+                        focusOnLeftClick: true
                     }
 
                     TextInput {
@@ -380,9 +360,14 @@ Rectangle {
                         font.family: "Segoe UI, sans-serif"
                         font.pixelSize: 11
                         color: "#F1F5F9"
+                        selectionColor: "#0284C7"
+                        selectedTextColor: "#FFFFFF"
+                        clip: true
                         text: (root.bridge && root.bridge.pageStart > 1) ? root.bridge.pageStart.toString() : ""
                         validator: IntValidator { bottom: 1; top: 999999 }
                         selectByMouse: true
+
+                        TextBarContextArea {}
 
                         Text {
                             anchors.centerIn: parent
@@ -426,12 +411,10 @@ Rectangle {
                         delay: 400
                     }
 
-                    MouseArea {
+                    TextBarContextArea {
                         id: pEndMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.IBeamCursor
-                        onClicked: pEndInput.forceActiveFocus()
+                        target: pEndInput
+                        focusOnLeftClick: true
                     }
 
                     TextInput {
@@ -442,9 +425,14 @@ Rectangle {
                         font.family: "Segoe UI, sans-serif"
                         font.pixelSize: 11
                         color: "#F1F5F9"
+                        selectionColor: "#0284C7"
+                        selectedTextColor: "#FFFFFF"
+                        clip: true
                         text: (root.bridge && root.bridge.pageEnd < 999999 && root.bridge.pageEnd !== 999) ? root.bridge.pageEnd.toString() : ""
                         validator: IntValidator { bottom: 1; top: 999999 }
                         selectByMouse: true
+
+                        TextBarContextArea {}
 
                         Text {
                             anchors.centerIn: parent

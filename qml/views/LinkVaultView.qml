@@ -877,6 +877,11 @@ Item {
                 border.width: 1
                 Behavior on border.color { ColorAnimation { duration: 140 } }
 
+                TextBarContextArea {
+                    target: searchInput
+                    focusOnLeftClick: true
+                }
+
                 RowLayout {
                     anchors.fill: parent
                     anchors.leftMargin: 12
@@ -888,9 +893,13 @@ Item {
                     TextInput {
                         id: searchInput
                         Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        verticalAlignment: TextInput.AlignVCenter
                         font.family: "Segoe UI, sans-serif"
                         font.pixelSize: 12
                         color: "#F8FAFC"
+                        selectionColor: "#0284C7"
+                        selectedTextColor: "#FFFFFF"
                         selectByMouse: true
                         clip: true
 
@@ -900,6 +909,10 @@ Item {
                             font.pixelSize: 12
                             color: "#475569"
                             visible: !searchInput.text && !searchInput.activeFocus
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            elide: Text.ElideRight
                         }
 
                         onTextChanged: {
@@ -907,17 +920,7 @@ Item {
                             if (linkVaultRoot.bridge) linkVaultRoot.bridge.refreshLinkVault(linkVaultRoot.searchQuery, linkVaultRoot.activePlatform)
                         }
 
-                        MouseArea {
-                            anchors.fill: parent
-                            acceptedButtons: Qt.RightButton
-                            hoverEnabled: false
-                            cursorShape: Qt.IBeamCursor
-                            onClicked: function(mouse) {
-                                if (typeof appWindow !== "undefined" && appWindow && typeof appWindow.openTextContextMenu === "function") {
-                                    appWindow.openTextContextMenu(searchInput, mouse.x, mouse.y)
-                                }
-                            }
-                        }
+                        TextBarContextArea {}
                     }
 
                     Text {
@@ -1372,9 +1375,12 @@ Item {
                                                 font.family: "Segoe UI, sans-serif"
                                                 font.pixelSize: 12
                                                 color: "#CBD5E1"
+                                                selectionColor: "#0284C7"
+                                                selectedTextColor: "#FFFFFF"
                                                 readOnly: true
                                                 selectByMouse: true
                                                 wrapMode: TextEdit.Wrap
+                                                TextBarContextArea {}
                                             }
                                         }
 
@@ -1807,9 +1813,15 @@ Item {
                         height: 38
                         radius: 8
                         color: "#0F172A"
-                        border.color: artistUrlField.activeFocus ? "#10B981" : "#334155"
-                        border.width: 1.2
+                        border.color: artistUrlField.activeFocus ? "#10B981" : (artistUrlBoxMouse.containsMouse ? "#475569" : "#334155")
+                        border.width: artistUrlField.activeFocus ? 1.5 : 1.2
                         Behavior on border.color { ColorAnimation { duration: 120 } }
+
+                        TextBarContextArea {
+                            id: artistUrlBoxMouse
+                            target: artistUrlField
+                            focusOnLeftClick: true
+                        }
 
                         RowLayout {
                             anchors.fill: parent
@@ -1820,11 +1832,16 @@ Item {
                             TextInput {
                                 id: artistUrlField
                                 Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                verticalAlignment: TextInput.AlignVCenter
                                 font.family: "Segoe UI, sans-serif"
                                 font.pixelSize: 12
                                 color: "#F8FAFC"
+                                selectionColor: "#0284C7"
+                                selectedTextColor: "#FFFFFF"
                                 selectByMouse: true
                                 clip: true
+                                TextBarContextArea {}
 
                                 Text {
                                     text: linkVaultRoot.tr("placeholder_artist_url", "https://kemono.cr/fanbox/user/1234567...")
@@ -1832,6 +1849,10 @@ Item {
                                     font.pixelSize: 12
                                     color: "#475569"
                                     visible: !artistUrlField.text && !artistUrlField.activeFocus
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    elide: Text.ElideRight
                                 }
                             }
 
@@ -2128,9 +2149,15 @@ Item {
                 Layout.fillWidth: true
                 height: 36
                 radius: 6
-                color: "#181B24"
-                border.color: pwInputField.activeFocus ? "#38BDF8" : "#283042"
-                border.width: 1
+                color: pwInputField.activeFocus ? "#0B0D12" : "#181B24"
+                border.color: pwInputField.activeFocus ? "#38BDF8" : (pwInputBoxMouse.containsMouse ? "#475569" : "#283042")
+                border.width: pwInputField.activeFocus ? 1.5 : 1
+
+                TextBarContextArea {
+                    id: pwInputBoxMouse
+                    target: pwInputField
+                    focusOnLeftClick: true
+                }
 
                 RowLayout {
                     anchors.fill: parent
@@ -2141,11 +2168,16 @@ Item {
                     TextInput {
                         id: pwInputField
                         Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        verticalAlignment: TextInput.AlignVCenter
                         font.family: "Segoe UI, sans-serif"
                         font.pixelSize: 12
                         color: "#F8FAFC"
+                        selectionColor: "#0284C7"
+                        selectedTextColor: "#FFFFFF"
                         selectByMouse: true
                         clip: true
+                        TextBarContextArea {}
                         onAccepted: savePwBtn.clicked()
 
                         Text {
@@ -2154,6 +2186,10 @@ Item {
                             font.pixelSize: 12
                             color: "#475569"
                             visible: !pwInputField.text && !pwInputField.activeFocus
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            elide: Text.ElideRight
                         }
                     }
 

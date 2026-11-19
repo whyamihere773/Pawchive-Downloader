@@ -520,9 +520,15 @@ Item {
                     Layout.fillWidth: true
                     Layout.preferredHeight: 38
                     radius: 8
-                    color: "#111622"
-                    border.color: promptInput.activeFocus ? "#A78BFA" : "#26324B"
-                    border.width: 1
+                    color: promptInput.activeFocus ? "#0B0D12" : "#111622"
+                    border.color: promptInput.activeFocus ? "#A78BFA" : (promptBoxMouse.containsMouse ? "#475569" : "#26324B")
+                    border.width: promptInput.activeFocus ? 1.5 : 1
+
+                    TextBarContextArea {
+                        id: promptBoxMouse
+                        target: promptInput
+                        focusOnLeftClick: true
+                    }
 
                     RowLayout {
                         anchors.fill: parent
@@ -541,12 +547,17 @@ Item {
                         TextInput {
                             id: promptInput
                             Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            verticalAlignment: TextInput.AlignVCenter
                             text: root.vsBridge ? root.vsBridge.customPrompt : "Photos & Cosplay, 2D Illustrations, Dark & Moody, Video Clips, Favorites"
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
                             color: "#F8FAFC"
+                            selectionColor: "#0284C7"
+                            selectedTextColor: "#FFFFFF"
                             selectByMouse: true
                             clip: true
+                            TextBarContextArea {}
                             onTextEdited: {
                                 if (root.vsBridge) root.vsBridge.setCustomPrompt(text)
                             }
@@ -921,8 +932,12 @@ Item {
                                             Layout.preferredHeight: 24
                                             radius: 4
                                             color: "#090D14"
-                                            border.color: "#38BDF8"
+                                            border.color: renInput.activeFocus ? "#38BDF8" : "#2563EB"
                                             border.width: 1
+                                            TextBarContextArea {
+                                                target: renInput
+                                                focusOnLeftClick: true
+                                            }
                                             TextInput {
                                                 id: renInput
                                                 anchors.fill: parent
@@ -933,7 +948,11 @@ Item {
                                                 font.family: "Segoe UI, sans-serif"
                                                 font.pixelSize: 11
                                                 color: "#F8FAFC"
+                                                selectionColor: "#0284C7"
+                                                selectedTextColor: "#FFFFFF"
+                                                clip: true
                                                 selectByMouse: true
+                                                TextBarContextArea {}
                                                 onAccepted: {
                                                     if (root.vsBridge && text.trim().length > 0) {
                                                         root.vsBridge.renameBucket(bktId, text.trim())
@@ -1031,9 +1050,14 @@ Item {
                                     Layout.preferredWidth: 190
                                     Layout.preferredHeight: 26
                                     radius: 5
-                                    color: "#0D111A"
-                                    border.color: "#6366F1"
-                                    border.width: 1
+                                    color: targetBktInput.activeFocus ? "#0B0D12" : "#0D111A"
+                                    border.color: targetBktInput.activeFocus ? "#38BDF8" : (targetBktBoxMouse.containsMouse ? "#818CF8" : "#6366F1")
+                                    border.width: targetBktInput.activeFocus ? 1.5 : 1
+                                    TextBarContextArea {
+                                        id: targetBktBoxMouse
+                                        target: targetBktInput
+                                        focusOnLeftClick: true
+                                    }
                                     TextInput {
                                         id: targetBktInput
                                         anchors.fill: parent
@@ -1043,10 +1067,15 @@ Item {
                                         font.family: "Segoe UI, sans-serif"
                                         font.pixelSize: 11
                                         color: "#F8FAFC"
+                                        selectionColor: "#0284C7"
+                                        selectedTextColor: "#FFFFFF"
+                                        clip: true
                                         selectByMouse: true
+                                        TextBarContextArea {}
                                         Text {
                                             anchors.fill: parent
                                             verticalAlignment: Text.AlignVCenter
+                                            elide: Text.ElideRight
                                             text: "Type new or existing folder…"
                                             font.pixelSize: 11
                                             color: "#64748B"

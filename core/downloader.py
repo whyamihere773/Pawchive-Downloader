@@ -69,9 +69,106 @@ def is_not_a_video_error(msg: str) -> bool:
 # removed. (403 isn't here: on these sites it's often a temporary block.)
 _PERMANENT_ERRORS = (
     "404", "410", "not found", "not exist", "no longer available", "has been removed", "been deleted",
+    "not imported", "not physically hosted", "not available on pawchive",
     "private video", "video unavailable", "this video is unavailable", "video is private",
     "account associated with this video has been terminated", "members-only", "join this channel",
 )
+
+
+def is_post_unimported_on_pawchive(post: Dict[str, Any], domain: str = "", service: str = "") -> bool:
+    """True when Pawchive only holds metadata/previews for this post and has not imported its
+    full-size files onto its storage nodes (and no upstream fallback mirror is enabled)."""
+    if not isinstance(post, dict):
+        return False
+    dom = str(domain or post.get("domain") or "").lower()
+    orig = str(post.get("origin") or "").lower()
+    if "pawchive" not in dom and "pawchive" not in orig:
+        return False
+    svc = str(service or post.get("service") or "").lower()
+    mirror_host = "coomer.st" if svc in COOMER_SERVICES else "kemono.cr"
+    if not is_disabled(mirror_host):
+        return False
+    if "has_full" in post:
+        return post.get("has_full") is False
+    if post.get("is_unimported") is not None:
+        return bool(post.get("is_unimported"))
+    return orig in ("kemono", "coomer") and str(post.get("preview_state") or "").lower() == "pending"
+
+
+def format_unimported_explanation(
+    creator_name: str,
+    unimported_posts: int,
+    unimported_files: int,
+    queued_thumbnails: int = 0,
+    is_single_post: bool = False,
+    all_unimported: bool = True,
+) -> Tuple[str, str]:
+    """Returns a clear, plain-English (title, message) pair explaining why unimported Pawchive
+    posts cannot be downloaded at full size."""
+    who = (creator_name or "this creator").strip()
+    post_word = "post" if unimported_posts == 1 else "posts"
+    file_word = "file" if unimported_files == 1 else "files"
+    thumb_word = "preview" if queued_thumbnails == 1 else "previews"
+
+    if queued_thumbnails > 0 and unimported_files == 0:
+        title = "Unimported Posts — Downloading Previews Only"
+        msg = (
+            f"{unimported_posts} {post_word} ({queued_thumbnails} {thumb_word}) for {who} haven't been imported "
+            f"onto Pawchive's servers yet, so full-size files aren't physically hosted on the site. "
+            f"Downloading small preview thumbnails directly because \"Fallback to Thumbnails\" is enabled."
+        )
+        return title, msg
+
+    title = "Not Imported on Pawchive Yet"
+    if is_single_post:
+        msg = (
+            f"This post's full-size files haven't been imported on Pawchive yet ({unimported_files} {file_word}), "
+            f"so they were marked as Not Imported.\n\n"
+            f"Right now Pawchive only lists the post details and small preview thumbnails — the actual files "
+            f"aren't physically stored on Pawchive's servers, so there's nothing full-size to download until "
+            f"Pawchive imports them.\n\n"
+            f"Tip: If you only want the small preview thumbnails for now, turn on "
+            f"\"Fallback to thumbnails if full-size missing\" in Downloader → Quick → Download Quality & Thumbnails."
+        )
+    elif all_unimported:
+        msg = (
+            f"These full-size files for {who} haven't been imported on Pawchive yet "
+            f"({unimported_posts} {post_word}, {unimported_files} {file_word}), so they were marked as Not Imported.\n\n"
+            f"Right now Pawchive only has the post metadata and small preview thumbnails — the actual files "
+            f"aren't physically hosted on Pawchive's servers, so there's nothing full-size to download until "
+            f"Pawchive finishes importing them.\n\n"
+            f"Tip: If you only want the small preview thumbnails for now, turn on "
+            f"\"Fallback to thumbnails if full-size missing\" in Downloader → Quick → Download Quality & Thumbnails."
+        )
+    else:
+        msg = (
+            f"Skipped {unimported_posts} unimported {post_word} ({unimported_files} {file_word}) for {who} — "
+            f"Pawchive hasn't imported those full-size files onto its servers yet (only preview thumbnails exist "
+            f"on the site, so nothing can be downloaded for them until Pawchive imports them)."
+        )
+    return title, msg
+
+
+UNIMPORTED_TASK_ERROR_MSG = (
+    "Not imported on Pawchive — full-size file isn't physically hosted on the site yet "
+    "(previews only; retry disabled)"
+)
+
+
+def is_task_non_retryable(task) -> bool:
+    """True for tasks whose full-size files are known not to exist on the server at all
+    (e.g. Pawchive posts not yet imported onto Pawchive's storage nodes), so retrying is pointless."""
+    if task is None:
+        return False
+    if isinstance(task, dict):
+        if task.get("is_unimported"):
+            return True
+        err = str(task.get("error_msg") or "").lower()
+    else:
+        if getattr(task, "is_unimported", False):
+            return True
+        err = str(getattr(task, "error_msg", "") or "").lower()
+    return "not imported on pawchive" in err
 
 
 # Embedded-video sites that no longer exist: their links never work again
@@ -101,6 +198,10 @@ def is_permanent_failure(task) -> bool:
     """A failed file that will fail the same way every time (missing on the server, a private or
     removed video, a site that no longer exists, or out of retries). The Watchlist counts these
     posts as done, so it stops offering the same posts again after every download (#28)."""
+    # Unimported Pawchive posts aren't permanently gone — Pawchive simply hasn't imported them
+    # yet, so Watchlist must NOT mark them as done (it should detect them once imported).
+    if is_task_non_retryable(task):
+        return False
     if getattr(task, "retry_capped", False):
         return True
     m = str(getattr(task, "error_msg", "") or "").lower()
@@ -371,6 +472,7 @@ class DownloadTask:
         self.fallback_urls: List[str] = []
         self._tried_urls: List[str] = []      # servers tried for this file (for the log)
         self.used_preview = False   # True when only the small preview copy could be fetched
+        self.is_unimported = False  # True when full-size file isn't hosted on Pawchive yet (non-retryable)
         self.post_info_path = ""    # post_info.txt to write once this post's first file is saved
 
     @property
@@ -403,6 +505,7 @@ class DownloadTask:
             "expected_sha256": getattr(self, "expected_sha256", ""),
             "fallback_urls": list(getattr(self, "fallback_urls", []) or []),
             "used_preview": bool(getattr(self, "used_preview", False)),
+            "is_unimported": bool(getattr(self, "is_unimported", False)),
             "options": self.options.to_dict() if (getattr(self, "options", None) and hasattr(self.options, "to_dict")) else None,
         }
 
@@ -430,6 +533,7 @@ class DownloadTask:
         )
         t.fallback_urls = [u for u in (d.get("fallback_urls") or []) if isinstance(u, str)]
         t.used_preview = bool(d.get("used_preview", False))
+        t.is_unimported = bool(d.get("is_unimported", False))
         t.downloaded_bytes = int(d.get("downloaded_bytes", 0))
         t.status = d.get("status", "pending")
         t.error_msg = d.get("error_msg", "")
@@ -579,6 +683,10 @@ class KemonoDownloader:
         self.adaptive_status_text = ""
         self._learned_stable_ceiling: Optional[int] = None
         self._stable_clean_count: int = 0
+        # Cross-thread Pawchive request-start pacer to keep aggregate request starts below
+        # Pawchive's ~30 req/10s nginx rate-limit bucket even on small/fast images.
+        self._pawchive_pace_lock = threading.Lock()
+        self._pawchive_next_req_time: float = 0.0
 
         # Smart Learning ETA and speed smoothing telemetry
         self._speed_samples = deque(maxlen=40)
@@ -595,6 +703,17 @@ class KemonoDownloader:
         # Harvested external cloud links (populated in links-only mode)
         self.harvested_links: Dict[str, List[str]] = {}
         self.harvested_links_records: List[Dict[str, Any]] = []
+        self.last_build_unimported: Dict[str, Any] = {
+            "posts": 0,
+            "files": 0,
+            "queued_thumbnails": 0,
+            "post_ids": [],
+            "creator_name": "",
+            "total_posts": 0,
+            "service": "",
+            "domain": "",
+        }
+        self.last_build_unimported_tasks: List[DownloadTask] = []
 
         # Callbacks for UI updates
         self.on_progress_update: Optional[Callable[[Dict[str, Any]], None]] = None
@@ -783,6 +902,8 @@ class KemonoDownloader:
         self._first_byte_time = 0.0
         self.adaptive_state = "optimal"
         self.adaptive_status_text = ""
+        with self._pawchive_pace_lock:
+            self._pawchive_next_req_time = 0.0
         logger.info("Downloader state fully reset.", category="downloader")
 
     def status_counts(self) -> Dict[str, int]:
@@ -944,9 +1065,15 @@ class KemonoDownloader:
                 target["preview_only"] = False
                 resolved_count += 1
 
+        # 2. Only scrape post HTML for legacy 'deferred: True' attachments that lack a direct temp_url.
+        #    Never scrape HTML for unimported (has_full=False) or bare preview_only posts, which
+        #    have no temporary links in HTML and would otherwise trigger hundreds of wasted page fetches.
+        if post.get("has_full") is False:
+            return resolved_count
+
         deferred_items = [
             a for a in attachments
-            if isinstance(a, dict) and (a.get("deferred") or a.get("preview_only")) and not a.get("is_temporary") and (not a.get("path") or not str(a.get("path", "")).startswith("http"))
+            if isinstance(a, dict) and a.get("deferred") and not a.get("is_temporary") and (not a.get("path") or not str(a.get("path", "")).startswith("http"))
         ]
         if not deferred_items:
             return resolved_count
@@ -1076,6 +1203,21 @@ class KemonoDownloader:
         renamed: Counter = Counter()             # log file (a line each only in the log panel)
         self._unmatched_known_count = 0
         self.last_build_cancelled = False
+        unimported_post_ids: Set[str] = set()
+        unimported_files_skipped = 0
+        unimported_thumbs_queued = 0
+        unimported_tasks: List[DownloadTask] = []
+        self.last_build_unimported_tasks = []
+        self.last_build_unimported = {
+            "posts": 0,
+            "files": 0,
+            "queued_thumbnails": 0,
+            "post_ids": [],
+            "creator_name": creator_name,
+            "total_posts": len(posts),
+            "service": service,
+            "domain": domain,
+        }
         # cancel() bumps _session_id, so only a cancel issued during this build counts;
         # a stale flag left over from an earlier cancelled scan must not abort it.
         build_session_id = self._session_id
@@ -1594,6 +1736,8 @@ class KemonoDownloader:
                     attachments = post.get("attachments", []) or []
                     main_file = post.get("file")
 
+            post_is_unimported = is_post_unimported_on_pawchive(post, domain=domain, service=service)
+
             # Check if post contains attachments or inline content images
             has_valid_attachments = any(
                 isinstance(a, dict) and (a.get("path") or a.get("storageKey")) and not a.get("locked")
@@ -1872,28 +2016,69 @@ class KemonoDownloader:
                     elif "kemono" in orig_host:
                         effective_domain = "kemono.cr"
 
+                is_temp_resolved = (
+                    bool(fobj.get("is_temporary")) or
+                    bool(re.search(r"\bt\d+\.pawchive\.pw\b", str(original_url or norm_path or fobj.get("path") or "")))
+                )
+                file_is_unimported = bool(
+                    (post_is_unimported or is_post_unimported_on_pawchive(post, domain=effective_domain, service=service))
+                    and not is_temp_resolved
+                )
                 is_preview_only = (
-                    bool(fobj.get("preview_only")) and
-                    not bool(fobj.get("is_temporary")) and
-                    not bool(re.search(r"\bt\d+\.pawchive\.pw\b", str(original_url or norm_path or fobj.get("path") or "")))
+                    (bool(fobj.get("preview_only")) or file_is_unimported) and
+                    not is_temp_resolved
                 )
                 allow_thumb_fallback = getattr(options, "fallback_to_thumbnails", False)
                 allow_thumbnails = getattr(options, "download_thumbnails_only", False) or allow_thumb_fallback
 
-                # If the attachment only has a preview thumbnail and thumbnail options are disabled, skip it
+                # If the post hasn't been imported onto Pawchive's storage nodes yet (or only has a preview)
+                # and thumbnail options are disabled, skip cleanly without spamming 404 requests.
                 if is_preview_only and not allow_thumbnails:
-                    logger.debug(
-                        f"Skipping preview-only attachment '{raw_name}': thumbnail fallback is disabled",
-                        category="filter", to_file=False
-                    )
-                    not_queued["filtered out"] += 1
+                    if file_is_unimported:
+                        unimported_files_skipped += 1
+                        if post_id:
+                            unimported_post_ids.add(str(post_id))
+                        not_queued["not imported on Pawchive (previews only)"] += 1
+                        unimp_target_path = fit_path_for_windows(os.path.join(target_dest_dir, sanitized_name))
+                        unimp_file_id = f"{post_id}_{clean_rel}"
+                        unimp_task = DownloadTask(
+                            url="",
+                            target_path=unimp_target_path,
+                            post_title=post_title,
+                            creator_name=creator_name,
+                            service=service,
+                            post_id=post_id,
+                            file_id=unimp_file_id,
+                            file_size=int(file_bytes or 0),
+                            batch_id=batch_id,
+                            post_url=task_post_url,
+                            post_date=date_str,
+                            user_id=user_id or post_user,
+                            options=options,
+                        )
+                        unimp_task.status = "failed"
+                        unimp_task.is_unimported = True
+                        unimp_task.retry_capped = True
+                        unimp_task.http_status = 404
+                        unimp_task.error_msg = UNIMPORTED_TASK_ERROR_MSG
+                        unimported_tasks.append(unimp_task)
+                        logger.debug(
+                            f"Skipping unimported Pawchive file '{raw_name}' (post {post_id}): full file isn't hosted on Pawchive yet",
+                            category="filter", to_file=False
+                        )
+                    else:
+                        logger.debug(
+                            f"Skipping preview-only attachment '{raw_name}': thumbnail fallback is disabled",
+                            category="filter", to_file=False
+                        )
+                        not_queued["filtered out"] += 1
                     continue
 
                 candidate_urls = []
 
                 if is_preview_only or options.download_thumbnails_only:
-                    # When download_thumbnails_only is enabled or an attachment is flagged preview_only,
-                    # strictly query thumbnail CDN servers — never pull the heavy full-sized original file.
+                    # When download_thumbnails_only is enabled or an attachment is preview-only / unimported,
+                    # strictly query thumbnail CDN servers — never hammer full-size storage nodes with 404s.
                     if "pawchive" in effective_domain:
                         thumb_host = "img.pawchive.pw"
                     elif "cum.st" in effective_domain:
@@ -1948,8 +2133,10 @@ class KemonoDownloader:
                             candidate_urls.append(f"https://img.cum.st/data{clean_rel}")
                             fallback_thumb_url = f"https://img.cum.st/thumbnail/data{clean_rel}"
                         elif "pawchive" in effective_domain:
-                            # Pawchive nodes (n1-n4.pawchive.pw) first when 'server' is provided by the API,
-                            # plus file.pawchive.pw and remaining n1-n4 nodes as fallback mirrors.
+                            # Each Pawchive file lives on one assigned storage node (fobj['server'] or n{node})
+                            # and file.pawchive.pw routes to the right node. Never blindly probe all four
+                            # n1-n4 nodes — hitting the 3 wrong shards generates guaranteed 404s that exhaust
+                            # Pawchive's ~30 req/10s nginx rate-limit bucket.
                             srv_raw = str(
                                 (fobj.get("server") if isinstance(fobj, dict) else "")
                                 or (post.get("server") if isinstance(post, dict) else "")
@@ -1960,6 +2147,8 @@ class KemonoDownloader:
                             node_num = fobj.get("node") if isinstance(fobj, dict) else None
                             if not node_num and isinstance(post, dict):
                                 node_num = post.get("node")
+                            if not srv_raw and node_num is not None:
+                                srv_raw = f"https://n{node_num}.pawchive.pw"
 
                             full_url = f"https://file.pawchive.pw/data{clean_rel}?f={_fq(sanitized_name)}"
                             srv_url = f"{srv_raw}/data{clean_rel}?f={_fq(sanitized_name)}" if srv_raw else None
@@ -1972,14 +2161,6 @@ class KemonoDownloader:
                             for u in order:
                                 if u and u not in candidate_urls and not is_disabled(u):
                                     candidate_urls.append(u)
-                            if node_num is not None:
-                                node_url = f"https://n{node_num}.pawchive.pw/data{clean_rel}?f={_fq(sanitized_name)}"
-                                if node_url not in candidate_urls:
-                                    candidate_urls.append(node_url)
-                            for n_idx in (1, 2, 3, 4):
-                                n_url = f"https://n{n_idx}.pawchive.pw/data{clean_rel}?f={_fq(sanitized_name)}"
-                                if n_url not in candidate_urls:
-                                    candidate_urls.append(n_url)
                             fallback_thumb_url = f"https://img.pawchive.pw/thumbnail/data{clean_rel}"
                         elif "coomer" in effective_domain:
                             # coomer.st/data/… redirects to the file server that holds the file.
@@ -2161,6 +2342,11 @@ class KemonoDownloader:
                 )
                 task.options = options
                 task.fallback_urls = candidate_urls[1:]
+                if file_is_unimported:
+                    task.is_unimported_preview = True
+                    unimported_thumbs_queued += 1
+                    if post_id:
+                        unimported_post_ids.add(str(post_id))
                 if passwords:
                     try:
                         from core.archive_password_manager import archive_password_manager
@@ -2288,6 +2474,28 @@ class KemonoDownloader:
             self.harvested_links = {}
             self.harvested_links_records = []
 
+        self.last_build_unimported_tasks = unimported_tasks
+        self.last_build_unimported = {
+            "posts": len(unimported_post_ids),
+            "files": unimported_files_skipped,
+            "queued_thumbnails": unimported_thumbs_queued,
+            "post_ids": sorted(unimported_post_ids),
+            "creator_name": creator_name,
+            "total_posts": len(posts_to_process),
+            "service": service,
+            "domain": domain,
+        }
+        if unimported_files_skipped > 0 or unimported_thumbs_queued > 0:
+            _, unimp_msg = format_unimported_explanation(
+                creator_name=creator_name,
+                unimported_posts=len(unimported_post_ids),
+                unimported_files=unimported_files_skipped,
+                queued_thumbnails=unimported_thumbs_queued,
+                is_single_post=(len(posts_to_process) == 1),
+                all_unimported=(len(new_tasks) == 0 and unimported_files_skipped > 0),
+            )
+            logger.warning(f"⚠ {unimp_msg.replace(chr(10) + chr(10), ' ')}", category="downloader")
+
         notes = [f"Not queued: {_counts(not_queued)}." if not_queued else "",
                  f"Renamed to keep files apart: {_counts(renamed)}." if renamed else ""]
         logger.success(" ".join([f"Prepared {len(new_tasks)} file download tasks."] + [n for n in notes if n]),
@@ -2392,7 +2600,7 @@ class KemonoDownloader:
         self.tasks.extend(deduped)
         logger.info(f"Appended {len(deduped)} new tasks to download queue (total in queue: {len(self.tasks)}).", category="downloader")
 
-        if not self._is_running and options is not None:
+        if not self._is_running and options is not None and any(t.status == "pending" for t in deduped):
             self.start_download_queue(self.tasks, FilterOptions.from_dict(options.to_dict()), cookie_str)
 
         return len(deduped)
@@ -2727,6 +2935,8 @@ class KemonoDownloader:
         for t in self.tasks:
             t_bid = self._task_batch_id(t)
             if t_bid == batch_id:
+                if is_task_non_retryable(t):
+                    continue
                 if t.status in ("failed", "cancelled") or (not self._is_running and t.status in ("pending", "paused")):
                     failed.append(t)
 
@@ -3164,6 +3374,8 @@ class KemonoDownloader:
             if now >= self._rate_limit_cooldown_until:
                 if threads_locked:
                     self._rate_limit_cooldown_until = now + 30.0
+                    with self._pawchive_pace_lock:
+                        self._pawchive_next_req_time = max(self._pawchive_next_req_time, self._rate_limit_cooldown_until)
                     logger.warning(
                         f"⚡ [Rate Limit Cooldown] HTTP 429 encountered! Threads locked at {self.max_workers} (cooldown 30s)...",
                         category="downloader"
@@ -3171,6 +3383,8 @@ class KemonoDownloader:
                     return
 
                 self._rate_limit_cooldown_until = now + 14.0
+                with self._pawchive_pace_lock:
+                    self._pawchive_next_req_time = max(self._pawchive_next_req_time, self._rate_limit_cooldown_until)
                 old_workers = self.max_workers
                 
                 # Remember and lock down the stable ceiling
@@ -3189,6 +3403,50 @@ class KemonoDownloader:
                 )
                 if self.on_concurrency_throttled:
                     self.on_concurrency_throttled(self.max_workers)
+
+    def _wait_pawchive_pace_slot(self, task: DownloadTask, url: str, respect_cooldown: bool = True) -> bool:
+        """Cross-thread request-start pacer for Pawchive hosts.
+
+        Keeps aggregate request starts across all concurrent worker threads comfortably below
+        Pawchive's ~30 req/10s nginx rate-limit bucket (and respects active 429 cooldowns),
+        while letting large file streams download at full parallel bandwidth once started.
+        Returns False if the task was cancelled or paused while waiting.
+        """
+        u_low = (url or "").lower()
+        if "pawchive.pw" not in u_low:
+            return True
+        if "img.pawchive.pw" in u_low:
+            min_gap = 0.15
+        elif "file.pawchive.pw" in u_low:
+            min_gap = 0.45
+        else:
+            min_gap = 0.38
+
+        with self._pawchive_pace_lock:
+            now = time.time()
+            floor = max(now, self._rate_limit_cooldown_until) if respect_cooldown else now
+            slot = max(floor, self._pawchive_next_req_time) if respect_cooldown else max(now, min(self._pawchive_next_req_time, now + min_gap))
+            self._pawchive_next_req_time = max(self._pawchive_next_req_time, slot + min_gap)
+            wait_s = max(0.0, slot - now)
+
+        if wait_s <= 0.0:
+            return True
+
+        steps = int(wait_s / 0.05)
+        rem = wait_s - steps * 0.05
+        for _ in range(steps):
+            if self._cancel_event.is_set() or self.is_batch_cancelled(task):
+                return False
+            if self.is_batch_paused(task) or task.status == "paused":
+                return False
+            time.sleep(0.05)
+        if rem > 0.0:
+            if self._cancel_event.is_set() or self.is_batch_cancelled(task):
+                return False
+            if self.is_batch_paused(task) or task.status == "paused":
+                return False
+            time.sleep(rem)
+        return True
 
     @staticmethod
     def task_key(t) -> str:
@@ -3233,6 +3491,8 @@ class KemonoDownloader:
         eligible_tasks = []
         capped = []
         for t in all_failed:
+            if is_task_non_retryable(t):
+                continue
             err = str(getattr(t, "error_msg", "")).lower()
             if skip_404 and ("404" in err or getattr(t, "http_status", 0) == 404):
                 continue
@@ -3262,7 +3522,13 @@ class KemonoDownloader:
         self._notify_many(capped)
 
         if not eligible_tasks:
-            logger.info(f"All {len(all_failed)} failed task(s) reached max retry limit ({max_auto_retries}). Skipped by auto-retry but preserved in modal.", category="downloader")
+            if all(is_task_non_retryable(t) for t in all_failed):
+                logger.info(
+                    f"Skipped retry for {len(all_failed)} unimported Pawchive file(s) — full files aren't hosted on Pawchive yet.",
+                    category="downloader",
+                )
+            else:
+                logger.info(f"All {len(all_failed)} failed task(s) reached max retry limit ({max_auto_retries}). Skipped by auto-retry but preserved in modal.", category="downloader")
             return 0
 
         for t in eligible_tasks:
@@ -3309,6 +3575,8 @@ class KemonoDownloader:
             # Matched by the same name the list gives it (a file name used to match every file with
             # that name, e.g. all "001.jpg"s of other posts)
             if self.task_key(t) not in selected_set:
+                continue
+            if is_task_non_retryable(t):
                 continue
             is_eligible = (
                 t.status in ("failed", "cancelled")
@@ -3401,8 +3669,17 @@ class KemonoDownloader:
         self.current_options = options
         is_locked = getattr(self.current_options or options, "threads_locked", False)
         # Adaptive threading tops out at 8: beyond that the file servers rate-limit and the app
-        # mostly spends its time on bookkeeping (16 threads made the window stop responding, #24)
-        target_max_workers = min(cpu_cores, 8) if (options.adaptive_threading and not is_locked) else max(1, self.max_workers)
+        # mostly spends its time on bookkeeping (16 threads made the window stop responding, #24).
+        # For Pawchive queues, cap Adaptive Threading at 4 threads to respect Pawchive's ~30 req/10s
+        # nginx rate limit and avoid overloading storage nodes (e.g. n2.pawchive.pw timeouts).
+        is_pawchive_queue = bool(self.tasks) and any(
+            "pawchive" in (getattr(t, "url", "") or "").lower()
+            or "pawchive" in (getattr(t, "post_url", "") or "").lower()
+            for t in self.tasks
+            if getattr(t, "status", "") == "pending"
+        )
+        adaptive_cap = 4 if is_pawchive_queue else 8
+        target_max_workers = min(cpu_cores, adaptive_cap) if (options.adaptive_threading and not is_locked) else max(1, self.max_workers)
         last_scale_time = time.time()
         last_checkpoint_time = time.time()
         consecutive_successes = 0
@@ -3677,6 +3954,8 @@ class KemonoDownloader:
                                 all_failed = [t for t in self.tasks if t.status == "failed"]
                                 failed_tasks = []
                                 for t in all_failed:
+                                    if is_task_non_retryable(t):
+                                        continue
                                     err = str(getattr(t, "error_msg", "")).lower()
                                     if skip_404 and ("404" in err or getattr(t, "http_status", 0) == 404):
                                         continue
@@ -3972,6 +4251,17 @@ class KemonoDownloader:
         if self.is_batch_cancelled(task):
             return False, "Cancelled"
 
+        # Non-retryable unimported Pawchive files aren't physically hosted on the server:
+        # fail immediately without creating empty directories or making any HTTP requests.
+        if getattr(task, "is_unimported", False) and not getattr(task, "is_unimported_preview", False):
+            task.status = "failed"
+            task.http_status = 404
+            task.retry_capped = True
+            task.error_msg = task.error_msg or UNIMPORTED_TASK_ERROR_MSG
+            if self.on_task_status_changed:
+                self.on_task_status_changed(task)
+            return False, task.error_msg
+
         task.target_path = fit_path_for_windows(task.target_path)
         os.makedirs(os.path.dirname(task.target_path), exist_ok=True)
         task.status = "downloading"
@@ -4062,17 +4352,8 @@ class KemonoDownloader:
                     category="file"
                 )
 
-        # Gentle inter-file pacing for Pawchive targets to prevent burst strain on host
-        is_pawchive_target = "pawchive" in (task.url or "").lower() or (getattr(task, "service", None) and "pawchive" in str(task.service).lower())
-        if is_pawchive_target and not self.is_batch_cancelled(task):
-            pacing_delay = random.uniform(0.25, 0.40)
-            steps = int(pacing_delay / 0.05)
-            for _ in range(steps):
-                if self.is_batch_cancelled(task):
-                    return False, "Cancelled"
-                if self.is_batch_paused(task) or task.status == "paused":
-                    return False, "Batch paused by user"
-                time.sleep(0.05)
+        # Cross-thread Pawchive request-start pacing is enforced right before each HTTP GET
+        # via _wait_pawchive_pace_slot() so aggregate concurrency stays below Pawchive's rate limit.
 
         # ── yt-dlp embedded media download execution ─────────────────────────
         if task.is_ytdlp:
@@ -4345,8 +4626,20 @@ class KemonoDownloader:
 
         try:
             # Two passes across full-size mirrors; small preview copy ONLY if fallback_to_thumbnails is enabled
-            pass_lists = [full_urls, full_urls] + ([preview_urls] if (preview_urls and allow_thumb_fallback) else [])
+            # and ONLY when full-size mirrors were missing/unavailable (never on temporary 429 rate-limits).
+            is_pawchive_task = any("pawchive" in u.lower() for u in full_urls)
+            pass1_urls = full_urls[:1] if (is_pawchive_task and len(full_urls) > 1) else full_urls
+            pass_lists = [full_urls, pass1_urls] + ([preview_urls] if (preview_urls and allow_thumb_fallback) else [])
+            saw_429 = False
+            saw_404 = False
+            saw_403 = False
+            last_error_status = 0
+            last_retry_after = ""
+
             for pass_idx, urls_to_try in enumerate(pass_lists):
+                # Never downgrade a temporarily rate-limited full-size file to a thumbnail preview
+                if pass_idx == 2 and saw_429:
+                    break
                 if pass_idx == 1:
                     time.sleep(1.5) # Brief jittered pause before second pass if all mirrors were busy
 
@@ -4402,6 +4695,10 @@ class KemonoDownloader:
                             req_headers.update(_CONTACT_HEADERS)
 
                     stream_timeout = (25, 60)
+                    if not self._wait_pawchive_pace_slot(task, attempt_url, respect_cooldown=not (pass_idx > 0 and saw_429)):
+                        if self._cancel_event.is_set() or self.is_batch_cancelled(task):
+                            return False, "Cancelled"
+                        return False, "Batch paused by user"
                     try:
                         resp = session.get(attempt_url, stream=True, timeout=stream_timeout, headers=req_headers)
                         if resp.status_code in (200, 206, 416):
@@ -4410,6 +4707,11 @@ class KemonoDownloader:
                         elif resp.status_code in (403, 404) and re.search(r"\bt\d+\.pawchive\.pw\b", attempt_url):
                             # Pawchive temporary oversized download URLs are signed (?e=...&s=...) and expire over time.
                             # Re-resolve the post page to get a fresh signed URL if available.
+                            last_error_status = resp.status_code
+                            if resp.status_code == 404:
+                                saw_404 = True
+                            else:
+                                saw_403 = True
                             fresh_url = self._refresh_pawchive_temp_url(task)
                             if fresh_url and fresh_url != attempt_url:
                                 logger.info(f"✨ Refreshed expired temporary download URL for {task.filename}", category="downloader")
@@ -4425,7 +4727,13 @@ class KemonoDownloader:
                                         retry_resp.close()
                                 except Exception:
                                     pass
+                            if resp and resp.status_code not in (200, 206, 416):
+                                resp.close()
+                                resp = None
+                                continue
                         elif resp.status_code == 404:
+                            saw_404 = True
+                            last_error_status = 404
                             if pass_idx < len(pass_lists) - 1:
                                 logger.debug(f"  ↪ Mirror 404 on {attempt_url} (pass {pass_idx + 1}/{len(pass_lists)}) — will retry on next pass...", category="file")
                                 resp.close()
@@ -4439,12 +4747,20 @@ class KemonoDownloader:
                             else:
                                 # Final pass on single-mirror host — definitive 404 verified after retry
                                 task.http_status = 404
-                                msg = "404 Not Found — file does not exist on server"
+                                if "pawchive" in u_low:
+                                    msg = (
+                                        "Not available on Pawchive (HTTP 404) — this file isn't physically hosted "
+                                        "on Pawchive's servers (the post may not have been imported yet, or the file was removed)"
+                                    )
+                                else:
+                                    msg = "404 Not Found — file does not exist on server"
                                 logger.warning(f"  ✖ {task.filename}: {msg}", category="file", details=self._task_context(task))
                                 resp.close()
                                 resp = None
                                 return False, msg
                         elif resp.status_code == 403:
+                            saw_403 = True
+                            last_error_status = 403
                             # If we sent a Range header, the CDN might be rejecting range requests with 403.
                             # Retry from byte 0 without Range and without cookies.
                             if "Range" in req_headers:
@@ -4521,20 +4837,38 @@ class KemonoDownloader:
                                 resp = None
                             continue
                         elif resp.status_code == 429:
+                            saw_429 = True
+                            last_error_status = 429
                             task.http_status = 429
-                            retry_after = resp.headers.get("Retry-After")
-                            delay = 2.5
-                            if retry_after and retry_after.strip().isdigit():
-                                delay = min(max(float(retry_after.strip()), 1.0), 10.0)
-                            logger.debug(f"  ↪ Rate limited (429) on {attempt_url} — waiting {delay:.1f}s before next attempt...", category="file")
+                            retry_after = str(resp.headers.get("Retry-After") or "").strip()
+                            last_retry_after = retry_after if retry_after.isdigit() else ("10" if "pawchive" in u_low else "15")
+                            delay = min(max(float(last_retry_after), 1.0), 10.0)
+                            logger.warning(
+                                f"  ⚠ {task.filename}: HTTP 429 Too Many Requests on {attempt_url} (Retry-After: {last_retry_after}s)",
+                                category="file"
+                            )
                             resp.close()
                             resp = None
-                            if len(urls_to_try) == 1:
+                            # Immediately step down Adaptive Threading & pause sibling workers even on a
+                            # first-pass 429 so concurrency doesn't stay stuck at its ceiling if pass 1 succeeds.
+                            is_locked_now = bool(getattr(self.current_options or options, "threads_locked", False))
+                            self._trigger_rate_limit_backoff(threads_locked=is_locked_now)
+                            with self._pawchive_pace_lock:
+                                self._pawchive_next_req_time = max(self._pawchive_next_req_time, time.time() + delay)
+                            if pass_idx == 0 and ("pawchive" in u_low or len(urls_to_try) == 1):
+                                # Respect Retry-After once before a single verification retry on pass 1;
+                                # break out of the inner mirror loop so shared-bucket mirrors aren't hammered.
                                 time.sleep(delay)
                                 if self._cancel_event.is_set():
                                     return False, "Cancelled"
+                                break
+                            if "pawchive" in u_low or len(urls_to_try) == 1:
+                                # Persistent 429 after Retry-After: propagate 429_RATE_LIMIT immediately
+                                # so global adaptive backoff and auto-retry engage cleanly.
+                                return False, f"429_RATE_LIMIT (Retry-After: {last_retry_after}s)"
                             continue
                         else:
+                            last_error_status = int(resp.status_code or 0)
                             resp.close()
                             resp = None
                     except Exception as ex:
@@ -4551,15 +4885,46 @@ class KemonoDownloader:
                     break
 
             if resp is None:
+                if saw_429:
+                    task.http_status = 429
+                    return False, f"429_RATE_LIMIT (Retry-After: {last_retry_after or '15'}s)"
+                if saw_403 and not saw_404:
+                    task.http_status = 403
+                    msg = "403 Forbidden — content locked (membership tier access required)"
+                    logger.error(f"  ✖ {task.filename}: {msg}", category="file", details=self._task_context(task))
+                    return False, msg
+                if saw_404:
+                    task.http_status = 404
+                    if is_pawchive_task or "pawchive" in (task.url or "").lower():
+                        msg = (
+                            "Not available on Pawchive (HTTP 404) — this file isn't physically hosted "
+                            "on Pawchive's servers (the post may not have been imported yet, or the file was removed)"
+                        )
+                    else:
+                        msg = "404 Not Found — file does not exist on any server mirror"
+                    logger.warning(f"  ✖ {task.filename}: {msg}", category="file", details=self._task_context(task))
+                    return False, msg
+                if last_error_status:
+                    task.http_status = last_error_status
+                    msg = f"HTTP {last_error_status}"
+                    logger.warning(f"  ✖ {task.filename}: {msg}", category="file", details=self._task_context(task))
+                    return False, msg
                 return False, "Failed to connect to any file server"
 
             task.used_preview = (is_preview_url(task.url) or (resp and is_preview_url(getattr(resp, "url", "")))) and not (options is not None and getattr(options, "download_thumbnails_only", False))
             if task.used_preview:
-                logger.warning(
-                    f"⚠ {task.filename}: the full-size file couldn't be reached, so a smaller preview copy was saved. "
-                    f"Turn on \"Re-download small / thumbnail files\" and download again later to replace it with the full one.",
-                    category="file"
-                )
+                if getattr(task, "is_unimported_preview", False):
+                    logger.info(
+                        f"ℹ️ {task.filename}: not imported on Pawchive yet, so only the preview thumbnail was saved "
+                        f"(full-size file isn't hosted on the site yet).",
+                        category="file"
+                    )
+                else:
+                    logger.warning(
+                        f"⚠ {task.filename}: the full-size file couldn't be reached, so a smaller preview copy was saved. "
+                        f"Turn on \"Re-download small / thumbnail files\" and download again later to replace it with the full one.",
+                        category="file"
+                    )
 
             status = resp.status_code
 

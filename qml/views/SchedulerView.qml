@@ -658,7 +658,11 @@ Item {
                                                 border.color: nightStartInput.activeFocus ? "#2DD4BF" : ((schedViewRoot.bridge && schedViewRoot.bridge.schedulerNightOwlEnabled) ? "#14B8A6" : "#475569")
                                             }
                                             color: (schedViewRoot.bridge && schedViewRoot.bridge.schedulerNightOwlEnabled) ? "#5EEAD4" : "#E2E8F0"
+                                            selectionColor: "#0284C7"
+                                            selectedTextColor: "#FFFFFF"
+                                            clip: true
                                             selectByMouse: true
+                                            TextBarContextArea {}
                                             onEditingFinished: {
                                                 schedViewRoot.saveGlobalSettings(undefined, undefined, undefined, text, nightEndInput.text, undefined, undefined)
                                             }
@@ -689,7 +693,11 @@ Item {
                                                 border.color: nightEndInput.activeFocus ? "#2DD4BF" : ((schedViewRoot.bridge && schedViewRoot.bridge.schedulerNightOwlEnabled) ? "#14B8A6" : "#475569")
                                             }
                                             color: (schedViewRoot.bridge && schedViewRoot.bridge.schedulerNightOwlEnabled) ? "#5EEAD4" : "#E2E8F0"
+                                            selectionColor: "#0284C7"
+                                            selectedTextColor: "#FFFFFF"
+                                            clip: true
                                             selectByMouse: true
+                                            TextBarContextArea {}
                                             onEditingFinished: {
                                                 schedViewRoot.saveGlobalSettings(undefined, undefined, undefined, nightStartInput.text, text, undefined, undefined)
                                             }
@@ -1328,8 +1336,14 @@ Item {
                             placeholderText: schedViewRoot.tr("scheduler_modal_name_placeholder", "e.g., Nightly Watchlist Sync")
                             color: "#F8FAFC"
                             placeholderTextColor: "#64748B"
+                            selectionColor: "#0284C7"
+                            selectedTextColor: "#FFFFFF"
+                            selectByMouse: true
+                            clip: true
+                            verticalAlignment: TextInput.AlignVCenter
                             font.pixelSize: 12
-                            background: Rectangle { color: "#1E293B"; radius: 6; border.color: taskNameInput.activeFocus ? "#818CF8" : "#334155" }
+                            background: Rectangle { color: taskNameInput.activeFocus ? "#0E1525" : "#1E293B"; radius: 6; border.color: taskNameInput.activeFocus ? "#818CF8" : (taskNameInput.hovered ? "#475569" : "#334155"); border.width: taskNameInput.activeFocus ? 1.5 : 1 }
+                            TextBarContextArea {}
                         }
                     }
 
@@ -1440,8 +1454,14 @@ Item {
                             placeholderText: "https://kemono.cr/patreon/user/12345"
                             color: "#F8FAFC"
                             placeholderTextColor: "#64748B"
+                            selectionColor: "#0284C7"
+                            selectedTextColor: "#FFFFFF"
+                            selectByMouse: true
+                            clip: true
+                            verticalAlignment: TextInput.AlignVCenter
                             font.pixelSize: 12
-                            background: Rectangle { color: "#1E293B"; radius: 6; border.color: taskUrlInput.activeFocus ? "#38BDF8" : "#334155" }
+                            background: Rectangle { color: taskUrlInput.activeFocus ? "#0E1525" : "#1E293B"; radius: 6; border.color: taskUrlInput.activeFocus ? "#38BDF8" : (taskUrlInput.hovered ? "#475569" : "#334155"); border.width: taskUrlInput.activeFocus ? 1.5 : 1 }
+                            TextBarContextArea {}
                         }
                     }
 
@@ -1578,9 +1598,15 @@ Item {
                                 Layout.preferredWidth: 70
                                 Layout.preferredHeight: 30
                                 horizontalAlignment: TextInput.AlignHCenter
+                                verticalAlignment: TextInput.AlignVCenter
                                 font.pixelSize: 12
                                 color: "#38BDF8"
-                                background: Rectangle { color: "#1E293B"; radius: 4; border.color: "#334155" }
+                                selectionColor: "#0284C7"
+                                selectedTextColor: "#FFFFFF"
+                                selectByMouse: true
+                                clip: true
+                                background: Rectangle { color: timeOfDayInput.activeFocus ? "#0E1525" : "#1E293B"; radius: 4; border.color: timeOfDayInput.activeFocus ? "#38BDF8" : (timeOfDayInput.hovered ? "#475569" : "#334155"); border.width: timeOfDayInput.activeFocus ? 1.5 : 1 }
+                                TextBarContextArea {}
                             }
 
                             Text {

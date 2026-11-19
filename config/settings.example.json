@@ -24,6 +24,7 @@
   "scan_content_images": true,
   "download_dms": false,
   "fallback_to_thumbnails": false,
+  "hide_unimported_notice": false,
   "redownload_small_files": false,
   "download_delay": 2.0,
   "save_post_metadata": true,

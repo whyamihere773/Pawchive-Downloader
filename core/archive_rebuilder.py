@@ -56,14 +56,22 @@ class ArchiveRebuildStats:
     total_bytes_hashed: int = 0
     start_time: float = field(default_factory=time.time)
     end_time: float = 0.0
+    elapsed_prior: float = 0.0
+    prior_processed: int = 0
+    prior_bytes_hashed: int = 0
+    prior_creators: int = 0
+    prior_posts: int = 0
     creators_found: Set[str] = field(default_factory=set)
     posts_found: Set[str] = field(default_factory=set)
 
     def to_dict(self) -> Dict[str, Any]:
         now = self.end_time if self.end_time > 0 else time.time()
-        elapsed = max(0.001, now - self.start_time)
-        fps = self.processed_files / elapsed
-        mbps = (self.total_bytes_hashed / (1024 * 1024)) / elapsed
+        session_elapsed = max(0.001, now - self.start_time)
+        total_elapsed = self.elapsed_prior + session_elapsed
+        session_files = max(0, self.processed_files - self.prior_processed)
+        session_bytes = max(0, self.total_bytes_hashed - self.prior_bytes_hashed)
+        fps = session_files / session_elapsed
+        mbps = (session_bytes / (1024 * 1024)) / session_elapsed
         pct = (self.processed_files / self.total_files * 100.0) if self.total_files > 0 else 0.0
 
         return {
@@ -72,12 +80,27 @@ class ArchiveRebuildStats:
             "added_count": self.added_count,
             "skipped_count": self.skipped_count,
             "error_count": self.error_count,
-            "total_creators": len(self.creators_found),
-            "total_posts": len(self.posts_found),
-            "elapsed_seconds": round(elapsed, 1),
+            "total_creators": max(len(self.creators_found), self.prior_creators),
+            "total_posts": max(len(self.posts_found), self.prior_posts),
+            "elapsed_seconds": round(total_elapsed, 1),
             "files_per_sec": round(fps, 1),
             "mb_per_sec": round(mbps, 2),
             "percentage": round(pct, 1),
+        }
+
+    def to_checkpoint_dict(self) -> Dict[str, Any]:
+        now = self.end_time if self.end_time > 0 else time.time()
+        total_elapsed = self.elapsed_prior + max(0.0, now - self.start_time)
+        return {
+            "total_files": self.total_files,
+            "processed_files": self.processed_files,
+            "added_count": self.added_count,
+            "skipped_count": self.skipped_count,
+            "error_count": self.error_count,
+            "total_bytes_hashed": self.total_bytes_hashed,
+            "total_creators": max(len(self.creators_found), self.prior_creators),
+            "total_posts": max(len(self.posts_found), self.prior_posts),
+            "elapsed_prior": round(total_elapsed, 2),
         }
 
 
@@ -178,18 +201,23 @@ class ArchiveRebuilder:
         options: Optional[ArchiveRebuildOptions] = None,
         on_progress: Optional[Callable[[Dict[str, Any]], None]] = None,
         on_finished: Optional[Callable[[Dict[str, Any]], None]] = None,
+        journal: Optional[Any] = None,
+        resume_state: Optional[Dict[str, Any]] = None,
     ):
         self.archive_manager = archive_manager
         self.directories = [os.path.normpath(d) for d in (directories or []) if d and os.path.isdir(d)]
         self.options = options or ArchiveRebuildOptions()
         self.on_progress = on_progress
         self.on_finished = on_finished
+        self.journal = journal
+        self.resume_state = dict(resume_state) if resume_state else None
 
         self.stats = ArchiveRebuildStats()
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._pause_event = threading.Event()
         self._pause_event.set()  # Not paused initially
+        self._preserve_on_stop = False
         self._is_running = False
 
     @property
@@ -204,12 +232,13 @@ class ArchiveRebuilder:
         """Start rebuilder in a background thread."""
         if self._is_running:
             return False
-        if not self.directories:
+        if not self.directories and not self.resume_state:
             logger.warning("ArchiveRebuilder: No valid directories specified.", category="archive")
             return False
 
         self._stop_event.clear()
         self._pause_event.set()
+        self._preserve_on_stop = False
         self._is_running = True
         self.stats = ArchiveRebuildStats()
 
@@ -228,10 +257,22 @@ class ArchiveRebuilder:
         logger.info("▶️ Archive Rebuilder resumed.", category="archive")
 
     def cancel(self) -> None:
-        """Cooperatively stop scanning."""
+        """Cooperatively stop scanning and clear the recovery journal (explicit user cancel)."""
+        self._preserve_on_stop = False
         self._stop_event.set()
         self._pause_event.set()  # Unblock if paused
         logger.info("⏹️ Archive Rebuilder cancellation requested.", category="archive")
+
+    def stop_and_preserve(self, timeout: float = 4.0) -> None:
+        """Stop cleanly on app shutdown, flushing the current batch and preserving the crash journal."""
+        if not self._is_running:
+            return
+        self._preserve_on_stop = True
+        self._stop_event.set()
+        self._pause_event.set()  # Unblock if paused
+        logger.info("💾 Saving Archive Rebuild checkpoint before shutdown...", category="archive")
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=timeout)
 
     def _notify(self, phase: str, current_file: str = ""):
         if not self.on_progress:
@@ -246,63 +287,173 @@ class ArchiveRebuilder:
         except Exception as ex:
             logger.debug(f"Progress notification error: {ex}", category="archive")
 
+    def _load_post_info_for_dir(
+        self,
+        dirpath: str,
+        dir_meta_cache: Dict[str, Dict[str, str]],
+        file_meta_cache: Dict[Tuple[str, str], Dict[str, str]],
+        loaded_dirs: Set[str],
+    ) -> None:
+        """Lazily reads post_info.txt files in `dirpath` (used when resuming without re-walking)."""
+        if not self.options.detect_post_info or not dirpath:
+            return
+        norm_key = os.path.normcase(dirpath)
+        if norm_key in loaded_dirs:
+            return
+        loaded_dirs.add(norm_key)
+        try:
+            for fn in os.listdir(dirpath):
+                if not is_post_info_name(fn):
+                    continue
+                info_path = os.path.join(dirpath, fn)
+                if not os.path.isfile(info_path):
+                    continue
+                posts_data = parse_multi_post_info_file(info_path)
+                if not posts_data:
+                    continue
+                if len(posts_data) == 1 and fn.lower() == "post_info.txt":
+                    dir_meta_cache[dirpath] = posts_data[0][0]
+                for post_meta, att_list in posts_data:
+                    for att in att_list:
+                        file_meta_cache.setdefault((norm_key, att.lower()), post_meta)
+        except OSError:
+            pass
+
     def _run_pipeline(self) -> None:
         """Main pipeline executed on worker thread."""
-        logger.info(f"🔨 Starting Archive Rebuilder across {len(self.directories)} root director(ies)...", category="archive")
-        self._notify("discovering")
-
-        # 1. Discover all candidate files across all roots
-        file_candidates: List[str] = []
         dir_meta_cache: Dict[str, Dict[str, str]] = {}
         file_meta_cache: Dict[Tuple[str, str], Dict[str, str]] = {}
+        loaded_info_dirs: Set[str] = set()
+        file_candidates: List[str] = []
+        cursor_start = 0
+        resumed_from_candidates = False
 
-        for root_dir in self.directories:
-            if self._stop_event.is_set():
-                break
-            for dirpath, dirnames, filenames in os.walk(root_dir, topdown=True):
+        # 0. Check if resuming directly from a saved SQLite WAL candidate list
+        if (
+            self.resume_state
+            and self.journal
+            and self.resume_state.get("status") in ("indexing", "paused")
+        ):
+            saved_cursor = int(self.resume_state.get("cursor_pos", 0) or 0)
+            remaining = self.journal.load_remaining_candidates(saved_cursor)
+            if remaining:
+                file_candidates = remaining
+                cursor_start = saved_cursor
+                resumed_from_candidates = True
+                self.stats.total_files = max(
+                    int(self.resume_state.get("total_files", 0) or 0),
+                    saved_cursor + len(remaining),
+                )
+                self.stats.processed_files = int(self.resume_state.get("processed_files", saved_cursor) or saved_cursor)
+                self.stats.added_count = int(self.resume_state.get("added_count", 0) or 0)
+                self.stats.skipped_count = int(self.resume_state.get("skipped_count", 0) or 0)
+                self.stats.error_count = int(self.resume_state.get("error_count", 0) or 0)
+                self.stats.total_bytes_hashed = int(self.resume_state.get("total_bytes_hashed", 0) or 0)
+                self.stats.elapsed_prior = float(self.resume_state.get("elapsed_prior", 0.0) or 0.0)
+                self.stats.prior_processed = self.stats.processed_files
+                self.stats.prior_bytes_hashed = self.stats.total_bytes_hashed
+                self.stats.prior_creators = int(self.resume_state.get("total_creators", 0) or 0)
+                self.stats.prior_posts = int(self.resume_state.get("total_posts", 0) or 0)
+                logger.info(
+                    f"🔄 Resuming Archive Rebuilder from file {saved_cursor}/{self.stats.total_files} "
+                    f"({len(remaining)} remaining)...",
+                    category="archive",
+                )
+
+        if not resumed_from_candidates:
+            logger.info(f"🔨 Starting Archive Rebuilder across {len(self.directories)} root director(ies)...", category="archive")
+            if self.journal:
+                self.journal.begin_session(
+                    self.directories,
+                    {
+                        "hash_mode": self.options.hash_mode,
+                        "detect_post_info": self.options.detect_post_info,
+                        "skip_existing": self.options.skip_existing,
+                        "exclude_temp": self.options.exclude_temp,
+                    },
+                )
+            self._notify("discovering")
+
+            # 1. Discover all candidate files across all roots
+            last_disc_ui = time.time()
+
+            for root_dir in self.directories:
                 if self._stop_event.is_set():
                     break
-                # Filter out system/ignored subdirectories in-place
-                dirnames[:] = [d for d in dirnames if d.lower() not in IGNORED_DIRNAMES and not d.startswith(".")]
+                for dirpath, dirnames, filenames in os.walk(root_dir, topdown=True):
+                    while not self._pause_event.is_set():
+                        if self._stop_event.is_set():
+                            break
+                        self.stats.total_files = len(file_candidates)
+                        self._notify("paused", dirpath)
+                        time.sleep(0.15)
+                    if self._stop_event.is_set():
+                        break
+                    # Filter out system/ignored subdirectories in-place
+                    dirnames[:] = [d for d in dirnames if d.lower() not in IGNORED_DIRNAMES and not d.startswith(".")]
 
-                # Check for post_info.txt in this folder; posts sharing a folder can have
-                # a combined "post_info.txt" or legacy per-post "post_info [<id>].txt"
-                if self.options.detect_post_info:
+                    # Check for post_info.txt in this folder; posts sharing a folder can have
+                    # a combined "post_info.txt" or legacy per-post "post_info [<id>].txt"
+                    if self.options.detect_post_info:
+                        loaded_info_dirs.add(os.path.normcase(dirpath))
+                        for fn in filenames:
+                            if not is_post_info_name(fn):
+                                continue
+                            info_path = os.path.join(dirpath, fn)
+                            posts_data = parse_multi_post_info_file(info_path)
+                            if not posts_data:
+                                continue
+                            if len(posts_data) == 1 and fn.lower() == "post_info.txt":
+                                dir_meta_cache[dirpath] = posts_data[0][0]
+                            for post_meta, att_list in posts_data:
+                                for att in att_list:
+                                    file_meta_cache.setdefault(
+                                        (os.path.normcase(dirpath), att.lower()), post_meta)
+
                     for fn in filenames:
-                        if not is_post_info_name(fn):
+                        fn_lower = fn.lower()
+                        if fn_lower in IGNORED_FILENAMES or fn_lower.startswith(".") or is_post_info_name(fn):
                             continue
-                        info_path = os.path.join(dirpath, fn)
-                        posts_data = parse_multi_post_info_file(info_path)
-                        if not posts_data:
+                        _, ext = os.path.splitext(fn_lower)
+                        if self.options.exclude_temp and ext in IGNORED_EXTENSIONS:
                             continue
-                        if len(posts_data) == 1 and fn.lower() == "post_info.txt":
-                            dir_meta_cache[dirpath] = posts_data[0][0]
-                        for post_meta, att_list in posts_data:
-                            for att in att_list:
-                                file_meta_cache.setdefault(
-                                    (os.path.normcase(dirpath), att.lower()), post_meta)
 
-                for fn in filenames:
-                    fn_lower = fn.lower()
-                    if fn_lower in IGNORED_FILENAMES or fn_lower.startswith(".") or is_post_info_name(fn):
-                        continue
-                    _, ext = os.path.splitext(fn_lower)
-                    if self.options.exclude_temp and ext in IGNORED_EXTENSIONS:
-                        continue
+                        full_path = os.path.join(dirpath, fn)
+                        file_candidates.append(full_path)
 
-                    full_path = os.path.join(dirpath, fn)
-                    file_candidates.append(full_path)
+                    now = time.time()
+                    if now - last_disc_ui >= 0.25:
+                        self.stats.total_files = len(file_candidates)
+                        self._notify("discovering", dirpath)
+                        last_disc_ui = now
 
-        self.stats.total_files = len(file_candidates)
-        logger.info(f"🔍 Discovered {self.stats.total_files} candidate file(s) across selected directories.", category="archive")
+            self.stats.total_files = len(file_candidates)
+            logger.info(f"🔍 Discovered {self.stats.total_files} candidate file(s) across selected directories.", category="archive")
 
-        if self.stats.total_files == 0:
-            self.stats.end_time = time.time()
-            self._is_running = False
-            self._notify("complete")
-            if self.on_finished:
-                self.on_finished(self.stats.to_dict())
-            return
+            if self._stop_event.is_set():
+                self.stats.end_time = time.time()
+                self._is_running = False
+                if self.journal and not self._preserve_on_stop:
+                    self.journal.clear()
+                if not self._preserve_on_stop:
+                    self._notify("cancelled")
+                    if self.on_finished:
+                        self.on_finished(self.stats.to_dict())
+                return
+
+            if self.stats.total_files == 0:
+                self.stats.end_time = time.time()
+                self._is_running = False
+                if self.journal:
+                    self.journal.clear()
+                self._notify("complete")
+                if self.on_finished:
+                    self.on_finished(self.stats.to_dict())
+                return
+
+            # Atomically persist discovered file list once so any crash/power cut skips re-walking
+            if self.journal:
+                self.journal.save_candidates(file_candidates, self.stats.to_checkpoint_dict())
 
         # 2. Pre-fetch existing archive index for fast in-memory skipping
         existing_hashes: Set[str] = set()
@@ -330,9 +481,19 @@ class ArchiveRebuilder:
         batch_records: List[Dict[str, Any]] = []
         BATCH_SIZE = 300
         last_ui_time = time.time()
+        next_cursor = cursor_start
 
-        for idx, file_path in enumerate(file_candidates):
+        for local_idx, file_path in enumerate(file_candidates):
+            abs_pos = cursor_start + local_idx
+
             # Check pause / cancel
+            if not self._pause_event.is_set() and not self._stop_event.is_set():
+                if batch_records:
+                    self._commit_batch(batch_records)
+                    batch_records.clear()
+                if self.journal:
+                    self.journal.update_checkpoint(abs_pos, self.stats.to_checkpoint_dict(), status="paused")
+
             while not self._pause_event.is_set():
                 if self._stop_event.is_set():
                     break
@@ -340,7 +501,12 @@ class ArchiveRebuilder:
                 time.sleep(0.15)
 
             if self._stop_event.is_set():
-                logger.info(f"⏹️ Rebuild stopped by user at file {idx + 1}/{self.stats.total_files}.", category="archive")
+                next_cursor = abs_pos
+                logger.info(
+                    f"⏹️ Rebuild stopped at file {abs_pos + 1}/{self.stats.total_files}"
+                    f"{' (checkpoint preserved)' if self._preserve_on_stop else ''}.",
+                    category="archive",
+                )
                 break
 
             try:
@@ -348,11 +514,17 @@ class ArchiveRebuilder:
             except OSError:
                 self.stats.processed_files += 1
                 self.stats.error_count += 1
+                next_cursor = abs_pos + 1
                 continue
 
             parent_dir = os.path.dirname(file_path)
             fn = os.path.basename(file_path)
             _, ext = os.path.splitext(fn.lower())
+
+            # Lazily load post_info.txt for remaining directories when resumed without os.walk
+            if resumed_from_candidates and self.options.detect_post_info:
+                for info_d in info_dirs_for(parent_dir):
+                    self._load_post_info_for_dir(info_d, dir_meta_cache, file_meta_cache, loaded_info_dirs)
 
             # DEDUCE METADATA
             meta = self._deduce_metadata(file_path, dir_meta_cache, file_meta_cache)
@@ -361,9 +533,6 @@ class ArchiveRebuilder:
             creator_name = meta.get("creator_name") or "Unknown Creator"
             post_id = meta.get("post_id") or ""
             post_title = meta.get("post_title") or "Untitled Post"
-
-            self.stats.creators_found.add(creator_name)
-            self.stats.posts_found.add(f"{service}:{creator_name}:{post_id or post_title}")
 
             # FILE HASH & SKIPPING
             file_hash = ""
@@ -375,6 +544,10 @@ class ArchiveRebuilder:
                         file_path,
                         cancel_flag=lambda: self._stop_event.is_set()
                     )
+                    if self._stop_event.is_set():
+                        # Aborted mid-hash: do not record partial/empty hash, resume will retry this file
+                        next_cursor = abs_pos
+                        break
                     self.stats.total_bytes_hashed += bytes_read
                 except Exception as ex:
                     logger.debug(f"Hashing failed for {file_path}: {ex}", category="archive")
@@ -387,6 +560,9 @@ class ArchiveRebuilder:
                     file_hash = hashlib.md5(raw_sig.encode("utf-8")).hexdigest()
                 except OSError:
                     file_hash = ""
+
+            self.stats.creators_found.add(creator_name)
+            self.stats.posts_found.add(f"{service}:{creator_name}:{post_id or post_title}")
 
             # Standard Kemono attachment ID convention: use hash or fallback to clean filename
             file_id = file_hash if file_hash else re.sub(r"[^\w\-.]", "_", fn)
@@ -426,10 +602,17 @@ class ArchiveRebuilder:
                 self.stats.added_count += 1
                 self.stats.processed_files += 1
 
-            # Commit batch if threshold reached
+            next_cursor = abs_pos + 1
+
+            # Commit batch to archive.db FIRST, then advance journal cursor atomically
             if len(batch_records) >= BATCH_SIZE:
                 self._commit_batch(batch_records)
                 batch_records.clear()
+                if self.journal:
+                    self.journal.update_checkpoint(next_cursor, self.stats.to_checkpoint_dict(), status="indexing")
+            elif self.journal and ((local_idx + 1) % BATCH_SIZE == 0):
+                # Advance cursor even across stretches of skipped files
+                self.journal.update_checkpoint(next_cursor, self.stats.to_checkpoint_dict(), status="indexing")
 
             # Throttle UI notifications to ~10 times per second for silky smooth rendering
             now = time.time()
@@ -444,6 +627,18 @@ class ArchiveRebuilder:
 
         self.stats.end_time = time.time()
         self._is_running = False
+
+        if self._stop_event.is_set() and self._preserve_on_stop:
+            if self.journal:
+                self.journal.update_checkpoint(next_cursor, self.stats.to_checkpoint_dict(), status="paused")
+            logger.info(
+                f"💾 Archive Rebuild checkpoint saved at file {next_cursor}/{self.stats.total_files}.",
+                category="archive",
+            )
+            return
+
+        if self.journal:
+            self.journal.clear()
 
         status = "cancelled" if self._stop_event.is_set() else "complete"
         self._notify(status)

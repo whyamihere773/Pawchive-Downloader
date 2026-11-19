@@ -193,6 +193,7 @@ class BrowserBridge(QObject):
     activeProviderAuthChanged = Signal()
     loginPromptRequested = Signal(str, str)           # providerId, reason
     providerLoginFinished = Signal(str, bool, str)    # providerId, ok, message
+    lastDownloadDirChanged = Signal()
 
     _callOnGui = Signal(object)
 
@@ -215,6 +216,7 @@ class BrowserBridge(QObject):
             "excluded_local_drives": [],
             "excluded_local_roots": [],
             "local_creator_links": {},
+            "browser_last_download_dir": "",
         }
 
         from core.storage_pool_manager import StoragePoolManager
@@ -258,6 +260,7 @@ class BrowserBridge(QObject):
         self._selected_post: Dict[str, Any] = {}
 
         self._req_gen: int = 0
+        self._fav_toggle_gen: int = 0
         self._new_posts_gen: int = 0
         self._is_checking_new_posts: bool = False
         self._new_posts_list: List[Dict[str, Any]] = []
@@ -884,6 +887,7 @@ class BrowserBridge(QObject):
 
         self._req_gen += 1
         gen = self._req_gen
+        fav_gen = self._fav_toggle_gen
         self._is_loading = True
         self._error_message = ""
         self._status_text = f"Loading posts for {creator.get('name', 'creator')}…"
@@ -898,6 +902,7 @@ class BrowserBridge(QObject):
         def _worker():
             try:
                 fav_keys = None
+                disk_summary = None
                 if mode == "local":
                     posts, total = self._local_library.list_local_creator_posts(
                         creator_key=str(creator.get("key") or ""),
@@ -939,24 +944,65 @@ class BrowserBridge(QObject):
                             except Exception:
                                 fav_keys = None
                         annotated = self._annotate_items(res.items)
+                        # Online Mode: when the creator exists on disk, annotate each post as
+                        # "complete" (green), "partial" (yellow), or "none" (not on disk)
+                        disk_index = None
+                        disk_summary = None
+                        try:
+                            disk_index = self._local_library.get_creator_post_disk_index(
+                                str(creator.get("service") or ""),
+                                str(creator.get("creator_id") or ""),
+                                str(creator.get("name") or ""),
+                            )
+                        except Exception as dex:
+                            logger.debug(f"[BrowserBridge] Post disk status scan skipped: {dex}", category="archive")
+                        if disk_index and disk_index.get("creator_on_disk"):
+                            cnt_complete = 0
+                            cnt_partial = 0
+                            cnt_missing = 0
+                            for p_item in annotated:
+                                info = LocalLibraryService.evaluate_online_post_disk_status(p_item, disk_index)
+                                p_item.update(info)
+                                st = info.get("disk_status")
+                                if st == "complete":
+                                    cnt_complete += 1
+                                elif st == "partial":
+                                    cnt_partial += 1
+                                else:
+                                    cnt_missing += 1
+                            disk_summary = {
+                                "is_on_disk": True,
+                                "local_drives": list(disk_index.get("local_drives") or []),
+                                "page_disk_complete": cnt_complete,
+                                "page_disk_partial": cnt_partial,
+                                "page_disk_missing": cnt_missing,
+                            }
                         total = res.total
                         has_more = res.has_more
                         err = res.error
             except Exception as e:
-                annotated, total, has_more, err, fav_keys = [], 0, False, str(e), None
+                annotated, total, has_more, err, fav_keys, disk_summary = [], 0, False, str(e), None, None
 
             def _deliver():
                 if gen != self._req_gen:
                     return
-                if fav_keys is not None and self._selected_creator:
+                if self._selected_creator:
                     sel_key = str(self._selected_creator.get("key") or "")
                     if sel_key and sel_key == str(creator.get("key") or ""):
-                        svc_k = str(self._selected_creator.get("service") or "").strip().lower()
-                        cid_k = str(self._selected_creator.get("creator_id") or "").strip()
-                        self._selected_creator = {
-                            **self._selected_creator,
-                            "is_favorited": (svc_k, cid_k) in fav_keys,
-                        }
+                        updates = {}
+                        if fav_keys is not None and fav_gen == self._fav_toggle_gen:
+                            svc_k = str(self._selected_creator.get("service") or "").strip().lower()
+                            cid_k = str(self._selected_creator.get("creator_id") or "").strip()
+                            updates["is_favorited"] = (svc_k, cid_k) in fav_keys
+                        if mode != "local":
+                            if disk_summary is not None:
+                                updates.update(disk_summary)
+                            else:
+                                updates["page_disk_complete"] = 0
+                                updates["page_disk_partial"] = 0
+                                updates["page_disk_missing"] = 0
+                        if updates:
+                            self._selected_creator = {**self._selected_creator, **updates}
                 self._posts_model.set_creators(annotated)
                 self._creator_posts_total = total
                 self._creator_posts_has_more = has_more
@@ -1003,6 +1049,21 @@ class BrowserBridge(QObject):
                     def _apply():
                         if self._selected_post.get("key") == key:
                             detail["is_marked"] = self._mark_manager.has_key(key)
+                            # Preserve / refine local disk status when full attachments arrive
+                            prev_status = str(self._selected_post.get("disk_status") or "none")
+                            prev_local = int(self._selected_post.get("local_file_count") or 0)
+                            if prev_status in ("complete", "partial"):
+                                full_expected = max(len(detail.get("attachments") or []), int(detail.get("file_count") or 0))
+                                if full_expected > 0:
+                                    refined = "complete" if prev_local >= full_expected else ("partial" if prev_local > 0 else "none")
+                                else:
+                                    refined = prev_status
+                                detail["disk_status"] = refined
+                                detail["is_on_disk"] = refined in ("complete", "partial")
+                                detail["local_file_count"] = prev_local
+                                detail["expected_file_count"] = full_expected
+                                detail["local_folder"] = self._selected_post.get("local_folder", "")
+                                detail["local_drives"] = list(self._selected_post.get("local_drives") or [])
                             self._selected_post = detail
                             self.selectedPostChanged.emit()
 
@@ -1287,6 +1348,11 @@ class BrowserBridge(QObject):
         self._mark_manager.clear()
         self._sync_marks_to_models()
 
+    @Slot(result="QVariantList")
+    def getMarkedItemsList(self) -> List[Dict[str, Any]]:
+        """Returns a plain list of all marked cart item dicts for QML modals."""
+        return [dict(it) for it in self._mark_manager.all_items()]
+
     @Slot(bool, bool)
     @Slot(bool)
     def dispatchMarkedToDownloader(self, auto_start: bool = True, switch_to_downloader_tab: bool = False) -> int:
@@ -1354,6 +1420,186 @@ class BrowserBridge(QObject):
             ),
             "success",
         )
+
+    # ── Browser Download Destination & Modal Dispatch ──────────────────────
+
+    @Property(str, notify=lastDownloadDirChanged)
+    def lastDownloadDir(self) -> str:
+        if self._app_bridge and hasattr(self._app_bridge, "browserLastDownloadDir"):
+            val = str(self._app_bridge.browserLastDownloadDir or "").strip()
+            if val:
+                return val
+        return str(self._read_settings().get("browser_last_download_dir") or "").strip()
+
+    @Slot(result=str)
+    def getEffectiveDownloadDir(self) -> str:
+        """Returns remembered Browser download folder, falling back to Downloader's folder if set."""
+        saved = self.lastDownloadDir
+        if saved:
+            return saved
+        if self._app_bridge:
+            dl_dir = str(getattr(self._app_bridge, "downloadDir", "") or "").strip()
+            if dl_dir:
+                return dl_dir
+        return ""
+
+    @Slot(str)
+    def setLastDownloadDir(self, path: str) -> None:
+        clean = os.path.normpath((path or "").replace("file:///", "").replace("file://", "").strip()) if (path or "").strip() else ""
+        if self._app_bridge and hasattr(self._app_bridge, "browserLastDownloadDir"):
+            self._app_bridge.browserLastDownloadDir = clean
+        else:
+            s = self._read_settings()
+            s["browser_last_download_dir"] = clean
+            self._write_settings(s)
+        self.lastDownloadDirChanged.emit()
+
+    @Slot(str, result=str)
+    @Slot(result=str)
+    def browseDownloadDir(self, current_dir: str = "") -> str:
+        """Opens native folder dialog starting at current/last remembered Browser path and persists the selection."""
+        initial = (current_dir or "").strip()
+        if not initial or not os.path.isdir(initial):
+            initial = self.lastDownloadDir
+        if not initial or not os.path.isdir(initial):
+            if self._app_bridge:
+                cand = str(getattr(self._app_bridge, "downloadDir", "") or "").strip()
+                if cand and os.path.isdir(cand):
+                    initial = cand
+        if not initial or not os.path.isdir(initial):
+            initial = os.path.expanduser("~")
+
+        chosen = ""
+        if self._app_bridge and hasattr(self._app_bridge, "browseBrowserDownloadDir"):
+            chosen = str(self._app_bridge.browseBrowserDownloadDir(initial) or "").strip()
+        else:
+            from PySide6.QtWidgets import QFileDialog
+            raw = QFileDialog.getExistingDirectory(None, "Select Browser Download Folder", initial)
+            chosen = os.path.normpath(raw) if raw else ""
+            if chosen:
+                self.setLastDownloadDir(chosen)
+
+        if chosen:
+            self.lastDownloadDirChanged.emit()
+        return chosen
+
+    @Slot(result=str)
+    def getSelectedCreatorDmsUrl(self) -> str:
+        if not self._selected_creator:
+            return ""
+        prov, svc, cid = self._resolve_online_provider(self._selected_creator, self._get_creator_links())
+        if not prov or not svc or svc == "local" or not cid:
+            return ""
+        return str(prov.build_dms_url(svc, cid) or "").strip()
+
+    @Slot(str, "QVariantList", bool, result="QVariantList")
+    def previewDownloadFolders(self, target_dir: str, items: list, create_creator_folder: bool = True) -> List[str]:
+        """Returns concrete resolved folder preview lines for the Browser Download modal."""
+        clean_dir = os.path.normpath((target_dir or "").strip()) if (target_dir or "").strip() else ""
+        if not clean_dir:
+            return []
+
+        from core.filter_engine import FilterEngine
+        from core.folder_naming import pick_creator_folder, is_creator_folder
+
+        creators: List[Tuple[str, str]] = []
+        seen_creators: Set[Tuple[str, str]] = set()
+        for it in (items or []):
+            if not isinstance(it, dict):
+                continue
+            cname = str(it.get("creator_name") or it.get("name") or it.get("title") or "").strip()
+            svc = str(it.get("service") or "").strip().lower()
+            cid = str(it.get("creator_id") or "").strip()
+            key = (svc, (cid or cname).lower())
+            if not cname:
+                cname = cid or "Creator"
+            if key not in seen_creators:
+                seen_creators.add(key)
+                creators.append((cname, svc))
+
+        if not creators:
+            return [clean_dir]
+
+        multi = len(creators) > 1
+        use_subfolder = True if multi else bool(create_creator_folder)
+        if not use_subfolder:
+            return [clean_dir]
+
+        previews: List[str] = []
+        base_leaf = os.path.basename(clean_dir)
+        for cname, svc in creators:
+            clean_c = FilterEngine.clean_filesystem_text(cname, max_len=80, fallback="creator")
+            if not multi and is_creator_folder(base_leaf, clean_c, svc):
+                previews.append(clean_dir)
+            else:
+                previews.append(pick_creator_folder(clean_dir, clean_c, svc))
+        return previews
+
+    @Slot("QVariantList", str, bool, bool, bool, bool, result=int)
+    def dispatchBrowserDownload(
+        self,
+        urls: list,
+        download_dir: str,
+        auto_start: bool = True,
+        create_creator_folder: bool = True,
+        clear_marks: bool = False,
+        force_redownload: bool = False,
+    ) -> int:
+        """Dispatches Browser-chosen URLs to the Downloader with an explicit destination folder & folder mode."""
+        clean_urls = [str(u or "").strip() for u in (urls or []) if str(u or "").strip()]
+        if not clean_urls:
+            self.toastRequested.emit("No downloadable URLs selected.", "warning")
+            return 0
+        clean_dir = os.path.normpath((download_dir or "").replace("file:///", "").replace("file://", "").strip()) if (download_dir or "").strip() else ""
+        if not clean_dir:
+            self.toastRequested.emit("Please choose a destination folder before downloading.", "warning")
+            return 0
+        if not self._app_bridge:
+            self.toastRequested.emit("Downloader bridge is not connected.", "warning")
+            return 0
+
+        # Remember this folder for the next time the Browser Download modal opens
+        self.setLastDownloadDir(clean_dir)
+
+        if hasattr(self._app_bridge, "enqueueBatchUrls"):
+            try:
+                sig = inspect.signature(self._app_bridge.enqueueBatchUrls)
+                if len(sig.parameters) >= 5:
+                    self._app_bridge.enqueueBatchUrls(
+                        clean_urls,
+                        bool(auto_start),
+                        bool(force_redownload),
+                        clean_dir,
+                        bool(create_creator_folder),
+                    )
+                else:
+                    self._app_bridge.enqueueBatchUrls(clean_urls, bool(auto_start), bool(force_redownload))
+            except Exception:
+                self._app_bridge.enqueueBatchUrls(clean_urls, bool(auto_start))
+        else:
+            self._app_bridge.downloadDir = clean_dir
+            self._app_bridge.currentUrl = "\n".join(clean_urls)
+            if auto_start:
+                self._app_bridge.startDownload()
+            else:
+                self._app_bridge.addToQueue()
+
+        if clear_marks:
+            self._mark_manager.clear()
+            self._sync_marks_to_models()
+
+        url_set = set(clean_urls)
+        if self._new_posts_list:
+            before_np = len(self._new_posts_list)
+            self._new_posts_list = [p for p in self._new_posts_list if str(p.get("url") or "").strip() not in url_set]
+            if len(self._new_posts_list) != before_np:
+                self._new_posts_status_text = f"Queued {len(clean_urls)} newer post(s) to {clean_dir}."
+                self.newPostsStateChanged.emit()
+
+        count = len(clean_urls)
+        action_label = "Started downloading" if auto_start else "Added to Queue:"
+        self.toastRequested.emit(f"{action_label} {count} item(s) → {clean_dir}", "success")
+        return count
 
     # ── Account Auth & Creator Favorites ───────────────────────────────────
 
@@ -1508,6 +1754,8 @@ class BrowserBridge(QObject):
         creator_map: Dict[str, Any],
         on_success=None,
     ) -> None:
+        self._fav_toggle_gen += 1
+
         def _worker():
             res = prov.set_creator_favorite(service, creator_id, desired)
             if isinstance(res, dict):

@@ -222,9 +222,15 @@ Rectangle {
                     Layout.fillWidth: true
                     height: 32
                     radius: 6
-                    color: "#0F1219"
-                    border.color: searchField.activeFocus ? "#38BDF8" : "#242C3D"
-                    border.width: 1
+                    color: searchField.activeFocus ? "#0B0D12" : "#0F1219"
+                    border.color: searchField.activeFocus ? "#38BDF8" : (searchFieldBoxMouse.containsMouse ? "#475569" : "#242C3D")
+                    border.width: searchField.activeFocus ? 1.5 : 1
+
+                    TextBarContextArea {
+                        id: searchFieldBoxMouse
+                        target: searchField
+                        focusOnLeftClick: true
+                    }
 
                     RowLayout {
                         anchors.fill: parent
@@ -237,21 +243,47 @@ Rectangle {
                         TextInput {
                             id: searchField
                             Layout.fillWidth: true
+                            Layout.fillHeight: true
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
                             color: "#F1F5F9"
+                            selectionColor: "#0284C7"
+                            selectedTextColor: "#FFFFFF"
                             selectByMouse: true
-                            verticalAlignment: Text.AlignVCenter
+                            clip: true
+                            verticalAlignment: TextInput.AlignVCenter
+
+                            TextBarContextArea {}
 
                             Text {
                                 text: cloudModalRoot.tr("placeholder_search_cloud", "Search by title, URL, or platform (Mega, Drive, etc.)...")
                                 color: "#64748B"
                                 font.pixelSize: 12
                                 visible: !searchField.text && !searchField.activeFocus
+                                anchors.left: parent.left
+                                anchors.right: parent.right
                                 anchors.verticalCenter: parent.verticalCenter
+                                elide: Text.ElideRight
                             }
 
                             onTextChanged: cloudLinksModel.populate(text)
+                        }
+
+                        Rectangle {
+                            width: 18; height: 18; radius: 9
+                            color: clearCloudSearchMouse.containsMouse ? "#374151" : "#1F2430"
+                            visible: searchField.text.length > 0
+                            Text { anchors.centerIn: parent; text: "×"; font.bold: true; font.pixelSize: 12; color: "#94A3B8" }
+                            MouseArea {
+                                id: clearCloudSearchMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    searchField.text = ""
+                                    searchField.forceActiveFocus()
+                                }
+                            }
                         }
                     }
                 }

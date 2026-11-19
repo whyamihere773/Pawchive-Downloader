@@ -66,8 +66,11 @@ class UpdaterBridge(QObject):
 
         # Quick version from version.json now; the commit (git) is filled in off the UI thread
         data = us._read_version_file(us.get_app_dir())
+        pkg_mgr = us.detect_package_manager() if us.is_compiled() else ""
         self._current_version = us.version_display(str(data.get("version") or ""))
-        self._edition = us.edition_label(not us.is_compiled())
+        self._edition = us.edition_label(not us.is_compiled(), package_manager=pkg_mgr)
+        self._can_self_update = not bool(pkg_mgr)
+        self._update_hint = us.managed_update_hint(pkg_mgr)
         threading.Thread(target=self._load_local_info, daemon=True, name="UpdaterLocalInfo").start()
         threading.Thread(target=us.cleanup_update_leftovers, daemon=True, name="UpdaterCleanup").start()
 
@@ -78,6 +81,8 @@ class UpdaterBridge(QObject):
             info = us.get_local_version_info()
             self._current_version = info["display"]
             self._edition = info["edition_label"]
+            self._can_self_update = bool(info.get("can_self_update", True))
+            self._update_hint = us.managed_update_hint(info.get("package_manager", ""))
             self.infoChanged.emit()
         except Exception as e:
             logger.debug(f"Couldn't read the local version: {e}", category="system")
@@ -145,6 +150,14 @@ class UpdaterBridge(QObject):
     def isSourceUpdate(self) -> bool:
         return self._info.get("kind", "") in ("source-git", "source-archive")
 
+    @Property(bool, notify=infoChanged)
+    def canSelfUpdate(self) -> bool:
+        return self._can_self_update
+
+    @Property(str, notify=infoChanged)
+    def updateHint(self) -> str:
+        return self._update_hint
+
     # ── Slots ─────────────────────────────────────────────────────────────────
     @Slot(bool)
     def checkForUpdates(self, silent: bool = False):
@@ -179,9 +192,15 @@ class UpdaterBridge(QObject):
     def _apply_update_result(self, res: Dict[str, Any], silent: bool = False):
         self._info = res
         self._update_available = bool(res.get("update_available"))
+        self._can_self_update = bool(res.get("can_self_update", self._can_self_update))
+        if res.get("update_hint"):
+            self._update_hint = str(res["update_hint"])
         self._checked_once = True
         if self._update_available:
-            self._status_message = f"Version {self.latestVersion} is ready to install."
+            if self._can_self_update:
+                self._status_message = f"Version {self.latestVersion} is ready to install."
+            else:
+                self._status_message = f"Version {self.latestVersion} is available."
             logger.info(f"Update available: {res.get('local_display')} -> {self.latestVersion}", category="system")
         elif res.get("error"):
             self._status_message = "Couldn't check for updates: " + res["error"]

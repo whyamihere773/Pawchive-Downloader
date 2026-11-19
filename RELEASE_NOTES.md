@@ -1,65 +1,52 @@
-### 🌐 Built-In Creator & Local Library Browser
-
-* **New Browser tab**: Browse creators, posts, direct messages, and tags directly inside Pawchive Downloader across Pawchive, cum.st, and CoomerFans without leaving the app.
-* **Account favorites & sign-in**: Favorite or unfavorite creators directly from creator cards and profiles with instant sync to your Pawchive or cum.st account, plus a dedicated **Favorites** category and an in-app sign-in prompt when logged out.
-* **Scrollable service bar**: Browse through all supported creator platforms smoothly using horizontal scrolling and quick left/right arrow controls.
-* **Multi-drive Local On-Disk mode**: Switch between online browsing and your saved local library across multiple drives, move creator folders to another drive in one click, and check for new online posts.
-* **Selection cart & in-app media viewer**: Mark creators and posts across pages to download or follow in your Watchlist together, and preview photos, animated GIFs, videos, and audio directly inside the post viewer.
-* **One-click link copying & preview notices**: Copy the link to any creator, post, or individual attachment straight from the viewer or full-screen preview, and see clear warning badges on creators and posts that have not been imported in full yet.
-* **Responsive narrow layout**: Toolbars, search and sort controls, creator headers, post details, and the bottom selection tray wrap cleanly when the log console panel is open.
+> **Heads up:** The next update might take a little longer than usual — I'm taking some time to clean up the codebase a bit so future updates are smoother and faster to ship.
 
 ---
 
-### 🖼️ Gallery Previews, Layout & Visual Sorter
+### ⚡ Pawchive Speed & Rate-Limit Fixes
 
-* **Folder preview thumbnails**: Folders in the Gallery tab now show cover previews of the images and media inside them so navigating creator folders is much faster.
-* **Whole-image & custom frame styles**: Switch between **Fit (Whole Image)** to view tall or wide artwork without cropping edges, or **Fill Frame (Crop)**, alongside **Square**, **Portrait**, and **Landscape** card shapes and a **Clean Cards** toggle.
-* **Organize media by visual style & mood**: Open **Visual Sort** in the Gallery tab to group files automatically by visual medium, resolution and framing, color mood, character tags, or custom text prompts.
-* **Safe virtual preview & undo**: Preview how files will be grouped before touching anything on disk, commit approved folders when ready, and undo changes anytime with Ctrl+Z.
-* **Optional vision model support**: Download the lightweight Visual Sorter vision model in Settings → Character & Franchise Recognition for stronger visual clustering and custom prompt sorting.
+* **Fixed ultra-slow Pawchive downloads & 429 rate-limit loops**: Downloading creators with unimported posts or lots of small images no longer triggers waves of failed or burst requests that cause Pawchive to throttle speeds to a crawl.
+* **Smoother pacing & smarter automatic slowdowns**: Pawchive downloads now request files from the right server at a steady pace, automatically step down active threads on the very first rate-limit warning, and pause briefly instead of hammering the server nonstop or saving small thumbnails instead.
+* **Faster scanning of unimported posts**: Scanning creators with unimported posts skips unnecessary extra page checks so scans finish much faster.
 
 ---
 
-### ☑️ Post Selector Overhaul
+### ⚠️ Unimported Pawchive Post Handling
 
-* **Play videos & animated GIFs directly**: Watch videos and animated GIFs right inside the post selector preview instead of seeing a "No Preview" warning, and check clear warning badges on unimported posts.
-* **Shift-click range selection**: Click any post or attachment, then hold Shift and click another to select or deselect the entire range in one step.
-* **Faster switching between previewing & selecting**: Click to open a post (or turn on **Select Mode** in the header for one-click toggling) and hold Ctrl while clicking to do the opposite without aiming for small checkboxes.
-* **Larger window & kept progress**: The post selector now uses nearly the full window width, ignores accidental clicks on the outside backdrop or title bar, and keeps your checked posts, search text, and loaded list if you close and reopen it.
-
----
-
-### ⚡ Mid-Download Settings & Watchlist Upgrades
-
-* **Change settings mid-download**: Editing folders, filters, naming rules, or download options while transfers are active now prompts you to continue with the new settings, restart cleanly from scratch, or apply changes only to future downloads.
-* **Edit Watchlist creator settings anytime**: Change custom folders, cutoffs, and download filters directly on any Watchlist creator, with a clear prompt if that creator is currently downloading.
-* **Fixed Watchlist folder & path bugs**: Shortening or changing a creator's download folder no longer gets overridden by old settings or saves to the wrong place, and missing creator folders are created automatically.
-* **Safer full re-downloads**: Choosing to re-download a creator now warns you clearly, deletes old files and archive history for that creator first, and starts fresh using your updated settings.
+* **Clear notice without stopping downloads**: When a post or creator hasn't been physically imported onto Pawchive's servers yet, the app marks those items as Not Imported and keeps downloading everything else without stopping. The notice modal includes a "Do not show again" option (while keeping the warning in the Progress Log) and an "Open Settings" button that jumps straight to the thumbnail fallback toggle and highlights it.
+* **Visible in Queue & Retry window, with retrying disabled**: Unimported files still show up in your Queue and Retry Failed window with a clear amber warning so you don't miss them, while retrying is disabled since those files aren't on the server yet.
+* **Automatic Watchlist pickup later**: Unimported posts are no longer marked as finished in your Watchlist, so they will be detected and downloaded automatically once Pawchive imports them.
 
 ---
 
-### 📊 New Statistics Tab
+### 📦 Download Archive Improvements
 
-* **Your download stats in one place**: A new **Statistics** tab shows how much you've downloaded and uploaded, how much space your library takes, and how many artists, posts, files and folders you have.
-* **Breakdowns by drive, file type and site**: See how your library is spread across drives, file types (images, videos, archives…) and creator platforms.
-* **Export & share**: Copy a quick summary, or save the full numbers as a CSV or JSON file.
-
----
-
-### 🐧 Linux & Startup Fixes
-
-* **Linux startup crash fixed**: The Linux build no longer closes a second after opening with a "bool_dealloc" error (seen on Linux Mint, Arch, CachyOS and others).
-* **yt-dlp updates work on Linux again**: The automatic yt-dlp update no longer fails with a "symbol lookup error", and opening folders, extracting archives and compressing videos run reliably with your system's own tools.
-* **No more freeze on PCs without a graphics card**: The app no longer hangs at startup on virtual machines or computers without hardware video encoding when FFmpeg is installed.
+* **Rebuild archive in the background with crash recovery**: You can now minimize an active Archive Rebuild to a compact progress bar at the bottom of the app and keep using every tab normally. Progress is saved automatically after every batch (and on pause or exit), so if the app closes or power cuts out, you can resume right where it left off without re-scanning finished files.
+* **Creators & file paths preserved on backup**: Exporting your Download Archive now defaults to a full JSON backup that keeps creator names and file locations intact instead of turning everything into "Unknown Creator" on re-import.
+* **Direct database import & text import fix**: You can now import an archive database file directly, and importing older text-list backups no longer breaks on filenames that contain spaces.
 
 ---
 
-### 🛠️ Updater, Link & Workspace Fixes
+### 🌐 Browser Download Dialog & Layout Fixes
 
-* **Windows updater exit & deep-folder fixes**: Installing updates inside long Windows folder paths works properly without misleading "No permission" errors, and the updater window now closes cleanly when finished.
-* **cum.st post & creator links fixed**: Copied links and saved post info links for cum.st now use the right website address format so every post opens directly in your browser.
-* **Live progress in Archive on large creators**: Removing or refreshing creators with huge libraries no longer makes the Archive tab look frozen—live status indicators keep you informed while the app stays responsive.
-* **Hide or show workspace tabs**: Customize which top-level tabs appear in Settings → Workspace & Tab Bar Visibility to keep your workspace clutter-free.
+* **Choose where Browser downloads go**: Starting or queueing any download from the Browser now opens a confirmation dialog where you can pick your save folder, automatically remember the last folder you chose, and access all Downloader settings right from the dialog.
+* **Automatic separate folders for multiple creators**: Selecting multiple creators in the Browser automatically gives each creator its own subfolder inside your chosen destination so files never mix together.
+* **At-a-glance on-disk post indicators in Online Browser**: When viewing a creator you already have on disk, posts you own in full are outlined in green, partially downloaded or pruned posts are outlined in yellow (with file counts like `4/12`), and posts not on disk stay unoutlined.
+* **Fixed Browser card overflow**: Creator cards and post cards in the Browser now keep buttons, stats, and action links cleanly inside card borders without clipping off the right edge.
+
+---
+
+### ✨ Interface Improvements
+
+* **Consistent text bars & right-click menus everywhere**: Every search bar, password field, URL input, and text box across the app now supports mouse text selection, full-bar click-to-focus, and the right-click context menu (Paste, Copy, Cut, Select All, Clear) — even inside pop-up dialogs.
+* **Fixed Gallery shortcuts hijacking typing**: Pressing Ctrl+A, Delete, or Ctrl+Z while typing in the Gallery search bar now edits your search text instead of selecting or deleting gallery files.
+
+---
+
+### 🐧 Linux & CachyOS Fixes
+
+* **Fixed Linux startup crash & Fontconfig warnings**: Stopped bundling conflicting Ubuntu system libraries so the app uses your system's own graphics and font drivers, and added an automatic fallback to software rendering (plus a `--software-render` launch option) if hardware OpenGL isn't available.
+* **One-click Linux desktop installer & cleaner archive folder**: Added an included desktop installer script to set up the application menu shortcut, icon, and `pawchive://` link handler from any portable folder, removed spaces from the extracted folder name, and fixed misleading `.exe` log labels on Linux.
+* **New experimental Flatpak & Arch/CachyOS packages**: Added experimental universal Flatpak and Arch `pacman` builds alongside the portable Linux download, with Windows builds now listed first on GitHub Releases.
 
 ---
 

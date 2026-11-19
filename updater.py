@@ -234,6 +234,16 @@ def run_gui(plan: Dict[str, Any], log: ui.UpdateLog) -> int:
     from PySide6.QtQml import QQmlApplicationEngine
 
     app = QGuiApplication.instance() or QGuiApplication(sys.argv)
+    try:
+        from core.graphics_backend import configure_qt_graphics_backend, parse_software_render_args
+        force_sw, _ = parse_software_render_args(sys.argv)
+        configure_qt_graphics_backend(
+            app,
+            force_software=force_sw,
+            on_log=lambda _lvl, msg: log.write(msg),
+        )
+    except Exception:
+        pass
     app.setApplicationName("PawchiveUpdater")
     app.setApplicationDisplayName("Pawchive Downloader Updater")
     icon_path = find_icon(plan["target_dir"])

@@ -1070,9 +1070,15 @@ Item {
                     Layout.fillWidth: true
                     Layout.minimumWidth: 120
                     radius: 5
-                    color: "#111827"
-                    border.color: searchInputWide.activeFocus ? "#6366F1" : "#1E293B"
-                    border.width: 1
+                    color: searchInputWide.activeFocus ? "#0B0D12" : "#111827"
+                    border.color: searchInputWide.activeFocus ? "#6366F1" : (searchWideBoxMouse.containsMouse ? "#475569" : "#1E293B")
+                    border.width: searchInputWide.activeFocus ? 1.5 : 1
+
+                    TextBarContextArea {
+                        id: searchWideBoxMouse
+                        target: searchInputWide
+                        focusOnLeftClick: true
+                    }
 
                     RowLayout {
                         anchors.fill: parent
@@ -1084,15 +1090,47 @@ Item {
                         TextInput {
                             id: searchInputWide
                             Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            verticalAlignment: TextInput.AlignVCenter
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 11
                             color: "#E2E8F0"
+                            selectionColor: "#0284C7"
+                            selectedTextColor: "#FFFFFF"
+                            selectByMouse: true
                             clip: true
                             text: root.searchText
+                            TextBarContextArea {}
+                            Text {
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.verticalCenter: parent.verticalCenter
+                                elide: Text.ElideRight
+                                text: root.tr("placeholder_decompressor_search", "Filter archives or creators...")
+                                font: parent.font
+                                color: "#475569"
+                                visible: !searchInputWide.text && !searchInputWide.activeFocus
+                            }
                             onTextChanged: {
                                 if (root.searchText !== text) {
                                     root.searchText = text;
                                     if (decompressor) decompressor.setSearch(text);
+                                }
+                            }
+                        }
+                        Rectangle {
+                            width: 16; height: 16; radius: 8
+                            color: clearDecWideMouse.containsMouse ? "#374151" : "#1F2430"
+                            visible: searchInputWide.text.length > 0
+                            Text { anchors.centerIn: parent; text: "×"; font.bold: true; font.pixelSize: 11; color: "#94A3B8" }
+                            MouseArea {
+                                id: clearDecWideMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    searchInputWide.text = ""
+                                    searchInputWide.forceActiveFocus()
                                 }
                             }
                         }
@@ -1106,9 +1144,15 @@ Item {
                 visible: root.width < 580
                 Layout.fillWidth: true
                 radius: 5
-                color: "#111827"
-                border.color: searchInputNarrow.activeFocus ? "#6366F1" : "#1E293B"
-                border.width: 1
+                color: searchInputNarrow.activeFocus ? "#0B0D12" : "#111827"
+                border.color: searchInputNarrow.activeFocus ? "#6366F1" : (searchNarrowBoxMouse.containsMouse ? "#475569" : "#1E293B")
+                border.width: searchInputNarrow.activeFocus ? 1.5 : 1
+
+                TextBarContextArea {
+                    id: searchNarrowBoxMouse
+                    target: searchInputNarrow
+                    focusOnLeftClick: true
+                }
 
                 RowLayout {
                     anchors.fill: parent
@@ -1120,15 +1164,47 @@ Item {
                     TextInput {
                         id: searchInputNarrow
                         Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        verticalAlignment: TextInput.AlignVCenter
                         font.family: "Segoe UI, sans-serif"
                         font.pixelSize: 11
                         color: "#E2E8F0"
+                        selectionColor: "#0284C7"
+                        selectedTextColor: "#FFFFFF"
+                        selectByMouse: true
                         clip: true
                         text: root.searchText
+                        TextBarContextArea {}
+                        Text {
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            elide: Text.ElideRight
+                            text: root.tr("placeholder_decompressor_search", "Filter archives or creators...")
+                            font: parent.font
+                            color: "#475569"
+                            visible: !searchInputNarrow.text && !searchInputNarrow.activeFocus
+                        }
                         onTextChanged: {
                             if (root.searchText !== text) {
                                 root.searchText = text;
                                 if (decompressor) decompressor.setSearch(text);
+                            }
+                        }
+                    }
+                    Rectangle {
+                        width: 16; height: 16; radius: 8
+                        color: clearDecNarrowMouse.containsMouse ? "#374151" : "#1F2430"
+                        visible: searchInputNarrow.text.length > 0
+                        Text { anchors.centerIn: parent; text: "×"; font.bold: true; font.pixelSize: 11; color: "#94A3B8" }
+                        MouseArea {
+                            id: clearDecNarrowMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                searchInputNarrow.text = ""
+                                searchInputNarrow.forceActiveFocus()
                             }
                         }
                     }
@@ -2566,6 +2642,11 @@ Item {
                         PropertyAnimation { target: pwInputRect; property: "x"; to:  0; duration: 40 }
                     }
 
+                    TextBarContextArea {
+                        target: pwInput
+                        focusOnLeftClick: true
+                    }
+
                     Item {
                         anchors { left: parent.left; right: parent.right; top: parent.top; bottom: parent.bottom; leftMargin: 10; rightMargin: 6 }
 
@@ -2596,28 +2677,33 @@ Item {
                             anchors {
                                 left: pwInputIcon.right; leftMargin: 6
                                 right: eyeToggle.left; rightMargin: 6
-                                verticalCenter: parent.verticalCenter
+                                top: parent.top
+                                bottom: parent.bottom
                             }
-                            height: 32
                             verticalAlignment: TextInput.AlignVCenter
                             font.pixelSize: 12
                             font.family: "Segoe UI, Inter, sans-serif"
                             color: "#E2E8F0"
+                            selectionColor: "#0284C7"
+                            selectedTextColor: "#FFFFFF"
+                            selectByMouse: true
+                            clip: true
                             echoMode: pwPromptCard.showPlain ? TextInput.Normal : TextInput.Password
                             onTextChanged: pwPromptCard.inputText = text
                             onAccepted: pwPromptCard.tryExtract()
                             Component.onCompleted: forceActiveFocus()
-                        }
+                            TextBarContextArea {}
 
-                        // Placeholder overlay
-                        Text {
-                            anchors { left: pwInput.left; verticalCenter: parent.verticalCenter }
-                            text: root.tr("placeholder_archive_pw", "Enter archive password...")
-                            font.pixelSize: 12
-                            font.family: "Segoe UI, Inter, sans-serif"
-                            color: "#475569"
-                            visible: pwInput.text.length === 0 && !pwInput.activeFocus
-                            MouseArea { anchors.fill: parent; onClicked: pwInput.forceActiveFocus() }
+                            // Placeholder overlay
+                            Text {
+                                anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter }
+                                elide: Text.ElideRight
+                                text: root.tr("placeholder_archive_pw", "Enter archive password...")
+                                font.pixelSize: 12
+                                font.family: "Segoe UI, Inter, sans-serif"
+                                color: "#475569"
+                                visible: pwInput.text.length === 0 && !pwInput.activeFocus
+                            }
                         }
                     }
                 }
@@ -3328,31 +3414,43 @@ Item {
                         height: 34
                         radius: 7
                         color: addPwInput.activeFocus ? "#0B1420" : "#0B0E14"
-                        border.color: addPwInput.activeFocus ? "#38BDF8" : "#334155"
+                        border.color: addPwInput.activeFocus ? "#38BDF8" : (addPwBoxMouse.containsMouse ? "#475569" : "#334155")
                         border.width: addPwInput.activeFocus ? 1.5 : 1
+
+                        TextBarContextArea {
+                            id: addPwBoxMouse
+                            target: addPwInput
+                            focusOnLeftClick: true
+                        }
 
                         TextInput {
                             id: addPwInput
-                            anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter; leftMargin: 10; rightMargin: 10 }
+                            anchors { fill: parent; leftMargin: 10; rightMargin: 10 }
+                            verticalAlignment: TextInput.AlignVCenter
                             font.pixelSize: 12
                             font.family: "Segoe UI, Inter, sans-serif"
                             color: "#E2E8F0"
+                            selectionColor: "#0284C7"
+                            selectedTextColor: "#FFFFFF"
+                            selectByMouse: true
+                            clip: true
+                            TextBarContextArea {}
                             onAccepted: {
                                 if (text.trim() && decompressor) {
                                     decompressor.addPassword(text.trim(), root.selectedBankCreator);
                                     text = "";
                                 }
                             }
-                        }
-                        // Placeholder overlay
-                        Text {
-                            anchors { left: parent.left; leftMargin: 10; verticalCenter: parent.verticalCenter }
-                            text: "Add password for " + root.selectedBankCreator + "..."
-                            font.pixelSize: 12
-                            font.family: "Segoe UI, Inter, sans-serif"
-                            color: "#475569"
-                            visible: addPwInput.text.length === 0 && !addPwInput.activeFocus
-                            MouseArea { anchors.fill: parent; onClicked: addPwInput.forceActiveFocus() }
+                            // Placeholder overlay
+                            Text {
+                                anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter }
+                                elide: Text.ElideRight
+                                text: "Add password for " + root.selectedBankCreator + "..."
+                                font.pixelSize: 12
+                                font.family: "Segoe UI, Inter, sans-serif"
+                                color: "#475569"
+                                visible: addPwInput.text.length === 0 && !addPwInput.activeFocus
+                            }
                         }
                     }
 

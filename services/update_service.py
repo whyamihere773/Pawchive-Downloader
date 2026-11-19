@@ -173,10 +173,42 @@ def edition(is_source: bool) -> str:
     return "macos" if key == "other" and sys.platform == "darwin" else key
 
 
-def edition_label(is_source: bool, is_git: bool = False) -> str:
-    """What the user sees: 'Windows build', 'Linux build', 'Source code (git)'..."""
+def detect_package_manager(app_dir: Optional[str] = None) -> str:
+    """Return 'flatpak', 'pacman', or '' when this install is externally package-managed."""
+    if not sys.platform.startswith("linux"):
+        return ""
+    if os.environ.get("FLATPAK_ID") or os.path.exists("/.flatpak-info"):
+        return "flatpak"
+    if is_compiled():
+        target = app_dir or get_app_dir()
+        if os.path.isfile(os.path.join(target, ".pacman-managed")):
+            return "pacman"
+    return ""
+
+
+def managed_update_hint(package_manager: str) -> str:
+    """User-facing update guidance for read-only package-managed Linux installs."""
+    if package_manager == "flatpak":
+        return (
+            "This install is managed by Flatpak (Experimental). "
+            "Download the latest .flatpak bundle from the Release page to update."
+        )
+    if package_manager == "pacman":
+        return (
+            "This install is managed by pacman / AUR (Experimental). "
+            "Update via your AUR helper or install the latest Arch package from the Release page."
+        )
+    return ""
+
+
+def edition_label(is_source: bool, is_git: bool = False, package_manager: str = "") -> str:
+    """What the user sees: 'Windows build', 'Linux build', 'Flatpak (Experimental)', 'Source code (git)'..."""
     if is_source:
         return "Source code (git)" if is_git else "Source code"
+    if package_manager == "flatpak":
+        return "Flatpak (Experimental)"
+    if package_manager == "pacman":
+        return "Arch / pacman (Experimental)"
     return {"windows": "Windows build", "linux": "Linux build", "macos": "macOS build"}.get(edition(False), "Build")
 
 
@@ -310,8 +342,11 @@ def get_local_version_info() -> Dict[str, Any]:
             pass
         info["short_commit"] = info["commit"][:7]
     info["display"] = version_display(info["version"], info["short_commit"])
+    pkg_mgr = detect_package_manager(app_dir) if not info["is_source"] else ""
+    info["package_manager"] = pkg_mgr
+    info["can_self_update"] = not bool(pkg_mgr)
     info["edition"] = edition(info["is_source"])
-    info["edition_label"] = edition_label(info["is_source"], info["is_git"])
+    info["edition_label"] = edition_label(info["is_source"], info["is_git"], package_manager=pkg_mgr)
     return info
 
 
@@ -348,9 +383,14 @@ def _http_error_text(e: Exception) -> str:
     return str(e) or e.__class__.__name__
 
 
-def find_matching_release_asset(assets: list, platform: Optional[str] = None) -> Dict[str, Any]:
+def find_matching_release_asset(
+    assets: list,
+    platform: Optional[str] = None,
+    package_manager: str = "",
+) -> Dict[str, Any]:
     """The release file for this platform: {"url", "name", "size", "sha256"}, or {} if there's none."""
     plat = platform or platform_key()
+    pkg_mgr = (package_manager or "").strip().lower()
     best, best_score = {}, 0
     for a in assets or []:
         name = str(a.get("name", "")).lower()
@@ -369,7 +409,15 @@ def find_matching_release_asset(assets: list, platform: Optional[str] = None) ->
                 score += 20
             if any(k in name for k in ("windows", "darwin", "macos", "osx")) or name.endswith(".exe"):
                 score -= 50
-            score += 8 if name.endswith((".tar.gz", ".tgz")) else (3 if name.endswith(".zip") else -50)
+            if pkg_mgr == "flatpak":
+                score += 12 if name.endswith(".flatpak") else -50
+            elif pkg_mgr == "pacman":
+                score += 12 if name.endswith((".pkg.tar.zst", ".pkg.tar.xz")) else -50
+            else:
+                if name.endswith((".flatpak", ".pkg.tar.zst", ".pkg.tar.xz", ".pkgbuild", ".deb", ".rpm", ".appimage")):
+                    score -= 50
+                else:
+                    score += 8 if name.endswith((".tar.gz", ".tgz")) else (3 if name.endswith(".zip") else -50)
         if score > best_score:
             digest = str(a.get("digest") or "")
             best_score = score
@@ -391,12 +439,16 @@ def check_for_updates(timeout: float = 8, proxy_url: str = "") -> Dict[str, Any]
     download_url, sha256, size, commit, branch, published_at, release_url, message, error.
     """
     local = get_local_version_info()
+    pkg_mgr = local.get("package_manager", "")
     res: Dict[str, Any] = {
         "update_available": False,
         "local_version": local["version"],
         "local_display": local["display"],
         "edition": local["edition"],
         "edition_label": local["edition_label"],
+        "package_manager": pkg_mgr,
+        "can_self_update": local.get("can_self_update", True),
+        "update_hint": managed_update_hint(pkg_mgr),
         "remote_version": "",
         "remote_display": "",
         "commits_behind": 0,
@@ -471,9 +523,17 @@ def _check_release_html(res: Dict[str, Any], local: Dict[str, Any], timeout: flo
         pass
 
     # Safety convention fallback if expanded_assets didn't parse
+    pkg_mgr = local.get("package_manager", "")
     if not assets:
         plat = platform_key()
-        conv_name = f"Pawchive-Downloader-{tag}-Windows.zip" if plat == "windows" else f"Pawchive-Downloader-{tag}-Linux-x86_64.tar.gz"
+        if plat == "windows":
+            conv_name = f"Pawchive-Downloader-{tag}-Windows.zip"
+        elif pkg_mgr == "flatpak":
+            conv_name = f"Pawchive-Linux-{tag}-Flatpak-Experimental-x86_64.flatpak"
+        elif pkg_mgr == "pacman":
+            conv_name = f"Pawchive-Linux-{tag}-Arch-Experimental-x86_64.pkg.tar.zst"
+        else:
+            conv_name = f"Pawchive-Linux-{tag}-Portable-x86_64.tar.gz"
         assets.append({
             "name": conv_name,
             "browser_download_url": f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/download/{tag}/{conv_name}",
@@ -481,7 +541,7 @@ def _check_release_html(res: Dict[str, Any], local: Dict[str, Any], timeout: flo
             "size": 0,
         })
 
-    asset = find_matching_release_asset(assets)
+    asset = find_matching_release_asset(assets, package_manager=pkg_mgr)
     if not asset:
         res["message"] = f"Version {res['remote_version']} is out, but it has no download for this system yet."
         return res
@@ -525,7 +585,7 @@ def _check_release(res: Dict[str, Any], local: Dict[str, Any], base: str, timeou
         if not is_newer(tag, local["version"]):
             res["message"] = "You're running the latest version."
             return res
-        asset = find_matching_release_asset(data.get("assets", []))
+        asset = find_matching_release_asset(data.get("assets", []), package_manager=local.get("package_manager", ""))
         if not asset:
             # Announcing an update with nothing to install would just close the app (#report: no Linux build)
             res["message"] = f"Version {res['remote_version']} is out, but it has no download for this system yet."
@@ -792,6 +852,12 @@ def launch_updater(info: Dict[str, Any]) -> str:
     The caller then closes the app normally; the updater waits for it to exit."""
     if not info.get("update_available"):
         raise RuntimeError("There's no update to install.")
+    pkg_mgr = info.get("package_manager") or detect_package_manager()
+    if pkg_mgr or info.get("can_self_update") is False:
+        raise RuntimeError(
+            managed_update_hint(pkg_mgr)
+            or "This install is managed by a package manager and cannot self-update."
+        )
     plan = build_update_plan(info)
     plan_dir = tempfile.mkdtemp(prefix="pawchive_plan_")
     plan_path = os.path.join(plan_dir, "plan.json")

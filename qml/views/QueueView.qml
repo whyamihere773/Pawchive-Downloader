@@ -418,6 +418,9 @@ Rectangle {
                         readonly property int cardDownloading: (typeof downloadingFiles !== "undefined" ? downloadingFiles : (model && model.downloadingFiles !== undefined ? model.downloadingFiles : 0))
                         readonly property int cardPending: (typeof pendingFiles !== "undefined" ? pendingFiles : (model && model.pendingFiles !== undefined ? model.pendingFiles : 0))
                         readonly property int cardFailed: (typeof failedFiles !== "undefined" ? failedFiles : (model && model.failedFiles !== undefined ? model.failedFiles : 0))
+                        readonly property int cardUnimported: (typeof unimportedFiles !== "undefined" ? unimportedFiles : (model && model.unimportedFiles !== undefined ? model.unimportedFiles : 0))
+                        readonly property int cardRetryableFailed: (typeof retryableFailedFiles !== "undefined" ? retryableFailedFiles : (model && model.retryableFailedFiles !== undefined ? model.retryableFailedFiles : Math.max(0, cardFailed - cardUnimported)))
+                        readonly property bool cardOnlyUnimportedFailed: cardFailed > 0 && cardRetryableFailed === 0 && cardUnimported > 0
                         readonly property string cardStatus: (typeof status !== "undefined" ? status : (model && model.status !== undefined ? model.status : "pending"))
                         readonly property string cardBatchId: (typeof batchId !== "undefined" ? batchId : (model && model.batchId !== undefined ? model.batchId : ""))
                         readonly property bool cardIsActiveDownloading: groupCard.cardDownloading > 0 || groupCard.cardStatus === "downloading"
@@ -509,17 +512,17 @@ Rectangle {
                                     Layout.minimumWidth: implicitWidth
                                     Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
                                     radius: 4
-                                    color: groupCard.cardIsEffectivelyPaused ? "#451A03" : (modelData.status === "completed" ? "#064E3B" : (modelData.status === "downloading" ? "#0C4A6E" : (modelData.status === "skipped" ? "#451A03" : (modelData.status === "failed" ? "#7F1D1D" : "#1E293B"))))
-                                    border.color: groupCard.cardIsEffectivelyPaused ? "#F59E0B" : (modelData.status === "completed" ? "#10B981" : (modelData.status === "downloading" ? "#0EA5E9" : (modelData.status === "skipped" ? "#F59E0B" : (modelData.status === "failed" ? "#EF4444" : "#475569"))))
+                                    color: groupCard.cardIsEffectivelyPaused ? "#451A03" : (groupCard.cardOnlyUnimportedFailed && modelData.status === "failed" ? "#451A03" : (modelData.status === "completed" ? "#064E3B" : (modelData.status === "downloading" ? "#0C4A6E" : (modelData.status === "skipped" ? "#451A03" : (modelData.status === "failed" ? "#7F1D1D" : "#1E293B")))))
+                                    border.color: groupCard.cardIsEffectivelyPaused ? "#F59E0B" : (groupCard.cardOnlyUnimportedFailed && modelData.status === "failed" ? "#F59E0B" : (modelData.status === "completed" ? "#10B981" : (modelData.status === "downloading" ? "#0EA5E9" : (modelData.status === "skipped" ? "#F59E0B" : (modelData.status === "failed" ? "#EF4444" : "#475569")))))
                                     border.width: 1
 
                                     Text {
                                         id: stText
                                         anchors.centerIn: parent
-                                        text: groupCard.cardIsEffectivelyPaused ? "PAUSED" : (modelData.status ? modelData.status.toUpperCase() : "")
+                                        text: groupCard.cardIsEffectivelyPaused ? "PAUSED" : (groupCard.cardOnlyUnimportedFailed && modelData.status === "failed" ? "NOT IMPORTED" : (modelData.status ? modelData.status.toUpperCase() : ""))
                                         font.pixelSize: 9
                                         font.bold: true
-                                        color: groupCard.cardIsEffectivelyPaused ? "#FDE68A" : (modelData.status === "completed" ? "#6EE7B7" : (modelData.status === "downloading" ? "#7DD3FC" : (modelData.status === "skipped" ? "#FDE68A" : (modelData.status === "failed" ? "#FCA5A5" : "#94A3B8"))))
+                                        color: groupCard.cardIsEffectivelyPaused ? "#FDE68A" : (groupCard.cardOnlyUnimportedFailed && modelData.status === "failed" ? "#FDE68A" : (modelData.status === "completed" ? "#6EE7B7" : (modelData.status === "downloading" ? "#7DD3FC" : (modelData.status === "skipped" ? "#FDE68A" : (modelData.status === "failed" ? "#FCA5A5" : "#94A3B8")))))
                                     }
                                 }
                             }
@@ -649,10 +652,12 @@ Rectangle {
                                     spacing: 8
 
                                     Text {
-                                        text: modelData.completedFiles + " / " + modelData.totalFiles + " files" + (modelData.failedFiles > 0 ? (" (" + modelData.failedFiles + " failed)") : "")
+                                        text: modelData.completedFiles + " / " + modelData.totalFiles + " files"
+                                              + (groupCard.cardRetryableFailed > 0 ? (" (" + groupCard.cardRetryableFailed + " failed)") : "")
+                                              + (groupCard.cardUnimported > 0 ? (" (" + groupCard.cardUnimported + " not imported)") : "")
                                         font.family: "Segoe UI, sans-serif"
                                         font.pixelSize: 11
-                                        color: modelData.failedFiles > 0 ? "#F87171" : "#94A3B8"
+                                        color: groupCard.cardRetryableFailed > 0 ? "#F87171" : (groupCard.cardUnimported > 0 ? "#FBBF24" : "#94A3B8")
                                     }
 
                                     Text { text: "•"; color: "#475569"; font.pixelSize: 10 }
@@ -683,7 +688,7 @@ Rectangle {
                                     }
 
                                     StyledButton {
-                                        visible: groupCard.cardFailed > 0
+                                        visible: groupCard.cardRetryableFailed > 0
                                         text: root.isVeryNarrow ? "" : root.tr("btn_retry_batch", "Retry Failed")
                                         iconText: "🔁"
                                         variant: "danger"
@@ -692,6 +697,20 @@ Rectangle {
                                         onClicked: {
                                             if (root.bridge && root.bridge.queueModel) {
                                                 root.bridge.queueModel.retryBatch(groupCard.cardBatchId)
+                                            }
+                                        }
+                                    }
+
+                                    StyledButton {
+                                        visible: groupCard.cardOnlyUnimportedFailed
+                                        text: root.isVeryNarrow ? "" : root.tr("badge_not_imported", "Not Imported")
+                                        iconText: "⚠️"
+                                        variant: "outline"
+                                        implicitHeight: 24
+                                        tooltip: root.tr("tip_unimported_inspect", "Files aren't imported on Pawchive yet (retry disabled) — click to inspect details")
+                                        onClicked: {
+                                            if (typeof appWindow !== "undefined" && typeof appWindow.openRetryModal === "function") {
+                                                appWindow.openRetryModal()
                                             }
                                         }
                                     }
@@ -746,10 +765,12 @@ Rectangle {
                                 visible: !root.isNarrow
 
                                 Text {
-                                    text: modelData.completedFiles + " / " + modelData.totalFiles + " files" + (modelData.failedFiles > 0 ? (" (" + modelData.failedFiles + " failed)") : "")
+                                    text: modelData.completedFiles + " / " + modelData.totalFiles + " files"
+                                          + (groupCard.cardRetryableFailed > 0 ? (" (" + groupCard.cardRetryableFailed + " failed)") : "")
+                                          + (groupCard.cardUnimported > 0 ? (" (" + groupCard.cardUnimported + " not imported)") : "")
                                     font.family: "Segoe UI, sans-serif"
                                     font.pixelSize: 11
-                                    color: modelData.failedFiles > 0 ? "#F87171" : "#94A3B8"
+                                    color: groupCard.cardRetryableFailed > 0 ? "#F87171" : (groupCard.cardUnimported > 0 ? "#FBBF24" : "#94A3B8")
                                 }
 
                                 Text { text: "•"; color: "#475569"; font.pixelSize: 10 }
@@ -778,7 +799,7 @@ Rectangle {
                                 }
 
                                 StyledButton {
-                                    visible: groupCard.cardFailed > 0
+                                    visible: groupCard.cardRetryableFailed > 0
                                     text: root.tr("btn_retry_batch", "Retry Failed")
                                     iconText: "🔁"
                                     variant: "danger"
@@ -787,6 +808,20 @@ Rectangle {
                                     onClicked: {
                                         if (root.bridge && root.bridge.queueModel) {
                                             root.bridge.queueModel.retryBatch(groupCard.cardBatchId)
+                                        }
+                                    }
+                                }
+
+                                StyledButton {
+                                    visible: groupCard.cardOnlyUnimportedFailed
+                                    text: root.tr("badge_not_imported", "Not Imported")
+                                    iconText: "⚠️"
+                                    variant: "outline"
+                                    implicitHeight: 24
+                                    tooltip: root.tr("tip_unimported_inspect", "Files aren't imported on Pawchive yet (retry disabled) — click to inspect details")
+                                    onClicked: {
+                                        if (typeof appWindow !== "undefined" && typeof appWindow.openRetryModal === "function") {
+                                            appWindow.openRetryModal()
                                         }
                                     }
                                 }
@@ -859,12 +894,13 @@ Rectangle {
 
                 delegate: Rectangle {
                     id: delegateRoot
+                    readonly property bool rowIsUnimported: !!model.isUnimported
                     width: queueList.width - 12
                     height: taskCol.implicitHeight + 16
                     implicitHeight: height
                     radius: 6
-                    color: model.status === "failed" ? "#1F161A" : (model.status === "downloading" ? "#131E2E" : (model.status === "skipped" ? "#1C150E" : (delegateHover.containsMouse ? "#1D222F" : "#1A1E29")))
-                    border.color: model.status === "downloading" ? "#38BDF8" : (model.status === "failed" ? "#EF4444" : (model.status === "skipped" ? (delegateHover.containsMouse ? "#F59E0B" : "#B45309") : (delegateHover.containsMouse ? "#3E485D" : "#282E3D")))
+                    color: rowIsUnimported ? "#1F1910" : (model.status === "failed" ? "#1F161A" : (model.status === "downloading" ? "#131E2E" : (model.status === "skipped" ? "#1C150E" : (delegateHover.containsMouse ? "#1D222F" : "#1A1E29"))))
+                    border.color: rowIsUnimported ? "#D97706" : (model.status === "downloading" ? "#38BDF8" : (model.status === "failed" ? "#EF4444" : (model.status === "skipped" ? (delegateHover.containsMouse ? "#F59E0B" : "#B45309") : (delegateHover.containsMouse ? "#3E485D" : "#282E3D"))))
                     border.width: (model.status === "failed" || model.status === "skipped") ? 1.5 : 1
 
                     Behavior on color { ColorAnimation { duration: 160; easing.type: Easing.OutCubic } }
@@ -899,6 +935,7 @@ Rectangle {
                                 Layout.alignment: Qt.AlignVCenter
                                 radius: 4
                                 color: {
+                                    if (delegateRoot.rowIsUnimported) return "#B45309"
                                     if (model.status === "completed") return "#10B981"
                                     if (model.status === "downloading") return "#0284C7"
                                     if (model.status === "skipped") return "#D97706"
@@ -911,7 +948,7 @@ Rectangle {
                                 Text {
                                     id: statusText
                                     anchors.centerIn: parent
-                                    text: model.status.toUpperCase()
+                                    text: delegateRoot.rowIsUnimported ? "NOT IMPORTED" : model.status.toUpperCase()
                                     font.family: "Segoe UI, sans-serif"
                                     font.pixelSize: 9
                                     font.bold: true
@@ -925,7 +962,7 @@ Rectangle {
                                 font.family: "Segoe UI, sans-serif"
                                 font.pixelSize: 12
                                 font.weight: 600
-                                color: model.status === "failed" ? "#FCA5A5" : (model.status === "skipped" ? "#FDE68A" : "#F1F5F9")
+                                color: delegateRoot.rowIsUnimported ? "#FDE68A" : (model.status === "failed" ? "#FCA5A5" : (model.status === "skipped" ? "#FDE68A" : "#F1F5F9"))
                                 Layout.fillWidth: true
                                 elide: Text.ElideMiddle
                             }
@@ -941,6 +978,7 @@ Rectangle {
                                     width: pctText.implicitWidth + 14
                                     radius: 4
                                     color: {
+                                        if (delegateRoot.rowIsUnimported) return "#3B2608"
                                         if (model.status === "completed") return "#064E3B"
                                         if (model.status === "downloading") return "#0C4A6E"
                                         if (model.status === "skipped") return "#451A03"
@@ -948,6 +986,7 @@ Rectangle {
                                         return "#1E293B"
                                     }
                                     border.color: {
+                                        if (delegateRoot.rowIsUnimported) return "#F59E0B"
                                         if (model.status === "completed") return "#10B981"
                                         if (model.status === "downloading") return "#38BDF8"
                                         if (model.status === "skipped") return "#F59E0B"
@@ -961,6 +1000,7 @@ Rectangle {
                                         id: pctText
                                         anchors.centerIn: parent
                                         text: {
+                                            if (delegateRoot.rowIsUnimported) return "No Retry"
                                             if (model.status === "completed") return "100%"
                                             if (model.status === "skipped") return "Skipped"
                                             if (model.status === "failed") return (model.retryCount > 0 ? ("Failed (" + model.retryCount + "x)") : "Failed")
@@ -971,6 +1011,7 @@ Rectangle {
                                         font.pixelSize: 10
                                         font.weight: Font.Bold
                                         color: {
+                                            if (delegateRoot.rowIsUnimported) return "#FCD34D"
                                             if (model.status === "completed") return "#34D399"
                                             if (model.status === "downloading") return "#38BDF8"
                                             if (model.status === "skipped") return "#FBBF24"
@@ -980,7 +1021,7 @@ Rectangle {
                                     }
                                 }
 
-                                // Single Item Retry Button (Visible for failed items)
+                                // Single Item Retry Button (Visible only for retryable failed items)
                                 Rectangle {
                                     width: 22
                                     height: 20
@@ -988,7 +1029,7 @@ Rectangle {
                                     color: itemRetryMouse.containsMouse ? "#EF4444" : "#2E1A20"
                                     border.color: "#EF4444"
                                     border.width: 1
-                                    visible: model.status === "failed"
+                                    visible: model.status === "failed" && !delegateRoot.rowIsUnimported
                                     anchors.verticalCenter: parent.verticalCenter
 
                                     scale: itemRetryMouse.pressed ? 0.85 : (itemRetryMouse.containsMouse ? 1.18 : 1.0)
@@ -1121,8 +1162,8 @@ Rectangle {
                             Layout.fillWidth: true
                             height: errorRow.implicitHeight + 8
                             radius: 4
-                            color: "#2C1217"
-                            border.color: "#5C1D24"
+                            color: delegateRoot.rowIsUnimported ? "#2A1F0E" : "#2C1217"
+                            border.color: delegateRoot.rowIsUnimported ? "#92400E" : "#5C1D24"
                             border.width: 1
                             visible: model.status === "failed" && model.errorMsg.length > 0
 
@@ -1139,15 +1180,16 @@ Rectangle {
                                 }
 
                                 Text {
-                                    text: (model.retryCount > 0 ? ("[" + model.retryCount + " " + (model.retryCount === 1 ? root.tr("label_failed_retry", "retry failed") : root.tr("label_failed_retries", "retries failed")) + "] ") : "") + model.errorMsg
+                                    text: (!delegateRoot.rowIsUnimported && model.retryCount > 0 ? ("[" + model.retryCount + " " + (model.retryCount === 1 ? root.tr("label_failed_retry", "retry failed") : root.tr("label_failed_retries", "retries failed")) + "] ") : "") + model.errorMsg
                                     font.family: "Segoe UI, sans-serif"
                                     font.pixelSize: 11
-                                    color: "#FCA5A5"
+                                    color: delegateRoot.rowIsUnimported ? "#FDE68A" : "#FCA5A5"
                                     Layout.fillWidth: true
                                     wrapMode: Text.Wrap
                                 }
 
                                 StyledButton {
+                                    visible: !delegateRoot.rowIsUnimported
                                     text: root.tr("btn_retry", "Retry")
                                     iconText: "↻"
                                     variant: "danger"
@@ -1156,6 +1198,36 @@ Rectangle {
                                         if (root.bridge && root.bridge.queueModel) {
                                             root.bridge.queueModel.retryTaskAt(index)
                                         }
+                                    }
+                                }
+
+                                Rectangle {
+                                    visible: delegateRoot.rowIsUnimported
+                                    implicitHeight: 20
+                                    implicitWidth: noRetryPillTxt.implicitWidth + 12
+                                    Layout.preferredHeight: implicitHeight
+                                    Layout.preferredWidth: implicitWidth
+                                    radius: 4
+                                    color: "#3B2608"
+                                    border.color: "#B45309"
+                                    border.width: 1
+
+                                    Text {
+                                        id: noRetryPillTxt
+                                        anchors.centerIn: parent
+                                        text: root.tr("btn_retry_disabled_short", "Retry Disabled")
+                                        font.family: "Segoe UI, sans-serif"
+                                        font.pixelSize: 10
+                                        font.bold: true
+                                        color: "#FCD34D"
+                                    }
+
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        ToolTip.visible: containsMouse
+                                        ToolTip.delay: 250
+                                        ToolTip.text: root.tr("tip_unimported_no_retry", "This file isn't physically hosted on Pawchive's servers yet, so retrying won't download it.")
                                     }
                                 }
                             }

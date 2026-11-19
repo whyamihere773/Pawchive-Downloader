@@ -1,7 +1,9 @@
+# Portable installs: run ./install.sh to generate a launcher with absolute paths,
+# install the icon into ~/.local/share/icons, and register pawchive:// links.
 [Desktop Entry]
 Name=Pawchive Downloader
 GenericName=Media Downloader & Archival Suite
-Comment=Universal Cross-Platform Kemono, Coomer, Bunkr & Fanbox Archival Suite
+Comment=Universal Cross-Platform Pawchive, Kemono, Coomer, Bunkr & Fanbox Archival Suite
 Exec=pawchive %U
 Icon=pawchive
 Terminal=false
@@ -10,4 +12,4 @@ Categories=Network;FileTransfer;Utility;Archiving;
 StartupNotify=true
 StartupWMClass=PawchiveDownloader
 MimeType=x-scheme-handler/pawchive;
-Keywords=kemono;coomer;bunkr;fanbox;downloader;archival;
+Keywords=pawchive;kemono;coomer;bunkr;fanbox;downloader;archival;

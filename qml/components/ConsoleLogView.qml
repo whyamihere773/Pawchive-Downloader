@@ -468,9 +468,15 @@ Rectangle {
             Layout.fillWidth: true
             height: 26
             radius: 5
-            color: "#13161E"
-            border.color: searchInput.activeFocus ? "#38BDF8" : "#242A38"
-            border.width: 1
+            color: searchInput.activeFocus ? "#0B0D12" : "#13161E"
+            border.color: searchInput.activeFocus ? "#38BDF8" : (consoleSearchMouse.containsMouse ? "#475569" : "#242A38")
+            border.width: searchInput.activeFocus ? 1.5 : 1
+
+            TextBarContextArea {
+                id: consoleSearchMouse
+                target: searchInput
+                focusOnLeftClick: true
+            }
 
             RowLayout {
                 anchors.fill: parent
@@ -483,24 +489,49 @@ Rectangle {
                 TextInput {
                     id: searchInput
                     Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    verticalAlignment: TextInput.AlignVCenter
                     font.family: "Segoe UI, sans-serif"
                     font.pixelSize: 11
                     color: "#F1F5F9"
+                    selectionColor: "#0284C7"
+                    selectedTextColor: "#FFFFFF"
                     clip: true
                     selectByMouse: true
 
+                    TextBarContextArea {}
+
                     Text {
-                        anchors.fill: parent
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        elide: Text.ElideRight
                         text: root.tr("placeholder_search_logs", "Filter console output...")
                         color: "#475569"
                         font.pixelSize: 11
                         visible: !searchInput.text && !searchInput.activeFocus
                     }
 
-
                     onTextChanged: {
                         root.clearSelection()
                         if (root.logModel) root.logModel.setSearchQuery(text)
+                    }
+                }
+
+                Rectangle {
+                    width: 16; height: 16; radius: 8
+                    color: clearConsoleSearchMouse.containsMouse ? "#374151" : "#1F2430"
+                    visible: searchInput.text.length > 0
+                    Text { anchors.centerIn: parent; text: "×"; font.bold: true; font.pixelSize: 11; color: "#94A3B8" }
+                    MouseArea {
+                        id: clearConsoleSearchMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            searchInput.text = ""
+                            searchInput.forceActiveFocus()
+                        }
                     }
                 }
             }

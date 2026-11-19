@@ -616,11 +616,21 @@ Rectangle {
                     }
 
                     StyledButton {
-                        text: root.width < 640 ? "" : root.tr("btn_rebuild_archive", "Rebuild")
-                        iconText: "🔨"
-                        variant: "outline"
+                        text: root.width < 640 ? "" : ((root.bridge && root.bridge.isArchiveRebuilding)
+                            ? root.tr("rebuild_btn_running", "Rebuilding…")
+                            : ((root.bridge && root.bridge.hasSavedArchiveRebuild)
+                                ? root.tr("rebuild_btn_resume_short", "Resume Rebuild")
+                                : root.tr("btn_rebuild_archive", "Rebuild")))
+                        iconText: (root.bridge && root.bridge.isArchiveRebuilding)
+                            ? "⚡"
+                            : ((root.bridge && root.bridge.hasSavedArchiveRebuild) ? "🔄" : "🔨")
+                        variant: (root.bridge && (root.bridge.isArchiveRebuilding || root.bridge.hasSavedArchiveRebuild)) ? "primary" : "outline"
                         implicitHeight: 30
-                        tooltip: root.tr("btn_rebuild_archive_tip", "Scan one or more local download directories to rebuild or sync the archive database")
+                        tooltip: (root.bridge && root.bridge.isArchiveRebuilding)
+                            ? root.tr("btn_rebuild_archive_running_tip", "Archive rebuild is running in the background — click to view live progress")
+                            : ((root.bridge && root.bridge.hasSavedArchiveRebuild)
+                                ? root.tr("btn_rebuild_archive_resume_tip", "An interrupted Archive Rebuild was saved — click to resume from where it left off")
+                                : root.tr("btn_rebuild_archive_tip", "Scan one or more local download directories to rebuild or sync the archive database"))
                         onClicked: {
                             if (typeof appWindow !== "undefined" && typeof appWindow.openArchiveRebuildModal === "function") {
                                 appWindow.openArchiveRebuildModal()
@@ -644,7 +654,7 @@ Rectangle {
                         variant: "outline"
                         implicitHeight: 30
                         enabled: !root._hasGlobalJob()
-                        tooltip: root.tr("btn_import_archive_tip", "Import an archive list (.txt) or JSON file exported from Pawchive Downloader")
+                        tooltip: root.tr("btn_import_archive_tip", "Import a Pawchive archive backup (.json, .db) or ID-only text list (.txt)")
                         onClicked: importFileDialog.open()
                     }
 
@@ -653,7 +663,7 @@ Rectangle {
                         iconText: "📤"
                         variant: "outline"
                         implicitHeight: 30
-                        tooltip: root.tr("btn_export_archive_tip", "Export archive records as a text list or JSON file")
+                        tooltip: root.tr("btn_export_archive_tip", "Export archive records as a full JSON backup (recommended — keeps creator names) or an ID-only text list")
                         onClicked: exportFileDialog.open()
                     }
 
@@ -1132,6 +1142,11 @@ Rectangle {
 
                         HoverHandler { id: searchBoxHover }
 
+                        TextBarContextArea {
+                            target: searchInput
+                            focusOnLeftClick: true
+                        }
+
                         RowLayout {
                             anchors.fill: parent
                             anchors.leftMargin: 10
@@ -1149,11 +1164,18 @@ Rectangle {
                             TextInput {
                                 id: searchInput
                                 Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                verticalAlignment: TextInput.AlignVCenter
                                 font.family: "Segoe UI, sans-serif"
                                 font.pixelSize: 10
                                 color: "#F8FAFC"
+                                selectionColor: "#0284C7"
+                                selectedTextColor: "#FFFFFF"
+                                clip: true
                                 selectByMouse: true
                                 text: root.searchFilter
+
+                                TextBarContextArea {}
 
                                 Text {
                                     text: root.tr("placeholder_archive_search", "Search files, links, creators, posts, hashes...")
@@ -2944,7 +2966,7 @@ Rectangle {
     FileDialog {
         id: importFileDialog
         title: root.tr("dialog_import_archive", "Import Download Archive File")
-        nameFilters: ["Archive Files (*.txt *.json)", "Text files (*.txt)", "JSON files (*.json)", "All Files (*.*)"]
+        nameFilters: ["Archive Backups (*.json *.db *.txt)", "Full Archive Backup (*.json)", "Archive Database (*.db)", "ID-Only List (*.txt)", "All Files (*.*)"]
         onAccepted: {
             if (root.bridge && selectedFile) {
                 var path = selectedFile.toString()
@@ -2962,12 +2984,12 @@ Rectangle {
         id: exportFileDialog
         title: root.tr("dialog_export_archive", "Export Download Archive")
         fileMode: FileDialog.SaveFile
-        defaultSuffix: "txt"
-        nameFilters: ["Archive list (*.txt)", "JSON File (*.json)"]
+        defaultSuffix: "json"
+        nameFilters: ["Full Archive Backup (*.json)", "ID-Only List — no creator names (*.txt)"]
         onAccepted: {
             if (root.bridge && selectedFile) {
                 var path = selectedFile.toString()
-                var fmt = path.toLowerCase().endsWith(".json") ? "json" : "txt"
+                var fmt = path.toLowerCase().endsWith(".txt") ? "txt" : "json"
                 root._exportRequest = "archive-export-" + Date.now()
                 root._startJob(root._exportRequest, root.tr("job_exporting_archive", "Exporting archive..."), "", false)
                 root.bridge.exportArchiveFileAsync(root._exportRequest, path, fmt)

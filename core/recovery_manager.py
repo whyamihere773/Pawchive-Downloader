@@ -324,9 +324,22 @@ class RecoveryManager:
                 logger.error(f"Failed to save recovery checkpoint: {e}", category="session")
                 return False
 
+    @staticmethod
+    def _is_non_retryable(task: Any) -> bool:
+        if isinstance(task, dict):
+            if task.get("is_unimported"):
+                return True
+            err = str(task.get("error_msg") or "").lower()
+        else:
+            if getattr(task, "is_unimported", False):
+                return True
+            err = str(getattr(task, "error_msg", "") or "").lower()
+        return "not imported on pawchive" in err
+
     def dump_retries(self, failed_tasks: List[Any], async_write: bool = True) -> bool:
         """Dumps failed retry tasks to disk in compact JSON to keep memory low during long sessions."""
-        if not failed_tasks:
+        retryable_tasks = [t for t in (failed_tasks or []) if not self._is_non_retryable(t)]
+        if not retryable_tasks:
             return False
         with self._write_lock:
             self._retry_generation += 1
@@ -351,9 +364,9 @@ class RecoveryManager:
                     return False
 
         if async_write:
-            self._async_executor.submit(_do_dump, list(failed_tasks))
+            self._async_executor.submit(_do_dump, list(retryable_tasks))
             return True
-        return _do_dump(failed_tasks)
+        return _do_dump(retryable_tasks)
 
     def _retry_file_key(self):
         try:

@@ -44,10 +44,14 @@ Rectangle {
         // How many are ticked, kept up to date as items are ticked: the buttons used to count all
         // items on every change, and filling the list made that quadratic (minutes with big lists)
         property int selectedCount: 0
+        property int unimportedCount: 0
+        property int retryableCount: 0
 
         function populate() {
             clear()
             selectedCount = 0
+            unimportedCount = 0
+            retryableCount = 0
             failedPageTimer.stop()
             if (!modalRoot.bridge || !modalRoot.bridge.queueModel) return
             modalRoot._failedReqCounter = (modalRoot._failedReqCounter || 0) + 1
@@ -59,9 +63,12 @@ Rectangle {
         function appendPage(list) {
             var rows = []
             var skip404 = modalRoot.bridge ? modalRoot.bridge.skipRetry404 : false
+            var addedRetryable = 0
+            var addedUnimported = 0
             for (var i = 0; i < list.length; i++) {
                 var item = list[i]
-                if (skip404 && item.errorMsg && item.errorMsg.indexOf("404") !== -1) {
+                var unimp = !!item.isUnimported
+                if (skip404 && !unimp && item.errorMsg && item.errorMsg.indexOf("404") !== -1) {
                     continue
                 }
                 rows.push({
@@ -77,15 +84,23 @@ Rectangle {
                     fileSize: item.fileSize || "-",
                     retryCount: item.retryCount || 0,
                     retryCapped: !!item.retryCapped,
-                    isSelected: true // defaults to true so items can be retried immediately
+                    isUnimported: unimp,
+                    isSelected: !unimp // unimported files aren't on the server and cannot be retried
                 })
+                if (unimp) addedUnimported++
+                else addedRetryable++
             }
             append(rows)            // one change per page
-            selectedCount += rows.length
+            unimportedCount += addedUnimported
+            retryableCount += addedRetryable
+            selectedCount += addedRetryable
         }
 
         function setSelected(i, val) {
-            if (get(i).isSelected === val) return
+            if (i < 0 || i >= count) return
+            var row = get(i)
+            if (row.isUnimported) return // Not imported on Pawchive — retry is disabled
+            if (row.isSelected === val) return
             setProperty(i, "isSelected", val)
             selectedCount += val ? 1 : -1
         }
@@ -95,7 +110,7 @@ Rectangle {
             var skip404 = modalRoot.bridge ? modalRoot.bridge.skipRetry404 : false
             for (var i = 0; i < count; i++) {
                 var item = get(i)
-                if (item.isSelected) {
+                if (item.isSelected && !item.isUnimported) {
                     if (skip404 && item.errorMsg && item.errorMsg.indexOf("404") !== -1) {
                         continue
                     }
@@ -110,10 +125,17 @@ Rectangle {
         }
 
         function selectAll(val) {
+            var cnt = 0
             for (var i = 0; i < count; i++) {
+                var item = get(i)
+                if (item.isUnimported) {
+                    if (item.isSelected) setProperty(i, "isSelected", false)
+                    continue
+                }
                 setProperty(i, "isSelected", val)
+                if (val) cnt++
             }
-            selectedCount = val ? count : 0
+            selectedCount = cnt
         }
     }
 
@@ -256,6 +278,28 @@ Rectangle {
                     }
                 }
 
+                Rectangle {
+                    id: unimportedBadgeBox
+                    visible: failedItemsModel.unimportedCount > 0
+                    implicitHeight: 22
+                    implicitWidth: Math.max(28, unimportedCntBadge.implicitWidth + 18)
+                    Layout.preferredHeight: implicitHeight
+                    Layout.preferredWidth: implicitWidth
+                    radius: 11
+                    color: "#3B2608"
+                    border.color: "#F59E0B"
+                    border.width: 1
+
+                    Text {
+                        id: unimportedCntBadge
+                        anchors.centerIn: parent
+                        text: "⚠ " + failedItemsModel.unimportedCount + " " + modalRoot.tr("badge_not_imported", "Not Imported")
+                        font.pixelSize: 10
+                        font.bold: true
+                        color: "#FDE68A"
+                    }
+                }
+
                 Item { Layout.fillWidth: true }
 
                 // Close X button
@@ -286,6 +330,50 @@ Rectangle {
                 wrapMode: Text.Wrap
             }
 
+            // Amber notice banner when one or more items aren't physically imported on Pawchive yet
+            Rectangle {
+                visible: failedItemsModel.unimportedCount > 0
+                Layout.fillWidth: true
+                implicitHeight: unimpBannerRow.implicitHeight + 14
+                radius: 6
+                color: "#241B0D"
+                border.color: "#B45309"
+                border.width: 1
+
+                RowLayout {
+                    id: unimpBannerRow
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.margins: 8
+                    spacing: 10
+
+                    UnimportedTriangleBadge {
+                        width: 22
+                        height: 22
+                        tooltipText: "Full-size files aren't hosted on Pawchive yet — retry is disabled"
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        wrapMode: Text.Wrap
+                        font.family: "Segoe UI, sans-serif"
+                        font.pixelSize: 11
+                        lineHeight: 1.3
+                        color: "#FDE68A"
+                        text: failedItemsModel.retryableCount === 0
+                              ? modalRoot.tr(
+                                  "banner_unimported_only",
+                                  "Not imported on Pawchive yet — retry is disabled. These files aren't physically hosted on Pawchive's servers yet (only preview thumbnails exist), so retrying won't download them until Pawchive imports the posts. You can check the post links below, or turn on 'Fallback to Thumbnails' in Settings if you want the small previews."
+                              )
+                              : modalRoot.tr(
+                                  "banner_unimported_mixed",
+                                  "%1 file(s) below aren't imported on Pawchive's servers yet and cannot be retried. Only the other %2 failed file(s) can be selected and retried."
+                              ).replace("%1", failedItemsModel.unimportedCount).replace("%2", failedItemsModel.retryableCount)
+                    }
+                }
+            }
+
             // Quick Selection Toolbar: one line when it fits; with long translations (Russian…) the
             // "Skip 404s" switch and the counter move to a second line instead of running off the edge
             GridLayout {
@@ -304,6 +392,7 @@ Rectangle {
                         iconText: "☑"
                         variant: "outline"
                         implicitHeight: 26
+                        enabled: failedItemsModel.retryableCount > 0
                         onClicked: failedItemsModel.selectAll(true)
                     }
 
@@ -312,6 +401,7 @@ Rectangle {
                         iconText: "☐"
                         variant: "ghost"
                         implicitHeight: 26
+                        enabled: failedItemsModel.retryableCount > 0
                         onClicked: failedItemsModel.selectAll(false)
                     }
 
@@ -356,10 +446,12 @@ Rectangle {
                     }
 
                     Text {
-                        text: failedItemsModel.selectedCount + " / " + failedItemsModel.count + " " + modalRoot.tr("label_selected_of", "selected")
+                        text: failedItemsModel.unimportedCount > 0
+                              ? (failedItemsModel.selectedCount + " / " + failedItemsModel.retryableCount + " retryable • " + failedItemsModel.unimportedCount + " not imported")
+                              : (failedItemsModel.selectedCount + " / " + failedItemsModel.count + " " + modalRoot.tr("label_selected_of", "selected"))
                         font.family: "Segoe UI, sans-serif"
                         font.pixelSize: 11
-                        color: "#38BDF8"
+                        color: failedItemsModel.retryableCount === 0 && failedItemsModel.unimportedCount > 0 ? "#FBBF24" : "#38BDF8"
                     }
                 }
             }
@@ -387,15 +479,18 @@ Rectangle {
                         height: itemCol.implicitHeight + 16
                         implicitHeight: height
                         radius: 6
-                        color: model.isSelected ? "#1F1A24" : "#141722"
-                        border.color: model.isSelected ? "#EF4444" : "#242A38"
+                        color: model.isUnimported ? "#1D1912" : (model.isSelected ? "#1F1A24" : "#141722")
+                        border.color: model.isUnimported ? "#B45309" : (model.isSelected ? "#EF4444" : "#242A38")
                         border.width: 1
 
                         MouseArea {
                             anchors.fill: parent
                             preventStealing: false
+                            cursorShape: model.isUnimported ? Qt.ArrowCursor : Qt.PointingHandCursor
                             onClicked: {
-                                failedItemsModel.setSelected(index, !model.isSelected)
+                                if (!model.isUnimported) {
+                                    failedItemsModel.setSelected(index, !model.isSelected)
+                                }
                             }
                         }
 
@@ -411,8 +506,9 @@ Rectangle {
                                 Layout.fillWidth: true
                                 spacing: 8
 
-                                // Checkbox Indicator
+                                // Checkbox Indicator (replaced by amber non-retryable badge for unimported items)
                                 Rectangle {
+                                    visible: !model.isUnimported
                                     width: 18; height: 18; radius: 4
                                     color: model.isSelected ? "#EF4444" : "#1A1F2C"
                                     border.color: model.isSelected ? "#EF4444" : "#475569"
@@ -426,6 +522,13 @@ Rectangle {
                                         color: "#FFFFFF"
                                         visible: model.isSelected
                                     }
+                                }
+
+                                UnimportedTriangleBadge {
+                                    visible: model.isUnimported
+                                    width: 18
+                                    height: 18
+                                    tooltipText: "Not imported on Pawchive yet — retry is disabled because the file isn't on Pawchive's servers"
                                 }
 
                                 // Service Pill
@@ -446,9 +549,30 @@ Rectangle {
                                     }
                                 }
 
+                                // Not Imported Pill (non-retryable)
+                                Rectangle {
+                                    visible: model.isUnimported
+                                    implicitWidth: Math.max(76, unimpPillText.implicitWidth + 12)
+                                    implicitHeight: 18
+                                    Layout.preferredWidth: implicitWidth
+                                    Layout.preferredHeight: implicitHeight
+                                    radius: 3
+                                    color: "#3B2608"
+                                    border.color: "#F59E0B"
+                                    border.width: 1
+                                    Text {
+                                        id: unimpPillText
+                                        anchors.centerIn: parent
+                                        text: modalRoot.tr("pill_not_imported_no_retry", "NOT IMPORTED • NO RETRY")
+                                        font.pixelSize: 9
+                                        font.bold: true
+                                        color: "#FCD34D"
+                                    }
+                                }
+
                                 // Retry Count / Capped Pill
                                 Rectangle {
-                                    visible: model.retryCount > 0
+                                    visible: !model.isUnimported && model.retryCount > 0
                                     implicitWidth: Math.max(56, retryBadgeText.implicitWidth + 12)
                                     implicitHeight: 18
                                     Layout.preferredWidth: implicitWidth
@@ -575,13 +699,14 @@ Rectangle {
                             // Error Callout Banner
                             Rectangle {
                                 Layout.fillWidth: true
-                                height: 22
+                                height: Math.max(22, errCalloutRow.implicitHeight + 6)
                                 radius: 4
-                                color: "#2B1318"
-                                border.color: "#5C1D24"
+                                color: model.isUnimported ? "#2A1F0E" : "#2B1318"
+                                border.color: model.isUnimported ? "#92400E" : "#5C1D24"
                                 border.width: 1
 
                                 RowLayout {
+                                    id: errCalloutRow
                                     anchors.fill: parent
                                     anchors.leftMargin: 6
                                     anchors.rightMargin: 6
@@ -589,12 +714,13 @@ Rectangle {
 
                                     Text { text: "⚠️"; font.pixelSize: 10 }
                                     Text {
-                                        text: (model.retryCount > 0 ? ("[" + model.retryCount + " " + (model.retryCount === 1 ? modalRoot.tr("label_failed_retry", "retry failed") : modalRoot.tr("label_failed_retries", "retries failed")) + "] ") : "") + model.errorMsg
+                                        text: (!model.isUnimported && model.retryCount > 0 ? ("[" + model.retryCount + " " + (model.retryCount === 1 ? modalRoot.tr("label_failed_retry", "retry failed") : modalRoot.tr("label_failed_retries", "retries failed")) + "] ") : "") + model.errorMsg
                                         font.family: "Segoe UI, sans-serif"
                                         font.pixelSize: 10
-                                        color: "#FCA5A5"
+                                        color: model.isUnimported ? "#FDE68A" : "#FCA5A5"
                                         Layout.fillWidth: true
-                                        elide: Text.ElideRight
+                                        wrapMode: model.isUnimported ? Text.Wrap : Text.NoWrap
+                                        elide: model.isUnimported ? Text.ElideNone : Text.ElideRight
                                     }
                                 }
                             }
@@ -695,11 +821,17 @@ Rectangle {
 
                     StyledButton {
                         id: retrySubmitBtn
-                        text: modalRoot.tr("btn_retry", "Retry") + " (" + failedItemsModel.selectedCount + ")"
-                        iconText: "🔁"
+                        readonly property bool onlyUnimported: failedItemsModel.retryableCount === 0 && failedItemsModel.unimportedCount > 0
+                        text: onlyUnimported
+                              ? modalRoot.tr("btn_retry_disabled_unimported", "Retry Disabled (Not Imported)")
+                              : (modalRoot.tr("btn_retry", "Retry") + " (" + failedItemsModel.selectedCount + ")")
+                        iconText: onlyUnimported ? "🚫" : "🔁"
                         variant: "danger"
                         implicitHeight: 32
                         enabled: failedItemsModel.selectedCount > 0
+                        tooltip: onlyUnimported
+                                 ? modalRoot.tr("tip_retry_disabled_unimported", "These files aren't physically hosted on Pawchive's servers yet, so retrying won't download them.")
+                                 : modalRoot.tr("tip_retry_selected", "Retry the selected failed downloads")
                         onClicked: {
                             var ids = failedItemsModel.getSelectedIds()
                             if (modalRoot.bridge && ids.length > 0) {

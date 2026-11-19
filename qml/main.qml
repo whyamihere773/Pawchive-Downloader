@@ -2544,7 +2544,7 @@ ApplicationWindow {
                             Behavior on y { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
                             Behavior on scale { NumberAnimation { duration: 260; easing.type: Easing.OutBack; easing.overshoot: 1.2 } }
 
-                            DownloaderView { anchors.fill: parent; bridge: appBridge }
+                            DownloaderView { id: downloaderView; anchors.fill: parent; bridge: appBridge }
                         }
 
                         // Tab 1: Dual-Mode Native Browser View (Online & Local On-Disk) with Newtonian slide & fade
@@ -2904,6 +2904,14 @@ ApplicationWindow {
         } // inner ColumnLayout
         } // mainAppContentArea
 
+        // 3b. Persistent Background Archive Rebuild Progress Bar (visible across all tabs when minimized)
+        ArchiveRebuildBar {
+            id: archiveRebuildBar
+            objectName: "archiveRebuildBar"
+            Layout.fillWidth: true
+            modal: archiveRebuildModal
+        }
+
         // 4. Bottom Status & Progress Footer (the Gallery shows a small download chip instead)
         Item {
             id: footerProgressArea
@@ -3113,6 +3121,18 @@ ApplicationWindow {
         onUseAlternative: (url) => { appBridge.currentUrl = url; appWindow.currentTab = 0 }
     }
 
+    // Pawchive posts not yet imported onto Pawchive's storage nodes
+    UnimportedNoticeModal {
+        id: unimportedNoticeModal
+        bridge: appBridge
+        onOpenSettingsRequested: {
+            appWindow.currentTab = 0
+            if (typeof downloaderView !== "undefined" && downloaderView && typeof downloaderView.focusFallbackToThumbnailsSetting === "function") {
+                downloaderView.focusFallbackToThumbnailsSetting()
+            }
+        }
+    }
+
     SessionRecoveryModal {
         id: sessionRecoveryModal
         bridge: appBridge
@@ -3254,6 +3274,13 @@ ApplicationWindow {
         }
         function onProviderDisabled(message, alternativeUrl, context) {
             providerNoticeModal.show(message, alternativeUrl, context)
+        }
+        function onUnimportedNotice(title, message, showModal) {
+            if (showModal) {
+                unimportedNoticeModal.show(title, message)
+            } else if (message && message.length > 0) {
+                appWindow.showToast("⚠️ " + message)
+            }
         }
         function onGalleryShowRequested(path, isDir) {
             // An open Gallery handles this itself; otherwise build it first, then show the place

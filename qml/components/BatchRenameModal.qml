@@ -317,14 +317,20 @@ Item {
                         Layout.fillWidth: true
                         text: root.renamePattern
                         placeholderText: "{name}.{ext}"
+                        placeholderTextColor: "#64748B"
                         font.family: "Segoe UI, monospace"
                         font.pixelSize: 11
                         color: "#F8FAFC"
+                        selectionColor: "#0284C7"
+                        selectedTextColor: "#FFFFFF"
+                        selectByMouse: true
+                        clip: true
+                        verticalAlignment: TextInput.AlignVCenter
                         background: Rectangle {
-                            color: "#0B0E16"
+                            color: patternField.activeFocus ? "#0B0D12" : "#0B0E16"
                             radius: 5
-                            border.color: patternField.activeFocus ? "#38BDF8" : "#273349"
-                            border.width: 1
+                            border.color: patternField.activeFocus ? "#38BDF8" : (patternField.hovered ? "#475569" : "#273349")
+                            border.width: patternField.activeFocus ? 1.5 : 1
                         }
                         onTextEdited: {
                             root.renamePattern = text
@@ -333,6 +339,7 @@ Item {
                         ToolTip.visible: hovered
                         ToolTip.delay: 350
                         ToolTip.text: "Rename Pattern\nTemplate used to generate new filenames.\nInsert variables such as {name}, {ext}, {artist}, {index}, etc."
+                        TextBarContextArea {}
                     }
                 }
 
@@ -345,13 +352,20 @@ Item {
                         id: findField
                         Layout.fillWidth: true
                         placeholderText: "Find text..."
+                        placeholderTextColor: "#64748B"
                         font.pixelSize: 11
                         color: "#F8FAFC"
-                        background: Rectangle { color: "#0B0E16"; radius: 5; border.color: "#273349"; border.width: 1 }
+                        selectionColor: "#0284C7"
+                        selectedTextColor: "#FFFFFF"
+                        selectByMouse: true
+                        clip: true
+                        verticalAlignment: TextInput.AlignVCenter
+                        background: Rectangle { color: findField.activeFocus ? "#0B0D12" : "#0B0E16"; radius: 5; border.color: findField.activeFocus ? "#38BDF8" : (findField.hovered ? "#475569" : "#273349"); border.width: findField.activeFocus ? 1.5 : 1 }
                         onTextEdited: { root.findText = text; root.updatePreview() }
                         ToolTip.visible: hovered
                         ToolTip.delay: 350
                         ToolTip.text: "Find Text\nSubstring to search for in filenames to replace."
+                        TextBarContextArea {}
                     }
                 }
 
@@ -364,13 +378,20 @@ Item {
                         id: replaceField
                         Layout.fillWidth: true
                         placeholderText: "Replace..."
+                        placeholderTextColor: "#64748B"
                         font.pixelSize: 11
                         color: "#F8FAFC"
-                        background: Rectangle { color: "#0B0E16"; radius: 5; border.color: "#273349"; border.width: 1 }
+                        selectionColor: "#0284C7"
+                        selectedTextColor: "#FFFFFF"
+                        selectByMouse: true
+                        clip: true
+                        verticalAlignment: TextInput.AlignVCenter
+                        background: Rectangle { color: replaceField.activeFocus ? "#0B0D12" : "#0B0E16"; radius: 5; border.color: replaceField.activeFocus ? "#38BDF8" : (replaceField.hovered ? "#475569" : "#273349"); border.width: replaceField.activeFocus ? 1.5 : 1 }
                         onTextEdited: { root.replaceText = text; root.updatePreview() }
                         ToolTip.visible: hovered
                         ToolTip.delay: 350
                         ToolTip.text: "Replace Text\nNew text to insert in place of the matched find text."
+                        TextBarContextArea {}
                     }
                 }
 
@@ -383,13 +404,20 @@ Item {
                         id: prefixField
                         Layout.fillWidth: true
                         placeholderText: "Prefix..."
+                        placeholderTextColor: "#64748B"
                         font.pixelSize: 11
                         color: "#F8FAFC"
-                        background: Rectangle { color: "#0B0E16"; radius: 5; border.color: "#273349"; border.width: 1 }
+                        selectionColor: "#0284C7"
+                        selectedTextColor: "#FFFFFF"
+                        selectByMouse: true
+                        clip: true
+                        verticalAlignment: TextInput.AlignVCenter
+                        background: Rectangle { color: prefixField.activeFocus ? "#0B0D12" : "#0B0E16"; radius: 5; border.color: prefixField.activeFocus ? "#38BDF8" : (prefixField.hovered ? "#475569" : "#273349"); border.width: prefixField.activeFocus ? 1.5 : 1 }
                         onTextEdited: { root.prefixText = text; root.updatePreview() }
                         ToolTip.visible: hovered
                         ToolTip.delay: 350
                         ToolTip.text: "Prefix\nText prepended to the start of each file or folder name."
+                        TextBarContextArea {}
                     }
                 }
 
@@ -402,13 +430,20 @@ Item {
                         id: suffixField
                         Layout.fillWidth: true
                         placeholderText: "Suffix..."
+                        placeholderTextColor: "#64748B"
                         font.pixelSize: 11
                         color: "#F8FAFC"
-                        background: Rectangle { color: "#0B0E16"; radius: 5; border.color: "#273349"; border.width: 1 }
+                        selectionColor: "#0284C7"
+                        selectedTextColor: "#FFFFFF"
+                        selectByMouse: true
+                        clip: true
+                        verticalAlignment: TextInput.AlignVCenter
+                        background: Rectangle { color: suffixField.activeFocus ? "#0B0D12" : "#0B0E16"; radius: 5; border.color: suffixField.activeFocus ? "#38BDF8" : (suffixField.hovered ? "#475569" : "#273349"); border.width: suffixField.activeFocus ? 1.5 : 1 }
                         onTextEdited: { root.suffixText = text; root.updatePreview() }
                         ToolTip.visible: hovered
                         ToolTip.delay: 350
                         ToolTip.text: "Suffix\nText appended to the end of each name before the extension."
+                        TextBarContextArea {}
                     }
                 }
 
@@ -452,14 +487,20 @@ Item {
                         Layout.fillWidth: true
                         text: "" + root.startIndex
                         placeholderText: "1"
+                        placeholderTextColor: "#64748B"
                         font.pixelSize: 11
                         color: "#F8FAFC"
+                        selectionColor: "#0284C7"
+                        selectedTextColor: "#FFFFFF"
+                        selectByMouse: true
+                        clip: true
+                        verticalAlignment: TextInput.AlignVCenter
                         validator: IntValidator { bottom: 0; top: 9999999 }
                         background: Rectangle {
-                            color: "#0B0E16"
+                            color: startField.activeFocus ? "#0B0D12" : "#0B0E16"
                             radius: 5
-                            border.color: startField.activeFocus ? "#A78BFA" : "#273349"
-                            border.width: 1
+                            border.color: startField.activeFocus ? "#A78BFA" : (startField.hovered ? "#475569" : "#273349")
+                            border.width: startField.activeFocus ? 1.5 : 1
                         }
                         onTextEdited: {
                             var val = parseInt(text)
@@ -469,6 +510,7 @@ Item {
                         ToolTip.visible: hovered
                         ToolTip.delay: 350
                         ToolTip.text: "Start Number\nStarting sequential index for {index}, {0index}, {00index}, and {000index}.\nIncrements by 1 for each file in sequence."
+                        TextBarContextArea {}
                     }
                 }
 

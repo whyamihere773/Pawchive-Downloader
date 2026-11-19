@@ -362,6 +362,9 @@ def build_post_card_dto(
     attachments: Optional[List[Dict[str, Any]]] = None,
     tags: Optional[List[str]] = None,
     is_on_disk: bool = False,
+    disk_status: str = "",
+    local_file_count: int = 0,
+    expected_file_count: int = 0,
     local_folder: str = "",
     local_drives: Optional[List[str]] = None,
     is_marked: bool = False,
@@ -384,6 +387,7 @@ def build_post_card_dto(
     clean_title = (title or "").strip() or (f"DM #{pid}" if is_dm and pid else (f"Post #{pid}" if pid else "Untitled Post"))
     key_prefix = f"{provider_id}:{svc}:{cid}"
     key = f"{key_prefix}:dm:{pid}" if is_dm else f"{key_prefix}:{pid}"
+    resolved_disk_status = (disk_status or ("complete" if is_on_disk else "none")).strip().lower()
     return {
         "key": key,
         "item_type": "post",
@@ -403,7 +407,10 @@ def build_post_card_dto(
         "video_count": vid_count,
         "attachments": atts,
         "tags": FilterEngine.normalize_tags(tags),
-        "is_on_disk": bool(is_on_disk),
+        "is_on_disk": bool(is_on_disk or resolved_disk_status in ("complete", "partial")),
+        "disk_status": resolved_disk_status,
+        "local_file_count": int(local_file_count or (len(atts) if is_on_disk else 0)),
+        "expected_file_count": int(expected_file_count or len(atts)),
         "local_folder": local_folder or "",
         "local_drives": list(local_drives or []),
         "is_marked": bool(is_marked),

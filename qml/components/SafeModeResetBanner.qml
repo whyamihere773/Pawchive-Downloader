@@ -211,13 +211,18 @@ Item {
                     echoMode: TextInput.Password
                     inputMethodHints: Qt.ImhDigitsOnly
                     color: "#FFFFFF"
+                    selectionColor: "#0284C7"
+                    selectedTextColor: "#FFFFFF"
+                    selectByMouse: true
+                    clip: true
+                    verticalAlignment: TextInput.AlignVCenter
                     font.pixelSize: 14
                     font.weight: Font.Bold
                     horizontalAlignment: TextInput.AlignHCenter
                     background: Rectangle {
-                        color: "#0F1117"
-                        border.color: pinField.activeFocus ? "#38BDF8" : "#334155"
-                        border.width: 1
+                        color: pinField.activeFocus ? "#0B0D12" : "#0F1117"
+                        border.color: pinField.activeFocus ? "#38BDF8" : (pinField.hovered ? "#475569" : "#334155")
+                        border.width: pinField.activeFocus ? 1.5 : 1
                         radius: 5
                     }
                     text: newPinInput
@@ -235,6 +240,7 @@ Item {
                         newPinInput = ""
                         pinErrorText = ""
                     }
+                    TextBarContextArea {}
                 }
 
                 // Confirm Button

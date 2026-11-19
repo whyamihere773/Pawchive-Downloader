@@ -1725,7 +1725,7 @@ class ArchiveManager:
         if not os.path.exists(self.db_path) or not self._ensure_db():
             return 0
         keys = ("service", "creator_id", "creator_name", "post_id", "post_title",
-                "file_id", "file_hash", "filename", "file_size", "file_ext", "downloaded_at")
+                "file_id", "file_hash", "filename", "file_size", "file_ext", "downloaded_at", "file_path")
         tmp = f"{filepath}.part"
         count = 0
         try:
@@ -1773,8 +1773,8 @@ class ArchiveManager:
 
     def import_archive(self, filepath: str) -> int:
         """
-        Import records from a text list exported by this app ("service post_id_file_id" per line) or a
-        Pawchive JSON export. (gallery-dl's own archives are SQLite databases and can't be imported.)
+        Import records from a Pawchive JSON backup (full metadata), another Pawchive SQLite
+        archive database (.db), or an ID-only text list ("service post_id_file_id" per line).
         """
         if not os.path.exists(filepath):
             return 0
@@ -1789,7 +1789,59 @@ class ArchiveManager:
                 now_str = datetime.datetime.now().isoformat()
                 records_to_insert = []
 
-                if filepath.lower().endswith(".json"):
+                is_sqlite = filepath.lower().endswith((".db", ".sqlite", ".sqlite3"))
+                if not is_sqlite:
+                    try:
+                        with open(filepath, "rb") as _hdr_f:
+                            is_sqlite = _hdr_f.read(16) == b"SQLite format 3\x00"
+                    except OSError:
+                        is_sqlite = False
+
+                if is_sqlite:
+                    if os.path.abspath(filepath) == os.path.abspath(self.db_path):
+                        logger.info("Archive import skipped: selected database is already the active archive.", category="archive")
+                        return 0
+                    src_conn = sqlite3.connect(filepath, timeout=15.0)
+                    try:
+                        src_cur = src_conn.cursor()
+                        src_cur.execute("PRAGMA table_info(downloaded_files);")
+                        src_cols = {row[1] for row in src_cur.fetchall()}
+                        if not {"service", "post_id", "file_id"}.issubset(src_cols):
+                            logger.warning(f"SQLite file '{filepath}' does not contain a Pawchive downloaded_files table.", category="archive")
+                            return 0
+                        wanted = (
+                            "service", "creator_id", "creator_name", "post_id", "post_title",
+                            "file_id", "file_hash", "filename", "file_size", "file_ext", "downloaded_at", "file_path",
+                        )
+                        select_exprs = [c if c in src_cols else "''" for c in wanted]
+                        src_cur.execute(f"SELECT {', '.join(select_exprs)} FROM downloaded_files;")
+                        while True:
+                            chunk = src_cur.fetchmany(5000)
+                            if not chunk:
+                                break
+                            for row in chunk:
+                                svc = str(row[0] or "").lower()
+                                pid = str(row[3] or "")
+                                fid = str(row[5] or "")
+                                if not svc or not pid or not fid:
+                                    continue
+                                records_to_insert.append((
+                                    svc,
+                                    str(row[1] or ""),
+                                    str(row[2] or ""),
+                                    pid,
+                                    str(row[4] or ""),
+                                    fid,
+                                    str(row[6] or ""),
+                                    str(row[7] or ""),
+                                    int(row[8] or 0),
+                                    str(row[9] or ""),
+                                    str(row[10] or now_str),
+                                    str(row[11] or ""),
+                                ))
+                    finally:
+                        src_conn.close()
+                elif filepath.lower().endswith(".json"):
                     with open(filepath, "r", encoding="utf-8") as f:
                         data = json.load(f)
                     if isinstance(data, list):
@@ -1810,20 +1862,21 @@ class ArchiveManager:
                                 str(item.get("filename") or ""),
                                 int(item.get("file_size") or 0),
                                 str(item.get("file_ext") or ""),
-                                str(item.get("downloaded_at") or now_str)
+                                str(item.get("downloaded_at") or now_str),
+                                str(item.get("file_path") or ""),
                             ))
                 else:
-                    # Plain text gallery-dl format lines
+                    # Plain text ID-only format lines: "<service> <post_id>_<file_id>"
+                    # Split on the first whitespace only so file_ids containing spaces stay intact.
                     with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
                         for raw_line in f:
                             line = raw_line.strip()
                             if not line or line.startswith("#"):
                                 continue
-                            parts = line.split()
+                            parts = line.split(None, 1)
                             if len(parts) >= 2:
                                 svc = parts[0].lower()
-                                target = parts[1]
-                                # gallery-dl format is typically "<service> <post_id>_<file_id>" or "<service> <id>"
+                                target = parts[1].strip()
                                 if "_" in target:
                                     subparts = target.split("_", 1)
                                     pid = subparts[0]
@@ -1832,7 +1885,7 @@ class ArchiveManager:
                                     pid = target
                                     fid = target
                                 records_to_insert.append((
-                                    svc, "", "", pid, "", fid, "", "", 0, "", now_str
+                                    svc, "", "", pid, "", fid, "", "", 0, "", now_str, ""
                                 ))
 
                 if not records_to_insert:
@@ -1841,7 +1894,7 @@ class ArchiveManager:
                 # Filled in the way the one-time repair of old databases does (it no longer runs on
                 # every start): extension from the file name, creator id / name from each other
                 fixed = []
-                for (svc, cid, cname, pid, ptitle, fid, fhash, fname, fsize, fext, at) in records_to_insert:
+                for (svc, cid, cname, pid, ptitle, fid, fhash, fname, fsize, fext, at, fpath) in records_to_insert:
                     if not fext and fname:
                         fext = os.path.splitext(fname)[1].lower()
                     if not cname and cid:
@@ -1850,15 +1903,15 @@ class ArchiveManager:
                         cid = cname
                     elif not cid and not cname:
                         cid, cname = "unknown", "Unknown Creator"
-                    fixed.append((svc, cid, cname, pid, ptitle, fid, fhash, fname, fsize, fext, at))
+                    fixed.append((svc, cid, cname, pid, ptitle, fid, fhash, fname, fsize, fext, at, fpath))
                 records_to_insert = fixed
 
                 cursor = self._conn.cursor()
                 cursor.executemany(
                     """
                     INSERT OR IGNORE INTO downloaded_files
-                    (service, creator_id, creator_name, post_id, post_title, file_id, file_hash, filename, file_size, file_ext, downloaded_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    (service, creator_id, creator_name, post_id, post_title, file_id, file_hash, filename, file_size, file_ext, downloaded_at, file_path)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """,
                     records_to_insert
                 )

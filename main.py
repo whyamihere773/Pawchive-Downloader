@@ -6,7 +6,14 @@ os.environ["QT_QUICK_CONTROLS_STYLE"] = "Basic"
 # Use default hardware-accelerated threaded render loop (Direct3D 11 on Windows) for silky smooth 60-144+ FPS
 
 if sys.platform.startswith("linux"):
-    os.environ["QT_QPA_PLATFORMTHEME"] = "xdgdesktopportal"
+    # Respect user/desktop QT_QPA_PLATFORMTHEME if already set (avoids redundant host portal registration)
+    os.environ.setdefault("QT_QPA_PLATFORMTHEME", "xdgdesktopportal")
+
+from core.graphics_backend import parse_software_render_args, configure_qt_graphics_backend
+
+_FORCE_SOFTWARE_RENDER, _CLEAN_ARGV = parse_software_render_args(sys.argv)
+if _FORCE_SOFTWARE_RENDER:
+    os.environ["QT_QUICK_BACKEND"] = "software"
 
 if sys.platform == "win32":
     # Ensure Windows searches PySide6's directory for multimedia backend & FFmpeg DLLs
@@ -84,6 +91,33 @@ def _install_qt_message_handler():
         if context is not None and context.file and context.file not in message:
             where = f"  [{context.file}:{context.line}]"
         logger.log(message + where, levels.get(mode, "WARNING"), "qt")
+
+        # Belt-and-suspenders guard against fatal Qt Quick RHI/OpenGL startup abort (SIGABRT) on Linux:
+        # if Qt still hits qFatal on the graphics backend, relaunch seamlessly with --software-render.
+        if (
+            mode == QtMsgType.QtFatalMsg
+            and sys.platform.startswith("linux")
+            and os.environ.get("QT_QUICK_BACKEND", "").strip().lower() != "software"
+            and os.environ.get("PAWCHIVE_SW_REEXEC") != "1"
+            and any(k in message for k in ("Failed to initialize graphics backend", "Failed to create RHI"))
+        ):
+            logger.warning(
+                "Hardware graphics backend failed during startup; relaunching automatically with --software-render...",
+                category="system",
+            )
+            logger.end_session("relaunching in software render mode")
+            os.environ["PAWCHIVE_SW_REEXEC"] = "1"
+            os.environ["QT_QUICK_BACKEND"] = "software"
+            try:
+                args = list(sys.argv)
+                if "--software-render" not in args:
+                    args.append("--software-render")
+                if getattr(sys, "frozen", False):
+                    os.execv(sys.executable, [sys.executable, *args[1:]])
+                else:
+                    os.execv(sys.executable, [sys.executable, *args])
+            except Exception:
+                pass
 
     qInstallMessageHandler(_handler)
 
@@ -175,11 +209,20 @@ def main():
     # Handle Ctrl+C gracefully
     signal.signal(signal.SIGINT, lambda *args: QApplication.quit())
 
-    app = QApplication(sys.argv)
+    app = QApplication(_CLEAN_ARGV)
     app.setApplicationName("PawchiveDownloader")
     app.setOrganizationName("PawchiveProject")
     if hasattr(app, "setDesktopFileName"):
-        app.setDesktopFileName("pawchive.desktop")
+        flatpak_id = os.environ.get("FLATPAK_ID", "").strip()
+        app.setDesktopFileName(f"{flatpak_id}.desktop" if flatpak_id else "pawchive.desktop")
+
+    # Configure Qt Quick graphics backend (honors --software-render and probes OpenGL/EGL on Linux
+    # so broken or mismatched GPU drivers fall back cleanly to software rendering instead of SIGABRT)
+    configure_qt_graphics_backend(
+        app,
+        force_software=_FORCE_SOFTWARE_RENDER,
+        on_log=lambda lvl, msg: logger.log(msg, lvl, "system"),
+    )
 
     # Periodic heartbeat timer to allow Python signal handling in Qt event loop
     sig_timer = QTimer()
@@ -206,8 +249,7 @@ def main():
     app_bridge.archive_manager.start_maintenance()      # weekly check + safety copy, a while after start
 
     locales_dir = os.path.join(base_dir, "locales")
-    translation_manager = TranslationManager(locales_dir=locales_dir)
-    translation_manager.setLanguage(app_bridge.language)
+    translation_manager = TranslationManager(locales_dir=locales_dir, initial_language=app_bridge.language)
     app_bridge.languageChanged.connect(lambda: translation_manager.setLanguage(app_bridge.language))
 
     from bridge.updater_bridge import UpdaterBridge

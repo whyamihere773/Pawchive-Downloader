@@ -626,11 +626,17 @@ Item {
                     Layout.preferredWidth: Math.min(260, parent.width * 0.35)
                     Layout.preferredHeight: 30
                     radius: 6
-                    color: "#0F1422"
-                    border.color: searchInput.activeFocus ? "#38BDF8" : (searchMouse.containsMouse ? "#2A364F" : "#1E2638")
-                    border.width: 1
+                    color: searchInput.activeFocus ? "#0B0D12" : "#0F1422"
+                    border.color: searchInput.activeFocus ? "#38BDF8" : (searchMouse.containsMouse ? "#475569" : "#1E2638")
+                    border.width: searchInput.activeFocus ? 1.5 : 1
 
                     Behavior on border.color { ColorAnimation { duration: 150 } }
+
+                    TextBarContextArea {
+                        id: searchMouse
+                        target: searchInput
+                        focusOnLeftClick: true
+                    }
 
                     RowLayout {
                         anchors.fill: parent
@@ -647,19 +653,27 @@ Item {
                         TextInput {
                             id: searchInput
                             Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            verticalAlignment: TextInput.AlignVCenter
                             font.family: "Segoe UI, Inter, sans-serif"
                             font.pixelSize: 11
                             color: "#E2E8F0"
                             selectionColor: "#0284C7"
                             selectedTextColor: "#FFFFFF"
+                            selectByMouse: true
                             clip: true
+
+                            TextBarContextArea {}
 
                             Text {
                                 text: root.tr("watchlist_search_placeholder", "Search creator or ID…")
                                 font: parent.font
                                 color: "#475569"
                                 visible: !searchInput.text && !searchInput.activeFocus
+                                anchors.left: parent.left
+                                anchors.right: parent.right
                                 anchors.verticalCenter: parent.verticalCenter
+                                elide: Text.ElideRight
                             }
 
                             onTextChanged: {
@@ -680,16 +694,12 @@ Item {
                                 anchors.fill: parent
                                 hoverEnabled: true
                                 cursorShape: Qt.PointingHandCursor
-                                onClicked: searchInput.text = ""
+                                onClicked: {
+                                    searchInput.text = ""
+                                    searchInput.forceActiveFocus()
+                                }
                             }
                         }
-                    }
-
-                    MouseArea {
-                        id: searchMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        acceptedButtons: Qt.NoButton
                     }
                 }
 
@@ -1467,9 +1477,15 @@ Item {
                                             Layout.fillWidth: true
                                             height: 32
                                             radius: 5
-                                            color: "#050811"
-                                            border.color: dateInput.activeFocus ? "#38BDF8" : (dateEditorCol.isDateValid ? "#1E293B" : "#EF4444")
-                                            border.width: 1
+                                            color: dateInput.activeFocus ? "#0B0D12" : "#050811"
+                                            border.color: dateInput.activeFocus ? "#38BDF8" : (dateEditorCol.isDateValid ? (dateBoxMouse.containsMouse ? "#475569" : "#1E293B") : "#EF4444")
+                                            border.width: dateInput.activeFocus ? 1.5 : 1
+
+                                            TextBarContextArea {
+                                                id: dateBoxMouse
+                                                target: dateInput
+                                                focusOnLeftClick: true
+                                            }
 
                                             TextInput {
                                                 id: dateInput
@@ -1480,15 +1496,22 @@ Item {
                                                 font.family: "Consolas, Segoe UI, monospace"
                                                 font.pixelSize: 12
                                                 color: "#F1F5F9"
+                                                selectionColor: "#0284C7"
+                                                selectedTextColor: "#FFFFFF"
+                                                clip: true
                                                 text: entryCard.artistLastPostDate || ""
                                                 selectByMouse: true
+                                                TextBarContextArea {}
 
                                                 Text {
                                                     text: "YYYY-MM-DD (e.g. 2024-05-18, 18/05/2024, Aug 19 2024)"
                                                     font: parent.font
                                                     color: "#475569"
                                                     visible: !dateInput.text && !dateInput.activeFocus
+                                                    anchors.left: parent.left
+                                                    anchors.right: parent.right
                                                     anchors.verticalCenter: parent.verticalCenter
+                                                    elide: Text.ElideRight
                                                 }
 
                                                 Keys.onReturnPressed: saveDateBtn.doSave()
@@ -2609,9 +2632,15 @@ Item {
                         Layout.fillWidth: true
                         height: 36
                         radius: 6
-                        color: "#080B14"
-                        border.color: addUrlInput.activeFocus ? "#8B5CF6" : "#242C40"
-                        border.width: 1
+                        color: addUrlInput.activeFocus ? "#0B0D12" : "#080B14"
+                        border.color: addUrlInput.activeFocus ? "#8B5CF6" : (addUrlBoxMouse.containsMouse ? "#475569" : "#242C40")
+                        border.width: addUrlInput.activeFocus ? 1.5 : 1
+
+                        TextBarContextArea {
+                            id: addUrlBoxMouse
+                            target: addUrlInput
+                            focusOnLeftClick: true
+                        }
 
                         TextInput {
                             id: addUrlInput
@@ -2622,14 +2651,21 @@ Item {
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
                             color: "#E2E8F0"
+                            selectionColor: "#0284C7"
+                            selectedTextColor: "#FFFFFF"
+                            clip: true
                             selectByMouse: true
+                            TextBarContextArea {}
 
                             Text {
                                 text: "https://kemono.cr/patreon/user/12345678"
                                 font: parent.font
                                 color: "#475569"
                                 visible: !addUrlInput.text && !addUrlInput.activeFocus
+                                anchors.left: parent.left
+                                anchors.right: parent.right
                                 anchors.verticalCenter: parent.verticalCenter
+                                elide: Text.ElideRight
                             }
                         }
                     }
@@ -2652,9 +2688,15 @@ Item {
                             Layout.fillWidth: true
                             height: 36
                             radius: 6
-                            color: "#080B14"
-                            border.color: addFolderInput.activeFocus ? "#8B5CF6" : "#242C40"
-                            border.width: 1
+                            color: addFolderInput.activeFocus ? "#0B0D12" : "#080B14"
+                            border.color: addFolderInput.activeFocus ? "#8B5CF6" : (addFolderBoxMouse.containsMouse ? "#475569" : "#242C40")
+                            border.width: addFolderInput.activeFocus ? 1.5 : 1
+
+                            TextBarContextArea {
+                                id: addFolderBoxMouse
+                                target: addFolderInput
+                                focusOnLeftClick: true
+                            }
 
                             TextInput {
                                 id: addFolderInput
@@ -2665,14 +2707,21 @@ Item {
                                 font.family: "Segoe UI, sans-serif"
                                 font.pixelSize: 11
                                 color: "#E2E8F0"
+                                selectionColor: "#0284C7"
+                                selectedTextColor: "#FFFFFF"
+                                clip: true
                                 selectByMouse: true
+                                TextBarContextArea {}
 
                                 Text {
                                     text: root.tr("watchlist_add_folder_ph", "Leave empty for default download folder")
                                     font: parent.font
                                     color: "#475569"
                                     visible: !addFolderInput.text && !addFolderInput.activeFocus
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
                                     anchors.verticalCenter: parent.verticalCenter
+                                    elide: Text.ElideRight
                                 }
                             }
                         }

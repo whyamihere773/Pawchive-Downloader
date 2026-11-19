@@ -598,9 +598,12 @@ class KemonoApiClient:
                 target["preview_only"] = False
                 resolved_count += 1
 
+        if post.get("has_full") is False:
+            return resolved_count
+
         deferred_items = [
             a for a in attachments
-            if isinstance(a, dict) and (a.get("deferred") or a.get("preview_only")) and not a.get("is_temporary") and (not a.get("path") or not str(a.get("path", "")).startswith("http"))
+            if isinstance(a, dict) and a.get("deferred") and not a.get("is_temporary") and (not a.get("path") or not str(a.get("path", "")).startswith("http"))
         ]
         if not deferred_items:
             return resolved_count

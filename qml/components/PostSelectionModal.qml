@@ -1082,9 +1082,15 @@ Item {
                     Layout.fillWidth: true
                     height: 32
                     radius: 6
-                    color: "#0B0E14"
-                    border.color: searchInput.activeFocus ? "#38BDF8" : "#1E293B"
-                    border.width: 1
+                    color: searchInput.activeFocus ? "#0B0D12" : "#0B0E14"
+                    border.color: searchInput.activeFocus ? "#38BDF8" : (postSearchBoxMouse.containsMouse ? "#475569" : "#1E293B")
+                    border.width: searchInput.activeFocus ? 1.5 : 1
+
+                    TextBarContextArea {
+                        id: postSearchBoxMouse
+                        target: searchInput
+                        focusOnLeftClick: true
+                    }
 
                     RowLayout {
                         anchors.fill: parent
@@ -1097,11 +1103,17 @@ Item {
                         TextInput {
                             id: searchInput
                             Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            verticalAlignment: TextInput.AlignVCenter
                             font.family: "Segoe UI, sans-serif"
                             font.pixelSize: 12
                             color: "#E2E8F0"
+                            selectionColor: "#0284C7"
+                            selectedTextColor: "#FFFFFF"
                             clip: true
                             selectByMouse: true
+
+                            TextBarContextArea {}
 
                             Text {
                                 text: modalRoot.tr("placeholder_search_posts", "Search posts by title or date...")
@@ -1109,7 +1121,10 @@ Item {
                                 font.pixelSize: 12
                                 color: "#475569"
                                 visible: !searchInput.text && !searchInput.activeFocus
+                                anchors.left: parent.left
+                                anchors.right: parent.right
                                 anchors.verticalCenter: parent.verticalCenter
+                                elide: Text.ElideRight
                             }
 
                             onTextChanged: {
@@ -1786,9 +1801,12 @@ Item {
                                         font.family: "Segoe UI, sans-serif"
                                         font.pixelSize: 12
                                         color: "#E2E8F0"
+                                        selectionColor: "#0284C7"
+                                        selectedTextColor: "#FFFFFF"
                                         wrapMode: TextEdit.Wrap
                                         readOnly: true
                                         selectByMouse: true
+                                        TextBarContextArea {}
                                     }
                                 }
                             }

@@ -1,8 +1,8 @@
 {
-    "version": "1.4.1",
+    "version": "1.4.2",
     "commit": "",
     "short_commit": "",
-    "date": "2026-11-17",
+    "date": "2026-11-19",
     "channel": "release",
     "history": [
         {
@@ -214,6 +214,11 @@
             "version": "1.4.1",
             "date": "2026-11-17",
             "notes": "Add built-in Creator & Local Library Browser, new Statistics tab, Gallery folder previews & Visual Sorter, Post Selector overhaul, Linux bool_dealloc startup crash fix, no-GPU freeze fix, and Windows updater fixes."
+        },
+        {
+            "version": "1.4.2",
+            "date": "2026-11-19",
+            "notes": "Fix Pawchive HTTP 429 rate-limit slowdowns (#49, #50) and unimported post handling (non-stopping batch flow, Not Imported badges, Do Not Show Again modal option, and Open Settings jump-and-glow to thumbnail fallback); add background Archive Rebuild with bottom progress bar and crash-proof SQLite WAL resume; fix Download Archive export/import; add Browser download destination modal, online on-disk post completeness outlines (green/yellow), and card overflow fixes; standardize all text bars and right-click context menus across the app; fix Linux/CachyOS EGL SIGABRT crash, Fontconfig warnings, portable desktop installer, and add experimental Flatpak and Arch/CachyOS packages."
         }
     ]
 }
