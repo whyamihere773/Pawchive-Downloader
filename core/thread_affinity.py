@@ -18,9 +18,38 @@ import sys
 from typing import Any, Dict, List, Set
 
 
-def _detect_windows_pcore_cpu_sets() -> Dict[str, Any]:
+def _load_win32_kernel32():
+    """Return a private kernel32 handle with explicit 64-bit-safe prototypes."""
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetCurrentThread.argtypes = []
+    kernel32.GetCurrentThread.restype = ctypes.c_void_p
+    kernel32.SetThreadPriority.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    kernel32.SetThreadPriority.restype = ctypes.c_int
+    if hasattr(kernel32, "GetSystemCpuSetInformation"):
+        kernel32.GetSystemCpuSetInformation.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_ulong,
+            ctypes.POINTER(ctypes.c_ulong),
+            ctypes.c_void_p,
+            ctypes.c_ulong,
+        ]
+        kernel32.GetSystemCpuSetInformation.restype = ctypes.c_int
+    if hasattr(kernel32, "SetThreadSelectedCpuSets"):
+        kernel32.SetThreadSelectedCpuSets.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_ulong),
+            ctypes.c_ulong,
+        ]
+        kernel32.SetThreadSelectedCpuSets.restype = ctypes.c_int
+    return kernel32
+
+
+def _detect_windows_pcore_cpu_sets(kernel32=None) -> Dict[str, Any]:
     """Query Windows GetSystemCpuSetInformation to locate highest EfficiencyClass CPU sets."""
-    kernel32 = ctypes.windll.kernel32
+    if kernel32 is None:
+        kernel32 = _load_win32_kernel32()
+    if not hasattr(kernel32, "GetSystemCpuSetInformation"):
+        return {"pcore_ids": [], "total_logical": os.cpu_count() or 1, "hybrid": False}
     buf_len = ctypes.c_ulong(0)
     # First call queries required buffer size (returns False with ERROR_INSUFFICIENT_BUFFER)
     kernel32.GetSystemCpuSetInformation(None, 0, ctypes.byref(buf_len), None, 0)
@@ -29,7 +58,7 @@ def _detect_windows_pcore_cpu_sets() -> Dict[str, Any]:
         return {"pcore_ids": [], "total_logical": os.cpu_count() or 1, "hybrid": False}
 
     raw = (ctypes.c_ubyte * size)()
-    ok = kernel32.GetSystemCpuSetInformation(raw, size, ctypes.byref(buf_len), None, 0)
+    ok = kernel32.GetSystemCpuSetInformation(ctypes.byref(raw), size, ctypes.byref(buf_len), None, 0)
     if not ok:
         return {"pcore_ids": [], "total_logical": os.cpu_count() or 1, "hybrid": False}
 
@@ -72,14 +101,14 @@ def _detect_windows_pcore_cpu_sets() -> Dict[str, Any]:
 
 
 def _apply_windows_pcore_affinity() -> Dict[str, Any]:
-    kernel32 = ctypes.windll.kernel32
+    kernel32 = _load_win32_kernel32()
     thread_handle = kernel32.GetCurrentThread()
 
     # Elevate GUI main thread priority one step above normal (THREAD_PRIORITY_ABOVE_NORMAL = 1)
     prio_ok = bool(kernel32.SetThreadPriority(thread_handle, 1))
     prio_label = "ABOVE_NORMAL" if prio_ok else "NORMAL"
 
-    topo = _detect_windows_pcore_cpu_sets()
+    topo = _detect_windows_pcore_cpu_sets(kernel32)
     pcore_ids: List[int] = topo.get("pcore_ids", [])
     total_logical = int(topo.get("total_logical") or (os.cpu_count() or 1))
     hybrid = bool(topo.get("hybrid"))
