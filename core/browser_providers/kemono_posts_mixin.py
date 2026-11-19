@@ -344,6 +344,7 @@ class KemonoCatalogPostsMixin:
                     dm_obj = payload.get("dm") if isinstance(payload, dict) and isinstance(payload.get("dm"), dict) else payload
                     if isinstance(dm_obj, dict):
                         dto = self._parse_kemono_post(dm_obj, service, creator_id, creator_name)
+                        dto["key"] = f"{self.provider_id}:{service}:{creator_id}:dm:{post_id}"
                         dto["is_dm"] = True
                         dto["url"] = self.build_dm_url(service, creator_id, post_id)
                         dto["content_full"] = html_to_readable_text(str(dm_obj.get("content") or dm_obj.get("captionHtml") or dm_obj.get("captionText") or ""))

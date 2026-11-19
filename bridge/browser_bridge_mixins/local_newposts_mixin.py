@@ -253,7 +253,13 @@ class BrowserLocalNewPostsMixin(BrowserSignalsMixin):
                 pass
 
         prov = browser_registry.get_provider(prov_id) if prov_id else None
-        if prov is None or (svc and svc != "local" and getattr(prov.capabilities, "supported_services", None) and svc not in prov.capabilities.supported_services and prov_id == "pawchive" and svc in ("onlyfans", "fansly", "candfans", "coomerfans")):
+        prov_svcs = None
+        if prov is not None:
+            caps = prov.capabilities() if callable(getattr(prov, "capabilities", None)) else getattr(prov, "capabilities", None)
+            raw_svcs = getattr(caps, "services", None) if caps is not None else None
+            if raw_svcs:
+                prov_svcs = {str(s[0] if isinstance(s, (tuple, list)) else s).lower() for s in raw_svcs}
+        if prov is None or (svc and svc != "local" and prov_svcs and svc not in prov_svcs and prov_id == "pawchive" and svc in ("onlyfans", "fansly", "candfans", "coomerfans")):
             if svc == "coomerfans":
                 prov = browser_registry.get_provider("coomerfans")
             elif svc in ("onlyfans", "fansly", "candfans"):
@@ -433,7 +439,6 @@ class BrowserLocalNewPostsMixin(BrowserSignalsMixin):
         cname: str,
         status_prefix: str = "",
     ) -> None:
-        known_ids, known_title_dates, known_filenames = self._collect_known_post_signatures(creator, svc, cid, cname)
         self._new_posts_gen += 1
         gen = self._new_posts_gen
         creator_key = str(creator.get("key") or "").strip()
@@ -445,6 +450,7 @@ class BrowserLocalNewPostsMixin(BrowserSignalsMixin):
         self.newPostsStateChanged.emit()
 
         def _worker():
+            known_ids, known_title_dates, known_filenames = self._collect_known_post_signatures(creator, svc, cid, cname)
             fetched: List[Dict[str, Any]] = []
             err_msg = ""
             try:

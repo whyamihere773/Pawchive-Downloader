@@ -334,7 +334,7 @@ Popup {
                     cursorShape: Qt.PointingHandCursor
                     onClicked: {
                         providerLoginModal.close()
-                        if (providerLoginModal.view.bBridge) providerLoginModal.view.bBridge.navigateToTabRequested(11)
+                        if (providerLoginModal.view.bBridge) providerLoginModal.view.bBridge.navigateToTabRequested(12)
                     }
                 }
             }

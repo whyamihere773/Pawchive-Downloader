@@ -196,6 +196,42 @@ class BrowserLinksRelocateMixin(BrowserSignalsMixin):
         self.toastRequested.emit(f"Queued '{title}' for fresh redownload (overwriting existing files).", "success")
         return True
 
+    @Slot("QVariantMap")
+    def redownloadPostAsync(self, post_map: Dict[str, Any]) -> None:
+        """Non-blocking companion to redownloadPost: clears archive records on a worker thread before queueing."""
+        post, _prov_id, svc, _cid, pid, url = self._resolve_post_online_context(post_map)
+        if not post:
+            self.toastRequested.emit("Select a post first to redownload it.", "warning")
+            return
+        if not url:
+            self.toastRequested.emit("This local post folder doesn't have an online source URL to redownload.", "warning")
+            return
+        if not self._app_bridge:
+            self.toastRequested.emit("Downloader bridge is not connected.", "warning")
+            return
+
+        title = str(post.get("title") or pid or "post").strip()
+        arch_mgr = getattr(self._app_bridge, "archive_manager", None)
+
+        def _worker():
+            if arch_mgr and svc and pid:
+                try:
+                    arch_mgr.delete_by_post(svc, pid)
+                except Exception as e:
+                    logger.debug(f"[BrowserBridge] Could not clear archive entry for post {svc}:{pid}: {e}", category="archive")
+
+            def _dispatch():
+                if hasattr(self._app_bridge, "enqueueBatchUrls"):
+                    self._app_bridge.enqueueBatchUrls([url], True, True)
+                else:
+                    self._app_bridge.currentUrl = url
+                    self._app_bridge.startDownload()
+                self.toastRequested.emit(f"Queued '{title}' for fresh redownload (overwriting existing files).", "success")
+
+            self._callOnGui.emit(_dispatch)
+
+        threading.Thread(target=_worker, daemon=True, name="BrowserRedownloadWorker").start()
+
     @Slot(str, str)
     def moveCreatorToDrive(self, creator_key: str, target_root_dir: str) -> None:
         """

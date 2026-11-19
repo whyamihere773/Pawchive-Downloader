@@ -248,7 +248,7 @@ Rectangle {
                     ToolTip.visible: containsMouse
                     ToolTip.delay: 250
                     ToolTip.text: "Redownload all files for this post freshly (overwrites existing files & bypasses archive skip)"
-                    onClicked: if (postDetailDrawer.view.bBridge) postDetailDrawer.view.bBridge.redownloadPost(postDetailDrawer.view.selectedPost)
+                    onClicked: if (postDetailDrawer.view.bBridge) { if (postDetailDrawer.view.bBridge.redownloadPostAsync) postDetailDrawer.view.bBridge.redownloadPostAsync(postDetailDrawer.view.selectedPost); else postDetailDrawer.view.bBridge.redownloadPost(postDetailDrawer.view.selectedPost) }
                 }
             }
 

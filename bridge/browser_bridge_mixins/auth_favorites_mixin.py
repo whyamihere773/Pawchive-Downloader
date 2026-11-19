@@ -191,7 +191,7 @@ class BrowserAuthFavoritesMixin(BrowserSignalsMixin):
                     self.toastRequested.emit(err or f"Could not update favorite for {creator_name}.", "error")
                     return
                 self._sync_favorite_state(creator_key, prov_id, service, creator_id, new_state)
-                site = prov.manifest.display_name
+                site = getattr(prov, "display_name", None) or prov_id
                 if new_state:
                     self.toastRequested.emit(f"Added {creator_name} to {site} favorites.", "success")
                 else:

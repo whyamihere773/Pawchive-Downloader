@@ -250,7 +250,7 @@ SmoothGridView {
                             ToolTip.visible: containsMouse
                             ToolTip.delay: 300
                             ToolTip.text: "Redownload this post freshly (overwrites existing files)"
-                            onClicked: if (postsGrid.view.bBridge) postsGrid.view.bBridge.redownloadPost(pData)
+                            onClicked: if (postsGrid.view.bBridge) { if (postsGrid.view.bBridge.redownloadPostAsync) postsGrid.view.bBridge.redownloadPostAsync(pData); else postsGrid.view.bBridge.redownloadPost(pData) }
                         }
                     }
                 }

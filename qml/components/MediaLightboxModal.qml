@@ -548,6 +548,10 @@ Item {
             }
             streamMediaUrl = playTarget
             var url = toUrl(playTarget)
+            if (mediaPlayer.error !== MediaPlayer.NoError || mediaPlayer.source == url) {
+                mediaPlayer.stop()
+                mediaPlayer.source = ""
+            }
             if (mediaPlayer.source != url) {
                 mediaPlayer.source = url
             }
