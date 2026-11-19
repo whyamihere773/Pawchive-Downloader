@@ -31,7 +31,7 @@ def download_dropbox_link(
     url: str,
     target_folder: str,
     log_func: Callable[[str], None] = print,
-    progress_callback: Optional[Callable[[str, int, int], None]] = None,
+    progress_callback: Optional[Callable[[str, int, int, int, int], None]] = None,
     cancel_event: Optional[Event] = None,
     pause_event: Optional[Event] = None,
     skip_words: Optional[Union[str, List[str]]] = None,
@@ -68,37 +68,29 @@ def download_dropbox_link(
                         return True
 
                 full_path = os.path.join(target_folder, filename)
+                tmp_path = full_path + ".part"
                 downloaded = 0
                 last_log = time.time()
+                cancelled = False
 
-                with open(full_path, 'wb') as f:
+                with open(tmp_path, 'wb') as f:
                     for chunk in r.iter_content(chunk_size=16384):
                         if cancel_event and cancel_event.is_set():
                             log_func("   [Dropbox] Download cancelled.")
-                            if os.path.exists(full_path):
-                                try:
-                                    os.remove(full_path)
-                                except OSError:
-                                    pass
-                            return False
+                            cancelled = True
+                            break
                         while pause_event and pause_event.is_set():
                             time.sleep(0.5)
                             if cancel_event and cancel_event.is_set():
-                                if os.path.exists(full_path):
-                                    try:
-                                        os.remove(full_path)
-                                    except OSError:
-                                        pass
-                                return False
+                                cancelled = True
+                                break
+                        if cancelled:
+                            break
 
                         if not bandwidth_limiter.wait_for(len(chunk), cancel_event, pause_event):
                             log_func("   [Dropbox] Download cancelled.")
-                            if os.path.exists(full_path):
-                                try:
-                                    os.remove(full_path)
-                                except OSError:
-                                    pass
-                            return False
+                            cancelled = True
+                            break
 
                         f.write(chunk)
                         downloaded += len(chunk)
@@ -106,6 +98,14 @@ def download_dropbox_link(
                             if progress_callback:
                                 progress_callback(filename, downloaded, total_size, 1, 1)
                             last_log = time.time()
+                if cancelled:
+                    if os.path.exists(tmp_path):
+                        try:
+                            os.remove(tmp_path)
+                        except OSError:
+                            pass
+                    return False
+                os.replace(tmp_path, full_path)
             finally:
                 with _active_cloud_lock:
                     _active_cloud_resps.discard(r)
@@ -235,12 +235,14 @@ def download_gofile_link(
             furl = fobj["link"]
             fsize = fobj.get("size", 0)
             fpath = os.path.join(save_path, fname)
+            tmp_path = fpath + ".part"
             if not _inside(save_path, fpath):
                 log_func(f"   [GoFile] ⚠️ Skipping '{fname}': unsafe file name")
                 return
 
             log_func(f"   [GoFile] 🔽 '{fname}'")
 
+            cancelled = False
             try:
                 with session.get(furl, stream=True, timeout=(30, 600)) as r:
                     with _active_cloud_lock:
@@ -249,32 +251,22 @@ def download_gofile_link(
                         r.raise_for_status()
                         downloaded = 0
                         last_t = time.time()
-                        with open(fpath, "wb") as f:
+                        with open(tmp_path, "wb") as f:
                             for chunk in r.iter_content(chunk_size=16384):
                                 if cancel_event and cancel_event.is_set():
-                                    if os.path.exists(fpath):
-                                        try:
-                                            os.remove(fpath)
-                                        except OSError:
-                                            pass
-                                    return
+                                    cancelled = True
+                                    break
                                 while pause_event and pause_event.is_set():
                                     time.sleep(0.5)
                                     if cancel_event and cancel_event.is_set():
-                                        if os.path.exists(fpath):
-                                            try:
-                                                os.remove(fpath)
-                                            except OSError:
-                                                pass
-                                        return
+                                        cancelled = True
+                                        break
+                                if cancelled:
+                                    break
 
                                 if not bandwidth_limiter.wait_for(len(chunk), cancel_event, pause_event):
-                                    if os.path.exists(fpath):
-                                        try:
-                                            os.remove(fpath)
-                                        except OSError:
-                                            pass
-                                    return
+                                    cancelled = True
+                                    break
 
                                 f.write(chunk)
                                 downloaded += len(chunk)
@@ -286,16 +278,26 @@ def download_gofile_link(
                         with _active_cloud_lock:
                             _active_cloud_resps.discard(r)
 
+                if cancelled:
+                    if os.path.exists(tmp_path):
+                        try:
+                            os.remove(tmp_path)
+                        except OSError:
+                            pass
+                    return
+                if os.path.exists(tmp_path):
+                    os.replace(tmp_path, fpath)
+
                 log_func(f"   [GoFile] ✅ Finished '{fname}'")
                 if progress_callback:
                     progress_callback(fname, fsize, fsize, processed_count + 1, total_files)
             except Exception as e:
+                if os.path.exists(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except OSError:
+                        pass
                 if cancel_event and cancel_event.is_set():
-                    if os.path.exists(fpath):
-                        try:
-                            os.remove(fpath)
-                        except OSError:
-                            pass
                     return
                 log_func(f"   [GoFile] ❌ Error on '{fname}': {e}")
             finally:

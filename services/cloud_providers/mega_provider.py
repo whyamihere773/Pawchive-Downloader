@@ -212,7 +212,15 @@ def download_and_decrypt_mega_file(
     initial_bytes = 0
 
     if os.path.exists(tmp_path):
-        initial_bytes = os.path.getsize(tmp_path)
+        raw_size = os.path.getsize(tmp_path)
+        aligned_size = (raw_size // 16) * 16
+        if raw_size != aligned_size:
+            try:
+                with open(tmp_path, "r+b") as tf:
+                    tf.truncate(aligned_size)
+            except OSError:
+                aligned_size = 0
+        initial_bytes = aligned_size
 
     headers = {}
     if initial_bytes > 0:
@@ -221,46 +229,38 @@ def download_and_decrypt_mega_file(
     else:
         log_func(f"   [Mega] 🔽 Downloading '{file_name}' ({file_size // 1024 // 1024} MB)...")
 
-    counter = initial_bytes // 16
-    cipher = AES.new(key, AES.MODE_CTR, nonce=nonce, initial_value=counter)
-
-    downloaded = initial_bytes
     last_log_time = time.time()
+    cancelled = False
 
     with requests.get(dl_url, headers=headers, stream=True, timeout=(15, 300)) as r:
         with _active_cloud_lock:
             _active_cloud_resps.add(r)
         try:
             r.raise_for_status()
+            if initial_bytes > 0 and r.status_code != 206:
+                initial_bytes = 0
             mode = 'ab' if initial_bytes > 0 else 'wb'
+            counter = initial_bytes // 16
+            cipher = AES.new(key, AES.MODE_CTR, nonce=nonce, initial_value=counter)
+            downloaded = initial_bytes
             with open(tmp_path, mode) as f:
                 for chunk in r.iter_content(chunk_size=16384):
                     if cancel_event and cancel_event.is_set():
                         log_func(f"   [Mega] Download cancelled for '{file_name}'.")
-                        if os.path.exists(tmp_path):
-                            try:
-                                os.remove(tmp_path)
-                            except OSError:
-                                pass
-                        return
+                        cancelled = True
+                        break
                     while pause_event and pause_event.is_set():
                         time.sleep(0.5)
                         if cancel_event and cancel_event.is_set():
-                            if os.path.exists(tmp_path):
-                                try:
-                                    os.remove(tmp_path)
-                                except OSError:
-                                    pass
-                            return
+                            cancelled = True
+                            break
+                    if cancelled:
+                        break
 
                     if not bandwidth_limiter.wait_for(len(chunk), cancel_event, pause_event):
                         log_func(f"   [Mega] Download cancelled for '{file_name}'.")
-                        if os.path.exists(tmp_path):
-                            try:
-                                os.remove(tmp_path)
-                            except OSError:
-                                pass
-                        return
+                        cancelled = True
+                        break
 
                     decrypted = cipher.decrypt(chunk)
                     f.write(decrypted)
@@ -275,10 +275,16 @@ def download_and_decrypt_mega_file(
             with _active_cloud_lock:
                 _active_cloud_resps.discard(r)
 
+    if cancelled:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+        return
+
     if os.path.exists(tmp_path):
-        if os.path.exists(final_path):
-            os.remove(final_path)
-        os.rename(tmp_path, final_path)
+        os.replace(tmp_path, final_path)
         log_func(f"   [Mega] ✅ Completed: '{file_name}'")
         if progress_callback:
             progress_callback(file_name, file_size, file_size, file_index, total_files)

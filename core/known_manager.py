@@ -40,9 +40,9 @@ class KnownManager(
     KnownCandidatesMixin,
 ):
     background_reload = False
-    _edit_lock = threading.Lock()
 
     def __init__(self, file_path: Optional[str] = None):
+        self._edit_lock = threading.Lock()
         if file_path:
             self.file_path = file_path
         else:
@@ -78,7 +78,10 @@ class KnownManager(
         self._custom_indexed: List[Tuple[str, Tuple[str, ...]]] = []
 
         # In-memory query cache for instant hits
-        self._lru_cache: Dict[Tuple[str, Tuple[str, ...], Tuple[str, ...], str, str], Optional[Tuple[str, str]]] = {}
+        self._lru_cache: Dict[
+            Tuple[str, Tuple[str, ...], Tuple[str, ...], str, str, str, bool, str],
+            Optional[Tuple[str, str]],
+        ] = {}
 
         # AI-assisted recognition subsystem (Tier 1 Embeddings & Tier 2 Reasoner)
         self.model_manager: Optional[Any] = None

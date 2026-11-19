@@ -161,6 +161,7 @@ def download_gdrive_link(
             if res_list:
                 # Filter out any quota-error HTML pages or files matching skip filters
                 good = []
+                skipped_by_filter = 0
                 for p in res_list:
                     if isinstance(p, str) and os.path.isfile(p):
                         if _is_quota_error_file(p):
@@ -171,6 +172,7 @@ def download_gdrive_link(
                             fsize = os.path.getsize(p) if os.path.exists(p) else 0
                             skip, reason = should_skip_cloud_file(rel_p, skip_words=skip_words, file_size=fsize, options=options)
                             if skip:
+                                skipped_by_filter += 1
                                 try:
                                     os.remove(p)
                                 except OSError:
@@ -182,7 +184,7 @@ def download_gdrive_link(
                     f"   [Google Drive] ✅ Folder download finished: "
                     f"{len(good)} file(s) saved to {target_folder}"
                 )
-                return len(good) > 0
+                return len(good) > 0 or skipped_by_filter > 0
             else:
                 log_func("   [Google Drive] ⚠️ Folder appears empty or has restricted permissions.")
                 return False

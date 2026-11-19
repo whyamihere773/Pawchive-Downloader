@@ -389,6 +389,26 @@ class ApiContentFetcherMixin:
 
         norm_after = date_after.strip() if date_after else ""
         norm_before = date_before.strip() if date_before else ""
+        if norm_after or norm_before:
+            from core.filter_engine import FilterEngine as _FE
+            norm_after = _FE.expand_date_start(norm_after) if norm_after else ""
+            norm_before = _FE.expand_date_end(norm_before) if norm_before else ""
+            if norm_after and norm_before and norm_after > norm_before:
+                norm_after, norm_before = norm_before, norm_after
+
+        def _dm_date_ymd(dm_item: Dict[str, Any]) -> str:
+            raw_d = dm_item.get("published") or dm_item.get("added") or dm_item.get("date") or ""
+            if isinstance(raw_d, (int, float)):
+                try:
+                    import datetime as _dt
+                    return _dt.datetime.fromtimestamp(raw_d).strftime("%Y-%m-%d")
+                except Exception:
+                    return ""
+            s = str(raw_d).strip()
+            return s.split("T")[0] if "T" in s else s[:10]
+
+        pawchive_domain = parsed.domain or "pawchive.pw"
+        total_unique_seen = 0
 
         while current_page <= page_end:
             if cancel_event and cancel_event.is_set():
@@ -402,7 +422,7 @@ class ApiContentFetcherMixin:
                     f"/user/{parsed.user_id}/dms?o={offset}&n={page_size}"
                 )
             else:  # pawchive
-                url = f"https://pawchive.pw/{parsed.service}/user/{parsed.user_id}/dms?o={offset}"
+                url = f"https://{pawchive_domain}/{parsed.service}/user/{parsed.user_id}/dms?o={offset}"
 
             if progress_callback and current_page == page_start and len(all_dms) == 0:
                 try:
@@ -504,7 +524,7 @@ class ApiContentFetcherMixin:
                     from core.browser_providers.base import KemonoStyleCatalogProvider
                     page_dms, html_total, has_next_page = KemonoStyleCatalogProvider.parse_dms_html_cards(
                         resp.text,
-                        base_domain="pawchive.pw",
+                        base_domain=pawchive_domain,
                         service=parsed.service,
                         creator_id=parsed.user_id,
                         current_offset=offset,
@@ -539,7 +559,20 @@ class ApiContentFetcherMixin:
                 break
 
             batch = len(unique_page_dms)
-            all_dms.extend(unique_page_dms)
+            total_unique_seen += batch
+            if norm_after or norm_before:
+                kept_dms: List[Dict[str, Any]] = []
+                for dm_obj in unique_page_dms:
+                    d_ymd = _dm_date_ymd(dm_obj)
+                    if d_ymd:
+                        if norm_after and d_ymd < norm_after:
+                            continue
+                        if norm_before and d_ymd > norm_before:
+                            continue
+                    kept_dms.append(dm_obj)
+                all_dms.extend(kept_dms)
+            else:
+                all_dms.extend(unique_page_dms)
             pages_fetched += 1
             logger.info(
                 f"DM Page {current_page:3d}  offset {offset:5d}  +{batch} DMs  "
@@ -554,7 +587,7 @@ class ApiContentFetcherMixin:
                     progress_callback(current_page, len(all_dms))
 
             # If total reached, stop
-            if known_total and len(all_dms) >= known_total:
+            if known_total and total_unique_seen >= known_total:
                 logger.info(f"Reached known total of {known_total} DMs.", category="api")
                 break
 

@@ -115,6 +115,16 @@ class TelegramService(TelegramAuthSessionMixin):
 
 
     # ── Channel & Message Resolution ─────────────────────────────────────────
+    @staticmethod
+    def _parse_peer_target(target: str):
+        """Convert numeric or negative channel/group IDs to int; leave usernames as str."""
+        s = str(target or "").strip()
+        if s.startswith("-") and s[1:].isdigit():
+            return int(s)
+        if s.isdigit():
+            return int(f"-100{s}")
+        return s
+
     def resolve_target_metadata(self, target: str, is_private: bool = False) -> Dict[str, Any]:
         """Fetches channel or chat metadata (title, username, photo, count)."""
         async def _coro():
@@ -145,10 +155,7 @@ class TelegramService(TelegramAuthSessionMixin):
                 if not entity:
                     # Target can be integer channel ID (for private channels) or username
                     try:
-                        if target.isdigit():
-                            entity = await client.get_entity(int(f"-100{target}" if not target.startswith("-100") else target))
-                        else:
-                            entity = await client.get_entity(target)
+                        entity = await client.get_entity(self._parse_peer_target(target))
                     except (errors.SessionRevokedError, errors.AuthKeyUnregisteredError) as e:
                         logger.warning(f"Telegram session was revoked or invalidated: {e}", category="telegram")
                         await self._handle_auth_invalidation("Telegram session expired or was revoked. Please log in again.")
@@ -205,10 +212,7 @@ class TelegramService(TelegramAuthSessionMixin):
         async def _coro():
             try:
                 client = await self._get_or_create_client()
-                if target.isdigit():
-                    peer = int(f"-100{target}" if not target.startswith("-100") else target)
-                else:
-                    peer = target
+                peer = self._parse_peer_target(target)
 
                 logger.debug(f"Telegram: resolving entity for peer={peer}", category="telegram")
                 entity = await client.get_entity(peer)
@@ -251,13 +255,14 @@ class TelegramService(TelegramAuthSessionMixin):
                     elif isinstance(msg.media, MessageMediaDocument):
                         doc = msg.media.document
                         file_size = doc.size if doc else 0
+                        attrs = (doc.attributes or []) if doc else []
 
                         # Check attributes
-                        is_video = any(isinstance(a, DocumentAttributeVideo) for a in (doc.attributes or []))
-                        is_audio = any(isinstance(a, DocumentAttributeAudio) for a in (doc.attributes or []))
+                        is_video = any(isinstance(a, DocumentAttributeVideo) for a in attrs)
+                        is_audio = any(isinstance(a, DocumentAttributeAudio) for a in attrs)
 
                         # Get filename
-                        for a in (doc.attributes or []):
+                        for a in attrs:
                             if isinstance(a, DocumentAttributeFilename):
                                 fn = a.file_name
                                 break
@@ -343,10 +348,7 @@ class TelegramService(TelegramAuthSessionMixin):
         async def _coro():
             try:
                 client = await self._get_or_create_client()
-                if channel_target.isdigit():
-                    peer = int(f"-100{channel_target}" if not channel_target.startswith("-100") else channel_target)
-                else:
-                    peer = channel_target
+                peer = self._parse_peer_target(channel_target)
 
                 msg = await client.get_messages(peer, ids=message_id)
                 if not msg or not msg.media:
@@ -366,10 +368,11 @@ class TelegramService(TelegramAuthSessionMixin):
                 elif isinstance(msg.media, MessageMediaDocument):
                     doc = msg.media.document
                     file_size = doc.size if doc else 0
-                    is_video = any(isinstance(a, DocumentAttributeVideo) for a in (doc.attributes or []))
-                    is_audio = any(isinstance(a, DocumentAttributeAudio) for a in (doc.attributes or []))
+                    attrs = (doc.attributes or []) if doc else []
+                    is_video = any(isinstance(a, DocumentAttributeVideo) for a in attrs)
+                    is_audio = any(isinstance(a, DocumentAttributeAudio) for a in attrs)
 
-                    for a in (doc.attributes or []):
+                    for a in attrs:
                         if isinstance(a, DocumentAttributeFilename):
                             fn = a.file_name
                             break
@@ -459,10 +462,8 @@ class TelegramService(TelegramAuthSessionMixin):
                     cached_peer = self._entity_cache.get(str(channel_id))
                     if cached_peer is not None:
                         peer = cached_peer
-                    elif channel_id.isdigit():
-                        peer = int(f"-100{channel_id}" if not channel_id.startswith("-100") else channel_id)
                     else:
-                        peer = channel_id
+                        peer = self._parse_peer_target(channel_id)
 
                     msg = await client.get_messages(peer, ids=message_id)
                     if not msg or not msg.media:
@@ -554,18 +555,19 @@ class TelegramService(TelegramAuthSessionMixin):
                             if self.on_flood_wait:
                                 self.on_flood_wait(e.seconds)
 
-                            # Sleep remaining seconds + 1
-                            for sec in range(e.seconds, 0, -1):
-                                if cancel_event and cancel_event.is_set():
-                                    return False, "Cancelled during flood wait"
+                            try:
+                                # Sleep remaining seconds + 1
+                                for sec in range(e.seconds, 0, -1):
+                                    if cancel_event and cancel_event.is_set():
+                                        return False, "Cancelled during flood wait"
+                                    if self.on_flood_wait:
+                                        self.on_flood_wait(sec)
+                                    await asyncio.sleep(1)
+                            finally:
+                                self.is_flood_waiting = False
+                                self.flood_wait_seconds = 0
                                 if self.on_flood_wait:
-                                    self.on_flood_wait(sec)
-                                await asyncio.sleep(1)
-
-                            self.is_flood_waiting = False
-                            self.flood_wait_seconds = 0
-                            if self.on_flood_wait:
-                                self.on_flood_wait(0)
+                                    self.on_flood_wait(0)
 
                         except (errors.SessionRevokedError, errors.AuthKeyUnregisteredError, errors.AuthKeyDuplicatedError) as e:
                             logger.warning(f"Telegram session was revoked or invalidated during download: {e}", category="telegram")

@@ -48,7 +48,7 @@ def load_plan(args: argparse.Namespace) -> Dict[str, Any]:
         }
     else:
         is_source = not getattr(sys, "frozen", False)
-        plan = {"target_dir": us.get_app_dir(), "pid": 0, "_manual": True, "is_source": is_source,
+        plan = {"target_dir": us.get_app_dir(), "pid": 0, "_manual": True, "_needs_check": True, "is_source": is_source,
                 "python_exe": sys.executable if is_source else "", "app_executable": ""}
     if args.no_wait:
         plan["no_wait"] = True
@@ -60,9 +60,9 @@ def plan_from_check(plan: Dict[str, Any]) -> Dict[str, Any]:
     """Manual run: ask GitHub what to install."""
     info = us.check_for_updates(timeout=15)
     if not info.get("update_available"):
-        return {**plan, "_uptodate": True, "_message": info.get("error") or info.get("message") or "You're up to date."}
+        return {**plan, "_needs_check": False, "_uptodate": True, "_message": info.get("error") or info.get("message") or "You're up to date."}
     built = us.build_update_plan(info)
-    built.update({"pid": 0, "target_dir": plan["target_dir"], "_manual": True})
+    built.update({"pid": 0, "target_dir": plan["target_dir"], "_manual": True, "_needs_check": False})
     return built
 
 
@@ -309,7 +309,7 @@ def run_gui(plan: Dict[str, Any], log: ui.UpdateLog) -> int:
 
         # ── running ──
         def start(self):
-            if self.plan.get("_manual"):
+            if self.plan.get("_needs_check", False) or (self.plan.get("_manual") and "_needs_check" not in self.plan):
                 self._phase = "running"
                 self._steps = [("check", "Checking for updates")]
                 self._states = ["active"]
@@ -328,7 +328,11 @@ def run_gui(plan: Dict[str, Any], log: ui.UpdateLog) -> int:
             self._worker.start()
 
         def _check_worker(self):
-            checked = plan_from_check(self.plan)
+            try:
+                checked = plan_from_check(self.plan)
+            except Exception as e:
+                self._event.emit("result", {"ok": False, "code": "network", "message": f"Update check failed: {e}"})
+                return
             if self._cancel.is_set():
                 self._event.emit("result", {"ok": False, "code": "cancelled", "message": "The update check was cancelled."})
                 return

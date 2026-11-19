@@ -94,7 +94,9 @@ class ApiListingsProfileMixin:
         if domain not in self._CREATOR_LISTINGS or is_disabled(domain):
             return 0
         if domain == "cum.st":
-            return self._listing_sizes.get(domain, 51000) // self.CUMST_STEP + 1
+            with self._listing_lock:
+                size = self._listing_sizes.get(domain, 51000)
+            return size // self.CUMST_STEP + 1
         return 1
 
     def fetch_creator_updates(self, domain: str, max_age: float = 600.0,

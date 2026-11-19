@@ -49,14 +49,16 @@ class KnownHierarchyMixin:
             self._ai_enabled,
             getattr(self, "_ai_engine_mode", "hybrid")
         )
-        if cache_key in self._lru_cache:
-            return self._lru_cache[cache_key]
+        with self._lock:
+            if cache_key in self._lru_cache:
+                return self._lru_cache[cache_key]
 
         # Ignore polls / announcement posts so they never match as anime characters
         if title:
             t_lower = title.lower()
             if any(w in t_lower for w in ("survey", "waifu poll", "feedback", "which waifu", "what character would you like", "next big collab", "character catalog", "what's coming next", "new generation style", "image style", "winner of the latest post")):
-                self._lru_cache[cache_key] = None
+                with self._lock:
+                    self._lru_cache[cache_key] = None
                 return None
 
         # Structural delimited title parsing ("Character | Series" or "[Extras] | Character | Series")
@@ -98,9 +100,10 @@ class KnownHierarchyMixin:
                 except Exception as ex:
                     logger.debug(f"AI Tier 2 reasoning error: {ex}", category="known")
 
-        if len(self._lru_cache) > 10000:
-            self._lru_cache.clear()
-        self._lru_cache[cache_key] = res
+        with self._lock:
+            if len(self._lru_cache) > 10000:
+                self._lru_cache.clear()
+            self._lru_cache[cache_key] = res
         return res
 
     def _find_matching_hierarchy_fast(
@@ -146,7 +149,7 @@ class KnownHierarchyMixin:
         MULTILINGUAL_HONORIFIC_SUFFIXES = (
             "chan", "san", "sama", "kun", "senpai", "sensei", "tan", "dono", "chama",
             "ちゃん", "さん", "さま", "様", "くん", "君", "せんぱい", "先輩", "せんせい", "先生", "殿",
-            "酱", "桑", "大人", "君", "学姐", "学长", "前辈", "老师", "殿下", "小姐", "女士", "太太", "娘",
+            "酱", "桑", "大人", "学姐", "学长", "前辈", "老师", "殿下", "小姐", "女士", "太太", "娘",
             "양", "군", "씨", "님", "선배", "선생님", "짱"
         )
         DIMINUTIVE_PREFIXES = ("小", "阿")
