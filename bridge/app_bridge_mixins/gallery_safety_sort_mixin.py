@@ -100,7 +100,11 @@ class GallerySafetySortMixin(AppBridgeSignalsMixin):
         now = time.monotonic()
         if hit and now - hit[0] < 30.0:
             return dict(hit[1])
-        info = type(self)._path_safety_info(self, path)
+        info = (
+            _app_bridge_mod().AppBridge._path_safety_info(self, path)
+            if self is None
+            else self._path_safety_info(path)
+        )
         if len(cache) > 500:
             cache.clear()
         cache[key] = (now, info)
