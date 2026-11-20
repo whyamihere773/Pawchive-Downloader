@@ -1,52 +1,40 @@
-> **Heads up:** The next update might take a little longer than usual — I'm taking some time to clean up the codebase a bit so future updates are smoother and faster to ship.
+### 🏗️ Architecture & Performance Improvements
+
+* **Cleaner modular structure**: Reorganized the existing codebase by splitting oversized all-in-one files into smaller, focused modules with a plug-and-play layout for cloud and media providers, making future updates faster and safer.
+* **Smoother interface under heavy load**: Pinned the interface to a dedicated high-performance CPU core and moved heavy work — like browsing huge folders, saving settings, testing AI recognition, exporting links, checking disk space, and refreshing Browser badges — to background workers so the window stays responsive.
+* **Faster large-library handling**: Sped up Queue updates, failed-task counters, Post Selector inspection, and Favorites Browser scrolling, and stopped a hidden Link Vault animation from running while closed.
+* **Consistent browser-style text inputs**: Every search bar and text field across the app now highlights all text on first click, scrolls long text cleanly without overflowing, and includes a right-click menu.
+* **Crash-proof session logs**: Logs now save immediately to disk as events happen and automatically write a dedicated crash report if the app ever closes unexpectedly.
 
 ---
 
-### ⚡ Pawchive Speed & Rate-Limit Fixes
+### 🖼️ Gallery, Visual Sorter & Media Viewer
 
-* **Fixed ultra-slow Pawchive downloads & 429 rate-limit loops**: Downloading creators with unimported posts or lots of small images no longer triggers waves of failed or burst requests that cause Pawchive to throttle speeds to a crawl.
-* **Smoother pacing & smarter automatic slowdowns**: Pawchive downloads now request files from the right server at a steady pace, automatically step down active threads on the very first rate-limit warning, and pause briefly instead of hammering the server nonstop or saving small thumbnails instead.
-* **Faster scanning of unimported posts**: Scanning creators with unimported posts skips unnecessary extra page checks so scans finish much faster.
-
----
-
-### ⚠️ Unimported Pawchive Post Handling
-
-* **Clear notice without stopping downloads**: When a post or creator hasn't been physically imported onto Pawchive's servers yet, the app marks those items as Not Imported and keeps downloading everything else without stopping. The notice modal includes a "Do not show again" option (while keeping the warning in the Progress Log) and an "Open Settings" button that jumps straight to the thumbnail fallback toggle and highlights it.
-* **Visible in Queue & Retry window, with retrying disabled**: Unimported files still show up in your Queue and Retry Failed window with a clear amber warning so you don't miss them, while retrying is disabled since those files aren't on the server yet.
-* **Automatic Watchlist pickup later**: Unimported posts are no longer marked as finished in your Watchlist, so they will be detected and downloaded automatically once Pawchive imports them.
+* **Gallery empty-space gap fixed**: Removed the large blank gap that appeared above the Gallery grid whenever no alert banners were active.
+* **Visual Sorter controls fixed**: Fixed invisible card overlays that blocked clicks on bucket rename, filter, inline rename, and keep/skip buttons.
+* **Character & Series filter restored**: Brought back the missing Character & Series filter button in the Gallery toolbar.
+* **Safer Gallery Cleaner & tidy Batch Rename**: Prevented accidental scans of entire system drives, fixed the live scan indicator, and stopped long Batch Rename destination paths from overflowing.
+* **Media Lightbox & Favorites Browser fixes**: Retrying a failed video stream in the Lightbox now properly restarts playback instead of freezing, and Favorites Browser grids resize cleanly without lag.
 
 ---
 
-### 📦 Download Archive Improvements
+### ⬇️ Downloads, Queue & Cloud Providers
 
-* **Rebuild archive in the background with crash recovery**: You can now minimize an active Archive Rebuild to a compact progress bar at the bottom of the app and keep using every tab normally. Progress is saved automatically after every batch (and on pause or exit), so if the app closes or power cuts out, you can resume right where it left off without re-scanning finished files.
-* **Creators & file paths preserved on backup**: Exporting your Download Archive now defaults to a full JSON backup that keeps creator names and file locations intact instead of turning everything into "Unknown Creator" on re-import.
-* **Direct database import & text import fix**: You can now import an archive database file directly, and importing older text-list backups no longer breaks on filenames that contain spaces.
-
----
-
-### 🌐 Browser Download Dialog & Layout Fixes
-
-* **Choose where Browser downloads go**: Starting or queueing any download from the Browser now opens a confirmation dialog where you can pick your save folder, automatically remember the last folder you chose, and access all Downloader settings right from the dialog.
-* **Automatic separate folders for multiple creators**: Selecting multiple creators in the Browser automatically gives each creator its own subfolder inside your chosen destination so files never mix together.
-* **At-a-glance on-disk post indicators in Online Browser**: When viewing a creator you already have on disk, posts you own in full are outlined in green, partially downloaded or pruned posts are outlined in yellow (with file counts like `4/12`), and posts not on disk stay unoutlined.
-* **Fixed Browser card overflow**: Creator cards and post cards in the Browser now keep buttons, stats, and action links cleanly inside card borders without clipping off the right edge.
+* **Video duration & DM date filters fixed**: Filtering downloads by video length no longer crashes before transfers begin, and date range filters now properly apply when fetching creator direct messages.
+* **Reliable Mega, Dropbox & GoFile downloads**: Resuming partial Mega downloads no longer corrupts files, and canceling Mega, Dropbox, or GoFile transfers cleanly removes incomplete temporary files on Windows.
+* **Google Drive & Telegram fixes**: Google Drive folder downloads now report properly when filters skip all files, and Telegram handles private channel links, missing attachments, and wait-timer cancellations reliably.
+* **Queue & Post Selector fixes**: Starting selected posts no longer clears unrelated Queue items, re-queuing right after clearing the Queue works cleanly, empty batch resumes no longer freeze the downloading state, text-only posts stay selectable, paused counts stay accurate, and all download requests respect your proxy settings.
+* **Watchlist improvements**: Renaming a creator's folder keeps their Watchlist paths updated automatically, mixed date formats sort reliably, and refresh animations reset smoothly.
 
 ---
 
-### ✨ Interface Improvements
+### 📦 Decompressor, Archive, Browser & Settings
 
-* **Consistent text bars & right-click menus everywhere**: Every search bar, password field, URL input, and text box across the app now supports mouse text selection, full-bar click-to-focus, and the right-click context menu (Paste, Copy, Cut, Select All, Clear) — even inside pop-up dialogs.
-* **Fixed Gallery shortcuts hijacking typing**: Pressing Ctrl+A, Delete, or Ctrl+Z while typing in the Gallery search bar now edits your search text instead of selecting or deleting gallery files.
-
----
-
-### 🐧 Linux & CachyOS Fixes
-
-* **Fixed Linux startup crash & Fontconfig warnings**: Stopped bundling conflicting Ubuntu system libraries so the app uses your system's own graphics and font drivers, and added an automatic fallback to software rendering (plus a `--software-render` launch option) if hardware OpenGL isn't available.
-* **One-click Linux desktop installer & cleaner archive folder**: Added an included desktop installer script to set up the application menu shortcut, icon, and `pawchive://` link handler from any portable folder, removed spaces from the extracted folder name, and fixed misleading `.exe` log labels on Linux.
-* **New experimental Flatpak & Arch/CachyOS packages**: Added experimental universal Flatpak and Arch `pacman` builds alongside the portable Linux download, with Windows builds now listed first on GitHub Releases.
+* **Compression settings respected**: Custom video encoding presets, audio codecs, and custom video options in the Bulk Decompressor are now applied instead of being silently ignored.
+* **Password prompt polished**: Reopening the password prompt for a new encrypted archive now clears the previous entry and focuses the input box automatically.
+* **Archive integrity, Video Fingerprinting & macOS fixes**: Video Fingerprinting works on folders with spaces or special characters, deleting archived paths and verifying creator integrity keep totals in sync, Watchlist folders appear in archive rebuild suggestions, confirmation popups block stray clicks behind them, and revealing folders works properly on macOS.
+* **Browser & Statistics fixes**: Toggling creator favorites and clicking "Accounts in Settings" in the Browser now work reliably, direct messages stay tracked properly, and Graphics & Documents totals show up accurately in Statistics.
+* **Settings, Console & Updater fixes**: Fixed the Connected Accounts indicator in Settings, wired up the "Auto-sync Known.txt" and "Show console links" toggles, fixed Console copy shortcuts (`Ctrl+Shift+C` / `Shift+C`) and right-click copy, and fixed the standalone Updater getting stuck in a repeat update-check loop.
 
 ---
 

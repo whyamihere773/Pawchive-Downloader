@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Attach the Linux builds to this existing release (e.g. v1.4.2); leave empty to only build"
+        description: "Attach the Linux builds to this existing release (e.g. v1.4.3); leave empty to only build"
         required: false
         default: ""
 

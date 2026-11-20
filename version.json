@@ -1,8 +1,8 @@
 {
-    "version": "1.4.2",
+    "version": "1.4.3",
     "commit": "",
     "short_commit": "",
-    "date": "2026-11-19",
+    "date": "2026-11-20",
     "channel": "release",
     "history": [
         {
@@ -219,6 +219,11 @@
             "version": "1.4.2",
             "date": "2026-11-19",
             "notes": "Fix Pawchive HTTP 429 rate-limit slowdowns (#49, #50) and unimported post handling (non-stopping batch flow, Not Imported badges, Do Not Show Again modal option, and Open Settings jump-and-glow to thumbnail fallback); add background Archive Rebuild with bottom progress bar and crash-proof SQLite WAL resume; fix Download Archive export/import; add Browser download destination modal, online on-disk post completeness outlines (green/yellow), and card overflow fixes; standardize all text bars and right-click context menus across the app; fix Linux/CachyOS EGL SIGABRT crash, Fontconfig warnings, portable desktop installer, and add experimental Flatpak and Arch/CachyOS packages."
+        },
+        {
+            "version": "1.4.3",
+            "date": "2026-11-20",
+            "notes": "Reorganized codebase into modular files with plug-and-play cloud providers, dedicated high-performance UI core affinity, universal browser-bar text inputs, and crash-proof atomic logging; fixed 62 pre-existing bugs across Downloads, Cloud Providers (Mega, Dropbox, GoFile, Google Drive, Telegram), Bulk Decompressor, Archive, Browser, Gallery, Visual Sorter, Watchlist, Statistics, Settings, Console, and Updater; fixed Gallery empty-space layout gap."
         }
     ]
 }
