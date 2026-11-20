@@ -9,6 +9,7 @@ ColumnLayout {
     required property var modal
     required property var filesModel
     Layout.fillWidth: true
+    Layout.fillHeight: false
     spacing: 12
 
     function setSearchText(value) {

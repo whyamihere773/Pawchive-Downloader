@@ -8,6 +8,7 @@ RowLayout {
 
     required property var consoleView
     Layout.fillWidth: true
+    Layout.fillHeight: false
     spacing: consoleView.isVeryNarrow ? 4 : (consoleView.isCompact ? 6 : 8)
 
     // Title & Icon

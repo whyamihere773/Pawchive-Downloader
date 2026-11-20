@@ -334,7 +334,12 @@ class FavoritesMixin(AppBridgeSignalsMixin):
     def _start_favorites_download_worker(self, page_start: int = 1, page_end: int = 999999, download_dir: str = ""):
         """Worker thread to incrementally sync all favorited artists from connected providers."""
         self._scan_cancel_event.clear()
-        self._set_ui_state(has_error=False, is_downloading=True, status_text="Fetching favorited artists...")
+        self._set_ui_state(
+            has_error=False,
+            is_downloading=True,
+            creator_name="Favorite Artists",
+            status_text="Fetching favorited artists...",
+        )
         self.isPausedChanged.emit()
 
         def _worker():
@@ -345,8 +350,6 @@ class FavoritesMixin(AppBridgeSignalsMixin):
                     providers_to_sync.append(("pawchive.pw", "pawchive"))
                 if auth_manager.is_logged_in("cumst"):
                     providers_to_sync.append(("cum.st", "cumst"))
-
-                self._set_ui_state(creator_name="Favorite Artists")
 
                 fav_artists = []
                 for p_domain, p_id in providers_to_sync:

@@ -8,6 +8,7 @@ RowLayout {
     required property var modal
     required property var filesModel
     Layout.fillWidth: true
+    Layout.fillHeight: false
     spacing: 10
 
     // Comprehensive Selection Counter Pill (Files + Posts)

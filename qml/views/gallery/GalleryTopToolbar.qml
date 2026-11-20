@@ -7,6 +7,7 @@ RowLayout {
     id: topBar
     required property var view
     Layout.fillWidth: true
+    Layout.fillHeight: false
     spacing: 8
 
     // Drive quick selectors with live storage space (scrolls sideways if they don't fit)

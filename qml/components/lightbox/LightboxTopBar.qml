@@ -12,6 +12,7 @@ RowLayout {
     property int imageImplicitHeight: 0
     visible: !topBar.modal.fullscreen
     Layout.fillWidth: true
+    Layout.fillHeight: false
     spacing: 12
 
     // Close button

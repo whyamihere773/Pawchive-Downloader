@@ -116,7 +116,7 @@ class SettingsPropsExtendedMixin(AppBridgeSignalsMixin):
         if folder_naming.include_service != bool(val):
             folder_naming.include_service = bool(val)
             self.siteInFolderNameChanged.emit()
-            self.scheduleSaveSettings()
+            self.saveSettings()
 
     @Property(bool, notify=AppBridgeSignalsMixin.fileIndexPrefixChanged)
     def fileIndexPrefix(self) -> bool:

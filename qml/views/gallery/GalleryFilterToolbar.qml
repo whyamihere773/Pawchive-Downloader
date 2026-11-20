@@ -8,6 +8,7 @@ RowLayout {
     required property var view
     property alias searchInput: searchInput
     Layout.fillWidth: true
+    Layout.fillHeight: false
     spacing: 8
 
     // Filter Pills (scroll sideways if they don't fit)

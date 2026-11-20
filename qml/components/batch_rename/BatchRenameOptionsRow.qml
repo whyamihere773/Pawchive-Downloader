@@ -9,6 +9,7 @@ RowLayout {
 
     required property var modal
     Layout.fillWidth: true
+    Layout.fillHeight: false
     spacing: 14
 
     // Option 1: Files only

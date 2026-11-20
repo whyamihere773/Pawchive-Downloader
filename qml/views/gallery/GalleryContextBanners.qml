@@ -7,9 +7,16 @@ ColumnLayout {
     id: contextBanners
     required property var view
     Layout.fillWidth: true
+    Layout.fillHeight: false
+    visible: privacyBanner.shown || privacyBanner.reveal > 0.01
+          || openPostBanner.shown || openPostBanner.reveal > 0.01
+          || charFilterBanner.shown || charFilterBanner.reveal > 0.01
+          || virtualBucketBanner.shown || virtualBucketBanner.reveal > 0.01
+          || selectionActionBanner.shown || selectionActionBanner.reveal > 0.01
     spacing: 8
 
     Rectangle {
+        id: privacyBanner
         Layout.fillWidth: true
         readonly property bool shown: contextBanners.view.privacyBlur
         property real reveal: shown ? 1 : 0
@@ -44,6 +51,7 @@ ColumnLayout {
 
     // 4a. OPEN POST BAR (while looking inside a grouped post)
     Rectangle {
+        id: openPostBanner
         Layout.fillWidth: true
         readonly property bool shown: contextBanners.view.openGroupKey.length > 0
         property real reveal: shown ? 1 : 0
@@ -81,6 +89,7 @@ ColumnLayout {
 
     // 4a2. CHARACTER FILTER BAR
     Rectangle {
+        id: charFilterBanner
         Layout.fillWidth: true
         readonly property bool shown: contextBanners.view.characterFilter.length > 0
         property real reveal: shown ? 1 : 0
@@ -125,6 +134,7 @@ ColumnLayout {
 
     // 4a3. VIRTUAL SORT BUCKET FILTER BAR (while previewing a virtual sort bucket in Gallery)
     Rectangle {
+        id: virtualBucketBanner
         Layout.fillWidth: true
         readonly property bool shown: contextBanners.view.virtualBucketName.length > 0
         property real reveal: shown ? 1 : 0
@@ -168,6 +178,7 @@ ColumnLayout {
     // 4b. SELECTION ACTION BAR (visible while items are selected)
     // Left: what's selected + selection links. Right, grouped: organize | archive | More, Delete.
     Rectangle {
+        id: selectionActionBanner
         Layout.fillWidth: true
         readonly property bool shown: contextBanners.view.selectionCount > 0
         property real reveal: shown ? 1 : 0

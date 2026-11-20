@@ -7,9 +7,13 @@ ColumnLayout {
     id: pathShortcutsBar
     required property var view
     Layout.fillWidth: true
+    Layout.fillHeight: false
+    visible: pathBarRect.shown || pathBarRect.reveal > 0.01
+          || shortcutsBarRect.shown || shortcutsBarRect.reveal > 0.01
     spacing: 8
 
     Rectangle {
+        id: pathBarRect
         Layout.fillWidth: true
         readonly property bool shown: pathShortcutsBar.view.showPathBar
         property real reveal: shown ? 1 : 0
@@ -269,6 +273,7 @@ ColumnLayout {
 
     // 3. QUICK SHORTCUTS / BOOKMARKS BAR (can be hidden from the view options menu)
     Rectangle {
+        id: shortcutsBarRect
         Layout.fillWidth: true
         readonly property bool shown: pathShortcutsBar.view.showShortcutsBar
         property real reveal: shown ? 1 : 0
