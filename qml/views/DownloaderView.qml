@@ -227,7 +227,7 @@ SmoothFlickable {
         spacing: 12
 
         PendingSettingsBanner {
-            visible: !root.embeddedInModal
+            suppressed: root.embeddedInModal
             Layout.fillWidth: true
             bridge: root.bridge
         }
@@ -239,8 +239,11 @@ SmoothFlickable {
             readonly property int progCurrent: (root.bridge && root.bridge.scanProgressCurrent !== undefined) ? root.bridge.scanProgressCurrent : 0
             readonly property int progTotal: (root.bridge && root.bridge.scanProgressTotal !== undefined) ? root.bridge.scanProgressTotal : 0
             Layout.fillWidth: true
+            Layout.fillHeight: false
             visible: scanningActive
+            clip: true
             implicitHeight: scanningActive ? scanBannerCol.implicitHeight + 18 : 0
+            Layout.preferredHeight: implicitHeight
             radius: 10
             color: "#111A2B"
             border.color: "#38BDF8"
@@ -249,11 +252,11 @@ SmoothFlickable {
             ColumnLayout {
                 id: scanBannerCol
                 anchors {
-                    fill: parent
+                    left: parent.left
+                    right: parent.right
+                    verticalCenter: parent.verticalCenter
                     leftMargin: 12
                     rightMargin: 12
-                    topMargin: 9
-                    bottomMargin: 9
                 }
                 spacing: 6
 

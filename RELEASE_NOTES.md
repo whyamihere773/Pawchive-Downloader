@@ -23,7 +23,7 @@
 * **Video duration & DM date filters fixed**: Filtering downloads by video length no longer crashes before transfers begin, and date range filters now properly apply when fetching creator direct messages.
 * **Reliable Mega, Dropbox & GoFile downloads**: Resuming partial Mega downloads no longer corrupts files, and canceling Mega, Dropbox, or GoFile transfers cleanly removes incomplete temporary files on Windows.
 * **Google Drive & Telegram fixes**: Google Drive folder downloads now report properly when filters skip all files, and Telegram handles private channel links, missing attachments, and wait-timer cancellations reliably.
-* **Queue & Post Selector fixes**: Starting selected posts no longer clears unrelated Queue items, re-queuing right after clearing the Queue works cleanly, empty batch resumes no longer freeze the downloading state, text-only posts stay selectable, paused counts stay accurate, and all download requests respect your proxy settings.
+* **Queue & Post Selector fixes**: Starting selected posts no longer clears unrelated Queue items, re-queuing right after clearing the Queue works cleanly, empty batch resumes no longer freeze the downloading state, text-only posts stay selectable, paused counts stay accurate, all download requests respect your proxy settings, and the hidden pending-settings banner no longer peeks out behind the Download Destination card.
 * **Watchlist improvements**: Renaming a creator's folder keeps their Watchlist paths updated automatically, mixed date formats sort reliably, and refresh animations reset smoothly.
 
 ---

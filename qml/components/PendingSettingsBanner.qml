@@ -8,10 +8,21 @@ import "."
 Rectangle {
     id: banner
     property var bridge: null
+    property bool suppressed: false
 
-    readonly property bool active: Boolean(bridge && bridge.isDownloading && bridge.hasPendingDownloadSettingsChanges)
-    visible: active
-    implicitHeight: active ? bannerLayout.implicitHeight + 18 : 0
+    readonly property bool active: !suppressed && Boolean(bridge && bridge.isDownloading && bridge.hasPendingDownloadSettingsChanges)
+    property real reveal: active ? 1.0 : 0.0
+
+    Behavior on reveal {
+        NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
+    }
+
+    visible: active || reveal > 0.01
+    clip: true
+    Layout.fillHeight: false
+    implicitHeight: visible ? Math.round((bannerLayout.implicitHeight + 18) * reveal) : 0
+    Layout.preferredHeight: implicitHeight
+    opacity: reveal
     radius: 10
     color: "#1B1E2E"
     border.color: "#F59E0B"
@@ -29,11 +40,11 @@ Rectangle {
     RowLayout {
         id: bannerLayout
         anchors {
-            fill: parent
+            left: parent.left
+            right: parent.right
+            verticalCenter: parent.verticalCenter
             leftMargin: 12
             rightMargin: 12
-            topMargin: 9
-            bottomMargin: 9
         }
         spacing: 10
 
