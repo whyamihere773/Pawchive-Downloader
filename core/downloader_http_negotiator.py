@@ -21,7 +21,7 @@ _CACHED_PAWCHIVE_UA: Optional[str] = None
 def _pawchive_user_agent() -> str:
     global _CACHED_PAWCHIVE_UA
     if _CACHED_PAWCHIVE_UA is None:
-        ver = "1.4.3"
+        ver = "1.4.4"
         try:
             from services.update_service import get_local_version_info
             v = str((get_local_version_info() or {}).get("version") or "").strip().lstrip("v")

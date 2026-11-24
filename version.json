@@ -1,8 +1,8 @@
 {
-    "version": "1.4.3",
+    "version": "1.4.4",
     "commit": "",
     "short_commit": "",
-    "date": "2026-11-20",
+    "date": "2026-11-24",
     "channel": "release",
     "history": [
         {
@@ -224,6 +224,11 @@
             "version": "1.4.3",
             "date": "2026-11-20",
             "notes": "Reorganized codebase into modular files with plug-and-play cloud providers, dedicated high-performance UI core affinity, universal browser-bar text inputs, and crash-proof atomic logging; fixed 62 pre-existing bugs across Downloads, Cloud Providers (Mega, Dropbox, GoFile, Google Drive, Telegram), Bulk Decompressor, Archive, Browser, Gallery, Visual Sorter, Watchlist, Statistics, Settings, Console, and Updater; fixed Gallery empty-space layout gap."
+        },
+        {
+            "version": "1.4.4",
+            "date": "2026-11-24",
+            "notes": "Added Date Folder Sorting option (By Year, By Month, and Year -> Month) across Downloader, Settings, Watchlist, and Browser summary; fixed Linux and Python 3.11/3.12 startup crash."
         }
     ]
 }
