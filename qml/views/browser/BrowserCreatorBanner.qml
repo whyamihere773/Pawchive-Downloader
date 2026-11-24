@@ -604,6 +604,50 @@ Rectangle {
                 }
             }
 
+            // Sync Missing & Mismatched Only (Homogeneous Path & Settings Auto-Reuse — Online & Local Modes)
+            Rectangle {
+                id: syncMissingMismatchedBtn
+                objectName: "syncMissingMismatchedBtn"
+                visible: !!(creatorBanner.view.selectedCreator && creatorBanner.view.selectedCreator.key && (creatorBanner.view.isLocalMode || creatorBanner.view.selectedCreator.url))
+                height: 30
+                width: syncMmRow.implicitWidth + 18
+                radius: 7
+                color: syncMmMouse.containsMouse ? "#0F766E" : "#115E59"
+                border.color: "#2DD4BF"
+                border.width: 1
+                Springy { hover: syncMmMouse.containsMouse; pressed: syncMmMouse.pressed }
+
+                Row {
+                    id: syncMmRow
+                    anchors.centerIn: parent
+                    spacing: 6
+                    Text {
+                        text: "🔄"
+                        font.pixelSize: 11
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+                    Text {
+                        text: "Sync Missing / Mismatched"
+                        font.family: "Segoe UI, sans-serif"
+                        font.pixelSize: 11
+                        font.weight: Font.Bold
+                        color: "#CCFBF1"
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+                }
+                MouseArea {
+                    id: syncMmMouse
+                    objectName: "syncMissingMismatchedMouse"
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    ToolTip.visible: containsMouse
+                    ToolTip.delay: 250
+                    ToolTip.text: "Download only posts not on disk or with mismatched/missing files — automatically reuses this creator's existing folder & layout settings"
+                    onClicked: creatorBanner.view.triggerCreatorDiskSync(creatorBanner.view.selectedCreator, "missing_or_mismatched")
+                }
+            }
+
             // Download Entire Creator Immediately
             Rectangle {
                 readonly property bool isDispatched: creatorBanner.view.isUrlDispatched(creatorBanner.view.selectedCreator.url)

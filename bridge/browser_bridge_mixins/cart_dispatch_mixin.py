@@ -418,6 +418,118 @@ class BrowserCartDispatchMixin(BrowserSignalsMixin):
                 previews.append(pick_creator_folder(clean_dir, clean_c, svc))
         return previews
 
+    @Slot("QVariantMap", result="QVariantMap")
+    def prepareCreatorSyncItem(self, creator_map: Dict[str, Any]) -> Dict[str, Any]:
+        """Resolve an Online or Local Mode creator card into a downloadable item dict for Homogeneous Sync."""
+        creator = dict(creator_map) if isinstance(creator_map, dict) else dict(self._selected_creator or {})
+        if not creator:
+            return {}
+        url = self._resolve_creator_url(creator)
+        if not url or not url.lower().startswith(("http://", "https://")):
+            return {"error": "unlinked", "name": str(creator.get("name") or creator.get("creator_name") or "Creator")}
+        prov, svc, cid = self._resolve_online_provider(creator, self._get_creator_links())
+        cname = str(creator.get("name") or creator.get("creator_name") or cid or "Creator").strip()
+        return {
+            "url": url,
+            "title": cname,
+            "creator_name": cname,
+            "creator_id": cid or str(creator.get("creator_id") or ""),
+            "service": svc or str(creator.get("service") or ""),
+            "service_label": str(creator.get("service_label") or svc or "").upper(),
+            "local_dirs": list(creator.get("local_dirs") or []),
+            "is_on_disk": bool(creator.get("is_on_disk") or creator.get("local_dirs")),
+            "item_type": "creator",
+        }
+
+    @Slot("QVariantList", str, bool, str, result="QVariantMap")
+    def inspectHomogeneousSync(
+        self,
+        items: list,
+        fallback_dir: str = "",
+        create_creator_folder: bool = True,
+        disk_sync_mode: str = "missing_or_mismatched",
+    ) -> Dict[str, Any]:
+        """Inspect pending Browser download items to preview auto-reused on-disk folders and layout settings."""
+        from core.filter_options import FilterOptions
+        from core.homogeneous_sync import resolve_homogeneous_creator_context
+
+        base_opts = (
+            self._app_bridge._get_filter_options()
+            if (self._app_bridge and hasattr(self._app_bridge, "_get_filter_options"))
+            else FilterOptions()
+        )
+        wl_mgr = getattr(self._app_bridge, "_watchlist_manager", None) if self._app_bridge else None
+        clean_fb = os.path.normpath((fallback_dir or "").strip()) if (fallback_dir or "").strip() else self.getEffectiveDownloadDir()
+
+        seen_keys: Set[Tuple[str, str]] = set()
+        previews: List[str] = []
+        summaries: List[str] = []
+        on_disk_cnt = 0
+        creator_cnt = 0
+        first_artist_dir = ""
+
+        raw_items = [it for it in (items or []) if isinstance(it, dict)]
+        multi = len({
+            (str(it.get("service") or "").lower(), str(it.get("creator_id") or it.get("creator_name") or it.get("name") or i).lower())
+            for i, it in enumerate(raw_items)
+        }) > 1
+
+        for idx, it in enumerate(raw_items):
+            svc = str(it.get("service") or "").strip().lower()
+            cid = str(it.get("creator_id") or "").strip()
+            cname = str(it.get("creator_name") or it.get("name") or it.get("title") or cid or "Creator").strip()
+            url = str(it.get("url") or "").strip()
+            if (not svc or svc == "local" or not cid) and url.startswith(("http://", "https://")):
+                try:
+                    from core.parser import KemonoURLParser
+                    p = KemonoURLParser.parse(url)
+                    if p and p.is_valid and not p.is_external_provider:
+                        svc = svc or str(p.service or "").lower()
+                        cid = cid or str(p.user_id or "")
+                except Exception:
+                    pass
+            key = (svc, (cid or cname or str(idx)).lower())
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            creator_cnt += 1
+
+            ctx = resolve_homogeneous_creator_context(
+                service=svc,
+                user_id=cid,
+                creator_name=cname,
+                base_options=base_opts,
+                fallback_dir=clean_fb,
+                disk_sync_mode=disk_sync_mode,
+                local_library=self._local_library,
+                watchlist_manager=wl_mgr,
+                explicit_local_dirs=list(it.get("local_dirs") or []),
+                create_creator_folder=(True if multi else bool(create_creator_folder)),
+            )
+            adir = str(ctx.get("artist_dir") or "")
+            if not first_artist_dir and adir:
+                first_artist_dir = adir
+            if ctx.get("on_disk"):
+                on_disk_cnt += 1
+                previews.append(f"{adir}  (✓ existing on disk)")
+            elif adir:
+                previews.append(adir)
+            summaries.append(str(ctx.get("summary") or ""))
+
+        summary_txt = summaries[0] if len(summaries) == 1 else (
+            f"Auto-matching per-creator folder layouts ({on_disk_cnt}/{creator_cnt} already on disk)"
+            if creator_cnt > 0 else ""
+        )
+        return {
+            "on_disk_count": on_disk_cnt,
+            "creator_count": creator_cnt,
+            "auto_dir": first_artist_dir if (creator_cnt == 1 and on_disk_cnt == 1) else clean_fb,
+            "single_on_disk": bool(creator_cnt == 1 and on_disk_cnt == 1),
+            "previews": previews,
+            "summary": summary_txt,
+        }
+
+    @Slot("QVariantList", str, bool, bool, bool, bool, str, result=int)
     @Slot("QVariantList", str, bool, bool, bool, bool, result=int)
     def dispatchBrowserDownload(
         self,
@@ -427,27 +539,41 @@ class BrowserCartDispatchMixin(BrowserSignalsMixin):
         create_creator_folder: bool = True,
         clear_marks: bool = False,
         force_redownload: bool = False,
+        disk_sync_mode: str = "all",
     ) -> int:
-        """Dispatches Browser-chosen URLs to the Downloader with an explicit destination folder & folder mode."""
+        """Dispatches Browser-chosen URLs to the Downloader with an explicit destination folder & sync mode."""
+        from core.filter_options import normalize_disk_sync_mode
+        norm_sync = normalize_disk_sync_mode(disk_sync_mode)
+
         clean_urls = [str(u or "").strip() for u in (urls or []) if str(u or "").strip()]
         if not clean_urls:
             self.toastRequested.emit("No downloadable URLs selected.", "warning")
             return 0
         clean_dir = os.path.normpath((download_dir or "").replace("file:///", "").replace("file://", "").strip()) if (download_dir or "").strip() else ""
-        if not clean_dir:
+        if not clean_dir and norm_sync == "all":
             self.toastRequested.emit("Please choose a destination folder before downloading.", "warning")
             return 0
         if not self._app_bridge:
             self.toastRequested.emit("Downloader bridge is not connected.", "warning")
             return 0
 
-        # Remember this folder for the next time the Browser Download modal opens
-        self.setLastDownloadDir(clean_dir)
+        # Remember this folder for future brand-new downloads (don't overwrite with an auto-matched existing creator folder)
+        if clean_dir and norm_sync == "all":
+            self.setLastDownloadDir(clean_dir)
 
         if hasattr(self._app_bridge, "enqueueBatchUrls"):
             try:
                 sig = inspect.signature(self._app_bridge.enqueueBatchUrls)
-                if len(sig.parameters) >= 5:
+                if len(sig.parameters) >= 6:
+                    self._app_bridge.enqueueBatchUrls(
+                        clean_urls,
+                        auto_start,
+                        force_redownload,
+                        clean_dir,
+                        create_creator_folder,
+                        norm_sync,
+                    )
+                elif len(sig.parameters) >= 5:
                     self._app_bridge.enqueueBatchUrls(
                         clean_urls,
                         bool(auto_start),
@@ -480,6 +606,16 @@ class BrowserCartDispatchMixin(BrowserSignalsMixin):
                 self.newPostsStateChanged.emit()
 
         count = len(clean_urls)
-        action_label = "Started downloading" if auto_start else "Added to Queue:"
-        self.toastRequested.emit(f"{action_label} {count} item(s) → {clean_dir}", "success")
+        if norm_sync != "all":
+            mode_labels = {
+                "missing_or_mismatched": "Missing & Mismatched",
+                "missing_only": "Not on Disk Only",
+                "mismatched_only": "Mismatched Only",
+            }
+            mlbl = mode_labels.get(norm_sync, "Disk Sync")
+            verb = "Started Homogeneous Sync" if auto_start else "Queued Homogeneous Sync"
+            self.toastRequested.emit(f"{verb} ({mlbl}) for {count} item(s) in Downloader.", "success")
+        else:
+            action_label = "Started downloading" if auto_start else "Added to Queue:"
+            self.toastRequested.emit(f"{action_label} {count} item(s) → {clean_dir}", "success")
         return count

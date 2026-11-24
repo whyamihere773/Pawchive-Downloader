@@ -407,6 +407,7 @@ class DownloadControlMixin(AppBridgeSignalsMixin):
             daemon=True
         ).start()
 
+    @Slot("QVariantList", bool, bool, str, bool, str)
     @Slot("QVariantList", bool, bool, str, bool)
     @Slot("QVariantList", bool, bool)
     @Slot("QVariantList", bool)
@@ -418,6 +419,7 @@ class DownloadControlMixin(AppBridgeSignalsMixin):
         forceRedownload: bool = False,
         downloadDir: str = "",
         createCreatorFolder: bool = True,
+        diskSyncMode: str = "all",
     ) -> None:
         """
         Enqueues a batch of creator or post URLs (e.g. from the Browser selection cart)
@@ -427,6 +429,8 @@ class DownloadControlMixin(AppBridgeSignalsMixin):
         if not raw_urls:
             return
         clean_dir = os.path.normpath(str(downloadDir or "").strip()) if str(downloadDir or "").strip() else ""
+        from core.filter_options import normalize_disk_sync_mode
+        norm_sync_mode = normalize_disk_sync_mode(diskSyncMode)
 
         self._scan_cancel_event.clear()
         if autoStart:
@@ -435,7 +439,10 @@ class DownloadControlMixin(AppBridgeSignalsMixin):
             if not self._is_downloading:
                 self._is_downloading = True
                 self.isDownloadingChanged.emit()
-            self._status_text = f"Fetching {len(raw_urls)} marked item(s) for download…"
+            if norm_sync_mode != "all":
+                self._status_text = f"Scanning {len(raw_urls)} item(s) for missing/mismatched files on disk…"
+            else:
+                self._status_text = f"Fetching {len(raw_urls)} marked item(s) for download…"
             self.statusTextChanged.emit()
 
         def _batch_worker():
@@ -452,7 +459,7 @@ class DownloadControlMixin(AppBridgeSignalsMixin):
                         continue
 
                     link_type, identity_key, parent_artist_key, display_name = self._get_link_identity(parsed)
-                    if not forceRedownload:
+                    if not forceRedownload and norm_sync_mode == "all":
                         if identity_key in self._queued_links:
                             logger.info(f"Skipping duplicate {link_type}: {display_name} is already in queue.", category="queue")
                             continue
@@ -468,6 +475,7 @@ class DownloadControlMixin(AppBridgeSignalsMixin):
                         override_download_dir=clean_dir,
                         create_creator_folder=bool(createCreatorFolder),
                         from_batch=is_multi,
+                        disk_sync_mode=norm_sync_mode,
                     )
             finally:
                 if autoStart and not self.downloader._is_running:

@@ -5,6 +5,13 @@
 
 ---
 
+### 🔄 Browser Mode: Sync Missing & Mismatched Only
+
+* **Download only missing or mismatched posts**: Use the new **Sync Missing / Mismatched** button on any creator in Browser Mode (or pick **Missing & Mismatched**, **Not on Disk Only**, or **Mismatched Only** in the Browser download dialog) to skip complete posts and grab only missing or incomplete ones.
+* **Automatic path & layout matching**: Syncing automatically finds the creator's existing folder on disk and reuses its exact folder layout and naming style so new and repaired files blend right in.
+
+---
+
 ### ⚡ Smarter Pawchive Rate-Limit Protection
 
 * **Smoother downloads without 429 stalls**: Downloads now automatically spread across different Pawchive storage servers, balance large and small files, and pace requests per server before rate limits are ever reached. If one storage server does ask to slow down, files on other servers keep downloading normally instead of stalling the whole queue.

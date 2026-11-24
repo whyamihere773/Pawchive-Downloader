@@ -50,6 +50,11 @@ class BrowserBridge(
         super().__init__(parent)
         self._callOnGui.connect(self._run_on_gui, Qt.QueuedConnection)
         self._app_bridge = app_bridge
+        if app_bridge is not None:
+            try:
+                app_bridge._browser_bridge = self
+            except Exception:
+                pass
 
         self._creators_model = RecordListModel(self, key_field="key")
         self._posts_model = RecordListModel(self, key_field="key")

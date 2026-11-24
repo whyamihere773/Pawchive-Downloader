@@ -16,7 +16,12 @@ Item {
     property string modalTitle: "Download Selection"
     property var pendingItems: []
     property string targetDir: ""
+    property string manualTargetDir: ""
     property bool createCreatorFolder: true
+    property string diskSyncMode: "all"        // "all" | "missing_or_mismatched" | "missing_only" | "mismatched_only"
+    property string homogeneousSummary: ""
+    property bool singleCreatorOnDisk: false
+    property int homogeneousOnDiskCount: 0
     property var folderPreviews: []
     property string errorText: ""
 
@@ -80,7 +85,62 @@ Item {
 
     Keys.onEscapePressed: modalRoot.close()
 
+    function applyDiskSyncInspection() {
+        if (modalRoot.diskSyncMode === "all") {
+            modalRoot.homogeneousSummary = ""
+            modalRoot.singleCreatorOnDisk = false
+            modalRoot.homogeneousOnDiskCount = 0
+            if (modalRoot.manualTargetDir && modalRoot.targetDir !== modalRoot.manualTargetDir) {
+                modalRoot.targetDir = modalRoot.manualTargetDir
+            }
+            modalRoot.createCreatorFolder = true
+            modalRoot.refreshFolderPreviews()
+            return
+        }
+        if (modalRoot.browserBridge && modalRoot.browserBridge.inspectHomogeneousSync) {
+            var info = modalRoot.browserBridge.inspectHomogeneousSync(
+                modalRoot.pendingItems || [],
+                modalRoot.manualTargetDir || modalRoot.targetDir || "",
+                modalRoot.createCreatorFolder,
+                modalRoot.diskSyncMode
+            ) || ({})
+            modalRoot.homogeneousSummary = String(info.summary || "")
+            modalRoot.singleCreatorOnDisk = !!info.single_on_disk
+            modalRoot.homogeneousOnDiskCount = Number(info.on_disk_count || 0)
+            if (info.single_on_disk && info.auto_dir) {
+                modalRoot.targetDir = String(info.auto_dir)
+                modalRoot.createCreatorFolder = false
+            }
+            modalRoot.folderPreviews = info.previews || []
+        } else {
+            modalRoot.refreshFolderPreviews()
+        }
+    }
+
+    function setDiskSyncMode(newMode) {
+        var norm = String(newMode || "all")
+        if (modalRoot.diskSyncMode === norm) return
+        if (modalRoot.diskSyncMode === "all" && modalRoot.targetDir) {
+            modalRoot.manualTargetDir = modalRoot.targetDir
+        }
+        modalRoot.diskSyncMode = norm
+        modalRoot.errorText = ""
+        modalRoot.applyDiskSyncInspection()
+    }
+
     function refreshFolderPreviews() {
+        if (modalRoot.diskSyncMode !== "all" && modalRoot.browserBridge && modalRoot.browserBridge.inspectHomogeneousSync) {
+            var info = modalRoot.browserBridge.inspectHomogeneousSync(
+                modalRoot.pendingItems || [],
+                modalRoot.targetDir || modalRoot.manualTargetDir || "",
+                modalRoot.effectiveCreateCreatorFolder,
+                modalRoot.diskSyncMode
+            ) || ({})
+            modalRoot.folderPreviews = info.previews || []
+            modalRoot.homogeneousSummary = String(info.summary || "")
+            modalRoot.singleCreatorOnDisk = !!info.single_on_disk
+            return
+        }
         var dir = (modalRoot.targetDir || "").trim()
         if (!dir) {
             modalRoot.folderPreviews = []
@@ -127,7 +187,7 @@ Item {
         openForItems(downloadable, heading, autoStart, "marked")
     }
 
-    function openForItems(items, title, autoStart, modeName) {
+    function openForItems(items, title, autoStart, modeName, initialSyncMode) {
         var list = []
         for (var i = 0; i < (items || []).length; i++) {
             var it = items[i]
@@ -155,8 +215,17 @@ Item {
         } else if (modalRoot.appBridge && modalRoot.appBridge.downloadDir) {
             initialDir = String(modalRoot.appBridge.downloadDir || "").trim()
         }
+        modalRoot.manualTargetDir = initialDir
         modalRoot.targetDir = initialDir
-        modalRoot.refreshFolderPreviews()
+        modalRoot.diskSyncMode = String(initialSyncMode || "all")
+        if (modalRoot.diskSyncMode !== "all") {
+            modalRoot.applyDiskSyncInspection()
+        } else {
+            modalRoot.homogeneousSummary = ""
+            modalRoot.singleCreatorOnDisk = false
+            modalRoot.homogeneousOnDiskCount = 0
+            modalRoot.refreshFolderPreviews()
+        }
         modalRoot.isOpen = true
     }
 
@@ -176,7 +245,7 @@ Item {
 
     function confirmDispatch(autoStart) {
         var cleanDir = (modalRoot.targetDir || "").trim()
-        if (!cleanDir) {
+        if (!cleanDir && modalRoot.diskSyncMode === "all") {
             modalRoot.activeTab = 0
             modalRoot.errorText = "Please choose a destination folder before starting."
             return
@@ -201,7 +270,8 @@ Item {
                 Boolean(autoStart),
                 modalRoot.effectiveCreateCreatorFolder,
                 modalRoot.mode === "marked",
-                false
+                false,
+                modalRoot.diskSyncMode
             )
             if (dispatched > 0) {
                 modalRoot.downloadDispatched(urls, Boolean(autoStart), cleanDir)
@@ -400,6 +470,15 @@ Item {
                     id: destCol
                     width: parent.width - 6
                     spacing: 12
+
+                    // 0. Disk Sync Scope Selector (All | Missing & Mismatched | Not on Disk | Mismatched Only)
+                    BrowserDiskSyncBar {
+                        diskSyncMode: modalRoot.diskSyncMode
+                        homogeneousSummary: modalRoot.homogeneousSummary
+                        onDiskCreatorCount: modalRoot.homogeneousOnDiskCount
+                        totalCreatorCount: modalRoot.distinctCreatorCount
+                        onModeSelected: function(m) { modalRoot.setDiskSyncMode(m) }
+                    }
 
                     // 1. Download Folder Card
                     Rectangle {
@@ -620,16 +699,18 @@ Item {
                                 spacing: 3
 
                                 Text {
-                                    text: "ACTIVE DOWNLOADER SETTINGS"
+                                    text: modalRoot.diskSyncMode !== "all" ? "HOMOGENEOUS SETTINGS (AUTO-REUSED)" : "ACTIVE DOWNLOADER SETTINGS"
                                     font.family: "Segoe UI, sans-serif"
                                     font.pixelSize: 10
                                     font.weight: Font.Bold
-                                    color: "#94A3B8"
+                                    color: modalRoot.diskSyncMode !== "all" ? "#34D399" : "#94A3B8"
                                 }
 
                                 Text {
                                     Layout.fillWidth: true
-                                    text: modalRoot.activeSettingsSummary || "Using Downloader tab settings"
+                                    text: (modalRoot.diskSyncMode !== "all" && modalRoot.homogeneousSummary.length > 0)
+                                          ? modalRoot.homogeneousSummary
+                                          : (modalRoot.activeSettingsSummary || "Using Downloader tab settings")
                                     font.family: "Segoe UI, sans-serif"
                                     font.pixelSize: 11
                                     color: "#E2E8F0"
@@ -807,17 +888,17 @@ Item {
                     iconText: "➕"
                     variant: modalRoot.defaultAutoStart ? "outline" : "primary"
                     implicitHeight: 34
-                    enabled: modalRoot.targetDir.trim().length > 0
+                    enabled: modalRoot.targetDir.trim().length > 0 || modalRoot.diskSyncMode !== "all"
                     onClicked: modalRoot.confirmDispatch(false)
                 }
 
                 StyledButton {
                     objectName: "browserDlModalStartBtn"
-                    text: "Start Download"
-                    iconText: "🚀"
+                    text: modalRoot.diskSyncMode !== "all" ? "Start Homogeneous Sync" : "Start Download"
+                    iconText: modalRoot.diskSyncMode !== "all" ? "🔄" : "🚀"
                     variant: modalRoot.defaultAutoStart ? "success" : "outline"
                     implicitHeight: 34
-                    enabled: modalRoot.targetDir.trim().length > 0
+                    enabled: modalRoot.targetDir.trim().length > 0 || modalRoot.diskSyncMode !== "all"
                     onClicked: modalRoot.confirmDispatch(true)
                 }
             }

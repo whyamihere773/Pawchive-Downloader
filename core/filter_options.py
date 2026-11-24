@@ -121,6 +121,23 @@ WEBP_QUALITY_LEVELS = {"lossless": None, "high": 95, "balanced": 85, "small": 70
 # Date-based folder sorting modes inside each creator folder
 DATE_FOLDER_MODES = ("none", "year", "month", "year_month")
 
+# Browser disk-sync modes ("all" = standard; others skip complete posts & auto-reuse creator path/layout)
+DISK_SYNC_MODES = ("all", "missing_or_mismatched", "missing_only", "mismatched_only")
+
+
+def normalize_disk_sync_mode(value: Any) -> str:
+    """Normalize a Browser disk-sync mode string to one of DISK_SYNC_MODES."""
+    v = str(value or "all").strip().lower().replace("-", "_").replace(" ", "_")
+    if v in ("all", "off", "false", "none", ""):
+        return "all"
+    if v in ("missing_or_mismatched", "missing_and_mismatched", "sync", "both"):
+        return "missing_or_mismatched"
+    if v in ("missing_only", "missing", "not_on_disk"):
+        return "missing_only"
+    if v in ("mismatched_only", "mismatched", "partial", "incomplete"):
+        return "mismatched_only"
+    return "all"
+
 
 def normalize_date_folder_mode(value: Any) -> str:
     """Normalize a date folder sorting mode to one of DATE_FOLDER_MODES."""
@@ -306,7 +323,8 @@ class FilterOptions:
         video_duration_filter_enabled: bool = False,
         min_video_duration: str = "",
         max_video_duration: str = "",
-        force_redownload: bool = False
+        force_redownload: bool = False,
+        disk_sync_mode: str = "all",
     ):
         self.characters = characters
         self.character_scope = character_scope
@@ -364,6 +382,7 @@ class FilterOptions:
         self.min_video_duration = normalize_duration_str(min_video_duration) if min_video_duration else ""
         self.max_video_duration = normalize_duration_str(max_video_duration) if max_video_duration else ""
         self.force_redownload = bool(force_redownload)
+        self.disk_sync_mode = normalize_disk_sync_mode(disk_sync_mode)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize filter options to dictionary for persistence."""
@@ -421,6 +440,7 @@ class FilterOptions:
             "min_video_duration": self.min_video_duration,
             "max_video_duration": self.max_video_duration,
             "force_redownload": self.force_redownload,
+            "disk_sync_mode": self.disk_sync_mode,
         }
 
     @classmethod
@@ -482,6 +502,7 @@ class FilterOptions:
             min_video_duration=d.get("min_video_duration", ""),
             max_video_duration=d.get("max_video_duration", ""),
             force_redownload=bool(d.get("force_redownload", False)),
+            disk_sync_mode=d.get("disk_sync_mode", "all"),
         )
 
 

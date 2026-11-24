@@ -79,15 +79,32 @@ class DownloaderTransferHttpMixin:
             self.on_task_status_changed(task)
 
         force_redownload = bool(getattr(options, "force_redownload", False))
+        sync_mode = str(getattr(options, "disk_sync_mode", "all") or "all").lower()
+        is_disk_sync = sync_mode in ("missing_or_mismatched", "missing_only", "mismatched_only")
+        check_size_mismatch = sync_mode in ("missing_or_mismatched", "mismatched_only")
 
-        # Check if file is already recorded in download archive database — unless the copy on disk is a
-        # small / preview one that should be replaced by the full-size file (planning allowed that,
-        # but this second check used to mark those files "already archived" anyway)
+        def _runtime_disk_mismatched(dpath: str, dsz: int) -> bool:
+            if needs_full_size_upgrade(dsz, task.file_size, task.target_path, options, dpath):
+                return True
+            if not check_size_mismatch or task.file_size <= 0 or dsz == task.file_size:
+                return False
+            dext = os.path.splitext(dpath)[1].lower()
+            if dext == ".webp":
+                return False
+            if getattr(options, "write_audio_metadata", False) and dext in (".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".opus"):
+                return False
+            return True
+
+        # Check if file is already recorded in download archive database — unless the copy on disk is
+        # missing (during Browser disk-sync) or small/mismatched and needs repair/upgrade
         _disk_cands = _get_media_candidate_paths(task.target_path)
         if not force_redownload and self.archive_manager and self.archive_manager.is_enabled:
             _on_disk = next((p for p in _disk_cands if os.path.exists(p) and os.path.getsize(p) > 0), None)
-            _upgrade = bool(_on_disk) and needs_full_size_upgrade(os.path.getsize(_on_disk), task.file_size, task.target_path, options, _on_disk)
-            if not _upgrade and self.archive_manager.is_archived(service=task.service, post_id=task.post_id, file_id=task.file_id, file_hash=task.expected_sha256):
+            _upgrade = bool(_on_disk) and _runtime_disk_mismatched(
+                _on_disk, os.path.getsize(_on_disk)
+            )
+            _missing_sync = is_disk_sync and (_on_disk is None)
+            if not _upgrade and not _missing_sync and self.archive_manager.is_archived(service=task.service, post_id=task.post_id, file_id=task.file_id, file_hash=task.expected_sha256):
                 task.status = "completed"
                 task.progress_pct = 100
                 task.eta_str = "Done"
@@ -123,9 +140,8 @@ class DownloaderTransferHttpMixin:
                     self.on_task_status_changed(task)
                 return True, f"Skipped: {f_reason}"
 
-            # Check if this existing file is a low-res thumbnail that needs upgrade to full resolution
-            should_upgrade = needs_full_size_upgrade(existing_disk_sz, task.file_size, task.target_path,
-                                                     options, found_existing_path)
+            # Check if this existing file is a low-res thumbnail or size-mismatched file that needs repair
+            should_upgrade = _runtime_disk_mismatched(found_existing_path, existing_disk_sz)
 
             if not should_upgrade:
                 if self.is_batch_cancelled(task):

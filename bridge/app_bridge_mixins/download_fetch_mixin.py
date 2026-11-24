@@ -161,7 +161,10 @@ class DownloadFetchMixin(AppBridgeSignalsMixin):
         override_download_dir: str = "",
         create_creator_folder: bool = True,
         from_batch: bool = False,
+        disk_sync_mode: str = "all",
     ):
+        from core.filter_options import normalize_disk_sync_mode
+        norm_disk_sync = normalize_disk_sync_mode(disk_sync_mode)
         scan_gen = self._scan_ui_gen
         with self._scan_jobs_lock:
             self._active_scan_jobs += 1
@@ -364,6 +367,28 @@ class DownloadFetchMixin(AppBridgeSignalsMixin):
                 self._creator_name = creator_name
                 self.creatorNameChanged.emit()
 
+                homog_ctx = None
+                if norm_disk_sync != "all":
+                    from core.homogeneous_sync import resolve_homogeneous_creator_context
+                    b_bridge = getattr(self, "_browser_bridge", None)
+                    loc_lib = getattr(b_bridge, "_local_library", None) if b_bridge is not None else None
+                    homog_ctx = resolve_homogeneous_creator_context(
+                        service=parsed.service,
+                        user_id=parsed.user_id,
+                        creator_name=creator_name,
+                        base_options=options,
+                        fallback_dir=effective_download_dir or str(self._download_dir or ""),
+                        disk_sync_mode=norm_disk_sync,
+                        local_library=loc_lib,
+                        watchlist_manager=self._watchlist_manager,
+                        create_creator_folder=create_creator_folder,
+                    )
+                    options = homog_ctx["options"]
+                    logger.info(
+                        f"🔄 [Homogeneous Sync] '{creator_name}' ({norm_disk_sync}) → folder='{homog_ctx['artist_dir']}'  [{homog_ctx['summary']}]",
+                        category="downloader",
+                    )
+
                 if self._scan_cancel_event.is_set():
                     self._is_downloading = bool(self.downloader._is_running)
                     self._status_text = "Progress: Cancelled"
@@ -379,13 +404,14 @@ class DownloadFetchMixin(AppBridgeSignalsMixin):
                     # If date auto-scan is enabled and a date filter is active,
                     # override page_end to scan all pages; the API client will
                     # stop early once it passes the requested date range.
-                    scan_page_start = options.page_start if from_watchlist else self._page_start
-                    scan_page_end = options.page_end if from_watchlist else self._page_end
-                    scan_date_after = options.date_after if from_watchlist else self._date_after
-                    scan_date_before = options.date_before if from_watchlist else self._date_before
+                    use_opt_bounds = from_watchlist or (norm_disk_sync != "all")
+                    scan_page_start = options.page_start if use_opt_bounds else self._page_start
+                    scan_page_end = options.page_end if use_opt_bounds else self._page_end
+                    scan_date_after = options.date_after if use_opt_bounds else self._date_after
+                    scan_date_before = options.date_before if use_opt_bounds else self._date_before
                     scan_download_dms = (
                         bool(getattr(options, "download_dms", False))
-                        if from_watchlist
+                        if use_opt_bounds
                         else bool(getattr(options, "download_dms", False) or self._download_dms)
                     )
                     effective_page_end = scan_page_end
@@ -459,6 +485,40 @@ class DownloadFetchMixin(AppBridgeSignalsMixin):
                     self.statusTextChanged.emit()
                     return
 
+                if homog_ctx is not None:
+                    from core.homogeneous_sync import filter_posts_for_disk_sync
+                    b_bridge = getattr(self, "_browser_bridge", None)
+                    loc_lib = getattr(b_bridge, "_local_library", None) if b_bridge is not None else None
+                    self._update_scan_progress(
+                        f"Comparing {len(posts):,} post(s) against local disk ({creator_name})...",
+                        0, 0, force=True, gen=scan_gen
+                    )
+                    posts, sync_stats = filter_posts_for_disk_sync(
+                        posts=posts,
+                        disk_sync_mode=norm_disk_sync,
+                        service=parsed.service,
+                        user_id=parsed.user_id,
+                        creator_name=creator_name,
+                        domain=parsed.domain,
+                        artist_dir=homog_ctx["artist_dir"],
+                        options=options,
+                        downloader=self.downloader,
+                        local_library=loc_lib,
+                    )
+                    logger.info(
+                        f"🔍 [Homogeneous Sync] '{creator_name}': {sync_stats['complete']} complete skipped, "
+                        f"{sync_stats['missing']} not on disk, {sync_stats['mismatched']} mismatched → {len(posts)} post(s) selected.",
+                        category="downloader",
+                    )
+                    if not posts:
+                        msg_done = f"✔ {creator_name}: Already complete & matched on disk ({sync_stats['complete']} post(s) verified)"
+                        logger.success(msg_done, category="downloader")
+                        if b_bridge is not None and hasattr(b_bridge, "toastRequested"):
+                            b_bridge.toastRequested.emit(msg_done, "info")
+                        if not from_batch and not self.downloader._is_running and self._active_scan_jobs <= 1:
+                            self._set_ui_state(is_downloading=False, status_text=msg_done)
+                        return
+
                 # If character filter uses comments scope, attach comments to post dictionaries
                 if options.character_scope in ("comments", "all"):
                     ctx_fetched_comments = True
@@ -504,7 +564,15 @@ class DownloadFetchMixin(AppBridgeSignalsMixin):
                     return
 
                 # 3. Build tasks
-                if has_override_dir:
+                if homog_ctx is not None and homog_ctx.get("artist_dir"):
+                    batch_id = (
+                        f"post_{parsed.service}_{parsed.user_id}_{parsed.post_id}"
+                        if (parsed.is_single_post and parsed.post_id)
+                        else f"artist_{parsed.service}_{parsed.user_id}"
+                    )
+                    artist_dir = homog_ctx["artist_dir"]
+                    tasks_base_dir = homog_ctx["base_dir"] or os.path.dirname(os.path.abspath(artist_dir))
+                elif has_override_dir:
                     from core.filter_engine import FilterEngine
                     batch_id = (
                         f"post_{parsed.service}_{parsed.user_id}_{parsed.post_id}"

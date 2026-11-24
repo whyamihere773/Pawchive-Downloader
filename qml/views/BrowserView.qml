@@ -357,8 +357,37 @@ Rectangle {
         newPostsModal.open()
     }
 
-    function openDownloadModalForItems(items, heading, autoStart, sourceMode) {
-        browserDownloadModal.openForItems(items, heading, autoStart, sourceMode)
+    function openDownloadModalForItems(items, heading, autoStart, sourceMode, initialSyncMode) {
+        browserDownloadModal.openForItems(items, heading, autoStart, sourceMode, initialSyncMode || "all")
+    }
+
+    function triggerCreatorDiskSync(creatorObj, syncMode) {
+        if (!root.bBridge) return
+        var c = creatorObj || root.selectedCreator || ({})
+        var mode = String(syncMode || "missing_or_mismatched")
+        if (root.bBridge.prepareCreatorSyncItem) {
+            var prep = root.bBridge.prepareCreatorSyncItem(c) || ({})
+            if (prep.error === "unlinked") {
+                root.bBridge.searchCreatorAcrossSites(c)
+                root.openNewPostsModal()
+                return
+            }
+            if (prep.url) {
+                var cname = String(prep.creator_name || prep.title || "Creator")
+                browserDownloadModal.openForItems(
+                    [prep],
+                    "Sync Missing & Mismatched — " + cname,
+                    true,
+                    "sync",
+                    mode
+                )
+                return
+            }
+        }
+        if (c.url) {
+            var lbl = String(c.name || c.creator_name || "Creator")
+            browserDownloadModal.openForItems([c], "Sync Missing & Mismatched — " + lbl, true, "sync", mode)
+        }
     }
 
     function openProviderLoginModal(providerId, reason) {

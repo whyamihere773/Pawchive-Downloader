@@ -593,14 +593,35 @@ class DownloaderTaskBuilderFilesMixin:
             expected_sha = str(fobj.get("sha256") or fobj.get("hash") or "")
 
             force_redownload = bool(getattr(options, "force_redownload", False))
+            sync_mode = str(getattr(options, "disk_sync_mode", "all") or "all").lower()
+            is_disk_sync = sync_mode in ("missing_or_mismatched", "missing_only", "mismatched_only")
+            check_size_mismatch = sync_mode in ("missing_or_mismatched", "mismatched_only")
+            api_file_bytes = int(file_bytes or 0)
 
-            # Skip if already recorded in download archive database (gallery-dl style) — unless the
-            # copy still on disk is a small / preview one that should be upgraded to full size
+            def _is_disk_file_mismatched(dpath: str, dsz: int) -> bool:
+                if needs_full_size_upgrade(dsz, api_file_bytes, target_path, options, dpath):
+                    return True
+                if not check_size_mismatch or api_file_bytes <= 0 or dsz == api_file_bytes:
+                    return False
+                dext = os.path.splitext(dpath)[1].lower()
+                if dext == ".webp":
+                    return False
+                if getattr(options, "write_audio_metadata", False) and dext in MediaTypes.AUDIO_EXTS:
+                    return False
+                return True
+
+            # Skip if already recorded in download archive database (gallery-dl style) — unless:
+            # 1) the copy still on disk is small / preview / size-mismatched and needs upgrade, OR
+            # 2) Browser disk-sync mode is active and the file is physically missing from disk!
             if not force_redownload and self.archive_manager and self.archive_manager.is_enabled:
                 if self.archive_manager.is_archived(service=service, post_id=post_id, file_id=file_id, file_hash=expected_sha):
                     on_disk = next((cp for cp in disk_candidates
                                     if os.path.exists(cp) and os.path.getsize(cp) > 0), None)
-                    if not (on_disk and needs_full_size_upgrade(os.path.getsize(on_disk), int(file_bytes or 0), target_path, options, on_disk)):
+                    if is_disk_sync and on_disk is None:
+                        pass
+                    elif on_disk and _is_disk_file_mismatched(on_disk, os.path.getsize(on_disk)):
+                        pass
+                    else:
                         logger.info(f"📦 Skipping archived file: '{os.path.basename(target_path)}' (present in download archive)",
                                     category="file", to_file=False)
                         not_queued["in the download archive"] += 1
@@ -613,9 +634,8 @@ class DownloaderTaskBuilderFilesMixin:
 
                 if existing_disk_path:
                     existing_sz = os.path.getsize(existing_disk_path)
-                    # A small / preview copy is replaced by the full-size file
-                    should_upgrade = needs_full_size_upgrade(existing_sz, int(file_bytes or 0), target_path,
-                                                             options, existing_disk_path)
+                    # A small / preview / size-mismatched copy is replaced by the full-size file
+                    should_upgrade = _is_disk_file_mismatched(existing_disk_path, existing_sz)
 
                     if not should_upgrade:
                         logger.info(f"⏳ Skipping existing file: '{os.path.basename(target_path)}' (already present on disk)",
@@ -625,7 +645,7 @@ class DownloaderTaskBuilderFilesMixin:
                     else:
                         logger.info(
                             f"🔄 Re-downloading '{os.path.basename(target_path)}' ({FilterEngine.format_size_str(existing_sz)}) "
-                            f"to upgrade to full resolution",
+                            f"to repair/upgrade mismatched file",
                             category="file"
                         )
 
