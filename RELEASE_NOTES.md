@@ -1,3 +1,21 @@
+> [!CAUTION]
+> ```diff
+> - CLEAN INSTALLATION STRONGLY RECOMMENDED AFTER THIS CODEBASE OVERHAUL — ALWAYS BACK UP YOUR DATA FIRST!
+> ```
+>
+> **BECAUSE THIS UPDATE REORGANIZED THE ENTIRE CODEBASE, WE STRONGLY RECOMMEND DOING A CLEAN INSTALLATION INSTEAD OF UPDATING OVER AN OLDER FOLDER (ESPECIALLY IF YOU HAVE BEEN UPDATING SINCE OLDER VERSIONS).**
+>
+> **HOW TO BACK UP & MIGRATE YOUR DATA SAFELY:**
+> 1. **Close Pawchive Downloader completely** before copying anything so your database and settings save cleanly.
+> 2. **Make a backup first**: Copy your existing **`config`** folder (this holds your settings, download archive database, Watchlist, Link Vault, saved logins, and password bank) — and your **`data`** folder if you have custom `Known.txt` entries or offline AI models — to a safe backup location (e.g. Desktop or another drive).
+>    * *On Windows:* Both folders sit right next to `Pawchive Downloader.exe`.
+>    * *On Linux:* Your data is stored in `~/.config/pawchive` and `~/.local/share/pawchive` — back those folders up before updating.
+> 3. **Fresh install**: Download v1.4.3 and extract it into a **brand-new empty folder**.
+> 4. **Migrate your data** *(Windows)*: Copy your **`config`** folder (and **`data`** folder, if you have one) from your backup into the new v1.4.3 folder next to `Pawchive Downloader.exe`, then launch the app. *(On Linux, simply launch the fresh v1.4.3 build — it will pick up `~/.config/pawchive` automatically.)*
+> 5. **Keep your backup** until you've opened v1.4.3 and verified your Archive, Watchlist, Link Vault, and Settings all loaded properly.
+
+---
+
 ### 🏗️ Architecture & Performance Improvements
 
 * **Cleaner modular structure**: Reorganized the existing codebase by splitting oversized all-in-one files into smaller, focused modules with a plug-and-play layout for cloud and media providers, making future updates faster and safer.
