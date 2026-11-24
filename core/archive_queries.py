@@ -8,7 +8,7 @@ import os
 import re
 import sqlite3
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from core import archive_index
 from core.logger import logger
