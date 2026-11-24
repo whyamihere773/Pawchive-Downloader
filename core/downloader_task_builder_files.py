@@ -233,7 +233,9 @@ class DownloaderTaskBuilderFilesMixin:
                     mirror_url = f"https://{mirror_host}/data{clean_rel}?f={_fq(sanitized_name)}"
                     not_copied_yet = str(post.get("origin", "")).lower() in ("kemono", "coomer") or str(post.get("preview_state", "")).lower() == "pending"
 
-                    primary_paw_list = [srv_url, full_url] if srv_url else [full_url]
+                    # Only fall back to file.pawchive.pw when the assigned nX storage node is unknown;
+                    # file.pawchive.pw 302-redirects straight back to nX, which would double-hit the same shard.
+                    primary_paw_list = [srv_url] if srv_url else [full_url]
                     order = ([mirror_url] + primary_paw_list) if not_copied_yet else (primary_paw_list + [mirror_url])
                     for u in order:
                         if u and u not in candidate_urls and not is_disabled(u):

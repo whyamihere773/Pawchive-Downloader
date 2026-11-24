@@ -177,6 +177,21 @@ class DownloaderTransferHttpMixin:
         part_path = task.target_path + PART_SUFFIX
         if force_redownload and os.path.exists(part_path):
             _remove_quietly(part_path)
+
+        # Zero-HTTP cross-post SHA-256 deduplication: if an identical 64-char SHA-256 file was already
+        # verified on disk (e.g. shared between a multi-variant pack post and an individual post),
+        # copy it locally in milliseconds without touching the remote storage node.
+        download_thumbs_only_early = getattr(options, "download_thumbnails_only", False) if options is not None else False
+        if not force_redownload and not download_thumbs_only_early and not is_preview_url(task.url or ""):
+            dedup_res = self._try_copy_from_verified_sha256(
+                task=task,
+                options=options,
+                part_path=part_path,
+                is_upgrade_download=is_upgrade_download,
+                found_existing_path=found_existing_path,
+            )
+            if dedup_res is not None:
+                return dedup_res
         existing_size = 0
         mode = "wb"
         range_headers = {}

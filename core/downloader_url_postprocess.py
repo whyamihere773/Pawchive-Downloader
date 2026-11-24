@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import time
 import urllib.parse
 from typing import Any, Dict, List, Optional, Tuple
@@ -339,12 +340,179 @@ class DownloaderUrlPostprocessMixin:
             if os.path.abspath(found_existing_path) != os.path.abspath(task.target_path):
                 _remove_quietly(found_existing_path)
 
+        pre_post_path = task.target_path
         self._post_process_downloaded_file(task, options)
+
+        # Record cryptographically verified 64-char SHA-256 path for zero-HTTP cross-post deduplication
+        v_sha = getattr(task, "_verified_sha256", "") or ""
+        if (
+            len(v_sha) == 64
+            and not getattr(task, "used_preview", False)
+            and task.target_path
+            and os.path.exists(task.target_path)
+        ):
+            webp_qual = None
+            if (
+                options
+                and getattr(options, "compress_to_webp", False)
+                and task.target_path != pre_post_path
+                and task.target_path.lower().endswith(".webp")
+            ):
+                webp_qual = str(getattr(options, "webp_quality", "balanced") or "balanced").lower()
+            with self._verified_hash_lock:
+                self._verified_hash_paths[v_sha] = (task.target_path, webp_qual)
 
         # Thread cooldown delay to avoid CDN rate limiting (429)
         if options.download_delay > 0 and not self._cancel_event.is_set():
-            time.sleep(options.download_delay)
+            self._sleep_interruptible(task, options.download_delay)
         return True, "Success"
+
+    def _try_copy_from_verified_sha256(
+        self,
+        task: DownloadTask,
+        options: Optional[FilterOptions],
+        part_path: str,
+        is_upgrade_download: bool = False,
+        found_existing_path: Optional[str] = None,
+    ) -> Optional[Tuple[bool, str]]:
+        """If another post already downloaded this exact 64-char SHA-256 file on disk, copy it locally
+        with zero HTTP requests (preventing duplicate multi-variant pack re-downloads and 429s)."""
+        url_str = task.url or ""
+        sha_hex = content_hash_from_url(url_str) or (task.expected_sha256 or "").strip().lower()
+        if len(sha_hex) != 64 or not all(c in "0123456789abcdef" for c in sha_hex):
+            return None
+        _, tgt_ext = os.path.splitext((task.target_path or "").lower())
+        is_video = tgt_ext in (".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi")
+        if is_video and ("cum.st/media/" in url_str or "e1.cum.st" in url_str or "cdn.cum.st" in url_str):
+            return None
+
+        cand_path: Optional[str] = None
+        cand_webp_qual: Optional[str] = None
+        with self._verified_hash_lock:
+            entry = self._verified_hash_paths.get(sha_hex)
+            if entry:
+                cand_path, cand_webp_qual = entry
+        if (not cand_path or not os.path.exists(cand_path)) and self.archive_manager is not None:
+            cand_path = self.archive_manager.find_existing_path_by_hash(sha_hex)
+            cand_webp_qual = None
+
+        if not cand_path or not os.path.exists(cand_path):
+            return None
+        if os.path.abspath(cand_path) == os.path.abspath(task.target_path):
+            return None
+
+        try:
+            # Case A: Same-session verified WebP conversion at identical quality level
+            want_webp = bool(options and getattr(options, "compress_to_webp", False))
+            want_qual = str(getattr(options, "webp_quality", "balanced") or "balanced").lower() if want_webp else None
+            if (
+                cand_webp_qual is not None
+                and want_webp
+                and want_qual == cand_webp_qual
+                and cand_path.lower().endswith(".webp")
+                and tgt_ext in (".jpg", ".jpeg", ".png")
+            ):
+                src_sz = os.path.getsize(cand_path)
+                if src_sz <= 0:
+                    return None
+                check_sz = task.file_size or src_sz
+                if options:
+                    keep_file, f_reason = FilterEngine.should_keep_file(task.filename, options, file_size=check_sz)
+                    if not keep_file:
+                        task.status = "skipped"
+                        task.error_msg = f_reason
+                        task.progress_pct = 100
+                        task.eta_str = "Skipped"
+                        if self.on_task_status_changed:
+                            self.on_task_status_changed(task)
+                        return True, f"Skipped: {f_reason}"
+                webp_dest = os.path.splitext(task.target_path)[0] + ".webp"
+                webp_part = webp_dest + PART_SUFFIX
+                os.makedirs(os.path.dirname(webp_dest), exist_ok=True)
+                shutil.copyfile(cand_path, webp_part)
+                replace_file(webp_part, webp_dest)
+                if is_upgrade_download and found_existing_path and os.path.exists(found_existing_path):
+                    if os.path.abspath(found_existing_path) != os.path.abspath(webp_dest):
+                        _remove_quietly(found_existing_path)
+                task.target_path = webp_dest
+                task.file_size = src_sz
+                task.downloaded_bytes = src_sz
+                task.expected_sha256 = sha_hex
+                task.progress_pct = 100
+                task.eta_str = "Done"
+                with self._lock:
+                    self.downloaded_bytes += src_sz
+                if options and getattr(options, "write_sidecars", False):
+                    self._write_sidecar_metadata(task, options)
+                logger.info(
+                    f"⚡ Instant local SHA-256 copy (0 HTTP requests): '{task.filename}' ({src_sz / (1024*1024):.2f} MB)",
+                    category="file",
+                )
+                return True, "Copied from local SHA-256 match"
+
+            # Case B: Cryptographically verify exact 64-char SHA-256 match on candidate file
+            src_sz = os.path.getsize(cand_path)
+            if src_sz <= 0 or needs_full_size_upgrade(src_sz, task.file_size, task.target_path, options, cand_path):
+                return None
+            h = hashlib.sha256()
+            with open(cand_path, "rb") as rf:
+                while buf := rf.read(1024 * 1024):
+                    h.update(buf)
+            if h.hexdigest().lower() != sha_hex:
+                return None
+
+            if options:
+                keep_file, f_reason = FilterEngine.should_keep_file(task.filename, options, file_size=src_sz)
+                if not keep_file:
+                    task.status = "skipped"
+                    task.error_msg = f_reason
+                    task.progress_pct = 100
+                    task.eta_str = "Skipped"
+                    if self.on_task_status_changed:
+                        self.on_task_status_changed(task)
+                    return True, f"Skipped: {f_reason}"
+
+            os.makedirs(os.path.dirname(task.target_path), exist_ok=True)
+            shutil.copyfile(cand_path, part_path)
+            if self.is_batch_cancelled(task):
+                _remove_quietly(part_path)
+                return False, "Cancelled"
+            if self.is_batch_paused(task) or task.status == "paused":
+                _remove_quietly(part_path)
+                return False, "Batch paused by user"
+
+            replace_file(part_path, task.target_path)
+            if is_upgrade_download and found_existing_path and os.path.exists(found_existing_path):
+                if os.path.abspath(found_existing_path) != os.path.abspath(task.target_path):
+                    _remove_quietly(found_existing_path)
+
+            task.file_size = src_sz
+            task.downloaded_bytes = src_sz
+            task.expected_sha256 = sha_hex
+            task._verified_sha256 = sha_hex
+            task.progress_pct = 100
+            task.eta_str = "Done"
+            with self._lock:
+                self.downloaded_bytes += src_sz
+
+            pre_post = task.target_path
+            self._post_process_downloaded_file(task, options)
+            if os.path.exists(task.target_path):
+                w_q = None
+                if options and getattr(options, "compress_to_webp", False) and task.target_path != pre_post and task.target_path.lower().endswith(".webp"):
+                    w_q = str(getattr(options, "webp_quality", "balanced") or "balanced").lower()
+                with self._verified_hash_lock:
+                    self._verified_hash_paths[sha_hex] = (task.target_path, w_q)
+
+            logger.info(
+                f"⚡ Instant local SHA-256 copy (0 HTTP requests): '{task.filename}' ({src_sz / (1024*1024):.2f} MB)",
+                category="file",
+            )
+            return True, "Copied from local SHA-256 match"
+        except Exception as ex:
+            _remove_quietly(part_path)
+            logger.debug(f"Local SHA-256 copy skipped for {task.filename}: {ex}", category="file")
+            return None
 
     def _verify_file_hash(self, task: DownloadTask, file_size: int, path: Optional[str] = None,
                           hasher=None, strict: bool = False) -> str:
@@ -407,6 +575,8 @@ class DownloaderUrlPostprocessMixin:
                         hasher.update(chunk)
                 computed_hash = hasher.hexdigest().lower()
             if computed_hash == raw_hash:
+                if algo_name == "SHA-256":
+                    task._verified_sha256 = computed_hash
                 logger.success(
                     f"✔ {task.filename}  ({file_size / (1024*1024):.2f} MB saved, {algo_name} verified)",
                     category="file"

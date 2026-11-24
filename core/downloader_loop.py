@@ -18,7 +18,8 @@ from core.downloader_models import (
     is_permanent_failure,
     is_task_non_retryable,
 )
-from core.filter_engine import FilterOptions
+from core.downloader_retries_pacing import extract_url_host, is_pawchive_storage_host
+from core.filter_engine import FilterOptions, MediaTypes
 from core.logger import logger
 from core.statistics_manager import statistics_manager
 
@@ -91,6 +92,7 @@ class DownloaderLoopMixin:
             if self.on_concurrency_throttled:
                 self.on_concurrency_throttled(self.max_workers)
         else:
+            self._manual_target_workers = max(1, self.max_workers) if not is_locked else None
             lock_label = " (Locked)" if is_locked else ""
             logger.info(f"Starting download pool with {self.max_workers} worker threads{lock_label}...", category="downloader")
 
@@ -142,30 +144,62 @@ class DownloaderLoopMixin:
 
                     # Effective ceiling: learned ceiling if we encountered 429, else user target
                     effective_ceiling = self._learned_stable_ceiling if self._learned_stable_ceiling is not None else target_max_workers
+                    active_cd_rem, active_cd_host = self.max_active_cooldown_remaining(now)
 
-                    # 1. Check Adaptive Scaling timer (every 5 seconds)
-                    if options.adaptive_threading and not is_locked and (now - last_scale_time >= scale_step_interval):
+                    # 1. Check Adaptive / Manual Recovery Scaling timer
+                    if not is_locked and not is_pure_telegram and (now - last_scale_time >= scale_step_interval):
                         last_scale_time = now
-                        # Only scale up if not currently in rate-limit cooldown
-                        if now >= self._rate_limit_cooldown_until:
-                            if self.max_workers < effective_ceiling:
+                        if options.adaptive_threading:
+                            # Only scale up if no host is currently in rate-limit cooldown
+                            if active_cd_rem <= 0.0:
+                                if self.max_workers < effective_ceiling:
+                                    self.max_workers += 1
+                                    consecutive_successes = 0
+                                    logger.info(
+                                        f"⚡ [Adaptive Threading] Connection stable. Scaling up concurrency to {self.max_workers}/{effective_ceiling} threads (ceiling: {effective_ceiling})...",
+                                        category="adaptive"
+                                    )
+                                    if self.on_concurrency_throttled:
+                                        self.on_concurrency_throttled(self.max_workers)
+                                elif self._stable_clean_count >= 50 and effective_ceiling < target_max_workers:
+                                    # Long-term stability probe after 50 consecutive error-free downloads
+                                    self._learned_stable_ceiling += 1
+                                    self.max_workers += 1
+                                    self._stable_clean_count = 0
+                                    consecutive_successes = 0
+                                    logger.info(
+                                        f"⚡ [Adaptive Threading] Long-term stability verified (50+ clean files). Probing higher concurrency (+1 to {self.max_workers} threads)...",
+                                        category="adaptive"
+                                    )
+                                    if self.on_concurrency_throttled:
+                                        self.on_concurrency_throttled(self.max_workers)
+                        elif self._manual_target_workers and active_cd_rem <= 0.0:
+                            # Manual unlocked mode: smoothly step back up after a temporary 429 drop
+                            # so the pool never gets stranded at 1 thread permanently.
+                            if self.max_workers > self._manual_target_workers:
+                                self._manual_target_workers = self.max_workers
+                            manual_ceil = min(
+                                self._manual_target_workers,
+                                self._learned_stable_ceiling if self._learned_stable_ceiling is not None else self._manual_target_workers,
+                            )
+                            if self.max_workers < manual_ceil and consecutive_successes >= 4:
                                 self.max_workers += 1
                                 consecutive_successes = 0
                                 logger.info(
-                                    f"⚡ [Adaptive Threading] Connection stable. Scaling up concurrency to {self.max_workers}/{effective_ceiling} threads (ceiling: {effective_ceiling})...",
-                                    category="adaptive"
+                                    f"⚡ [Manual Recovery] Connection stable. Restoring concurrency to {self.max_workers}/{self._manual_target_workers} threads...",
+                                    category="downloader",
                                 )
                                 if self.on_concurrency_throttled:
                                     self.on_concurrency_throttled(self.max_workers)
-                            elif self._stable_clean_count >= 50 and effective_ceiling < target_max_workers:
-                                # Long-term stability probe after 50 consecutive error-free downloads
-                                self._learned_stable_ceiling += 1
+                            elif self._stable_clean_count >= 30 and self.max_workers < self._manual_target_workers:
+                                if self._learned_stable_ceiling is not None and self._learned_stable_ceiling < self._manual_target_workers:
+                                    self._learned_stable_ceiling += 1
                                 self.max_workers += 1
                                 self._stable_clean_count = 0
                                 consecutive_successes = 0
                                 logger.info(
-                                    f"⚡ [Adaptive Threading] Long-term stability verified (50+ clean files). Probing higher concurrency (+1 to {self.max_workers} threads)...",
-                                    category="adaptive"
+                                    f"⚡ [Manual Recovery] Sustained clean throughput (30+ files). Restoring concurrency to {self.max_workers}/{self._manual_target_workers} threads...",
+                                    category="downloader",
                                 )
                                 if self.on_concurrency_throttled:
                                     self.on_concurrency_throttled(self.max_workers)
@@ -201,7 +235,6 @@ class DownloaderLoopMixin:
                                     task.status = "completed"
                                     task.error_msg = ""
                                     statistics_manager.record_file_result("completed")
-                                    self._on_pawchive_request_succeeded()
                                     consecutive_successes += 1
                                     self._stable_clean_count += 1
                                     self.session_manager.record_downloaded_file(task.file_id)
@@ -225,7 +258,8 @@ class DownloaderLoopMixin:
                                     # Fast Adaptive Scaling: Scale up after 10 consecutive successful files if below ceiling and interval elapsed
                                     if options.adaptive_threading and not is_locked and not is_pure_telegram and consecutive_successes >= 10 and (now - last_scale_time >= 6.0):
                                         effective_ceiling = self._learned_stable_ceiling if self._learned_stable_ceiling is not None else target_max_workers
-                                        if now >= self._rate_limit_cooldown_until and self.max_workers < effective_ceiling:
+                                        rem_cd, _ = self.max_active_cooldown_remaining(now)
+                                        if rem_cd <= 0.0 and self.max_workers < effective_ceiling:
                                             self.max_workers += 1
                                             consecutive_successes = 0
                                             last_scale_time = now
@@ -239,11 +273,15 @@ class DownloaderLoopMixin:
                                 consecutive_successes = 0
                                 self._stable_clean_count = 0
                                 if msg.startswith("429_RATE_LIMIT"):
-                                    # 429 Rate Limit encountered -> auto-retry after escalating cooldown
-                                    self._trigger_rate_limit_backoff(threads_locked=is_locked)
-                                    wait_secs = max(1, int(round(self._rate_limit_cooldown_until - time.time())))
+                                    # 429 Rate Limit encountered -> per-host escalating cooldown & auto-retry
+                                    t_host = self._task_primary_host(task)
+                                    paw_host = t_host if "pawchive.pw" in t_host else ""
+                                    self._trigger_rate_limit_backoff(threads_locked=is_locked, host=paw_host)
+                                    cd_exp = self.get_host_cooldown_until(paw_host)
+                                    wait_secs = max(1, int(round(cd_exp - time.time())))
                                     task.status = "pending"
-                                    task.error_msg = f"Rate limited (429) — cooling down for {wait_secs}s before auto-retry"
+                                    host_note = f" on {paw_host}" if paw_host else ""
+                                    task.error_msg = f"Rate limited (429){host_note} — cooling down for {wait_secs}s before auto-retry"
                                     statistics_manager.record_retry()
                                     if self.on_task_status_changed:
                                         self.on_task_status_changed(task)
@@ -302,22 +340,26 @@ class DownloaderLoopMixin:
                         failed_count = counts["failed"]
                         self._emit_progress(completed_count, failed_count, len(self.tasks))
 
-                    # 4. If in cooldown or paused or cancelled, wait
-                    if time.time() < self._rate_limit_cooldown_until or self._pause_event.is_set() or self._cancel_event.is_set():
+                    # 4. If paused, cancelled, or unscoped global cooldown is active, wait
+                    now_dispatch = time.time()
+                    unscoped_cd = getattr(self, "_unscoped_cooldown_until", 0.0)
+                    if (now_dispatch < unscoped_cd) or self._pause_event.is_set() or self._cancel_event.is_set():
                         time.sleep(0.2)
                         continue
 
-                    # 5. Dispatch pending tasks up to self.max_workers with Anti-Burst Staggering
-                    # After a 429 cooldown expires, probe with 1 worker until a clean response succeeds
-                    # so all workers don't slam the storage node simultaneously and re-trip 429.
+                    # 5. Dispatch pending tasks with per-host cooldown skipping, node concurrency caps,
+                    # host-spread round-robin, and large/small file interleaving.
                     current_active = len(active_futures)
-                    dispatch_cap = 1 if getattr(self, "_rate_limit_probe_needed", False) else self.max_workers
-                    slots_available = max(0, dispatch_cap - current_active)
+                    slots_available = max(0, self.max_workers - current_active)
                     if slots_available > 0:
-                        pending_tasks = self._collect_pending(slots_available * 4 + 8, now)
+                        cand_limit = max(32, slots_available * 12)
+                        pending_tasks, saw_cooling_pending = self._collect_pending(cand_limit, now_dispatch)
                         if not pending_tasks and current_active == 0:
-                            pending_tasks = self._collect_pending(slots_available * 4 + 8, now, full=True)
+                            pending_tasks, saw_cooling_pending = self._collect_pending(cand_limit, now_dispatch, full=True)
                         if not pending_tasks and current_active == 0:
+                            if saw_cooling_pending and not self._cancel_event.is_set():
+                                time.sleep(0.2)
+                                continue
                             has_paused_tasks = any(
                                 (self.is_batch_paused(t) or t.status == "paused")
                                 for t in self.tasks
@@ -395,22 +437,11 @@ class DownloaderLoopMixin:
                             # All tasks completed or finished
                             break
 
-                        # Telegram concurrency cap (strictly max 2 active Telegram downloads under any circumstance)
-                        active_tg_count = sum(
-                            1 for t in active_futures.values()
-                            if getattr(t, "is_telegram", False) or getattr(t, "service", "") == "telegram" or (t.url and t.url.startswith("tg://"))
+                        tasks_to_dispatch = self._select_tasks_for_dispatch(
+                            pending_tasks=pending_tasks,
+                            active_tasks=list(active_futures.values()),
+                            slots_available=slots_available,
                         )
-
-                        tasks_to_dispatch = []
-                        for task in pending_tasks:
-                            if len(tasks_to_dispatch) >= slots_available:
-                                break
-                            is_tg = getattr(task, "is_telegram", False) or getattr(task, "service", "") == "telegram" or (task.url and task.url.startswith("tg://"))
-                            if is_tg and (active_tg_count >= 2):
-                                continue
-                            if is_tg:
-                                active_tg_count += 1
-                            tasks_to_dispatch.append(task)
 
                         for i, task in enumerate(tasks_to_dispatch):
                             if self._cancel_event.is_set():
@@ -444,20 +475,29 @@ class DownloaderLoopMixin:
                                 task.status = "pending"
                                 break
 
-                    # Feature 5: Track Adaptive Health State
+                    # Feature 5: Track Adaptive / Recovery Health State
+                    cd_rem_ui, cd_host_ui = self.max_active_cooldown_remaining(now)
+                    probing_ui = self.any_host_probe_needed()
+                    host_suffix = f" [{cd_host_ui.split('.')[0]}]" if cd_host_ui else ""
                     if is_locked:
-                        if now < self._rate_limit_cooldown_until:
+                        if cd_rem_ui > 0.0:
                             self.adaptive_state = "cooldown"
-                            rem = max(1, int(self._rate_limit_cooldown_until - now))
-                            self.adaptive_status_text = f"Cooldown: {rem}s (Locked {self.max_workers} threads)"
+                            rem = max(1, int(round(cd_rem_ui)))
+                            self.adaptive_status_text = f"Cooldown{host_suffix}: {rem}s (Locked {self.max_workers} threads)"
+                        elif probing_ui:
+                            self.adaptive_state = "cooldown"
+                            self.adaptive_status_text = "Probing recovery (1 thread)"
                         else:
                             self.adaptive_state = "locked"
                             self.adaptive_status_text = f"Locked ({self.max_workers} threads)"
                     elif options.adaptive_threading:
-                        if now < self._rate_limit_cooldown_until:
+                        if cd_rem_ui > 0.0:
                             self.adaptive_state = "cooldown"
-                            rem = max(1, int(self._rate_limit_cooldown_until - now))
-                            self.adaptive_status_text = f"Cooldown: {rem}s ({self.max_workers} threads)"
+                            rem = max(1, int(round(cd_rem_ui)))
+                            self.adaptive_status_text = f"Cooldown{host_suffix}: {rem}s ({self.max_workers} threads)"
+                        elif probing_ui:
+                            self.adaptive_state = "scaling"
+                            self.adaptive_status_text = "Probing recovery (1 thread)"
                         elif self._learned_stable_ceiling is not None and self.max_workers >= self._learned_stable_ceiling:
                             self.adaptive_state = "optimal"
                             self.adaptive_status_text = f"Stable Lock ({self.max_workers} threads)"
@@ -469,8 +509,16 @@ class DownloaderLoopMixin:
                             effective_ceiling = self._learned_stable_ceiling if self._learned_stable_ceiling is not None else target_max_workers
                             self.adaptive_status_text = f"Scaling ({self.max_workers}/{effective_ceiling} threads)"
                     else:
-                        self.adaptive_state = "manual"
-                        self.adaptive_status_text = f"Manual ({self.max_workers} threads)"
+                        if cd_rem_ui > 0.0:
+                            self.adaptive_state = "cooldown"
+                            rem = max(1, int(round(cd_rem_ui)))
+                            self.adaptive_status_text = f"Cooldown{host_suffix}: {rem}s ({self.max_workers} threads)"
+                        elif probing_ui:
+                            self.adaptive_state = "scaling"
+                            self.adaptive_status_text = "Probing recovery (1 thread)"
+                        else:
+                            self.adaptive_state = "manual"
+                            self.adaptive_status_text = f"Manual ({self.max_workers} threads)"
 
                     # Periodic crash-proof checkpoint (every 30 seconds), written in the background: writing
                     # 1,000+ tasks with fsync here used to stop new downloads from starting for 30-50 s on
@@ -574,26 +622,143 @@ class DownloaderLoopMixin:
             if self.on_download_finished:
                 self.on_download_finished(True, f"Completed: {completed_count} downloaded{skip_msg}, {failed_count} failed.")
 
-    def _collect_pending(self, limit: int, now: float, full: bool = False) -> List[DownloadTask]:
-        """Up to `limit` pending files, without walking the whole queue 20 times a second: finished
-        files pile up at the front, so the scan starts where pending ones began last time. A full
-        scan every second picks up files that were put back in line (retries, rate limits)."""
+    @staticmethod
+    def _is_large_task(task: DownloadTask) -> bool:
+        sz = getattr(task, "file_size", 0) or 0
+        if sz >= 5 * 1024 * 1024:
+            return True
+        if sz > 0:
+            return False
+        _, ext = os.path.splitext((getattr(task, "filename", "") or "").lower())
+        return ext in (MediaTypes.VIDEO_EXTS | MediaTypes.ARCHIVE_EXTS)
+
+    def _select_tasks_for_dispatch(
+        self,
+        pending_tasks: List[DownloadTask],
+        active_tasks: List[DownloadTask],
+        slots_available: int,
+    ) -> List[DownloadTask]:
+        """Select up to `slots_available` tasks with:
+        - Telegram strict <= 2 active cap
+        - Pawchive total <= 4 active streams (even in Manual/Locked mode)
+        - Pawchive per-node <= 2 active streams (`n1`-`n4`, `file`, `t1`-`t4`)
+        - Post-429 single-worker probe (`<= 1` active stream on recovering host)
+        - Host-spread round-robin (least-loaded host first) + large/small size interleaving
+        """
+        if slots_available <= 0 or not pending_tasks:
+            return []
+
+        unscoped_probe = bool(getattr(self, "_rate_limit_probe_needed", False) and not getattr(self, "_host_probe_needed", {}))
+        if unscoped_probe:
+            if active_tasks:
+                return []
+            slots_available = 1
+
+        active_tg_count = 0
+        active_pawchive_total = 0
+        active_by_host: Counter = Counter()
+        active_large = 0
+        active_small = 0
+
+        for t in active_tasks:
+            is_tg = getattr(t, "is_telegram", False) or getattr(t, "service", "") == "telegram" or (t.url and t.url.startswith("tg://"))
+            if is_tg:
+                active_tg_count += 1
+            h = self._task_primary_host(t)
+            if h:
+                active_by_host[h] += 1
+                if "pawchive.pw" in h:
+                    active_pawchive_total += 1
+            if self._is_large_task(t):
+                active_large += 1
+            else:
+                active_small += 1
+
+        remaining = list(enumerate(pending_tasks))
+        selected: List[DownloadTask] = []
+
+        while len(selected) < slots_available and remaining:
+            best_idx = -1
+            best_score = None
+            prefer_large = active_small > active_large
+            prefer_small = active_large > active_small
+
+            for list_pos, (orig_order, cand) in enumerate(remaining):
+                is_tg = getattr(cand, "is_telegram", False) or getattr(cand, "service", "") == "telegram" or (cand.url and cand.url.startswith("tg://"))
+                if is_tg and active_tg_count >= 2:
+                    continue
+
+                h = self._task_primary_host(cand)
+                if h and "pawchive.pw" in h:
+                    if active_pawchive_total >= 4:
+                        continue
+                    if is_pawchive_storage_host(h) and active_by_host[h] >= 2:
+                        continue
+                if h and self.is_host_probe_needed(h) and active_by_host[h] >= 1:
+                    continue
+
+                is_large = self._is_large_task(cand)
+                if prefer_large:
+                    size_penalty = 0 if is_large else 1
+                elif prefer_small:
+                    size_penalty = 0 if not is_large else 1
+                else:
+                    size_penalty = 0
+
+                score = (active_by_host[h] if h else 0, size_penalty, orig_order)
+                if best_score is None or score < best_score:
+                    best_score = score
+                    best_idx = list_pos
+                    if score[0] == 0 and score[1] == 0:
+                        break
+
+            if best_idx < 0:
+                break
+
+            _, chosen = remaining.pop(best_idx)
+            selected.append(chosen)
+            if getattr(chosen, "is_telegram", False) or getattr(chosen, "service", "") == "telegram" or (chosen.url and chosen.url.startswith("tg://")):
+                active_tg_count += 1
+            ch_host = self._task_primary_host(chosen)
+            if ch_host:
+                active_by_host[ch_host] += 1
+                if "pawchive.pw" in ch_host:
+                    active_pawchive_total += 1
+            if self._is_large_task(chosen):
+                active_large += 1
+            else:
+                active_small += 1
+
+        return selected
+
+    def _collect_pending(self, limit: int, now: float, full: bool = False):
+        """Return `(eligible_pending_tasks, saw_cooling_pending)`.
+
+        Skips tasks whose storage host is currently in a 429 cooldown so healthy nodes (`n1`/`n2`/`n4`/`img`
+        or other sites) keep downloading without stalling, while preserving `saw_cooling_pending=True` so
+        the loop waits cleanly if *only* cooling-host tasks remain.
+        """
         tasks = self.tasks
         if full or now - self._last_full_scan >= 1.0 or self._dispatch_cursor > len(tasks):
             self._dispatch_cursor = 0
             self._last_full_scan = now
         found: List[DownloadTask] = []
-        first = None
+        first_pending = None
+        saw_cooling = False
         for i in range(self._dispatch_cursor, len(tasks)):
             t = tasks[i]
             if t.status == "pending" and not self.is_batch_paused(t) and not self.is_batch_cancelled(t):
-                if first is None:
-                    first = i
+                if first_pending is None:
+                    first_pending = i
+                h = self._task_primary_host(t)
+                if h and self.is_host_cooling_down(h, now):
+                    saw_cooling = True
+                    continue
                 found.append(t)
                 if len(found) >= limit:
                     break
-        self._dispatch_cursor = first if first is not None else len(tasks)
-        return found
+        self._dispatch_cursor = first_pending if first_pending is not None else len(tasks)
+        return found, saw_cooling
 
     def _worker_download_task(self, task: DownloadTask, options: FilterOptions):
         try:

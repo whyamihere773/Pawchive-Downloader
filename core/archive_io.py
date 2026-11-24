@@ -62,6 +62,35 @@ class ArchiveIOMixin:
                 self._note_error(e)
                 return False
 
+    def find_existing_path_by_hash(self, file_hash: str) -> Optional[str]:
+        """Return an existing non-empty on-disk file_path recorded for `file_hash`, or None."""
+        clean_hash = (file_hash or "").strip().lower()
+        if len(clean_hash) != 64:
+            return None
+        if not self._ensure_db():
+            return None
+        try:
+            with self._rlock:
+                conn = self._reader()
+                if conn is None:
+                    return None
+                rows = conn.execute(
+                    "SELECT file_path FROM downloaded_files "
+                    "WHERE file_hash = ? AND file_path IS NOT NULL AND file_path != '' AND is_missing != 1 "
+                    "ORDER BY id DESC LIMIT 5;",
+                    (clean_hash,),
+                ).fetchall()
+            for (cand_path,) in rows:
+                if cand_path and os.path.exists(cand_path):
+                    try:
+                        if os.path.getsize(cand_path) > 0:
+                            return cand_path
+                    except OSError:
+                        continue
+        except Exception as e:
+            logger.debug(f"Archive hash path lookup skipped: {e}", category="archive")
+        return None
+
     def record_file(
         self,
         service: str,

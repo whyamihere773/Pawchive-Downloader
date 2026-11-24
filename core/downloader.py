@@ -151,15 +151,29 @@ class KemonoDownloader(
         self.adaptive_state = "optimal"       # "optimal", "scaling", "cooldown", "manual"
         self.adaptive_status_text = ""
         self._learned_stable_ceiling: Optional[int] = None
+        self._manual_target_workers: Optional[int] = None
         self._stable_clean_count: int = 0
         self._consecutive_429_bursts: int = 0
         self._rate_limit_probe_needed: bool = False
         self._rate_limit_probe_claimed_until: float = 0.0
-        # Cross-thread Pawchive request-start pacer to keep aggregate request starts below
-        # Pawchive's ~30 req/10s nginx rate-limit bucket even on small/fast images.
+        self._unscoped_cooldown_until: float = 0.0
+        self._host_cooldown_until: Dict[str, float] = {}
+        self._host_consecutive_429: Dict[str, int] = defaultdict(int)
+        self._host_probe_needed: Dict[str, bool] = {}
+        self._host_probe_claimed_until: Dict[str, float] = {}
+        # Cross-thread Pawchive request-start pacer & sliding-window self-calibration
         self._pawchive_pace_lock = threading.Lock()
         self._pawchive_next_req_time: float = 0.0
+        self._pawchive_global_next_time: float = 0.0
         self._pawchive_recovery_gap_until: float = 0.0
+        self._host_next_req_time: Dict[str, float] = {}
+        self._host_recovery_gap_until: Dict[str, float] = {}
+        self._host_req_timestamps: Dict[str, deque] = defaultdict(deque)
+        self._host_calibrated_rpm: Dict[str, int] = {}
+        self._host_slow_ttfb_until: Dict[str, float] = {}
+        # Verified SHA-256 -> (path, webp_quality_or_none) for zero-HTTP cross-post local copies
+        self._verified_hash_lock = threading.Lock()
+        self._verified_hash_paths: Dict[str, Tuple[str, Optional[str]]] = {}
 
         # Smart Learning ETA and speed smoothing telemetry
         self._speed_samples = deque(maxlen=40)
@@ -375,12 +389,28 @@ class KemonoDownloader(
         self._first_byte_time = 0.0
         self.adaptive_state = "optimal"
         self.adaptive_status_text = ""
+        self._manual_target_workers = None
         self._consecutive_429_bursts = 0
         self._rate_limit_probe_needed = False
         self._rate_limit_probe_claimed_until = 0.0
+        self._rate_limit_cooldown_until = 0.0
+        self._unscoped_cooldown_until = 0.0
+        with self._rate_limit_lock:
+            self._host_cooldown_until.clear()
+            self._host_consecutive_429.clear()
+            self._host_probe_needed.clear()
+            self._host_probe_claimed_until.clear()
         with self._pawchive_pace_lock:
             self._pawchive_next_req_time = 0.0
+            self._pawchive_global_next_time = 0.0
             self._pawchive_recovery_gap_until = 0.0
+            self._host_next_req_time.clear()
+            self._host_recovery_gap_until.clear()
+            self._host_req_timestamps.clear()
+            self._host_calibrated_rpm.clear()
+            self._host_slow_ttfb_until.clear()
+        with self._verified_hash_lock:
+            self._verified_hash_paths.clear()
         logger.info("Downloader state fully reset.", category="downloader")
 
     def status_counts(self) -> Dict[str, int]:

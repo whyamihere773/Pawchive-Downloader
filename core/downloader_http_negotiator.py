@@ -3,6 +3,8 @@ Downloader HTTP Mirror Negotiation & Request Headers Mixin
 Decomposed from core/downloader_transfer_http.py for proactive modularity.
 """
 
+from datetime import datetime, timezone
+import email.utils
 import re
 import sys
 import time
@@ -11,11 +13,37 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 
 from core.downloader_models import DownloadTask, _CONTACT_HEADERS
+from core.downloader_retries_pacing import extract_url_host
 from core.filter_engine import FilterOptions
 from core.logger import logger
 from core.providers import cookie_for_url, provider_for_host
 
 _CACHED_PAWCHIVE_UA: Optional[str] = None
+
+
+def _parse_retry_after_seconds(raw_header: Any, default_s: float = 15.0) -> Tuple[float, str]:
+    """Parse Retry-After header as integer/float seconds or RFC 7231 HTTP-date, clamped to [1, 120]s."""
+    text = str(raw_header or "").strip()
+    if text:
+        try:
+            secs = float(text)
+            clamped = min(max(secs, 1.0), 120.0)
+            label = str(int(round(clamped))) if text.isdigit() else f"{clamped:g}"
+            return clamped, label
+        except ValueError:
+            pass
+        try:
+            dt = email.utils.parsedate_to_datetime(text)
+            if dt is not None:
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                delta = (dt - datetime.now(timezone.utc)).total_seconds()
+                clamped = min(max(delta, 1.0), 120.0)
+                return clamped, str(int(round(clamped)))
+        except Exception:
+            pass
+    clamped_def = min(max(float(default_s), 1.0), 120.0)
+    return clamped_def, str(int(round(clamped_def)))
 
 
 def _pawchive_user_agent() -> str:
@@ -147,6 +175,7 @@ class DownloaderHttpNegotiatorMixin:
 
                 req_headers = self._build_request_headers(task, attempt_url, range_headers)
                 u_low = attempt_url.lower()
+                attempt_host = extract_url_host(attempt_url)
 
                 stream_timeout = (25, 60)
                 if not self._wait_pawchive_pace_slot(task, attempt_url, respect_cooldown=not (pass_idx > 0 and saw_429)):
@@ -157,11 +186,14 @@ class DownloaderHttpNegotiatorMixin:
                 if early_pause is not None:
                     return None, mode, existing_size, req_headers, early_pause
                 try:
+                    t_req_start = time.monotonic()
                     resp = session.get(attempt_url, stream=True, timeout=stream_timeout, headers=req_headers)
+                    ttfb_s = max(0.0, time.monotonic() - t_req_start)
                     if resp.status_code in (200, 206, 416):
                         task.url = attempt_url
                         if "pawchive" in u_low:
-                            self._on_pawchive_request_succeeded()
+                            self._note_pawchive_ttfb(attempt_host, ttfb_s)
+                            self._on_pawchive_request_succeeded(attempt_host)
                         break
                     elif resp.status_code in (403, 404) and re.search(r"\bt\d+\.pawchive\.pw\b", attempt_url):
                         # Pawchive temporary oversized download URLs are signed (?e=...&s=...) and expire over time.
@@ -268,11 +300,12 @@ class DownloaderHttpNegotiatorMixin:
                                     existing_size = 0
                                     break
                                 elif clean_resp.status_code == 403 and len(urls_to_try) == 1:
-                                    # Single-mirror CDN transient burst 403 — progressive pause & retry
+                                    # Single-mirror CDN transient burst 403 — progressive pause-aware retry
                                     clean_resp.close()
+                                    early_403_abort = None
                                     for delay in (1.5, 3.0):
-                                        time.sleep(delay)
-                                        if self._cancel_event.is_set():
+                                        early_403_abort = self._sleep_interruptible(task, delay)
+                                        if early_403_abort is not None:
                                             break
                                         retry_resp = clean_sess.get(attempt_url, stream=True, timeout=stream_timeout, headers=clean_headers)
                                         if retry_resp.status_code in (200, 206):
@@ -284,6 +317,11 @@ class DownloaderHttpNegotiatorMixin:
                                             break
                                         else:
                                             retry_resp.close()
+                                    if early_403_abort is not None:
+                                        if resp:
+                                            resp.close()
+                                            resp = None
+                                        return None, mode, existing_size, req_headers, early_403_abort
                                 else:
                                     clean_resp.close()
                             finally:
@@ -304,32 +342,32 @@ class DownloaderHttpNegotiatorMixin:
                         saw_429 = True
                         last_error_status = 429
                         task.http_status = 429
-                        retry_after = str(resp.headers.get("Retry-After") or "").strip()
-                        last_retry_after = retry_after if retry_after.isdigit() else ("10" if "pawchive" in u_low else "15")
-                        delay = min(max(float(last_retry_after), 1.0), 120.0)
+                        raw_ra = resp.headers.get("Retry-After")
+                        default_ra = 10.0 if "pawchive" in u_low else 15.0
+                        delay, last_retry_after = _parse_retry_after_seconds(raw_ra, default_s=default_ra)
                         logger.warning(
                             f"  ⚠ {task.filename}: HTTP 429 Too Many Requests on {attempt_url} (Retry-After: {last_retry_after}s)",
                             category="file"
                         )
                         resp.close()
                         resp = None
-                        # Immediately step down Adaptive Threading & engage escalating cooldown even on
+                        # Immediately step down Adaptive Threading & engage per-host escalating cooldown even on
                         # pass 0 so sibling workers never slam the rate-limited host.
                         is_locked_now = bool(getattr(self.current_options or options, "threads_locked", False))
-                        self._trigger_rate_limit_backoff(threads_locked=is_locked_now, retry_after=delay)
+                        paw_host = attempt_host if "pawchive" in u_low else ""
+                        self._trigger_rate_limit_backoff(threads_locked=is_locked_now, retry_after=delay, host=paw_host)
+                        host_cd_until = self.get_host_cooldown_until(paw_host)
                         with self._pawchive_pace_lock:
-                            self._pawchive_next_req_time = max(
-                                self._pawchive_next_req_time,
-                                self._rate_limit_cooldown_until,
-                                time.time() + delay,
-                            )
+                            next_allowed = max(host_cd_until, time.time() + delay)
+                            if paw_host:
+                                self._host_next_req_time[paw_host] = max(self._host_next_req_time.get(paw_host, 0.0), next_allowed)
+                            self._pawchive_next_req_time = max(self._pawchive_next_req_time, next_allowed)
                         if pass_idx == 0 and ("pawchive" in u_low or len(urls_to_try) == 1):
-                            # Only ONE worker per cooldown window runs the Pass-1 verification probe,
-                            # and it waits the full active cooldown (pausing cleanly if user clicks Pause).
-                            # All sibling workers yield back to the queue immediately to prevent thundering herds.
-                            if not self._claim_429_probe_slot():
+                            # Only ONE worker per host cooldown window runs the Pass-1 verification probe,
+                            # waiting the full active host cooldown (pausing cleanly if user clicks Pause).
+                            if not self._claim_429_probe_slot(paw_host):
                                 return None, mode, existing_size, req_headers, (False, f"429_RATE_LIMIT (Retry-After: {last_retry_after}s)")
-                            probe_wait = max(delay, self._rate_limit_cooldown_until - time.time())
+                            probe_wait = max(delay, self.get_host_cooldown_until(paw_host) - time.time())
                             early_pause = self._sleep_interruptible(task, probe_wait)
                             if early_pause is not None:
                                 return None, mode, existing_size, req_headers, early_pause
