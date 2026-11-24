@@ -277,6 +277,7 @@ Rectangle {
             creator_id: String(meta.creator_id || meta.id || ""),
             service: String(meta.service || ""),
             service_label: String(meta.service_label || meta.service || ""),
+            local_dirs: meta.local_dirs || [],
             item_type: String(meta.item_type || (meta.post_id ? "post" : "creator"))
         }
         var heading = label ? ("Download: " + label) : "Download Item"

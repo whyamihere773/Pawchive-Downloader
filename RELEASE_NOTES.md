@@ -8,7 +8,7 @@
 
 ### 🔄 Browser Mode: Sync Missing & Mismatched Only
 
-* **Download only missing or incomplete posts**: Click **Sync Missing / Mismatched** on any creator in Browser Mode (or choose **Missing & Mismatched**, **Not on Disk Only**, or **Mismatched Only** in the download dialog) to skip finished posts and grab only what is missing or incomplete.
+* **Download only missing or incomplete posts**: Choose **Missing & Mismatched**, **Not on Disk Only**, or **Mismatched Only** right inside the Browser download dialog to skip finished posts and grab only what is missing or incomplete.
 * **Automatic folder & naming match**: Syncing automatically locates the creator's existing folder on disk and reuses its folder structure and file-naming style so new files fit right in.
 
 ---
