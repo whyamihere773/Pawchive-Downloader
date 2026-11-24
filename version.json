@@ -233,7 +233,7 @@
         {
             "version": "1.4.5",
             "date": "2026-11-24",
-            "notes": "Eliminated multi-hour Pawchive stop-and-go cooldown loops with steady Quota Cruise and automatic hourly recovery, added rolling 60-minute marathon self-pacing and cross-server load spreading, fixed active downloads getting interrupted when a rate-limit pause starts, and sped up skipping for missing Pawchive files."
+            "notes": "Added always-visible Pawchive Rate Guard readout in the bottom bar with selectable Full/Compact/Minimal/Tiny styles, full unshortened hover details, and 1-click mode/reset popover; eliminated multi-hour stop-and-go cooldown loops with steady Quota Cruise and automatic hourly recovery; added rolling 60-minute marathon self-pacing and cross-server load spreading; fixed active downloads getting interrupted when a rate-limit pause starts; and sped up skipping for missing Pawchive files."
         }
     ]
 }

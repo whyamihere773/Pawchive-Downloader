@@ -666,6 +666,19 @@ class SettingsPropsMiscMixin(AppBridgeSignalsMixin):
             self.pawchiveRateGuardChanged.emit()
             self.scheduleSaveSettings()
 
+    @Property(str, notify=AppBridgeSignalsMixin.pawchiveRateGuardChanged)
+    def pawchiveRateGuardFooterStyle(self) -> str:
+        return getattr(self, "_pawchive_rate_guard_footer_style", "micro")
+
+    @pawchiveRateGuardFooterStyle.setter
+    def pawchiveRateGuardFooterStyle(self, val: str):
+        from core.pawchive_rate_persistence import normalize_rate_guard_footer_style
+        norm = normalize_rate_guard_footer_style(val)
+        if getattr(self, "_pawchive_rate_guard_footer_style", "micro") != norm:
+            self._pawchive_rate_guard_footer_style = norm
+            self.pawchiveRateGuardChanged.emit()
+            self.scheduleSaveSettings()
+
     @Property("QVariantMap", notify=AppBridgeSignalsMixin.pawchiveRateGuardChanged)
     def pawchiveRateGuardInfo(self) -> Dict[str, Any]:
         gov = getattr(self, "pawchive_governor", None)
@@ -674,18 +687,32 @@ class SettingsPropsMiscMixin(AppBridgeSignalsMixin):
         return {
             "mode": getattr(self, "_pawchive_rate_guard_mode", "smart"),
             "state": "cruise",
+            "quota_cruise": False,
             "cooldown_remaining": 0.0,
+            "wave": 0,
+            "recovery_clean_files": 0,
             "live_rpm": 0.0,
             "effective_rpm": 26.0,
             "target_rpm": 26.0,
             "danger_rpm": 0.0,
+            "target_streams": 3,
+            "danger_streams": 0,
+            "waves_5m": 0,
+            "waves_60m": 0,
+            "sent_5m": 0.0,
+            "sent_60m": 0.0,
             "manual_rpm": float(getattr(self, "_pawchive_manual_rpm", 24.0)),
             "manual_max_streams": int(getattr(self, "_pawchive_manual_streams", 3)),
             "manual_cooldown_s": int(getattr(self, "_pawchive_manual_cooldown", 40)),
             "max_streams": 3,
             "node_streams": 2,
-            "status_text": "Cruise (0 req/min • Pace 26/min)",
+            "status_text": "Cruise (0 req/min • 3 conn • Pace 26/min)",
         }
+
+    @Slot()
+    def refreshPawchiveRateGuard(self) -> None:
+        """Tick live cooldown / rolling window readouts on the footer HUD."""
+        self.pawchiveRateGuardChanged.emit()
 
     @Slot(result="QVariantMap")
     def recalibratePawchiveRateGuard(self) -> Dict[str, Any]:

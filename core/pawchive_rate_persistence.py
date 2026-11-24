@@ -14,6 +14,7 @@ from core.atomic_io import atomic_write_json
 from core.logger import logger
 
 RATE_GUARD_MODES = ("smart", "cautious", "manual")
+RATE_GUARD_FOOTER_STYLES = ("full", "micro", "minimal", "tiny", "hidden")
 
 
 def normalize_rate_guard_mode(val: Any) -> str:
@@ -25,6 +26,21 @@ def normalize_rate_guard_mode(val: Any) -> str:
     if v in ("manual", "custom"):
         return "manual"
     return "smart"
+
+
+def normalize_rate_guard_footer_style(val: Any) -> str:
+    v = str(val or "micro").strip().lower()
+    if v in ("full", "full_length", "expanded", "detailed"):
+        return "full"
+    if v in ("micro", "compact", "unified", "default"):
+        return "micro"
+    if v in ("minimal", "mini", "short"):
+        return "minimal"
+    if v in ("tiny", "nano", "dot"):
+        return "tiny"
+    if v in ("hidden", "off", "none"):
+        return "hidden"
+    return "micro"
 
 
 class PawchiveRatePersistenceMixin:
@@ -289,6 +305,8 @@ class PawchiveRatePersistenceMixin:
                 "state": self._state if cd_rem <= 0 else "cooldown",
                 "quota_cruise": self._quota_cruise_active,
                 "cooldown_remaining": round(cd_rem, 1),
+                "wave": int(self._wave),
+                "recovery_clean_files": int(self._recovery_clean_files),
                 "live_rpm": live,
                 "effective_rpm": eff,
                 "target_rpm": round(self._target_global_rpm, 1),
@@ -297,6 +315,7 @@ class PawchiveRatePersistenceMixin:
                 "danger_streams": danger_s,
                 "waves_5m": waves_5m,
                 "waves_60m": waves_60m,
+                "sent_5m": round(self._sent_5m_weight, 1),
                 "sent_60m": round(self._sent_60m_weight, 1),
                 "manual_rpm": round(self._manual_rpm, 1),
                 "manual_max_streams": self._manual_max_streams,

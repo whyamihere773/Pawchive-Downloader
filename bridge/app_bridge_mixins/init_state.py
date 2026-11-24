@@ -104,6 +104,10 @@ def init_bridge_core_state(self) -> None:
     )
     self.archive_manager.on_repair_finished = self._on_archive_repaired
     self._pawchive_rate_guard_mode = normalize_rate_guard_mode(saved_settings.get("pawchive_rate_guard_mode", "smart"))
+    from core.pawchive_rate_persistence import normalize_rate_guard_footer_style
+    self._pawchive_rate_guard_footer_style = normalize_rate_guard_footer_style(
+        saved_settings.get("pawchive_rate_guard_footer_style", "micro")
+    )
     try:
         self._pawchive_manual_rpm = max(8.0, min(60.0, float(saved_settings.get("pawchive_manual_rpm", 24.0))))
     except (TypeError, ValueError):

@@ -247,6 +247,7 @@ class SessionManager:
             "disabled_tabs": [],
             "local_library_roots": [],
             "pawchive_rate_guard_mode": "smart",
+            "pawchive_rate_guard_footer_style": "micro",
             "pawchive_manual_rpm": 24.0,
             "pawchive_manual_streams": 3,
             "pawchive_manual_cooldown": 40,

@@ -11,6 +11,7 @@ CardSection {
     readonly property var bridge: guardCard.view ? guardCard.view.bridge : null
     readonly property var info: (bridge && bridge.pawchiveRateGuardInfo) ? bridge.pawchiveRateGuardInfo : ({})
     readonly property string curMode: bridge ? String(bridge.pawchiveRateGuardMode || "smart") : "smart"
+    readonly property string curFooterStyle: bridge ? String(bridge.pawchiveRateGuardFooterStyle || "micro") : "micro"
     readonly property string guardState: String(info.state || "cruise")
     readonly property real dangerRpm: Number(info.danger_rpm || 0)
     property bool justRecalibrated: false
@@ -379,6 +380,66 @@ CardSection {
                             font.bold: true
                             color: "#7DD3FC"
                         }
+                    }
+                }
+            }
+        }
+
+        // 4. Bottom Status Bar Display Style Selector
+        Flow {
+            width: parent.width
+            Layout.fillWidth: true
+            spacing: 6
+
+            Text {
+                text: "Bottom Bar Badge:"
+                font.family: "Segoe UI, sans-serif"
+                font.pixelSize: 11
+                color: "#94A3B8"
+                height: 26
+                verticalAlignment: Text.AlignVCenter
+            }
+
+            Repeater {
+                model: [
+                    { key: "full", label: "Full Length", tip: "Show full unshortened state, pace, connections, and 60-minute request count in the bottom bar." },
+                    { key: "micro", label: "Compact (Default)", tip: "Single compact badge combining live pace, connections, and 60-minute count." },
+                    { key: "minimal", label: "Minimal", tip: "Compact icon + pace and connections only (full details on hover or click)." },
+                    { key: "tiny", label: "Tiny Dot", tip: "Ultra-small colored status dot + live pace." },
+                    { key: "hidden", label: "Hidden", tip: "Hide the Rate Guard badge from the bottom bar." }
+                ]
+
+                delegate: Rectangle {
+                    readonly property bool active: guardCard.curFooterStyle === modelData.key
+                    objectName: "rateGuardFooterStyle_" + modelData.key
+                    height: 26
+                    width: fsTxt.implicitWidth + 16
+                    radius: 6
+                    color: active ? "#1E1B38" : (fsMouse.containsMouse ? "#1A2336" : "#0F1522")
+                    border.color: active ? "#A78BFA" : (fsMouse.containsMouse ? "#334155" : "#1E293B")
+                    border.width: active ? 1.5 : 1
+
+                    Springy { hover: fsMouse.containsMouse; pressed: fsMouse.pressed }
+
+                    Text {
+                        id: fsTxt
+                        anchors.centerIn: parent
+                        text: modelData.label
+                        font.family: "Segoe UI, sans-serif"
+                        font.pixelSize: 11
+                        font.weight: active ? Font.Bold : Font.Medium
+                        color: active ? "#DDD6FE" : "#94A3B8"
+                    }
+
+                    MouseArea {
+                        id: fsMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 250
+                        ToolTip.text: modelData.tip
+                        onClicked: if (guardCard.bridge) guardCard.bridge.pawchiveRateGuardFooterStyle = modelData.key
                     }
                 }
             }

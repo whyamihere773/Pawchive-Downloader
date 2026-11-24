@@ -52,11 +52,12 @@ Item {
             // Live Adaptive Health & Scaling Pill (Feature 5) with Spring Entrance
             Rectangle {
                 id: adaptivePill
+                readonly property bool isDuplicatePawchiveGuard: appBridge && appBridge.pawchiveRateGuardFooterStyle !== "hidden" && appBridge.adaptiveStatusText.indexOf("Pawchive Guard") === 0
                 implicitHeight: 24
                 implicitWidth: adaptiveRow.implicitWidth + 24
                 radius: 6
                 visible: opacity > 0
-                opacity: (appBridge && appBridge.isDownloading && appBridge.adaptiveStatusText.length > 0 && (appBridge.adaptiveThreading || appBridge.adaptiveState === "cooldown" || appBridge.adaptiveStatusText.indexOf("Pawchive Guard") !== -1 || appBridge.adaptiveStatusText.indexOf("Probing") !== -1)) ? 1.0 : 0.0
+                opacity: (appBridge && appBridge.isDownloading && !adaptivePill.isDuplicatePawchiveGuard && appBridge.adaptiveStatusText.length > 0 && (appBridge.adaptiveThreading || appBridge.adaptiveState === "cooldown" || appBridge.adaptiveStatusText.indexOf("Pawchive Guard") !== -1 || appBridge.adaptiveStatusText.indexOf("Probing") !== -1)) ? 1.0 : 0.0
                 scale: opacity > 0 ? 1.0 : 0.6
                 transformOrigin: Item.Center
 
@@ -109,6 +110,12 @@ Item {
                         }
                     }
                 }
+            }
+
+            // Always-visible Pawchive Rate Guard status badge (supports Full / Compact / Minimal / Tiny / Hidden)
+            PawchiveRateGuardFooterPill {
+                id: pawchiveFooterGuard
+                bridge: appBridge
             }
 
             // Quick session state badge
