@@ -134,8 +134,12 @@ class KemonoDownloader(
         self._active_resp_lock = threading.Lock()
         self._worker_sessions: set = set()
         self._worker_sessions_lock = threading.Lock()
+        self._in_flight_sessions: Dict[requests.Session, int] = defaultdict(int)
+        self._pawchive_pool_reset_epoch: int = 0
         self._thread_local = threading.local()
         self._worker_session_epoch: int = 0
+        self._host_dispatch_seq: Dict[str, int] = {}
+        self._dispatch_seq_counter: int = 0
         self._proxy_url: str = ""
         self._clean_cookie: str = ""
         self._post_info_pending: Dict[Any, str] = {}   # post_info.txt path -> text, written after the first file
@@ -247,8 +251,12 @@ class KemonoDownloader(
             # (it used to go to every host, Bunkr and other file servers included)
             self._thread_local.session = sess
             self._thread_local.session_epoch = self._worker_session_epoch
+            self._thread_local.pawchive_pool_epoch = self._pawchive_pool_reset_epoch
             with self._worker_sessions_lock:
                 self._worker_sessions.add(sess)
+        elif getattr(self._thread_local, "pawchive_pool_epoch", 0) != self._pawchive_pool_reset_epoch:
+            self._evict_pawchive_pools_from_session(sess)
+            self._thread_local.pawchive_pool_epoch = self._pawchive_pool_reset_epoch
         return sess
 
     def bump_worker_session_epoch(self, proxy_url: Optional[str] = None) -> None:
@@ -414,6 +422,8 @@ class KemonoDownloader(
             self._host_slow_ttfb_until.clear()
         with self._verified_hash_lock:
             self._verified_hash_paths.clear()
+        self._host_dispatch_seq.clear()
+        self._dispatch_seq_counter = 0
         if getattr(self, "pawchive_governor", None) is not None:
             self.pawchive_governor.reset_runtime()
         logger.info("Downloader state fully reset.", category="downloader")

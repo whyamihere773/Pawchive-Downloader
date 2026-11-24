@@ -352,7 +352,7 @@ class DownloaderLoopMixin:
                     current_active = len(active_futures)
                     slots_available = max(0, self.max_workers - current_active)
                     if slots_available > 0:
-                        cand_limit = max(32, slots_available * 12)
+                        cand_limit = max(96, slots_available * 32)
                         pending_tasks, saw_cooling_pending = self._collect_pending(cand_limit, now_dispatch)
                         if not pending_tasks and current_active == 0:
                             pending_tasks, saw_cooling_pending = self._collect_pending(cand_limit, now_dispatch, full=True)
@@ -685,6 +685,10 @@ class DownloaderLoopMixin:
         gov = getattr(self, "pawchive_governor", None)
         paw_max_total, paw_max_node = gov.max_concurrent_streams() if gov is not None else (4, 2)
         paw_probing = gov.is_probing() if gov is not None else False
+        host_seq = getattr(self, "_host_dispatch_seq", None)
+        if host_seq is None:
+            host_seq = {}
+            self._host_dispatch_seq = host_seq
 
         while len(selected) < slots_available and remaining:
             best_idx = -1
@@ -698,13 +702,14 @@ class DownloaderLoopMixin:
                     continue
 
                 h = self._task_primary_host(cand)
+                is_paw_shard = bool(h and is_pawchive_storage_host(h))
                 if h and "pawchive.pw" in h:
                     if paw_probing and active_pawchive_total >= 1:
                         continue
                     if active_pawchive_total >= paw_max_total:
                         continue
                     node_cap = gov.max_streams_for_node(h) if gov is not None else paw_max_node
-                    if is_pawchive_storage_host(h) and active_by_host[h] >= node_cap:
+                    if is_paw_shard and active_by_host[h] >= node_cap:
                         continue
                 elif h and self.is_host_probe_needed(h) and active_by_host[h] >= 1:
                     continue
@@ -717,11 +722,13 @@ class DownloaderLoopMixin:
                 else:
                     size_penalty = 0
 
-                score = (active_by_host[h] if h else 0, size_penalty, orig_order)
+                hot_pen = 1 if (is_paw_shard and gov is not None and gov.is_node_hot(h)) else 0
+                recent_seq = host_seq.get(h, 0) if is_paw_shard else 0
+                score = (hot_pen, active_by_host[h] if h else 0, recent_seq, size_penalty, orig_order)
                 if best_score is None or score < best_score:
                     best_score = score
                     best_idx = list_pos
-                    if score[0] == 0 and score[1] == 0:
+                    if score[:4] == (0, 0, 0, 0):
                         break
 
             if best_idx < 0:
@@ -736,6 +743,10 @@ class DownloaderLoopMixin:
                 active_by_host[ch_host] += 1
                 if "pawchive.pw" in ch_host:
                     active_pawchive_total += 1
+                if is_pawchive_storage_host(ch_host):
+                    seq_val = getattr(self, "_dispatch_seq_counter", 0) + 1
+                    self._dispatch_seq_counter = seq_val
+                    host_seq[ch_host] = seq_val
             if self._is_large_task(chosen):
                 active_large += 1
             else:
@@ -773,9 +784,28 @@ class DownloaderLoopMixin:
         return found, saw_cooling
 
     def _worker_download_task(self, task: DownloadTask, options: FilterOptions):
+        worker_session = None
         try:
             worker_session = self._get_worker_session()
+            with self._worker_sessions_lock:
+                self._in_flight_sessions[worker_session] = self._in_flight_sessions.get(worker_session, 0) + 1
             task_opts = getattr(task, "options", None) or self.get_batch_options(getattr(task, "batch_id", "")) or options
             return self._download_single_file(task, worker_session, task_opts)
         except Exception as e:
             return False, str(e)
+        finally:
+            if worker_session is not None:
+                need_evict = False
+                with self._worker_sessions_lock:
+                    rem = self._in_flight_sessions.get(worker_session, 0) - 1
+                    if rem <= 0:
+                        self._in_flight_sessions.pop(worker_session, None)
+                        need_evict = (
+                            getattr(self._thread_local, "pawchive_pool_epoch", 0)
+                            != getattr(self, "_pawchive_pool_reset_epoch", 0)
+                        )
+                    else:
+                        self._in_flight_sessions[worker_session] = rem
+                if need_evict:
+                    self._evict_pawchive_pools_from_session(worker_session)
+                    self._thread_local.pawchive_pool_epoch = getattr(self, "_pawchive_pool_reset_epoch", 0)

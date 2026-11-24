@@ -19,6 +19,7 @@ from core.logger import logger
 from core.providers import cookie_for_url, provider_for_host
 
 _CACHED_PAWCHIVE_UA: Optional[str] = None
+_PAWCHIVE_DIRECT_NODE_404_RE = re.compile(r"\b(?:n\d+|img)\.pawchive\.pw\b", re.IGNORECASE)
 
 
 def _parse_retry_after_seconds(raw_header: Any, default_s: float = 15.0) -> Tuple[float, str]:
@@ -151,22 +152,26 @@ class DownloaderHttpNegotiatorMixin:
         is_pawchive_task = any("pawchive" in u.lower() for u in full_urls)
         pass1_urls = full_urls[:1] if (is_pawchive_task and len(full_urls) > 1) else full_urls
         pass_lists = [full_urls, pass1_urls] + ([preview_urls] if (preview_urls and allow_thumb_fallback) else [])
+        pawchive_404_urls: set = set()
         saw_429 = False
         saw_404 = False
         saw_403 = False
         last_error_status = 0
         last_retry_after = ""
 
-        for pass_idx, urls_to_try in enumerate(pass_lists):
+        for pass_idx, raw_urls in enumerate(pass_lists):
             # Never downgrade a temporarily rate-limited full-size file to a thumbnail preview
             if pass_idx == 2 and saw_429:
                 break
+            urls_to_try = [u for u in raw_urls if u not in pawchive_404_urls] if pass_idx > 0 else list(raw_urls)
+            if not urls_to_try:
+                continue
             if pass_idx == 1:
                 early_pause = self._sleep_interruptible(task, 1.5)
                 if early_pause is not None:
                     return None, mode, existing_size, req_headers, early_pause
 
-            for attempt_url in urls_to_try:
+            for url_idx, attempt_url in enumerate(urls_to_try):
                 early_pause = self._wait_if_globally_paused(task)
                 if early_pause is not None:
                     return None, mode, existing_size, req_headers, early_pause
@@ -227,18 +232,29 @@ class DownloaderHttpNegotiatorMixin:
                     elif resp.status_code == 404:
                         saw_404 = True
                         last_error_status = 404
-                        if pass_idx < len(pass_lists) - 1:
-                            logger.debug(f"  ↪ Mirror 404 on {attempt_url} (pass {pass_idx + 1}/{len(pass_lists)}) — will retry on next pass...", category="file")
-                            resp.close()
-                            resp = None
-                            continue
-                        elif len(urls_to_try) > 1:
+                        if _PAWCHIVE_DIRECT_NODE_404_RE.search(u_low):
+                            # Direct storage shard (n1-n4) / thumbnail CDN (img) 404 is authoritative;
+                            # never re-hit the exact same dead shard URL twice, while still allowing
+                            # redirect routers (file.pawchive.pw) or preview fallbacks to run.
+                            pawchive_404_urls.add(attempt_url)
+                        has_more_in_pass = url_idx < (len(urls_to_try) - 1)
+                        has_later_unseen = any(
+                            u not in pawchive_404_urls
+                            for later_list in pass_lists[pass_idx + 1:]
+                            for u in later_list
+                        )
+                        if has_more_in_pass:
                             logger.debug(f"  ↪ Mirror 404 on {attempt_url} — trying next mirror...", category="file")
                             resp.close()
                             resp = None
                             continue
+                        elif has_later_unseen:
+                            logger.debug(f"  ↪ Mirror 404 on {attempt_url} (pass {pass_idx + 1}/{len(pass_lists)}) — will try fallback/next pass...", category="file")
+                            resp.close()
+                            resp = None
+                            continue
                         else:
-                            # Final pass on single-mirror host — definitive 404 verified after retry
+                            # Definitive 404 (Pawchive storage/CDN 404s are authoritative and not re-requested twice)
                             task.http_status = 404
                             if "pawchive" in u_low:
                                 msg = (

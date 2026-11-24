@@ -246,45 +246,66 @@ class DownloaderRetriesPacingMixin:
         self._host_recovery_gap_until[host] = max(self._host_recovery_gap_until.get(host, 0.0), cooldown_until + 120.0)
         return tuned
 
+    @staticmethod
+    def _evict_pawchive_pools_from_session(sess) -> int:
+        """Evict and close `*.pawchive.pw` urllib3 pools on a single idle `requests.Session`."""
+        closed = 0
+        adapters = getattr(sess, "adapters", None)
+        if not isinstance(adapters, dict):
+            return 0
+        for adapter in list(adapters.values()):
+            pm = getattr(adapter, "poolmanager", None)
+            pools = getattr(pm, "pools", None)
+            if pools is None:
+                continue
+            evicted = []
+            try:
+                p_lock = getattr(pools, "lock", None)
+                if p_lock is not None:
+                    with p_lock:
+                        container = getattr(pools, "_container", None)
+                        keys = list(container.keys()) if isinstance(container, dict) else []
+                        for k in keys:
+                            kh = str(getattr(k, "key_host", "") or k).lower()
+                            if "pawchive.pw" in kh:
+                                pool_obj = container.pop(k, None)
+                                if pool_obj is not None:
+                                    evicted.append(pool_obj)
+                for pool_obj in evicted:
+                    try:
+                        pool_obj.close()
+                        closed += 1
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        return closed
+
     def _close_idle_pawchive_connections(self) -> int:
-        """Close pooled idle Keep-Alive HTTP connections to `*.pawchive.pw` during 429 cooldowns
-        so flagged/stale edge sockets terminate cleanly and fresh connections open when probing."""
-        closed_pools = 0
+        """Close pooled idle Keep-Alive HTTP connections to `*.pawchive.pw` during 429 cooldowns.
+
+        Sessions actively executing a request on another worker thread are never closed cross-thread
+        (avoiding `HTTPSConnectionPool: Pool is closed` mid-request); instead `_pawchive_pool_reset_epoch`
+        is bumped so busy workers recycle their own Pawchive pools as soon as their request finishes.
+        """
         sessions_lock = getattr(self, "_worker_sessions_lock", None)
         if sessions_lock is None:
             return 0
+        tl = getattr(self, "_thread_local", None)
+        cur_sess = getattr(tl, "session", None) if tl is not None else None
         with sessions_lock:
-            sessions = list(getattr(self, "_worker_sessions", ()))
-        for sess in sessions:
-            adapters = getattr(sess, "adapters", None)
-            if not isinstance(adapters, dict):
-                continue
-            for adapter in list(adapters.values()):
-                pm = getattr(adapter, "poolmanager", None)
-                pools = getattr(pm, "pools", None)
-                if pools is None:
-                    continue
-                evicted = []
-                try:
-                    p_lock = getattr(pools, "lock", None)
-                    if p_lock is not None:
-                        with p_lock:
-                            container = getattr(pools, "_container", None)
-                            keys = list(container.keys()) if isinstance(container, dict) else []
-                            for k in keys:
-                                kh = str(getattr(k, "key_host", "") or k).lower()
-                                if "pawchive.pw" in kh:
-                                    pool_obj = container.pop(k, None)
-                                    if pool_obj is not None:
-                                        evicted.append(pool_obj)
-                    for pool_obj in evicted:
-                        try:
-                            pool_obj.close()
-                            closed_pools += 1
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
+            new_epoch = getattr(self, "_pawchive_pool_reset_epoch", 0) + 1
+            self._pawchive_pool_reset_epoch = new_epoch
+            in_flight = getattr(self, "_in_flight_sessions", None) or {}
+            safe_sessions = [
+                s for s in getattr(self, "_worker_sessions", ())
+                if s is cur_sess or in_flight.get(s, 0) <= 0
+            ]
+        closed_pools = 0
+        for sess in safe_sessions:
+            closed_pools += self._evict_pawchive_pools_from_session(sess)
+            if sess is cur_sess and tl is not None:
+                tl.pawchive_pool_epoch = new_epoch
         return closed_pools
 
     def _trigger_rate_limit_backoff(self, threads_locked: bool = False, retry_after: float = 0.0, host: str = ""):

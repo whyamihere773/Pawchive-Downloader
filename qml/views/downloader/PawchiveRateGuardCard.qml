@@ -172,7 +172,7 @@ CardSection {
                         key: "smart",
                         icon: "⚡",
                         label: "Smart Auto (Recommended)",
-                        tip: "Two-layer per-node + shared IP pacing. Dynamically opens more connections (up to 6) when clean, closes/sheds connections on 429, and heals upward automatically so speeds never crawl."
+                        tip: "Two-layer per-node + rolling hourly pacing. Dynamically scales up to 5 connections when clean, glides into steady Quota Cruise if hourly limits tighten, and self-heals upward automatically."
                     },
                     {
                         key: "cautious",

@@ -21,55 +21,52 @@ from __future__ import annotations
 
 from collections import deque
 import math
-import os
 import random
 import re
 import threading
 import time
 from typing import Any, Callable, Dict, Optional, Tuple
 
-from core.atomic_io import atomic_write_json
 from core.logger import logger
+from core.pawchive_rate_persistence import (
+    PawchiveRatePersistenceMixin,
+    RATE_GUARD_MODES,
+    normalize_rate_guard_mode,
+)
 
-RATE_GUARD_MODES = ("smart", "cautious", "manual")
 _STORAGE_HOST_RE = re.compile(r"^(?:file|[nt]\d+)\.pawchive\.pw$", re.IGNORECASE)
 
 
-def normalize_rate_guard_mode(val: Any) -> str:
-    v = str(val or "smart").strip().lower()
-    if v in ("smart", "auto", "balanced", "default"):
-        return "smart"
-    if v in ("cautious", "paranoid", "ban_safe", "safe", "stealth"):
-        return "cautious"
-    if v in ("manual", "custom"):
-        return "manual"
-    return "smart"
+def slow_probe_ts_needed(slow_probe_mode: bool) -> bool:
+    return bool(slow_probe_mode)
 
 
-class PawchiveRateGovernor:
+class PawchiveRateGovernor(PawchiveRatePersistenceMixin):
     """Thread-safe two-layer congestion controller and persistent rate calibrator for `*.pawchive.pw`."""
 
     # Preset parameters: fast enough to never feel sluggish, conservative enough to avoid 429s
     _PRESETS: Dict[str, Dict[str, float]] = {
         "smart": {
             "start_rpm": 26.0,       # ~1,560 files/hr baseline
-            "floor_rpm": 12.0,       # anti-crawl floor (1 file / 5s worst-case)
-            "max_rpm": 36.0,         # ~2,160 files/hr max auto-probe
+            "floor_rpm": 12.0,       # normal Cruise floor (1 file / 5s) when hourly quota is healthy
+            "quota_floor_rpm": 4.0,  # steady Quota Cruise floor unlocked only when hourly refill tightens
+            "max_rpm": 30.0,         # ~1,800 files/hr max auto-probe (tapers automatically over 60m)
             "safety_ratio": 0.85,    # settle comfortably at 85% of confirmed 429 ceiling
             "start_streams": 3.0,    # starts balanced at 3 simultaneous connections
-            "min_streams": 2.0,      # Cruise anti-crawl floor (0 in cooldown, 1 in probe, 2+ in cruise)
-            "max_streams": 6.0,      # dynamically opens up to 6 Pawchive connections when clean
-            "base_cd": 35.0,
+            "min_streams": 2.0,      # normal Cruise floor (drops to 1 in Quota Cruise < 10 RPM)
+            "max_streams": 5.0,      # dynamically opens up to 5 Pawchive connections when clean
+            "base_cd": 20.0,         # short 20s first-bump cooldown
         },
         "cautious": {
             "start_rpm": 18.0,       # ~1,080 files/hr baseline
-            "floor_rpm": 9.0,        # 1 file / 6.6s worst-case
+            "floor_rpm": 9.0,        # 1 file / 6.6s normal floor
+            "quota_floor_rpm": 4.0,  # steady Quota Cruise floor under sustained hourly throttling
             "max_rpm": 24.0,
             "safety_ratio": 0.75,    # extra 25% safety headroom below any 429 ceiling
             "start_streams": 2.0,
             "min_streams": 1.0,
             "max_streams": 2.0,
-            "base_cd": 45.0,
+            "base_cd": 30.0,
         },
     }
 
@@ -104,10 +101,12 @@ class PawchiveRateGovernor:
 
         # Runtime state machine: "cruise" | "cooldown" | "probing" | "recovering" | "paused_shield"
         self._state: str = "cruise"
+        self._quota_cruise_active: bool = False
         self._domain_cooldown_until: float = 0.0
         self._cooldown_id: int = 0
         self._probe_claimed_id: int = 0
         self._wave: int = 0
+        self._wave_ts_60m: deque = deque()               # timestamps of 429 waves over last 3600s
         self._consecutive_failed_probes: int = 0
         self._recovery_started_at: float = 0.0
         self._recovery_clean_files: int = 0
@@ -115,8 +114,14 @@ class PawchiveRateGovernor:
         self._self_heal_clean_files: int = 0
         self._last_probe_up_ts: float = 0.0
 
-        # Sliding-window telemetry (real HTTP requests sent vs next scheduled slot)
-        self._global_sent_ts: deque = deque()            # (timestamp, weight) over last 300s
+        # O(1) sliding-window telemetry (1m live RPM, 5m burst/sustained, 60m rolling hourly self-pacing)
+        self._global_sent_1m: deque = deque()
+        self._global_sent_5m: deque = deque()
+        self._global_sent_60m: deque = deque()
+        self._global_sent_ts: deque = self._global_sent_5m
+        self._sent_1m_weight: float = 0.0
+        self._sent_5m_weight: float = 0.0
+        self._sent_60m_weight: float = 0.0
         self._node_sent_ts: Dict[str, deque] = {}        # host -> deque[timestamp] over last 120s
         self._global_sched_ts: deque = deque()           # scheduled storage slots over last 60s
         self._node_sched_ts: Dict[str, deque] = {}       # scheduled per-node slots over last 60s
@@ -130,235 +135,53 @@ class PawchiveRateGovernor:
         if self._persist_path:
             self._load_from_disk()
 
-    # ── Configuration & Persistence ───────────────────────────────────────────
-
-    def configure(
-        self,
-        *,
-        mode: Optional[str] = None,
-        manual_rpm: Optional[float] = None,
-        manual_max_streams: Optional[int] = None,
-        manual_cooldown_s: Optional[int] = None,
-    ) -> None:
-        changed = False
-        with self._lock:
-            if mode is not None:
-                nm = normalize_rate_guard_mode(mode)
-                if nm != self._mode:
-                    prev_mode = self._mode
-                    self._mode = nm
-                    changed = True
-                    if nm in self._PRESETS:
-                        p = self._PRESETS[nm]
-                        if prev_mode == "manual" or self._target_global_rpm <= 0:
-                            self._target_global_rpm = p["start_rpm"]
-                            self._target_streams = int(p["start_streams"])
-                        self._clamp_target_unlocked()
-                        self._clamp_streams_unlocked()
-            if manual_rpm is not None:
-                mr = max(8.0, min(60.0, float(manual_rpm)))
-                if abs(mr - self._manual_rpm) >= 0.05:
-                    self._manual_rpm = mr
-                    changed = True
-            if manual_max_streams is not None:
-                ms = max(1, min(6, int(manual_max_streams)))
-                if ms != self._manual_max_streams:
-                    self._manual_max_streams = ms
-                    changed = True
-            if manual_cooldown_s is not None:
-                mc = max(15, min(180, int(manual_cooldown_s)))
-                if mc != self._manual_cooldown_s:
-                    self._manual_cooldown_s = mc
-                    changed = True
-        if changed:
-            self._save_async(force=True)
-            self._notify()
-
-    def reset_runtime(self) -> None:
-        """Clear transient in-session cooldown/probing flags while preserving learned safe speeds."""
-        with self._lock:
-            self._state = "cruise"
-            self._domain_cooldown_until = 0.0
-            self._cooldown_id = 0
-            self._probe_claimed_id = 0
-            self._wave = 0
-            self._consecutive_failed_probes = 0
-            self._recovery_clean_files = 0
-            self._hot_node_until.clear()
-            self._global_sched_ts.clear()
-            self._node_sched_ts.clear()
-            self._global_next_slot = 0.0
-            self._node_next_slot.clear()
-        self._notify()
-
-    def recalibrate(self) -> Dict[str, Any]:
-        """Clear learned 429 danger ceilings & penalties and begin a fresh smooth calibration."""
-        with self._lock:
-            preset = self._PRESETS.get(self._mode, self._PRESETS["smart"])
-            self._danger_global_rpm = None
-            self._danger_streams = None
-            self._hot_node_until.clear()
-            self._node_rpm.clear()
-            self._node_last_429_ts.clear()
-            self._target_global_rpm = preset["start_rpm"] if self._mode != "manual" else self._manual_rpm
-            self._target_streams = int(preset["start_streams"]) if self._mode != "manual" else self._manual_max_streams
-            self._state = "cruise"
-            self._domain_cooldown_until = 0.0
-            self._cooldown_id = 0
-            self._probe_claimed_id = 0
-            self._wave = 0
-            self._consecutive_failed_probes = 0
-            self._recovery_clean_files = 0
-            self._cruise_clean_files = 0
-            self._self_heal_clean_files = 0
-            self._global_sched_ts.clear()
-            self._node_sched_ts.clear()
-            self._global_next_slot = 0.0
-            self._node_next_slot.clear()
-            snap = self.snapshot()
-        logger.info(
-            f"🔄 [Pawchive Rate Guard] Recalibrated — reset learned ceilings to {snap['effective_rpm']:.1f} req/min "
-            f"& {snap['max_streams']} conn ({self._mode} mode).",
-            category="downloader",
-        )
-        self._save_async(force=True)
-        self._notify()
-        return snap
-
-    def _load_from_disk(self) -> None:
-        if not self._persist_path or not os.path.isfile(self._persist_path):
-            return
-        try:
-            import json
-            with open(self._persist_path, "r", encoding="utf-8") as rf:
-                data = json.load(rf)
-            if not isinstance(data, dict):
-                return
-            with self._lock:
-                if "mode" in data:
-                    self._mode = normalize_rate_guard_mode(data.get("mode"))
-                if "manual_rpm" in data:
-                    self._manual_rpm = max(8.0, min(60.0, float(data["manual_rpm"])))
-                if "manual_max_streams" in data:
-                    self._manual_max_streams = max(1, min(6, int(data["manual_max_streams"])))
-                if "manual_cooldown_s" in data:
-                    self._manual_cooldown_s = max(15, min(180, int(data["manual_cooldown_s"])))
-
-                preset = self._PRESETS.get(self._mode, self._PRESETS["smart"])
-                saved_target = float(data.get("target_global_rpm") or preset["start_rpm"])
-                saved_danger = data.get("danger_global_rpm")
-                saved_streams = int(data.get("target_streams") or preset["start_streams"])
-                saved_danger_s = data.get("danger_streams")
-                last_429 = float(data.get("last_429_wall_ts") or 0.0)
-                self._last_429_wall_ts = last_429
-
-                # Time-based decay on restart so old penalties from hours/days ago never lock speeds low
-                now = time.time()
-                hours_since_429 = max(0.0, (now - last_429) / 3600.0) if last_429 > 0 else 999.0
-                if saved_danger is not None:
-                    d_val = float(saved_danger)
-                    if hours_since_429 >= 48.0:
-                        d_val = None
-                    elif hours_since_429 >= 2.0:
-                        # Heal +12% per 6 hours away from Pawchive
-                        heal_factor = 1.0 + 0.12 * (hours_since_429 / 6.0)
-                        d_val = min(preset["max_rpm"] / preset["safety_ratio"], d_val * heal_factor)
-                        if d_val >= preset["max_rpm"]:
-                            d_val = None
-                    self._danger_global_rpm = d_val
-
-                if saved_danger_s is not None:
-                    ds_val: Optional[int] = int(saved_danger_s)
-                    if hours_since_429 >= 24.0:
-                        ds_val = None
-                    elif hours_since_429 >= 6.0 and ds_val is not None:
-                        ds_val = ds_val + int(hours_since_429 // 6.0)
-                        if ds_val > int(preset["max_streams"]):
-                            ds_val = None
-                    self._danger_streams = ds_val
-
-                if hours_since_429 >= 6.0 and saved_target < preset["start_rpm"]:
-                    saved_target = min(preset["start_rpm"], saved_target + 4.0 * (hours_since_429 / 6.0))
-                if hours_since_429 >= 6.0 and saved_streams < int(preset["start_streams"]):
-                    saved_streams = min(int(preset["start_streams"]), saved_streams + int(hours_since_429 // 6.0))
-                self._target_global_rpm = saved_target
-                self._target_streams = saved_streams
-                self._clamp_target_unlocked()
-                self._clamp_streams_unlocked()
-
-                raw_nodes = data.get("node_rpm")
-                if isinstance(raw_nodes, dict) and hours_since_429 < 24.0:
-                    for hk, hv in raw_nodes.items():
-                        try:
-                            self._node_rpm[str(hk).lower()] = max(8.0, min(30.0, float(hv)))
-                        except (TypeError, ValueError):
-                            pass
-        except Exception as ex:
-            logger.debug(f"[PawchiveRateGovernor] Profile load skipped: {ex}", category="downloader")
-
-    def _save_async(self, force: bool = False) -> None:
-        if not self._persist_path:
-            return
-        now = time.time()
-        with self._lock:
-            if not force and (now - self._last_save_ts < 15.0 or self._save_pending):
-                return
-            self._save_pending = True
-            self._last_save_ts = now
-            payload = {
-                "version": 1,
-                "updated_at": now,
-                "mode": self._mode,
-                "manual_rpm": round(self._manual_rpm, 2),
-                "manual_max_streams": self._manual_max_streams,
-                "manual_cooldown_s": self._manual_cooldown_s,
-                "target_global_rpm": round(self._target_global_rpm, 2),
-                "danger_global_rpm": round(self._danger_global_rpm, 2) if self._danger_global_rpm is not None else None,
-                "target_streams": int(self._target_streams),
-                "danger_streams": int(self._danger_streams) if self._danger_streams is not None else None,
-                "last_429_wall_ts": self._last_429_wall_ts,
-                "node_rpm": {k: round(v, 2) for k, v in self._node_rpm.items()},
-            }
-            path = self._persist_path
-
-        def _writer():
-            try:
-                os.makedirs(os.path.dirname(path), exist_ok=True)
-                atomic_write_json(path, payload)
-            except Exception as ex:
-                logger.debug(f"[PawchiveRateGovernor] Profile save skipped: {ex}", category="downloader")
-            finally:
-                with self._lock:
-                    self._save_pending = False
-
-        threading.Thread(target=_writer, daemon=True, name="PawchiveRateProfileSave").start()
-
-    def _notify(self) -> None:
-        cb = self._on_state_changed
-        if cb is not None:
-            try:
-                cb()
-            except Exception:
-                pass
-
     # ── Core Calculations ─────────────────────────────────────────────────────
+
+    def _hourly_budget_cap_unlocked(self) -> Tuple[float, int]:
+        """Smoothly taper Smart Auto ceiling over rolling 60m volume so marathon queues glide
+        underneath Pawchive's ~2,200–2,500 req/hr threshold before hitting a wall."""
+        preset = self._PRESETS.get(self._mode, self._PRESETS["smart"])
+        if self._mode != "smart":
+            return preset["max_rpm"], int(preset["max_streams"])
+        s60 = self._sent_60m_weight
+        if s60 < 1400.0:
+            return preset["max_rpm"], int(preset["max_streams"])
+        if s60 < 1800.0:
+            frac = (s60 - 1400.0) / 400.0
+            return preset["max_rpm"] - 8.0 * frac, 4
+        frac = min(1.0, (s60 - 1800.0) / 350.0)
+        return 22.0 - 6.0 * frac, 3
+
+    def _wave_counts_unlocked(self, now: float) -> Tuple[int, int]:
+        cutoff_60m = now - 3600.0
+        while self._wave_ts_60m and self._wave_ts_60m[0] <= cutoff_60m:
+            self._wave_ts_60m.popleft()
+        cutoff_5m = now - 300.0
+        w5 = sum(1 for t in self._wave_ts_60m if t > cutoff_5m)
+        return w5, len(self._wave_ts_60m)
 
     def _clamp_target_unlocked(self) -> None:
         preset = self._PRESETS.get(self._mode, self._PRESETS["smart"])
-        floor_rpm = preset["floor_rpm"]
-        ceil_rpm = preset["max_rpm"]
+        floor_rpm = preset["quota_floor_rpm"] if self._quota_cruise_active else preset["floor_rpm"]
+        hr_rpm, _ = self._hourly_budget_cap_unlocked()
+        ceil_rpm = min(preset["max_rpm"], hr_rpm)
         if self._danger_global_rpm is not None:
-            ceil_rpm = min(ceil_rpm, max(floor_rpm, self._danger_global_rpm * preset["safety_ratio"]))
+            ceil_rpm = min(ceil_rpm, max(preset["floor_rpm"], self._danger_global_rpm * preset["safety_ratio"]))
         self._target_global_rpm = max(floor_rpm, min(ceil_rpm, self._target_global_rpm))
 
     def _clamp_streams_unlocked(self) -> None:
         preset = self._PRESETS.get(self._mode, self._PRESETS["smart"])
-        min_s = int(preset["min_streams"])
-        max_s = int(preset["max_streams"])
+        low_quota = self._quota_cruise_active and self._target_global_rpm < 10.5
+        min_s = 1 if low_quota else int(preset["min_streams"])
+        _, hr_s = self._hourly_budget_cap_unlocked()
+        max_s = min(int(preset["max_streams"]), hr_s)
         if self._danger_streams is not None:
             max_s = min(max_s, max(min_s, self._danger_streams - 1))
-        rpm_cap = max(min_s, min(int(preset["max_streams"]), int(self._target_global_rpm // 5.5)))
-        max_s = min(max_s, rpm_cap)
+        if low_quota:
+            max_s = 1
+        else:
+            rpm_cap = max(min_s, min(int(preset["max_streams"]), int(self._target_global_rpm // 5.5)))
+            max_s = min(max_s, rpm_cap)
         self._target_streams = max(min_s, min(max_s, int(self._target_streams)))
 
     def _effective_rpm_unlocked(self, now: float) -> float:
@@ -370,18 +193,40 @@ class PawchiveRateGovernor:
         self._clamp_target_unlocked()
         preset = self._PRESETS.get(self._mode, self._PRESETS["smart"])
         if self._state in ("probing", "recovering"):
+            if self._quota_cruise_active:
+                return max(preset["quota_floor_rpm"], self._target_global_rpm * 0.90)
             return max(preset["floor_rpm"], self._target_global_rpm * 0.82)
         return self._target_global_rpm
 
     def _prune_telemetry_unlocked(self, now: float) -> None:
+        cutoff_1m = now - 60.0
+        while self._global_sent_1m and self._global_sent_1m[0][0] <= cutoff_1m:
+            _, w = self._global_sent_1m.popleft()
+            self._sent_1m_weight = max(0.0, self._sent_1m_weight - w)
+        if not self._global_sent_1m:
+            self._sent_1m_weight = 0.0
+
         cutoff_5m = now - 300.0
-        while self._global_sent_ts and self._global_sent_ts[0][0] <= cutoff_5m:
-            self._global_sent_ts.popleft()
+        while self._global_sent_5m and self._global_sent_5m[0][0] <= cutoff_5m:
+            _, w = self._global_sent_5m.popleft()
+            self._sent_5m_weight = max(0.0, self._sent_5m_weight - w)
+        if not self._global_sent_5m:
+            self._sent_5m_weight = 0.0
+
+        cutoff_60m = now - 3600.0
+        while self._global_sent_60m and self._global_sent_60m[0][0] <= cutoff_60m:
+            _, w = self._global_sent_60m.popleft()
+            self._sent_60m_weight = max(0.0, self._sent_60m_weight - w)
+        if not self._global_sent_60m:
+            self._sent_60m_weight = 0.0
+
+        while self._wave_ts_60m and self._wave_ts_60m[0] <= cutoff_60m:
+            self._wave_ts_60m.popleft()
+
         cutoff_2m = now - 120.0
         for dq in self._node_sent_ts.values():
             while dq and dq[0] <= cutoff_2m:
                 dq.popleft()
-        cutoff_1m = now - 60.0
         while self._global_sched_ts and self._global_sched_ts[0] <= cutoff_1m:
             self._global_sched_ts.popleft()
         for dq in self._node_sched_ts.values():
@@ -392,8 +237,14 @@ class PawchiveRateGovernor:
         ts = time.time() if now is None else now
         with self._lock:
             self._prune_telemetry_unlocked(ts)
-            c60 = ts - 60.0
-            return round(sum(w for t, w in self._global_sent_ts if t > c60), 1)
+            return round(self._sent_1m_weight, 1)
+
+    def is_node_hot(self, host: str, now: Optional[float] = None) -> bool:
+        """True when `host` recently returned HTTP 429 and should yield priority to cool shards."""
+        ts = time.time() if now is None else now
+        h = (host or "").strip().lower()
+        with self._lock:
+            return bool(h and ts < self._hot_node_until.get(h, 0.0))
 
     def max_concurrent_streams(self, now: Optional[float] = None) -> Tuple[int, int]:
         """Return `(max_total_pawchive_streams, max_per_storage_node_streams)` right now.
@@ -480,14 +331,20 @@ class PawchiveRateGovernor:
                 return max(0.0, slot - ts)
 
             # Storage / API request: apply Two-Layer (Per-Node + Global IP) pacing
-            global_gap = max(0.45, 60.0 / max(8.0, eff_rpm) * 0.72)
-            if in_cautious:
-                global_gap = max(global_gap, 60.0 / max(8.0, eff_rpm))
+            in_quota_low = eff_rpm < 12.0
+            if in_quota_low:
+                # Quota Cruise (< 12 req/min): smooth even spacing (7.5s–15s apart) with zero bursts
+                global_gap = 60.0 / max(3.0, eff_rpm) * (1.0 if in_cautious else 0.94)
+                default_node_rpm = eff_rpm
+            else:
+                global_gap = max(0.45, 60.0 / max(8.0, eff_rpm) * 0.72)
+                if in_cautious:
+                    global_gap = max(global_gap, 60.0 / max(8.0, eff_rpm))
+                default_node_rpm = max(8.0, min(eff_rpm * 0.70, 22.0))
 
-            default_node_rpm = max(8.0, min(eff_rpm * 0.70, 22.0))
             node_rpm = self._node_rpm.get(h, default_node_rpm) if is_storage else eff_rpm
             node_rpm = min(node_rpm, eff_rpm)
-            node_gap = max(0.55, 60.0 / max(6.0, node_rpm) * 0.80)
+            node_gap = max(0.55, 60.0 / max(3.0, node_rpm) * (0.94 if node_rpm < 12.0 else 0.80))
             if slow_ttfb:
                 node_gap = max(node_gap, 1.10)
             if in_cautious:
@@ -502,22 +359,25 @@ class PawchiveRateGovernor:
 
             # Global 10s burst guard + 60s RPM cap + 5m sustained leaky-bucket guard
             g_dq = self._global_sched_ts
-            burst_10s = max(3, min(7, int(math.ceil(eff_rpm / 4.5))))
-            cap_60s = max(6, int(round(eff_rpm)))
+            if in_quota_low:
+                burst_10s = 1 if eff_rpm <= 6.5 else 2
+            else:
+                burst_10s = max(3, min(7, int(math.ceil(eff_rpm / 4.5))))
+            cap_60s = max(3, int(round(eff_rpm)))
             if len(g_dq) >= burst_10s:
                 slot = max(slot, g_dq[-burst_10s] + 10.05)
             if len(g_dq) >= cap_60s:
                 slot = max(slot, g_dq[-cap_60s] + 60.05)
 
             # 5-minute sustained window check from real sent requests
-            sent_5m = sum(w for t, w in self._global_sent_ts if t > ts - 300.0)
+            sent_5m = self._sent_5m_weight
             cap_5m = eff_rpm * 4.80
-            if sent_5m >= cap_5m and self._global_sent_ts:
-                slot = max(slot, self._global_sent_ts[0][0] + 300.05)
+            if sent_5m >= cap_5m and self._global_sent_5m:
+                slot = max(slot, self._global_sent_5m[0][0] + 300.05)
 
             # Per-node 60s rolling cap
             n_dq = self._node_sched_ts.setdefault(h, deque())
-            node_cap_60s = max(5, int(round(node_rpm)))
+            node_cap_60s = max(3, int(round(node_rpm)))
             if len(n_dq) >= node_cap_60s:
                 slot = max(slot, n_dq[-node_cap_60s] + 60.05)
 
@@ -536,7 +396,13 @@ class PawchiveRateGovernor:
         weight = 0.35 if "img.pawchive.pw" in h else 1.0
         with self._lock:
             self._prune_telemetry_unlocked(ts)
-            self._global_sent_ts.append((ts, weight))
+            item = (ts, weight)
+            self._global_sent_1m.append(item)
+            self._sent_1m_weight += weight
+            self._global_sent_5m.append(item)
+            self._sent_5m_weight += weight
+            self._global_sent_60m.append(item)
+            self._sent_60m_weight += weight
             if weight >= 1.0:
                 self._node_sent_ts.setdefault(h, deque()).append(ts)
 
@@ -572,6 +438,11 @@ class PawchiveRateGovernor:
                 entered_cooldown = True
                 self._cooldown_id += 1
                 was_probing = self._state == "probing"
+                prev_last_429 = self._last_429_wall_ts
+                self._wave_ts_60m.append(ts)
+                waves_5m, waves_60m = self._wave_counts_unlocked(ts)
+                if prev_last_429 > 0.0 and (ts - prev_last_429) >= 300.0 and waves_5m <= 1 and waves_60m <= 2:
+                    self._wave = 0
                 self._wave += 1
                 if was_probing:
                     self._consecutive_failed_probes += 1
@@ -579,8 +450,8 @@ class PawchiveRateGovernor:
                     self._consecutive_failed_probes = 1
 
                 # Measure real request rate over last 60s and last 5m
-                obs_60s = sum(w for t, w in self._global_sent_ts if t > ts - 60.0)
-                obs_5m_rpm = sum(w for t, w in self._global_sent_ts if t > ts - 300.0) / 5.0
+                obs_60s = self._sent_1m_weight
+                obs_5m_rpm = self._sent_5m_weight / 5.0
                 node_60s = len([t for t in self._node_sent_ts.get(h, ()) if t > ts - 60.0]) if h else 0
 
                 cross_node_recent = any(
@@ -589,6 +460,9 @@ class PawchiveRateGovernor:
                 )
                 if h:
                     self._node_last_429_ts[h] = ts
+                    if _STORAGE_HOST_RE.match(h):
+                        # Always mark the offending storage shard hot so cool shards take priority
+                        self._hot_node_until[h] = max(self._hot_node_until.get(h, 0.0), ts + 240.0)
                 self._last_429_wall_ts = ts
 
                 # Determine whether a single hot node overloaded or the shared IP bucket tripped
@@ -598,48 +472,78 @@ class PawchiveRateGovernor:
                 )
 
                 prev_streams = self._target_streams
-                if self._mode != "manual":
-                    preset = self._PRESETS.get(self._mode, self._PRESETS["smart"])
-                    obs_eff = max(obs_60s, obs_5m_rpm)
-                    if single_node_overload:
-                        cur_n = self._node_rpm.get(h, min(self._target_global_rpm * 0.70, 20.0))
-                        ref_n = max(8.0, float(node_60s)) if node_60s >= 6 else cur_n
-                        self._node_rpm[h] = max(8.0, min(cur_n * 0.85, ref_n * 0.78))
-                        self._hot_node_until[h] = ts + 240.0
-                        self._target_global_rpm = max(preset["floor_rpm"], self._target_global_rpm * 0.90)
-                        self._target_streams = max(int(preset["min_streams"]), prev_streams - 1)
-                        self._clamp_streams_unlocked()
-                    else:
-                        trigger_rpm = obs_eff if obs_eff >= 10.0 else (self._target_global_rpm * 0.92)
-                        if self._danger_global_rpm is None:
-                            self._danger_global_rpm = max(preset["floor_rpm"] / preset["safety_ratio"], trigger_rpm)
-                        else:
-                            # Smooth EWMA / min update, bounded above floor so a post-cooldown probe doesn't crush ceiling
-                            if trigger_rpm >= preset["floor_rpm"]:
-                                self._danger_global_rpm = min(self._danger_global_rpm, trigger_rpm)
-                        if prev_streams >= 4 or (prev_streams >= 3 and self._wave >= 2):
-                            self._danger_streams = (
-                                prev_streams if self._danger_streams is None else min(self._danger_streams, prev_streams)
-                            )
-                        step_down = 2 if prev_streams >= 4 else 1
-                        self._target_global_rpm = self._target_global_rpm * 0.78
-                        self._clamp_target_unlocked()
-                        self._target_streams = max(int(preset["min_streams"]), prev_streams - step_down)
-                        self._clamp_streams_unlocked()
-
-                # Compute domain-wide quiet cooldown (jittered so retries never look robotic)
+                hard_brake = False
                 if self._mode == "manual":
                     tiers = (
                         float(self._manual_cooldown_s),
                         min(180.0, self._manual_cooldown_s * 1.5),
                         min(240.0, self._manual_cooldown_s * 2.2),
                     )
+                    raw_cd = tiers[min(self._wave - 1, len(tiers) - 1)]
                 else:
-                    b_cd = self._PRESETS.get(self._mode, self._PRESETS["smart"])["base_cd"]
-                    tiers = (b_cd, b_cd * 1.7, b_cd * 2.5, 135.0)
+                    preset = self._PRESETS.get(self._mode, self._PRESETS["smart"])
+                    obs_eff = max(obs_60s, obs_5m_rpm)
+                    near_floor = self._target_global_rpm <= (preset["floor_rpm"] + 1.5)
+                    hard_brake = (waves_5m >= 3) or (waves_60m >= 5)
+                    enter_quota_cruise = hard_brake or (waves_5m >= 2) or (waves_60m >= 3) or near_floor or self._quota_cruise_active
 
-                raw_cd = tiers[min(self._wave - 1, len(tiers) - 1)]
-                cooldown_s = min(180.0, max(raw_cd, float(retry_after or 0.0)))
+                    if hard_brake:
+                        # 3rd+ 429 in 5m or 5th+ in 60m -> 4-minute Quiet Quota Breather + drop to 4–5 req/min
+                        self._quota_cruise_active = True
+                        q_floor = preset["quota_floor_rpm"]
+                        self._target_global_rpm = max(q_floor, min(self._target_global_rpm * 0.65, 5.0))
+                        self._target_streams = 1
+                        if h and _STORAGE_HOST_RE.match(h):
+                            self._node_rpm[h] = max(q_floor, min(self._node_rpm.get(h, self._target_global_rpm), self._target_global_rpm))
+                            self._hot_node_until[h] = max(self._hot_node_until.get(h, 0.0), ts + 420.0)
+                        self._clamp_target_unlocked()
+                        self._clamp_streams_unlocked()
+                        raw_cd = 245.0
+                    elif enter_quota_cruise:
+                        # 2nd 429 in 5m / near floor -> unlock Quota Cruise (< 12 RPM, 1 conn) below server refill rate
+                        self._quota_cruise_active = True
+                        q_floor = preset["quota_floor_rpm"]
+                        ref_rpm = min(self._target_global_rpm, max(q_floor, obs_eff)) if obs_eff >= q_floor else self._target_global_rpm
+                        self._target_global_rpm = max(
+                            q_floor,
+                            min(self._target_global_rpm * 0.68, ref_rpm * 0.76, preset["floor_rpm"] - 2.5),
+                        )
+                        if h and _STORAGE_HOST_RE.match(h):
+                            self._node_rpm[h] = max(q_floor, min(self._node_rpm.get(h, self._target_global_rpm), self._target_global_rpm))
+                            self._hot_node_until[h] = max(self._hot_node_until.get(h, 0.0), ts + 360.0)
+                        self._target_streams = 1 if self._target_global_rpm < 10.5 else min(2, prev_streams)
+                        self._clamp_target_unlocked()
+                        self._clamp_streams_unlocked()
+                        raw_cd = 60.0 if self._mode == "smart" else 72.0
+                    else:
+                        # 1st transient 429 in 5m -> short 20s speed bump, preserve >= 12 RPM floor
+                        if single_node_overload:
+                            cur_n = self._node_rpm.get(h, min(self._target_global_rpm * 0.70, 20.0))
+                            ref_n = max(8.0, float(node_60s)) if node_60s >= 6 else cur_n
+                            self._node_rpm[h] = max(8.0, min(cur_n * 0.85, ref_n * 0.78))
+                            self._target_global_rpm = max(preset["floor_rpm"], self._target_global_rpm * 0.90)
+                            self._target_streams = max(int(preset["min_streams"]), prev_streams - 1)
+                            self._clamp_streams_unlocked()
+                        else:
+                            trigger_rpm = obs_eff if obs_eff >= 10.0 else (self._target_global_rpm * 0.92)
+                            min_danger = preset["floor_rpm"] / preset["safety_ratio"]
+                            if self._danger_global_rpm is None:
+                                self._danger_global_rpm = max(min_danger, trigger_rpm)
+                            elif trigger_rpm >= preset["floor_rpm"]:
+                                self._danger_global_rpm = min(self._danger_global_rpm, max(min_danger, trigger_rpm))
+                            if prev_streams >= 4 or (prev_streams >= 3 and self._wave >= 2):
+                                self._danger_streams = (
+                                    prev_streams if self._danger_streams is None else min(self._danger_streams, prev_streams)
+                                )
+                            step_down = 2 if prev_streams >= 4 else 1
+                            self._target_global_rpm = self._target_global_rpm * 0.80
+                            self._clamp_target_unlocked()
+                            self._target_streams = max(int(preset["min_streams"]), prev_streams - step_down)
+                            self._clamp_streams_unlocked()
+                        raw_cd = 38.0 if was_probing else preset["base_cd"]
+
+                max_cd_cap = 300.0 if hard_brake else 180.0
+                cooldown_s = min(max_cd_cap, max(raw_cd, float(retry_after or 0.0)))
                 # Small deterministic-safe positive jitter (0% to +8%)
                 cooldown_s = round(cooldown_s * random.uniform(1.0, 1.08), 1)
 
@@ -665,14 +569,17 @@ class PawchiveRateGovernor:
 
                 scope_lbl = f"node {h}" if single_node_overload else "shared *.pawchive.pw IP bucket"
                 conn_note = f" | connections {prev_streams}→0 (cooldown)→{self._target_streams}" if self._mode != "manual" else ""
+                mode_note = " | Quota Cruise unlocked" if self._quota_cruise_active else ""
                 logger.warning(
-                    f"🛡️ [Pawchive Rate Guard] HTTP 429 ({scope_lbl}, wave {self._wave}) — "
+                    f"🛡️ [Pawchive Rate Guard] HTTP 429 ({scope_lbl}, wave {self._wave}, {waves_5m}/5m • {waves_60m}/60m) — "
                     f"quiet domain cooldown {int(round(cooldown_s))}s | target pace {self._effective_rpm_unlocked(ts):.1f} req/min"
                     + conn_note
+                    + mode_note
                     + (f" | ceiling {self._danger_global_rpm:.1f} req/min" if self._danger_global_rpm else ""),
                     category="downloader",
                 )
             else:
+                waves_5m, waves_60m = self._wave_counts_unlocked(ts)
                 cooldown_s = max(1.0, self._domain_cooldown_until - ts)
                 should_auto_pause = self._state == "paused_shield"
 
@@ -681,6 +588,9 @@ class PawchiveRateGovernor:
                 "cooldown_until": self._domain_cooldown_until,
                 "cooldown_s": cooldown_s,
                 "wave": self._wave,
+                "waves_5m": waves_5m,
+                "waves_60m": waves_60m,
+                "quota_cruise": self._quota_cruise_active,
                 "target_rpm": round(self._target_global_rpm, 1),
                 "danger_rpm": round(self._danger_global_rpm, 1) if self._danger_global_rpm else None,
                 "target_streams": self._target_streams,
@@ -727,21 +637,28 @@ class PawchiveRateGovernor:
                 elapsed_rec = ts - self._recovery_started_at
                 if self._recovery_clean_files >= 15 and elapsed_rec >= 75.0:
                     self._state = "cruise"
-                    self._wave = 0
+                    waves_5m, waves_60m = self._wave_counts_unlocked(ts)
+                    # Only reset wave counter if >= 5 full clean minutes have elapsed without a 429
+                    if (self._last_429_wall_ts <= 0.0 or (ts - self._last_429_wall_ts) >= 300.0) and waves_5m == 0 and not self._quota_cruise_active:
+                        self._wave = 0
                     self._consecutive_failed_probes = 0
                     self._cruise_clean_files = 0
                     self._last_probe_up_ts = ts
                     changed = True
                     cr_s, _ = self.max_concurrent_streams(ts)
+                    mode_lbl = "Quota Cruise" if self._quota_cruise_active else "Cruise"
                     logger.info(
                         f"⚡ [Pawchive Rate Guard] Recovery verified ({self._recovery_clean_files} clean files) — "
-                        f"resuming Cruise at {cr_s} conn • {self._effective_rpm_unlocked(ts):.1f} req/min.",
+                        f"resuming {mode_lbl} at {cr_s} conn • {self._effective_rpm_unlocked(ts):.1f} req/min.",
                         category="downloader",
                     )
             else:
                 self._state = "cruise"
                 self._cruise_clean_files += 1
                 self._self_heal_clean_files += 1
+                waves_5m, waves_60m = self._wave_counts_unlocked(ts)
+                if self._wave > 0 and (ts - self._last_429_wall_ts) >= 300.0 and waves_5m == 0:
+                    self._wave = 0
 
                 if self._mode != "manual":
                     preset = self._PRESETS.get(self._mode, self._PRESETS["smart"])
@@ -765,70 +682,39 @@ class PawchiveRateGovernor:
                                 self._danger_streams += 1
                         changed = True
 
-                    # Smooth upward probe every 25 clean files & >= 60s: nudge pace (+1.5 RPM) & open +1 connection
-                    if self._cruise_clean_files >= 25 and (ts - self._last_probe_up_ts) >= 60.0:
+                    # Upward probe cadence:
+                    # - In Quota Cruise or elevated hourly waves (>= 3 in 60m): probe gently every 12 minutes (720s)
+                    #   so we generate <= 3–4 test bumps/hour while hourly windows drain, then graduate smoothly.
+                    # - In normal healthy Cruise: probe every 25 clean files & >= 60s.
+                    slow_probe_mode = self._quota_cruise_active or waves_60m >= 3
+                    ref_probe_ts = max(self._last_probe_up_ts, self._last_429_wall_ts) if slow_probe_ts_needed(slow_probe_mode) else self._last_probe_up_ts
+                    min_probe_files = 20 if slow_probe_mode else 25
+                    min_probe_interval = 720.0 if slow_probe_mode else 60.0
+                    if self._cruise_clean_files >= min_probe_files and (ts - ref_probe_ts) >= min_probe_interval:
                         self._cruise_clean_files = 0
                         self._last_probe_up_ts = ts
                         prev_t = self._target_global_rpm
                         prev_s = self._target_streams
-                        self._target_global_rpm += 1.5
+                        prev_qc = self._quota_cruise_active
+                        step_rpm = 2.0 if self._quota_cruise_active else 1.5
+                        self._target_global_rpm += step_rpm
+                        if self._quota_cruise_active and self._target_global_rpm >= preset["floor_rpm"] and waves_5m == 0:
+                            self._quota_cruise_active = False
                         self._clamp_target_unlocked()
-                        self._target_streams += 1
+                        if not self._quota_cruise_active or self._target_global_rpm >= 10.5:
+                            self._target_streams += 1
                         self._clamp_streams_unlocked()
                         for nh in list(self._node_rpm.keys()):
-                            self._node_rpm[nh] = min(22.0, self._node_rpm[nh] + 1.5)
-                        if abs(self._target_global_rpm - prev_t) >= 0.1 or self._target_streams != prev_s:
+                            self._node_rpm[nh] = min(22.0, self._node_rpm[nh] + step_rpm)
+                        if abs(self._target_global_rpm - prev_t) >= 0.1 or self._target_streams != prev_s or prev_qc != self._quota_cruise_active:
                             changed = True
                             logger.debug(
                                 f"📈 [Pawchive Rate Guard] Clean streak — scaling up to {self._target_streams} conn "
-                                f"• {self._target_global_rpm:.1f} req/min.",
+                                f"• {self._target_global_rpm:.1f} req/min"
+                                + (" (exited Quota Cruise)." if (prev_qc and not self._quota_cruise_active) else "."),
                                 category="downloader",
                             )
 
         if changed:
             self._save_async(force=False)
             self._notify()
-
-    # ── UI Snapshot ───────────────────────────────────────────────────────────
-
-    def snapshot(self, now: Optional[float] = None) -> Dict[str, Any]:
-        ts = time.time() if now is None else now
-        with self._lock:
-            if self._state == "cooldown" and ts >= self._domain_cooldown_until:
-                self._state = "probing"
-            cd_rem = max(0.0, self._domain_cooldown_until - ts)
-            eff = round(self._effective_rpm_unlocked(ts), 1)
-            live = self.live_rpm(ts)
-            danger = round(self._danger_global_rpm, 1) if self._danger_global_rpm is not None else 0.0
-            danger_s = int(self._danger_streams) if self._danger_streams is not None else 0
-            tot_s, node_s = self.max_concurrent_streams(ts)
-
-            if cd_rem > 0.0:
-                status = f"Quiet Cooldown: {int(round(cd_rem))}s (0 conn • wave {max(1, self._wave)})"
-            elif self._state == "paused_shield":
-                status = "Ban-Shield Paused (3× 429 probes — wait a few min & Resume)"
-            elif self._state == "probing":
-                status = f"Probing (1 test conn • {eff:.0f} req/min)"
-            elif self._state == "recovering":
-                status = f"Recovering ({self._recovery_clean_files}/15 clean • {tot_s} conn • {eff:.0f} req/min)"
-            else:
-                ceil_part = f" • Safe Cap {eff:.0f}/min" if danger > 0 else f" • Pace {eff:.0f}/min"
-                status = f"Cruise ({live:.0f} req/min • {tot_s} conn{ceil_part})"
-
-            return {
-                "mode": self._mode,
-                "state": self._state if cd_rem <= 0 else "cooldown",
-                "cooldown_remaining": round(cd_rem, 1),
-                "live_rpm": live,
-                "effective_rpm": eff,
-                "target_rpm": round(self._target_global_rpm, 1),
-                "danger_rpm": danger,
-                "target_streams": self._target_streams,
-                "danger_streams": danger_s,
-                "manual_rpm": round(self._manual_rpm, 1),
-                "manual_max_streams": self._manual_max_streams,
-                "manual_cooldown_s": self._manual_cooldown_s,
-                "max_streams": tot_s,
-                "node_streams": node_s,
-                "status_text": status,
-            }
