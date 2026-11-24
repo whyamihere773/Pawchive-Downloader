@@ -810,11 +810,17 @@ class LinkExtractor:
                 pass
 
         # 6. Canonical post URL
+        from core.parser import canonical_site_url, normalize_archive_url
         post_url = ""
         if domain and service and user_id and pid:
-            post_url = f"https://{domain}/{service}/user/{user_id}/post/{pid}"
+            post_url = canonical_site_url(domain, service, user_id, "post", pid) or f"https://{domain}/{service}/user/{user_id}/post/{pid}"
         elif post.get("post_url") or post.get("url"):
-            post_url = str(post.get("post_url") or post.get("url"))
+            post_url = normalize_archive_url(
+                str(post.get("post_url") or post.get("url")),
+                fallback_service=service,
+                fallback_user_id=user_id,
+                fallback_post_id=pid,
+            )
 
         from core.text_utils import strip_html_tags
         clean_body = strip_html_tags(combined_text)

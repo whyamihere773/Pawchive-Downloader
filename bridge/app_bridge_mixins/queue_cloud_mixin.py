@@ -515,10 +515,22 @@ class QueueCloudMixin(AppBridgeSignalsMixin):
                 "",
             ]
 
+            from core.parser import canonical_site_url, normalize_archive_url
+
+            def _resolve_task_post_url(t_obj) -> str:
+                svc = str(getattr(t_obj, "service", "") or "").strip().lower()
+                uid = str(getattr(t_obj, "user_id", "") or getattr(t_obj, "creator_name", "") or "").strip()
+                pid = str(getattr(t_obj, "post_id", "") or "").strip()
+                raw_p = str(getattr(t_obj, "post_url", "") or "").strip()
+                if raw_p:
+                    return normalize_archive_url(raw_p, fallback_service=svc, fallback_user_id=uid, fallback_post_id=pid)
+                if svc and uid and pid:
+                    dom = "cum.st" if (svc in ("onlyfans", "fansly", "candfans") or "cum.st" in str(getattr(t_obj, "url", "")).lower()) else "pawchive.pw"
+                    return canonical_site_url(dom, svc, uid, "post", pid)
+                return ""
+
             for idx, t in enumerate(tasks_to_export, 1):
-                p_url = getattr(t, "post_url", "") or ""
-                if not p_url and t.service and t.post_id:
-                    p_url = f"https://pawchive.pw/{t.service}/user/{t.creator_name}/post/{t.post_id}"
+                p_url = _resolve_task_post_url(t)
 
                 lines.append(f"[{idx}] File: {t.filename}")
                 lines.append(f"    File Size: {self._queue_model._format_size(t.file_size)}")
@@ -553,9 +565,7 @@ class QueueCloudMixin(AppBridgeSignalsMixin):
             ])
             post_urls_seen = set()
             for t in tasks_to_export:
-                p_url = getattr(t, "post_url", "") or ""
-                if not p_url and t.service and t.post_id:
-                    p_url = f"https://pawchive.pw/{t.service}/user/{t.creator_name}/post/{t.post_id}"
+                p_url = _resolve_task_post_url(t)
                 if p_url and p_url not in post_urls_seen:
                     post_urls_seen.add(p_url)
                     lines.append(p_url)

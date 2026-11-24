@@ -39,28 +39,72 @@ def canonical_site_url(domain: str, service: str, user_id: str, route: str = "",
     return base
 
 
-def normalize_archive_url(url: str) -> str:
-    """Rewrite legacy /{service}/user/{id}... page URLs on cum.st to canonical /creators/{service}/{id}..."""
+_CUMST_USERLESS_POST_RE = re.compile(
+    r"^https?://(?:www\.)?cum\.st/(?:"
+    r"(?P<svc1>[^/?#]+)/(?P<rt1>post|posts|dm|dms)/(?P<pid1>[^/?#]+)"
+    r"|(?P<rt2>posts|post|dm|dms)/(?P<svc2>[^/?#]+)/(?P<pid2>[^/?#]+)"
+    r")/?$",
+    re.IGNORECASE,
+)
+
+
+def normalize_archive_url(
+    url: str,
+    fallback_service: str = "",
+    fallback_user_id: str = "",
+    fallback_post_id: str = "",
+) -> str:
+    """Rewrite legacy/incomplete cum.st page URLs (/{svc}/user/{id}..., /posts/{svc}/{id}/{pid},
+    or userless /{svc}/post/{pid} when `fallback_user_id` is known) to canonical /creators/{svc}/{id}..."""
     clean = str(url or "").strip()
     if not clean or "cum.st" not in clean.lower():
         return clean
     low = clean.lower()
     if "/api/" in low or "cdn.cum.st" in low or "img.cum.st" in low:
         return clean
-    m = KemonoURLParser.KEMONO_PATTERN.match(clean)
+
+    head_path, sep, query_str = clean.partition("?")
+
+    def _with_query(built_url: str) -> str:
+        return f"{built_url}?{query_str}" if (sep and query_str and built_url) else built_url
+
+    # Already canonical /creators/{service}/{user_id}...
+    if KemonoURLParser.CREATORS_PATTERN.match(head_path):
+        return clean
+
+    # Legacy /{service}/user/{user_id}[/post|dm/{post_id}]
+    m = KemonoURLParser.KEMONO_PATTERN.match(head_path)
     if m and "cum.st" in m.group(1).lower():
-        svc, uid, pid = m.group(2), m.group(3), m.group(4) or ""
-        tail_path = clean.split("?", 1)[0].rstrip("/")
+        svc, uid, pid = m.group(2), m.group(3), m.group(4) or fallback_post_id or ""
+        tail_path = head_path.rstrip("/")
         if pid:
-            route = "dm" if re.search(rf"/dm/{re.escape(pid)}$", tail_path, re.IGNORECASE) else "post"
+            route = "dm" if re.search(rf"/dms?/{re.escape(pid)}$", tail_path, re.IGNORECASE) else "post"
         elif re.search(r"/dms?$", tail_path, re.IGNORECASE):
             route = "dms"
         else:
             route = ""
         built = canonical_site_url("cum.st", svc, uid, route=route, post_id=pid)
-        if "?" in clean:
-            built += "?" + clean.split("?", 1)[1]
-        return built
+        return _with_query(built) if built else clean
+
+    # /posts/{service}/{user_id}/{post_id}
+    m_posts = KemonoURLParser.POSTS_PATTERN.match(head_path)
+    if m_posts and "cum.st" in m_posts.group(1).lower():
+        svc, uid, pid = m_posts.group(2), m_posts.group(3), m_posts.group(4)
+        built = canonical_site_url("cum.st", svc, uid, route="post", post_id=pid)
+        return _with_query(built) if built else clean
+
+    # Incomplete userless /{service}/post/{post_id} or /posts/{service}/{post_id}
+    m_ul = _CUMST_USERLESS_POST_RE.match(head_path)
+    if m_ul:
+        svc = (m_ul.group("svc1") or m_ul.group("svc2") or fallback_service or "").strip().lower()
+        raw_rt = (m_ul.group("rt1") or m_ul.group("rt2") or "post").strip().lower()
+        route = "dm" if raw_rt.startswith("dm") else "post"
+        pid = (m_ul.group("pid1") or m_ul.group("pid2") or fallback_post_id or "").strip()
+        uid = str(fallback_user_id or "").strip()
+        if svc and uid and pid:
+            built = canonical_site_url("cum.st", svc, uid, route=route, post_id=pid)
+            if built:
+                return _with_query(built)
     return clean
 
 

@@ -338,10 +338,8 @@ class GalleryToolsBridge(QObject):
 
         if not post_id:
             return empty
-        if info_post_url:
-            return {"url": normalize_archive_url(info_post_url), "postId": post_id, "title": title}
 
-        if not domain and self._watchlist is not None:
+        if (not domain or not user) and self._watchlist is not None:
             folder_case = os.path.normcase(folder)
             for entry in list(getattr(self._watchlist, "entries", [])):
                 dirs = list(getattr(entry, "download_dirs", []) or [])
@@ -350,10 +348,22 @@ class GalleryToolsBridge(QObject):
                 for d in dirs:
                     d_case = os.path.normcase(os.path.normpath(d))
                     if d and (folder_case == d_case or folder_case.startswith(d_case + os.sep)):
-                        domain, service, user = entry.domain, entry.service, str(entry.user_id)
+                        domain = domain or entry.domain
+                        service = service or entry.service
+                        user = user or str(entry.user_id)
                         break
-                if domain:
+                if domain and user:
                     break
+
+        if info_post_url:
+            norm_info_url = normalize_archive_url(
+                info_post_url,
+                fallback_service=service,
+                fallback_user_id=user,
+                fallback_post_id=post_id,
+            )
+            if not ("cum.st" in norm_info_url.lower() and "/creators/" not in norm_info_url.lower() and service and user):
+                return {"url": norm_info_url, "postId": post_id, "title": title}
 
         if not (domain and service and user):
             return {"url": "", "postId": post_id, "title": title}

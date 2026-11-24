@@ -1,29 +1,29 @@
-### 📅 Date Folder Sorting
+### ⚡ Pawchive Rate Guard & Anti-Ban Calibration
 
-* **Organize creator downloads by Year and Month**: Choose **By Year** (`Creator/2025/...`), **By Month** (`Creator/2025-03/...`), or **Year → Month** (`Creator/2025/03 - March/...`) under **Downloader → Structure & Engine** or **Settings → Storage & File Processing**. Posts without a publication date are placed in `Unknown Date/`.
-* **Works everywhere**: Date folder sorting works alongside Subfolder per post, Group by File Type, and custom per-creator Watchlist settings, and shows up in the Browser download summary.
+* **Smart automatic speed & connection tuning**: Pawchive Downloader now tracks per-server and overall rate limits together, opening extra connections when downloads are running smoothly and stepping down quietly whenever servers ask to slow down. Your learned safe pace is saved between sessions and steadily heals back up on its own so temporary slowdowns never leave downloads crawling.
+* **New Rate Guard controls & Recalibrate**: Pick **Smart Auto**, **Cautious (Ban-Safe)**, or **Custom Manual** sliders under **Downloader → Structure & Engine**, view your live files-per-minute pace, or click **Recalibrate** anytime (with an automatic safety pause if repeated test files are still blocked).
+* **Instant local copy for reposted files**: When a creator includes the exact same file in multiple posts (such as an individual post and a monthly pack), your already-downloaded local copy is reused instantly instead of downloading it again.
 
 ---
 
 ### 🔄 Browser Mode: Sync Missing & Mismatched Only
 
-* **Download only missing or mismatched posts**: Use the new **Sync Missing / Mismatched** button on any creator in Browser Mode (or pick **Missing & Mismatched**, **Not on Disk Only**, or **Mismatched Only** in the Browser download dialog) to skip complete posts and grab only missing or incomplete ones.
-* **Automatic path & layout matching**: Syncing automatically finds the creator's existing folder on disk and reuses its exact folder layout and naming style so new and repaired files blend right in.
+* **Download only missing or incomplete posts**: Click **Sync Missing / Mismatched** on any creator in Browser Mode (or choose **Missing & Mismatched**, **Not on Disk Only**, or **Mismatched Only** in the download dialog) to skip finished posts and grab only what is missing or incomplete.
+* **Automatic folder & naming match**: Syncing automatically locates the creator's existing folder on disk and reuses its folder structure and file-naming style so new files fit right in.
 
 ---
 
-### ⚡ Smarter Pawchive Rate-Limit Protection
+### 📅 Date Folder Sorting
 
-* **Two-layer anti-ban speed & connection calibration**: Pawchive Downloader now balances both per-server (`n1`–`n4`) and shared IP limits automatically, dynamically opening extra connections when transfers are smooth and closing them down on rate limits while steadily healing speed back up so downloads never crawl.
-* **Pawchive Rate Guard controls & Recalibrate**: Choose **Smart Auto**, **Cautious (Ban-Safe)**, or **Custom Manual** sliders under **Downloader → Structure & Engine**, watch live files-per-minute telemetry, or click **Recalibrate** anytime (with automatic emergency pause if repeated test files are still blocked).
-* **Instant local copy for reposted files**: When a creator attaches the exact same file in multiple posts (such as an individual post and a monthly pack), Pawchive Downloader now copies your already-verified local file instantly instead of downloading it all over again.
+* **Sort creator downloads by Year and Month**: Organize posts into **By Year** (`Creator/2025/...`), **By Month** (`Creator/2025-03/...`), or **Year → Month** (`Creator/2025/03 - March/...`) under **Downloader → Structure & Engine** or **Settings → Storage & File Processing**. Posts without a publication date are placed in `Unknown Date/`.
 
 ---
 
 ### 🛠️ Fixes
 
-* **Pause & rate-limit recovery fixes**: Clicking **Pause** immediately freezes all retry timers (and resuming after a pause no longer waits out already-elapsed cooldowns). Manual thread counts also recover automatically after a temporary slowdown instead of staying stuck at 1 thread.
-* **Linux & older Python startup fix**: Resolved a startup crash on Linux builds and Python 3.11/3.12 environments.
+* **Broken cum.st post links fixed**: Opening, copying, or redownloading a `cum.st` post from Browser Mode, Gallery, or older saved folders now always uses the working `cum.st/creators/...` post link instead of broken `cum.st/.../post/...` addresses.
+* **Pause & recovery reliability fixes**: Clicking **Pause** immediately freezes active retry timers without re-waiting already-elapsed cooldowns on resume, and manual thread counts recover smoothly after temporary rate-limit slowdowns instead of staying stuck at 1 thread.
+* **Linux & Python 3.11/3.12 startup fix**: Fixed a startup crash affecting Linux builds and Python 3.11/3.12 environments.
 
 ---
 

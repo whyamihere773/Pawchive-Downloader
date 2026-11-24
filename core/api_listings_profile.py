@@ -240,8 +240,9 @@ class ApiListingsProfileMixin:
                     logger.debug(f"Failed to parse profile JSON from {url}: {e}", category="api")
 
         # Phase 2: HTML Page metadata scraping (extremely resilient against API rate limits & 429/403)
+        from core.parser import canonical_site_url
         for domain in profile_domains:
-            html_url = f"https://{domain}/{parsed.service}/user/{parsed.user_id}"
+            html_url = canonical_site_url(domain, parsed.service, parsed.user_id) or f"https://{domain}/{parsed.service}/user/{parsed.user_id}"
             resp = self._get_with_log(html_url, timeout=10, quick=True)
             if resp and resp.status_code == 200:
                 name = self._extract_creator_from_html(resp.text, uid_str)

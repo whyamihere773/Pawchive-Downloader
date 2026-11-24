@@ -522,6 +522,20 @@ class QueueModelOpsMixin:
     def _build_failed_list(self, tasks, skip_404: bool, p):
         """The Retry dialog's rows: failed / cancelled tasks of the queue, else the saved failed files."""
         failed = []
+        from core.parser import canonical_site_url, normalize_archive_url
+
+        def _task_canonical_post_url(svc: str, uid: str, pid: str, raw_post_url: str, file_url: str) -> str:
+            s = (svc or "").strip().lower()
+            u = str(uid or "").strip()
+            p_id = str(pid or "").strip()
+            rp = str(raw_post_url or "").strip()
+            if rp:
+                return normalize_archive_url(rp, fallback_service=s, fallback_user_id=u, fallback_post_id=p_id)
+            if s and u and p_id:
+                dom = "cum.st" if (s in ("onlyfans", "fansly", "candfans") or "cum.st" in str(file_url or "").lower()) else "pawchive.pw"
+                return canonical_site_url(dom, s, u, "post", p_id)
+            return ""
+
         has_failed_in_queue = False
         for t in tasks:
             if t.status in ("failed", "cancelled") or (t.status == "pending" and (getattr(t, "retry_count", 0) > 0 or getattr(t, "error_msg", ""))):
@@ -531,9 +545,13 @@ class QueueModelOpsMixin:
                 if skip_404 and not unimp and ("404" in str(err_msg).lower() or getattr(t, "http_status", 0) == 404):
                     continue
 
-                p_url = getattr(t, "post_url", "") or ""
-                if not p_url and t.service and t.post_id:
-                    p_url = f"https://pawchive.pw/{t.service}/user/{t.creator_name}/post/{t.post_id}"
+                p_url = _task_canonical_post_url(
+                    t.service,
+                    getattr(t, "user_id", "") or t.creator_name,
+                    t.post_id,
+                    getattr(t, "post_url", "") or "",
+                    t.url,
+                )
 
                 failed.append({
                     "fileId": t.file_id,
@@ -563,9 +581,13 @@ class QueueModelOpsMixin:
                             if skip_404 and not unimp and ("404" in str(err_msg).lower() or d.get("http_status") == 404):
                                 continue
 
-                            p_url = d.get("post_url") or ""
-                            if not p_url and d.get("service") and d.get("post_id"):
-                                p_url = f"https://pawchive.pw/{d.get('service')}/user/{d.get('creator_name')}/post/{d.get('post_id')}"
+                            p_url = _task_canonical_post_url(
+                                d.get("service", ""),
+                                d.get("user_id") or d.get("creator_name", ""),
+                                d.get("post_id", ""),
+                                d.get("post_url") or "",
+                                d.get("url", ""),
+                            )
                             failed.append({
                                 "fileId": d.get("file_id", ""),
                                 "filename": d.get("filename", ""),

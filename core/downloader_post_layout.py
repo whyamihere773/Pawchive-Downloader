@@ -263,8 +263,17 @@ class DownloaderPostLayoutMixin:
             tags_str = ", ".join(tags_list)
 
             # Build creator profile URL
-            post_user = str(post.get("user") or post.get("user_id") or post.get("artist_id") or user_id or "")
-            if domain == "cum.st":
+            post_user = str(
+                post.get("user")
+                or post.get("creatorId")
+                or post.get("creator_id")
+                or post.get("user_id")
+                or post.get("artist_id")
+                or user_id
+                or ""
+            ).strip()
+            dom_low = (domain or "").strip().lower()
+            if "cum.st" in dom_low or "cumst" in dom_low:
                 if service and post_user:
                     creator_url = f"https://cum.st/creators/{service}/{post_user}"
                 elif service:

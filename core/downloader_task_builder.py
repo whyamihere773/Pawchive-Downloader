@@ -367,17 +367,27 @@ class DownloaderTaskBuilderMixin:
                 date_str = FilterEngine.clean_filesystem_text(date_str, max_len=20, fallback="")
 
             # Construct canonical web post link for manual inspection/testing
-            post_user = str(post.get("user") or post.get("user_id") or post.get("artist_id") or user_id or "")
+            post_user = str(
+                post.get("user")
+                or post.get("creatorId")
+                or post.get("creator_id")
+                or post.get("user_id")
+                or post.get("artist_id")
+                or user_id
+                or ""
+            ).strip()
             is_dm = bool(post.get("is_dms") or post.get("is_dm") or post.get("type") == "dm" or post.get("dm"))
             route = "dm" if is_dm else "post"
-            if domain == "cum.st":
+            dom_low = (domain or "").strip().lower()
+            if "cum.st" in dom_low or "cumst" in dom_low:
                 if service and post_user and post_id:
                     task_post_url = f"https://cum.st/creators/{service}/{post_user}/{route}/{post_id}"
-                elif service and post_id:
-                    task_post_url = f"https://cum.st/posts/{service}/{post_id}"
+                elif post.get("url"):
+                    from core.parser import normalize_archive_url
+                    task_post_url = normalize_archive_url(str(post.get("url")), fallback_service=service, fallback_user_id=post_user, fallback_post_id=post_id)
                 else:
                     task_post_url = ""
-            elif domain == "coomerfans.com":
+            elif "coomerfans" in dom_low:
                 task_post_url = f"https://coomerfans.com/p/{post_id}/{post_user}/{service}"
             elif domain and service and post_user and post_id:
                 task_post_url = f"https://{domain}/{service}/user/{post_user}/{route}/{post_id}"

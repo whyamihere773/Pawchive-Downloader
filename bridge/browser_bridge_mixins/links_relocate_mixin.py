@@ -71,13 +71,25 @@ class BrowserLinksRelocateMixin(BrowserSignalsMixin):
                 svc = r_svc
                 cid = r_cid
 
+        clean_svc = "" if svc == "local" else svc
+        clean_pid = "" if (pid == "root_files" or pid.startswith("local_")) else pid
+        if url:
+            url = normalize_archive_url(
+                url,
+                fallback_service=clean_svc,
+                fallback_user_id=cid,
+                fallback_post_id=clean_pid,
+            )
+            if "cum.st" in url.lower() and "/creators/" not in url.lower() and clean_svc and cid and clean_pid:
+                url = ""
+
         if not url:
             url = LocalLibraryService._build_post_online_url(prov_id, svc, cid, pid, is_dm=is_dm)
-        if not url and prov_id and svc and svc != "local" and cid and pid and pid != "root_files":
+        if not url and prov_id and clean_svc and cid and clean_pid:
             prov = browser_registry.get_provider(prov_id)
             if prov:
-                url = prov.build_dm_url(svc, cid, pid) if is_dm else prov.build_post_url(svc, cid, pid)
-        return post, prov_id, svc, cid, pid, normalize_archive_url(str(url or "").strip())
+                url = prov.build_dm_url(clean_svc, cid, clean_pid) if is_dm else prov.build_post_url(clean_svc, cid, clean_pid)
+        return post, prov_id, svc, cid, pid, normalize_archive_url(str(url or "").strip(), fallback_service=clean_svc, fallback_user_id=cid, fallback_post_id=clean_pid)
 
     def _resolve_post_url(self, post_map: Optional[Dict[str, Any]] = None) -> str:
         post, _prov_id, _svc, _cid, _pid, url = self._resolve_post_online_context(post_map)

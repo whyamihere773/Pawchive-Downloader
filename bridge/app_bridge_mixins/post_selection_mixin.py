@@ -246,7 +246,13 @@ class PostSelectionMixin(AppBridgeSignalsMixin):
             or "pawchive.pw"
         )
         svc = str(raw_post.get("service") or (getattr(parsed, "service", "") if parsed else "") or "").strip().lower()
-        cid = str(raw_post.get("user") or (getattr(parsed, "user_id", "") if parsed else "") or "").strip()
+        cid = str(
+            raw_post.get("user")
+            or raw_post.get("creatorId")
+            or raw_post.get("creator_id")
+            or (getattr(parsed, "user_id", "") if parsed else "")
+            or ""
+        ).strip()
         is_dm = bool(raw_post.get("is_dm") or raw_post.get("is_dms") or (getattr(parsed, "is_dms", False) if parsed else False))
         is_ext = bool(getattr(parsed, "is_external_provider", False)) if parsed else False
         prov_id = "" if is_ext else self.get_provider_for_domain(domain)
@@ -254,7 +260,13 @@ class PostSelectionMixin(AppBridgeSignalsMixin):
         if not is_ext and domain and svc and cid and pid:
             post_url = canonical_site_url(domain, svc, cid, "dm" if is_dm else "post", pid)
         else:
-            post_url = str(raw_post.get("url") or "")
+            from core.parser import normalize_archive_url
+            post_url = normalize_archive_url(
+                str(raw_post.get("url") or ""),
+                fallback_service=svc,
+                fallback_user_id=cid,
+                fallback_post_id=pid,
+            )
 
         if "has_full" in raw_post:
             post_is_unimported = raw_post.get("has_full") is False

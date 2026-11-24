@@ -157,6 +157,21 @@ def generate_completion_report(
     else:
         lines.append("  (None)")
 
+    from core.parser import canonical_site_url, normalize_archive_url
+
+    def _report_post_url(item) -> str:
+        svc = str(getattr(item, "service", "") or "").strip().lower()
+        uid = str(getattr(item, "user_id", "") or getattr(item, "creator_name", "") or "").strip()
+        pid = str(getattr(item, "post_id", "") or "").strip()
+        rp = str(getattr(item, "post_url", "") or "").strip()
+        f_url = str(getattr(item, "url", "") or "").lower()
+        if rp:
+            return normalize_archive_url(rp, fallback_service=svc, fallback_user_id=uid, fallback_post_id=pid)
+        if svc and uid and pid:
+            dom = "cum.st" if (svc in ("onlyfans", "fansly", "candfans") or "cum.st" in f_url) else "pawchive.pw"
+            return canonical_site_url(dom, svc, uid, "post", pid)
+        return ""
+
     if failed_tasks:
         lines.append("\n" + "!" * 70)
         lines.append(f"  [FAILED DOWNLOADS - {len(failed_tasks)} ITEM(S)]")
@@ -167,9 +182,7 @@ def generate_completion_report(
             post_title = getattr(f, "post_title", "")
             post_id = getattr(f, "post_id", "")
             service = getattr(f, "service", "")
-            post_url = getattr(f, "post_url", "")
-            if not post_url and service and post_id:
-                post_url = f"https://pawchive.pw/{service}/user/{creator}/post/{post_id}"
+            post_url = _report_post_url(f)
             file_url = getattr(f, "url", "")
             err = getattr(f, "error_msg", "") or "Download failed"
             retries = getattr(f, "retry_count", 0)
@@ -218,9 +231,7 @@ def generate_completion_report(
         post_title = html.escape(getattr(f, "post_title", "") or "Untitled Post")
         post_id = getattr(f, "post_id", "")
         service = getattr(f, "service", "")
-        post_url = getattr(f, "post_url", "")
-        if not post_url and service and post_id:
-            post_url = f"https://pawchive.pw/{service}/user/{getattr(f, 'creator_name', '')}/post/{post_id}"
+        post_url = _report_post_url(f)
         file_url = getattr(f, "url", "")
         err = html.escape(getattr(f, "error_msg", "") or "Download failed")
         retries = getattr(f, "retry_count", 0)

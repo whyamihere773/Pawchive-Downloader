@@ -208,19 +208,31 @@ class LocalLibraryService(LocalLibraryDiskIndexMixin, LocalLibraryPostsRelocateM
         meta: Any = None,
         is_dm: bool = False,
     ) -> str:
-        if meta and getattr(meta, "post_url", ""):
-            return normalize_archive_url(str(meta.post_url).strip())
         svc = (service or "").strip().lower()
         cid = str(creator_id or "").strip()
         pid = str(post_id or "").strip()
-        if not svc or svc == "local" or not cid or not pid or pid == "root_files" or pid.startswith("local_"):
+        clean_pid = "" if (pid == "root_files" or pid.startswith("local_")) else pid
+        clean_svc = "" if svc == "local" else svc
+
+        if meta and getattr(meta, "post_url", ""):
+            norm_meta_url = normalize_archive_url(
+                str(meta.post_url).strip(),
+                fallback_service=clean_svc,
+                fallback_user_id=cid,
+                fallback_post_id=clean_pid,
+            )
+            # Only trust meta.post_url if it is not still a userless cum.st URL when we have cid
+            if norm_meta_url and not ("cum.st" in norm_meta_url.lower() and "/creators/" not in norm_meta_url.lower() and clean_svc and cid and clean_pid):
+                return norm_meta_url
+
+        if not clean_svc or not cid or not clean_pid:
             return ""
-        if provider_id == "coomerfans" or svc == "coomerfans":
+        if provider_id == "coomerfans" or clean_svc == "coomerfans":
             uid = cid.split("|", 1)[0].strip()
-            return f"https://coomerfans.com/p/{pid}/{uid}/{svc}"
+            return f"https://coomerfans.com/p/{clean_pid}/{uid}/{clean_svc}"
         route = "dm" if is_dm else "post"
-        dom = "cum.st" if (provider_id == "cumst" or svc in ("onlyfans", "fansly", "candfans")) else "pawchive.pw"
-        return canonical_site_url(dom, svc, cid, route, pid)
+        dom = "cum.st" if (provider_id == "cumst" or clean_svc in ("onlyfans", "fansly", "candfans")) else "pawchive.pw"
+        return canonical_site_url(dom, clean_svc, cid, route, clean_pid)
 
     # ── Fast O(1) Lookup for Online Browser Badges ─────────────────────────────
 
