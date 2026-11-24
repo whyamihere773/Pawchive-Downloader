@@ -201,6 +201,7 @@ class DownloaderLoopMixin:
                                     task.status = "completed"
                                     task.error_msg = ""
                                     statistics_manager.record_file_result("completed")
+                                    self._on_pawchive_request_succeeded()
                                     consecutive_successes += 1
                                     self._stable_clean_count += 1
                                     self.session_manager.record_downloaded_file(task.file_id)
@@ -238,14 +239,14 @@ class DownloaderLoopMixin:
                                 consecutive_successes = 0
                                 self._stable_clean_count = 0
                                 if msg.startswith("429_RATE_LIMIT"):
-                                    # 429 Rate Limit encountered -> auto-retry after cooldown (30s if locked, 15s if adaptive)
-                                    wait_secs = 30 if is_locked else 15
+                                    # 429 Rate Limit encountered -> auto-retry after escalating cooldown
+                                    self._trigger_rate_limit_backoff(threads_locked=is_locked)
+                                    wait_secs = max(1, int(round(self._rate_limit_cooldown_until - time.time())))
                                     task.status = "pending"
                                     task.error_msg = f"Rate limited (429) — cooling down for {wait_secs}s before auto-retry"
                                     statistics_manager.record_retry()
                                     if self.on_task_status_changed:
                                         self.on_task_status_changed(task)
-                                    self._trigger_rate_limit_backoff(threads_locked=is_locked)
                                     last_scale_time = time.time() + float(wait_secs)
                                 elif "Disk full" in msg:
                                     task.status = "pending"
@@ -307,8 +308,11 @@ class DownloaderLoopMixin:
                         continue
 
                     # 5. Dispatch pending tasks up to self.max_workers with Anti-Burst Staggering
+                    # After a 429 cooldown expires, probe with 1 worker until a clean response succeeds
+                    # so all workers don't slam the storage node simultaneously and re-trip 429.
                     current_active = len(active_futures)
-                    slots_available = max(0, self.max_workers - current_active)
+                    dispatch_cap = 1 if getattr(self, "_rate_limit_probe_needed", False) else self.max_workers
+                    slots_available = max(0, dispatch_cap - current_active)
                     if slots_available > 0:
                         pending_tasks = self._collect_pending(slots_available * 4 + 8, now)
                         if not pending_tasks and current_active == 0:

@@ -134,11 +134,14 @@ class DownloaderHttpNegotiatorMixin:
             if pass_idx == 2 and saw_429:
                 break
             if pass_idx == 1:
-                time.sleep(1.5)  # Brief jittered pause before second pass if all mirrors were busy
+                early_pause = self._sleep_interruptible(task, 1.5)
+                if early_pause is not None:
+                    return None, mode, existing_size, req_headers, early_pause
 
             for attempt_url in urls_to_try:
-                if self._cancel_event.is_set():
-                    return None, mode, existing_size, req_headers, (False, "Cancelled")
+                early_pause = self._wait_if_globally_paused(task)
+                if early_pause is not None:
+                    return None, mode, existing_size, req_headers, early_pause
                 if attempt_url not in task._tried_urls:
                     task._tried_urls.append(attempt_url)
 
@@ -150,10 +153,15 @@ class DownloaderHttpNegotiatorMixin:
                     if self._cancel_event.is_set() or self.is_batch_cancelled(task):
                         return None, mode, existing_size, req_headers, (False, "Cancelled")
                     return None, mode, existing_size, req_headers, (False, "Batch paused by user")
+                early_pause = self._wait_if_globally_paused(task)
+                if early_pause is not None:
+                    return None, mode, existing_size, req_headers, early_pause
                 try:
                     resp = session.get(attempt_url, stream=True, timeout=stream_timeout, headers=req_headers)
                     if resp.status_code in (200, 206, 416):
                         task.url = attempt_url
+                        if "pawchive" in u_low:
+                            self._on_pawchive_request_succeeded()
                         break
                     elif resp.status_code in (403, 404) and re.search(r"\bt\d+\.pawchive\.pw\b", attempt_url):
                         # Pawchive temporary oversized download URLs are signed (?e=...&s=...) and expire over time.
@@ -298,29 +306,36 @@ class DownloaderHttpNegotiatorMixin:
                         task.http_status = 429
                         retry_after = str(resp.headers.get("Retry-After") or "").strip()
                         last_retry_after = retry_after if retry_after.isdigit() else ("10" if "pawchive" in u_low else "15")
-                        delay = min(max(float(last_retry_after), 1.0), 10.0)
+                        delay = min(max(float(last_retry_after), 1.0), 120.0)
                         logger.warning(
                             f"  ⚠ {task.filename}: HTTP 429 Too Many Requests on {attempt_url} (Retry-After: {last_retry_after}s)",
                             category="file"
                         )
                         resp.close()
                         resp = None
-                        # Immediately step down Adaptive Threading & pause sibling workers even on a
-                        # first-pass 429 so concurrency doesn't stay stuck at its ceiling if pass 1 succeeds.
+                        # Immediately step down Adaptive Threading & engage escalating cooldown even on
+                        # pass 0 so sibling workers never slam the rate-limited host.
                         is_locked_now = bool(getattr(self.current_options or options, "threads_locked", False))
-                        self._trigger_rate_limit_backoff(threads_locked=is_locked_now)
+                        self._trigger_rate_limit_backoff(threads_locked=is_locked_now, retry_after=delay)
                         with self._pawchive_pace_lock:
-                            self._pawchive_next_req_time = max(self._pawchive_next_req_time, time.time() + delay)
+                            self._pawchive_next_req_time = max(
+                                self._pawchive_next_req_time,
+                                self._rate_limit_cooldown_until,
+                                time.time() + delay,
+                            )
                         if pass_idx == 0 and ("pawchive" in u_low or len(urls_to_try) == 1):
-                            # Respect Retry-After once before a single verification retry on pass 1;
-                            # break out of the inner mirror loop so shared-bucket mirrors aren't hammered.
-                            time.sleep(delay)
-                            if self._cancel_event.is_set():
-                                return None, mode, existing_size, req_headers, (False, "Cancelled")
+                            # Only ONE worker per cooldown window runs the Pass-1 verification probe,
+                            # and it waits the full active cooldown (pausing cleanly if user clicks Pause).
+                            # All sibling workers yield back to the queue immediately to prevent thundering herds.
+                            if not self._claim_429_probe_slot():
+                                return None, mode, existing_size, req_headers, (False, f"429_RATE_LIMIT (Retry-After: {last_retry_after}s)")
+                            probe_wait = max(delay, self._rate_limit_cooldown_until - time.time())
+                            early_pause = self._sleep_interruptible(task, probe_wait)
+                            if early_pause is not None:
+                                return None, mode, existing_size, req_headers, early_pause
                             break
                         if "pawchive" in u_low or len(urls_to_try) == 1:
-                            # Persistent 429 after Retry-After: propagate 429_RATE_LIMIT immediately
-                            # so global adaptive backoff and auto-retry engage cleanly.
+                            # Persistent 429 after full cooldown probe: escalate cooldown and return to queue.
                             return None, mode, existing_size, req_headers, (False, f"429_RATE_LIMIT (Retry-After: {last_retry_after}s)")
                         continue
                     else:

@@ -5,9 +5,10 @@ Decomposed from core/downloader.py to keep modules cohesive and under 1,000 line
 
 import os
 import random
+import re
 import threading
 import time
-from typing import List, Optional, Set
+from typing import List, Optional, Set, Tuple
 
 from core.downloader_models import (
     DownloadTask,
@@ -18,27 +19,97 @@ from core.filter_engine import FilterEngine, FilterOptions
 from core.logger import logger
 from core.providers import is_disabled
 
+_PAWCHIVE_STORAGE_NODE_RE = re.compile(r"\b(?:file|n\d+)\.pawchive\.pw\b", re.IGNORECASE)
+
 
 class DownloaderRetriesPacingMixin:
     """Adaptive rate-limit backoff, Pawchive polite pacing, task retries, and log diagnostics."""
 
-    def _trigger_rate_limit_backoff(self, threads_locked: bool = False):
+    def _wait_if_globally_paused(self, task: DownloadTask) -> Optional[Tuple[bool, str]]:
+        """Block cleanly while the global pause event is set; return an early error tuple if cancelled/batch-paused."""
+        while self._pause_event.is_set():
+            if self._cancel_event.is_set() or self.is_batch_cancelled(task):
+                return (False, "Cancelled")
+            if self.is_batch_paused(task) or task.status == "paused":
+                return (False, "Batch paused by user")
+            time.sleep(0.1)
+        if self._cancel_event.is_set() or self.is_batch_cancelled(task):
+            return (False, "Cancelled")
+        if self.is_batch_paused(task) or task.status == "paused":
+            return (False, "Batch paused by user")
+        return None
+
+    def _sleep_interruptible(self, task: DownloadTask, seconds: float) -> Optional[Tuple[bool, str]]:
+        """Sleep for `seconds` while honoring cancel, batch pause, and global pause."""
+        early = self._wait_if_globally_paused(task)
+        if early is not None:
+            return early
+        if seconds <= 0.0:
+            return None
+        steps = int(seconds / 0.1)
+        rem = seconds - steps * 0.1
+        for _ in range(steps):
+            early = self._wait_if_globally_paused(task)
+            if early is not None:
+                return early
+            time.sleep(0.1)
+        if rem > 0.0:
+            early = self._wait_if_globally_paused(task)
+            if early is not None:
+                return early
+            time.sleep(rem)
+        return self._wait_if_globally_paused(task)
+
+    def _claim_429_probe_slot(self) -> bool:
+        """Allow only one worker per cooldown window to run the Pass-1 verification probe."""
+        with self._rate_limit_lock:
+            cd_until = getattr(self, "_rate_limit_cooldown_until", 0.0)
+            claimed_until = getattr(self, "_rate_limit_probe_claimed_until", 0.0)
+            if cd_until > claimed_until:
+                self._rate_limit_probe_claimed_until = cd_until
+                return True
+            return False
+
+    def _on_pawchive_request_succeeded(self) -> None:
+        """Reset consecutive 429 burst escalation and single-probe guard after a clean response."""
+        with self._rate_limit_lock:
+            self._consecutive_429_bursts = 0
+            self._rate_limit_probe_needed = False
+
+    def _trigger_rate_limit_backoff(self, threads_locked: bool = False, retry_after: float = 0.0):
         with self._rate_limit_lock:
             now = time.time()
             if now >= self._rate_limit_cooldown_until:
+                burst = getattr(self, "_consecutive_429_bursts", 0) + 1
+                self._consecutive_429_bursts = burst
+                self._rate_limit_probe_needed = True
                 if threads_locked:
-                    self._rate_limit_cooldown_until = now + 30.0
+                    locked_tiers = (30.0, 45.0, 60.0, 90.0)
+                    base_cd = locked_tiers[min(burst - 1, len(locked_tiers) - 1)]
+                    cooldown_s = min(120.0, max(base_cd, float(retry_after or 0.0)))
+                    self._rate_limit_cooldown_until = now + cooldown_s
                     with self._pawchive_pace_lock:
                         self._pawchive_next_req_time = max(self._pawchive_next_req_time, self._rate_limit_cooldown_until)
+                        self._pawchive_recovery_gap_until = max(
+                            getattr(self, "_pawchive_recovery_gap_until", 0.0),
+                            self._rate_limit_cooldown_until + 120.0,
+                        )
                     logger.warning(
-                        f"⚡ [Rate Limit Cooldown] HTTP 429 encountered! Threads locked at {self.max_workers} (cooldown 30s)...",
+                        f"⚡ [Rate Limit Cooldown] HTTP 429 encountered (wave {burst})! Threads locked at {self.max_workers} (cooldown {int(cooldown_s)}s, 1-worker probe)...",
                         category="downloader"
                     )
                     return
 
-                self._rate_limit_cooldown_until = now + 14.0
+                adaptive_tiers = (15.0, 30.0, 60.0, 90.0)
+                base_cd = adaptive_tiers[min(burst - 1, len(adaptive_tiers) - 1)]
+                cooldown_s = min(120.0, max(base_cd, float(retry_after or 0.0)))
+                self._rate_limit_cooldown_until = now + cooldown_s
                 with self._pawchive_pace_lock:
                     self._pawchive_next_req_time = max(self._pawchive_next_req_time, self._rate_limit_cooldown_until)
+                    self._pawchive_recovery_gap_until = max(
+                        getattr(self, "_pawchive_recovery_gap_until", 0.0),
+                        self._rate_limit_cooldown_until + 120.0,
+                    )
                 old_workers = self.max_workers
                 
                 # Remember and lock down the stable ceiling
@@ -52,7 +123,7 @@ class DownloaderRetriesPacingMixin:
                 self.max_workers = max(1, min(old_workers - 2, self._learned_stable_ceiling - 1) if self._learned_stable_ceiling > 2 else 1)
                 
                 logger.warning(
-                    f"⚡ [Adaptive Backoff] HTTP 429 encountered! Locked stable ceiling to {self._learned_stable_ceiling} threads. Dropping concurrency to {self.max_workers} threads (cooldown 14s)...",
+                    f"⚡ [Adaptive Backoff] HTTP 429 encountered (wave {burst})! Locked stable ceiling to {self._learned_stable_ceiling} threads. Dropping concurrency to {self.max_workers} threads (cooldown {int(cooldown_s)}s)...",
                     category="adaptive"
                 )
                 if self.on_concurrency_throttled:
@@ -62,19 +133,25 @@ class DownloaderRetriesPacingMixin:
         """Cross-thread request-start pacer for Pawchive hosts.
 
         Keeps aggregate request starts across all concurrent worker threads comfortably below
-        Pawchive's ~30 req/10s nginx rate-limit bucket (and respects active 429 cooldowns),
+        Pawchive's nginx rate-limit bucket (respecting active 429 cooldowns and global pause),
         while letting large file streams download at full parallel bandwidth once started.
-        Returns False if the task was cancelled or paused while waiting.
+        Returns False if the task was cancelled or batch-paused while waiting.
         """
+        if self._wait_if_globally_paused(task) is not None:
+            return False
+
         u_low = (url or "").lower()
         if "pawchive.pw" not in u_low:
             return True
+
+        now_check = time.time()
+        in_recovery = now_check < getattr(self, "_pawchive_recovery_gap_until", 0.0)
         if "img.pawchive.pw" in u_low:
-            min_gap = 0.15
-        elif "file.pawchive.pw" in u_low:
-            min_gap = 0.45
+            min_gap = 0.35 if in_recovery else 0.15
+        elif _PAWCHIVE_STORAGE_NODE_RE.search(u_low):
+            min_gap = 1.25 if in_recovery else 0.50
         else:
-            min_gap = 0.38
+            min_gap = 0.90 if in_recovery else 0.38
 
         with self._pawchive_pace_lock:
             now = time.time()
@@ -84,23 +161,19 @@ class DownloaderRetriesPacingMixin:
             wait_s = max(0.0, slot - now)
 
         if wait_s <= 0.0:
-            return True
+            return self._wait_if_globally_paused(task) is None
 
         steps = int(wait_s / 0.05)
         rem = wait_s - steps * 0.05
         for _ in range(steps):
-            if self._cancel_event.is_set() or self.is_batch_cancelled(task):
-                return False
-            if self.is_batch_paused(task) or task.status == "paused":
+            if self._wait_if_globally_paused(task) is not None:
                 return False
             time.sleep(0.05)
         if rem > 0.0:
-            if self._cancel_event.is_set() or self.is_batch_cancelled(task):
-                return False
-            if self.is_batch_paused(task) or task.status == "paused":
+            if self._wait_if_globally_paused(task) is not None:
                 return False
             time.sleep(rem)
-        return True
+        return self._wait_if_globally_paused(task) is None
 
     @staticmethod
     def task_key(t) -> str:

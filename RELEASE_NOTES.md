@@ -7,6 +7,7 @@
 
 ### 🛠️ Fixes
 
+* **Pawchive HTTP 429 storm & Pause fix**: Clicking **Pause** now immediately freezes in-flight rate-limit retries so downloads never keep hitting Pawchive while paused. Rate-limit recovery now escalates cooldowns smoothly and probes with a single worker first instead of letting all threads slam the server at once.
 * **Linux & older Python startup fix**: Resolved a startup crash on Linux builds and Python 3.11/3.12 environments.
 
 ---

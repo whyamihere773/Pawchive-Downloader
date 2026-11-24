@@ -152,10 +152,14 @@ class KemonoDownloader(
         self.adaptive_status_text = ""
         self._learned_stable_ceiling: Optional[int] = None
         self._stable_clean_count: int = 0
+        self._consecutive_429_bursts: int = 0
+        self._rate_limit_probe_needed: bool = False
+        self._rate_limit_probe_claimed_until: float = 0.0
         # Cross-thread Pawchive request-start pacer to keep aggregate request starts below
         # Pawchive's ~30 req/10s nginx rate-limit bucket even on small/fast images.
         self._pawchive_pace_lock = threading.Lock()
         self._pawchive_next_req_time: float = 0.0
+        self._pawchive_recovery_gap_until: float = 0.0
 
         # Smart Learning ETA and speed smoothing telemetry
         self._speed_samples = deque(maxlen=40)
@@ -371,8 +375,12 @@ class KemonoDownloader(
         self._first_byte_time = 0.0
         self.adaptive_state = "optimal"
         self.adaptive_status_text = ""
+        self._consecutive_429_bursts = 0
+        self._rate_limit_probe_needed = False
+        self._rate_limit_probe_claimed_until = 0.0
         with self._pawchive_pace_lock:
             self._pawchive_next_req_time = 0.0
+            self._pawchive_recovery_gap_until = 0.0
         logger.info("Downloader state fully reset.", category="downloader")
 
     def status_counts(self) -> Dict[str, int]:
