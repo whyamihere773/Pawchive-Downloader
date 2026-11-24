@@ -337,6 +337,11 @@ ColumnLayout {
         view: subTab2Content.view
     }
 
+    // Card 2.2b: Pawchive Two-Layer Rate Guard & Persistent Calibration
+    PawchiveRateGuardCard {
+        view: subTab2Content.view
+    }
+
     // Card 2.3: Post-Download Automation
     CardSection {
         Layout.fillWidth: true

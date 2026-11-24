@@ -208,6 +208,7 @@ class AppBridgeSignalsMixin:
     browserLastDownloadDirChanged = Signal()
     autoSyncKnownChanged = Signal()
     showConsoleLinksChanged = Signal()
+    pawchiveRateGuardChanged = Signal()
 
     # Shared class-level synchronization & constants
     _watchlist_check_lock = threading.Lock()

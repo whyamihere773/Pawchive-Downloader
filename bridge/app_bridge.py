@@ -223,6 +223,10 @@ class AppBridge(
             "disabled_tabs": list(self._disabled_tabs),
             "local_library_roots": list(getattr(self, "_local_library_roots", [])),
             "browser_last_download_dir": str(getattr(self, "_browser_last_download_dir", "") or ""),
+            "pawchive_rate_guard_mode": str(getattr(self, "_pawchive_rate_guard_mode", "smart") or "smart"),
+            "pawchive_manual_rpm": float(getattr(self, "_pawchive_manual_rpm", 24.0)),
+            "pawchive_manual_streams": int(getattr(self, "_pawchive_manual_streams", 3)),
+            "pawchive_manual_cooldown": int(getattr(self, "_pawchive_manual_cooldown", 40)),
         }
         self.session_manager.save_settings(settings_dict, silent=True)
         self._evaluate_pending_download_settings()

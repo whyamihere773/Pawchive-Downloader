@@ -58,27 +58,44 @@ class DownloaderRetriesPacingMixin:
         if self._rate_limit_cooldown_until <= 0.0:
             self._unscoped_cooldown_until = 0.0
             self._host_cooldown_until.clear()
+            gov = getattr(self, "pawchive_governor", None)
+            if gov is not None and gov._domain_cooldown_until > 0.0:
+                with gov._lock:
+                    gov._domain_cooldown_until = 0.0
+                    if gov._state == "cooldown":
+                        gov._state = "probing"
 
     def get_host_cooldown_until(self, host: str = "") -> float:
-        """Return active cooldown expiry timestamp applying to `host` (or unscoped global cooldown)."""
+        """Return active cooldown expiry timestamp applying to `host` (domain-wide for *.pawchive.pw)."""
+        h = (host or "").strip().lower()
+        gov = getattr(self, "pawchive_governor", None)
         with self._rate_limit_lock:
             self._sync_cooldown_mirrors_unlocked()
             unscoped = getattr(self, "_unscoped_cooldown_until", 0.0)
-            if not host:
-                return max(unscoped, self._rate_limit_cooldown_until)
-            return max(unscoped, self._host_cooldown_until.get(host.lower(), 0.0))
+            if not h:
+                gov_cd = gov.get_cooldown_until() if gov is not None else 0.0
+                return max(unscoped, self._rate_limit_cooldown_until, gov_cd)
+            if "pawchive.pw" in h and gov is not None:
+                return max(unscoped, gov.get_cooldown_until(), self._host_cooldown_until.get(h, 0.0))
+            return max(unscoped, self._host_cooldown_until.get(h, 0.0))
 
     def is_host_cooling_down(self, host: str, now: Optional[float] = None) -> bool:
         ts = time.time() if now is None else now
         return ts < self.get_host_cooldown_until(host)
 
     def max_active_cooldown_remaining(self, now: Optional[float] = None) -> Tuple[float, str]:
-        """Return (max_remaining_seconds, host_label) across any active host or unscoped cooldown."""
+        """Return (max_remaining_seconds, host_label) across any active Pawchive or unscoped cooldown."""
         ts = time.time() if now is None else now
+        gov = getattr(self, "pawchive_governor", None)
         with self._rate_limit_lock:
             self._sync_cooldown_mirrors_unlocked()
             best_rem = max(0.0, getattr(self, "_unscoped_cooldown_until", 0.0) - ts)
             best_host = ""
+            if gov is not None:
+                gov_rem = max(0.0, gov.get_cooldown_until(ts) - ts)
+                if gov_rem > best_rem:
+                    best_rem = gov_rem
+                    best_host = "pawchive.pw"
             for h, exp in list(self._host_cooldown_until.items()):
                 rem = exp - ts
                 if rem > best_rem:
@@ -89,14 +106,22 @@ class DownloaderRetriesPacingMixin:
             return best_rem, best_host
 
     def is_host_probe_needed(self, host: str = "") -> bool:
+        h = (host or "").strip().lower()
+        gov = getattr(self, "pawchive_governor", None)
+        if h and "pawchive.pw" in h and gov is not None:
+            return gov.is_probing()
         with self._rate_limit_lock:
-            if host and host.lower() in self._host_probe_needed:
-                return bool(self._host_probe_needed.get(host.lower(), False))
-            if not host:
-                return bool(self._rate_limit_probe_needed or any(self._host_probe_needed.values()))
+            if h and h in self._host_probe_needed:
+                return bool(self._host_probe_needed.get(h, False))
+            if not h:
+                gov_p = gov.is_probing() if gov is not None else False
+                return bool(self._rate_limit_probe_needed or gov_p or any(self._host_probe_needed.values()))
             return False
 
     def any_host_probe_needed(self) -> bool:
+        gov = getattr(self, "pawchive_governor", None)
+        if gov is not None and gov.is_probing():
+            return True
         with self._rate_limit_lock:
             return bool(self._rate_limit_probe_needed or any(self._host_probe_needed.values()))
 
@@ -142,8 +167,11 @@ class DownloaderRetriesPacingMixin:
         return self._wait_if_globally_paused(task)
 
     def _claim_429_probe_slot(self, host: str = "") -> bool:
-        """Allow only one worker per cooldown window (scoped per host when known) to run Pass-1 probe."""
+        """Allow only one worker per cooldown window to run the Pass-1 verification probe."""
         h = (host or "").strip().lower()
+        gov = getattr(self, "pawchive_governor", None)
+        if h and "pawchive.pw" in h and gov is not None:
+            return gov.claim_probe_slot()
         with self._rate_limit_lock:
             self._sync_cooldown_mirrors_unlocked()
             if h:
@@ -166,13 +194,16 @@ class DownloaderRetriesPacingMixin:
             return False
 
     def _on_pawchive_request_succeeded(self, host: str = "") -> None:
-        """Reset consecutive 429 burst escalation and single-probe guard after a real HTTP 200/206/416."""
+        """Notify the Two-Layer Pawchive Rate Governor of a clean HTTP 200/206/416 response."""
         h = (host or "").strip().lower()
+        gov = getattr(self, "pawchive_governor", None)
+        if gov is not None and (not h or "pawchive.pw" in h):
+            gov.on_request_succeeded(h)
         with self._rate_limit_lock:
             if h:
                 self._host_consecutive_429.pop(h, None)
                 self._host_probe_needed.pop(h, None)
-                if not self._host_probe_needed:
+                if not self._host_probe_needed and (gov is None or not gov.is_probing()):
                     self._consecutive_429_bursts = 0
                     self._rate_limit_probe_needed = False
             else:
@@ -186,6 +217,9 @@ class DownloaderRetriesPacingMixin:
         h = (host or "").strip().lower()
         if not h or "pawchive.pw" not in h:
             return
+        gov = getattr(self, "pawchive_governor", None)
+        if gov is not None:
+            gov.note_ttfb(h, ttfb_s)
         if ttfb_s >= 2.5:
             with self._pawchive_pace_lock:
                 self._host_slow_ttfb_until[h] = max(self._host_slow_ttfb_until.get(h, 0.0), time.time() + 30.0)
@@ -212,8 +246,91 @@ class DownloaderRetriesPacingMixin:
         self._host_recovery_gap_until[host] = max(self._host_recovery_gap_until.get(host, 0.0), cooldown_until + 120.0)
         return tuned
 
+    def _close_idle_pawchive_connections(self) -> int:
+        """Close pooled idle Keep-Alive HTTP connections to `*.pawchive.pw` during 429 cooldowns
+        so flagged/stale edge sockets terminate cleanly and fresh connections open when probing."""
+        closed_pools = 0
+        sessions_lock = getattr(self, "_worker_sessions_lock", None)
+        if sessions_lock is None:
+            return 0
+        with sessions_lock:
+            sessions = list(getattr(self, "_worker_sessions", ()))
+        for sess in sessions:
+            adapters = getattr(sess, "adapters", None)
+            if not isinstance(adapters, dict):
+                continue
+            for adapter in list(adapters.values()):
+                pm = getattr(adapter, "poolmanager", None)
+                pools = getattr(pm, "pools", None)
+                if pools is None:
+                    continue
+                evicted = []
+                try:
+                    p_lock = getattr(pools, "lock", None)
+                    if p_lock is not None:
+                        with p_lock:
+                            container = getattr(pools, "_container", None)
+                            keys = list(container.keys()) if isinstance(container, dict) else []
+                            for k in keys:
+                                kh = str(getattr(k, "key_host", "") or k).lower()
+                                if "pawchive.pw" in kh:
+                                    pool_obj = container.pop(k, None)
+                                    if pool_obj is not None:
+                                        evicted.append(pool_obj)
+                    for pool_obj in evicted:
+                        try:
+                            pool_obj.close()
+                            closed_pools += 1
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+        return closed_pools
+
     def _trigger_rate_limit_backoff(self, threads_locked: bool = False, retry_after: float = 0.0, host: str = ""):
         h = (host or "").strip().lower()
+        gov = getattr(self, "pawchive_governor", None)
+
+        # Pawchive domain-wide Two-Layer Governor path (handles shared IP + per-node calibration & Ban-Shield)
+        if h and "pawchive.pw" in h and gov is not None:
+            with self._rate_limit_lock:
+                self._sync_cooldown_mirrors_unlocked()
+            info = gov.on_429(host=h, retry_after=retry_after)
+            with self._rate_limit_lock:
+                cd_until = float(info["cooldown_until"])
+                self._rate_limit_cooldown_until = max(self._rate_limit_cooldown_until, cd_until)
+                self._consecutive_429_bursts = max(self._consecutive_429_bursts, int(info["wave"]))
+                self._rate_limit_probe_needed = True
+                self._pawchive_next_req_time = max(self._pawchive_next_req_time, cd_until)
+
+                if not threads_locked:
+                    old_workers = self.max_workers
+                    if self._learned_stable_ceiling is None:
+                        self._learned_stable_ceiling = max(1, old_workers - 1)
+                    else:
+                        self._learned_stable_ceiling = max(1, min(self._learned_stable_ceiling, old_workers - 1))
+                    self._stable_clean_count = 0
+                    self.max_workers = max(1, min(old_workers - 2, self._learned_stable_ceiling - 1) if self._learned_stable_ceiling > 2 else 1)
+                    if self.on_concurrency_throttled:
+                        self.on_concurrency_throttled(self.max_workers)
+
+            if info.get("entered_cooldown"):
+                closed_n = self._close_idle_pawchive_connections()
+                if closed_n > 0:
+                    logger.debug(
+                        f"🔌 [Pawchive Rate Guard] Closed {closed_n} idle Pawchive HTTP connection pool(s) for clean cooldown reset.",
+                        category="downloader",
+                    )
+
+            if info.get("should_auto_pause") and not self._pause_event.is_set():
+                self.pause()
+                logger.warning(
+                    "🛡️ [Pawchive Ban-Shield] 3 consecutive post-cooldown test requests returned HTTP 429 — "
+                    "downloads paused automatically to protect your IP from a ban. Wait a few minutes, then click Resume.",
+                    category="downloader",
+                )
+            return
+
         with self._rate_limit_lock:
             self._sync_cooldown_mirrors_unlocked()
             now = time.time()
@@ -241,30 +358,22 @@ class DownloaderRetriesPacingMixin:
                     self._unscoped_cooldown_until = new_cd_until
                     self._rate_limit_cooldown_until = new_cd_until
 
-                tuned_rpm = None
                 with self._pawchive_pace_lock:
-                    if h:
-                        tuned_rpm = self._calibrate_host_rate_on_429_unlocked(h, now, new_cd_until)
-                        self._pawchive_next_req_time = max(self._pawchive_next_req_time, new_cd_until)
-                    else:
-                        self._pawchive_next_req_time = max(self._pawchive_next_req_time, new_cd_until)
-                        self._pawchive_recovery_gap_until = max(
-                            getattr(self, "_pawchive_recovery_gap_until", 0.0),
-                            new_cd_until + 120.0,
-                        )
+                    self._pawchive_next_req_time = max(self._pawchive_next_req_time, new_cd_until)
+                    self._pawchive_recovery_gap_until = max(
+                        getattr(self, "_pawchive_recovery_gap_until", 0.0),
+                        new_cd_until + 120.0,
+                    )
 
                 host_tag = f" on {h}" if h else ""
-                cal_tag = f", calibrated cap {tuned_rpm} req/min" if tuned_rpm else ""
                 if threads_locked:
                     logger.warning(
-                        f"⚡ [Rate Limit Cooldown] HTTP 429 encountered{host_tag} (wave {burst})! Threads locked at {self.max_workers} (cooldown {int(cooldown_s)}s, 1-worker probe{cal_tag})...",
+                        f"⚡ [Rate Limit Cooldown] HTTP 429 encountered{host_tag} (wave {burst})! Threads locked at {self.max_workers} (cooldown {int(cooldown_s)}s, 1-worker probe)...",
                         category="downloader"
                     )
                     return
 
                 old_workers = self.max_workers
-
-                # Remember and lock down the stable ceiling
                 if self._learned_stable_ceiling is None:
                     self._learned_stable_ceiling = max(1, old_workers - 1)
                 else:
@@ -274,21 +383,14 @@ class DownloaderRetriesPacingMixin:
                 self.max_workers = max(1, min(old_workers - 2, self._learned_stable_ceiling - 1) if self._learned_stable_ceiling > 2 else 1)
 
                 logger.warning(
-                    f"⚡ [Adaptive Backoff] HTTP 429 encountered{host_tag} (wave {burst})! Locked stable ceiling to {self._learned_stable_ceiling} threads. Dropping concurrency to {self.max_workers} threads (cooldown {int(cooldown_s)}s{cal_tag})...",
+                    f"⚡ [Adaptive Backoff] HTTP 429 encountered{host_tag} (wave {burst})! Locked stable ceiling to {self._learned_stable_ceiling} threads. Dropping concurrency to {self.max_workers} threads (cooldown {int(cooldown_s)}s)...",
                     category="adaptive"
                 )
                 if self.on_concurrency_throttled:
                     self.on_concurrency_throttled(self.max_workers)
 
     def _wait_pawchive_pace_slot(self, task: DownloadTask, url: str, respect_cooldown: bool = True) -> bool:
-        """Per-host + cross-thread sliding-window request pacer for Pawchive hosts.
-
-        Enforces:
-        1. Per-host cooldowns (`n3` cooling down never blocks `n1`/`n2`/`n4`/`img`).
-        2. Per-host minimum spacing (widened during recovery or slow TTFB spikes).
-        3. Proactive 10s & 60s rolling-window budgets per host (auto-calibrated on 429).
-        4. Global pause & cancel responsiveness with wall-clock deadline (no double-waiting after Resume).
-        """
+        """Two-Layer (Per-Node + Master *.pawchive.pw IP) pacer delegated to `PawchiveRateGovernor`."""
         if self._wait_if_globally_paused(task) is not None:
             return False
 
@@ -296,57 +398,13 @@ class DownloaderRetriesPacingMixin:
         if "pawchive.pw" not in host:
             return True
 
-        host_cd = self.get_host_cooldown_until(host) if respect_cooldown else 0.0
-
-        with self._pawchive_pace_lock:
-            now = time.time()
-            in_recovery = (
-                now < self._host_recovery_gap_until.get(host, 0.0)
-                or now < getattr(self, "_pawchive_recovery_gap_until", 0.0)
-            )
-            slow_ttfb = now < self._host_slow_ttfb_until.get(host, 0.0)
-
-            if "img.pawchive.pw" in host:
-                min_gap = 0.35 if in_recovery else (0.25 if slow_ttfb else 0.15)
-                cross_gap = 0.08
-                budget_10s = 18
-                budget_60s = self._host_calibrated_rpm.get(host, 75)
-            elif is_pawchive_storage_host(host):
-                min_gap = 1.25 if in_recovery else (0.85 if slow_ttfb else 0.50)
-                cross_gap = 0.15
-                budget_10s = 6
-                budget_60s = self._host_calibrated_rpm.get(host, 24)
-            else:
-                min_gap = 0.90 if in_recovery else (0.60 if slow_ttfb else 0.38)
-                cross_gap = 0.12
-                budget_10s = 8
-                budget_60s = self._host_calibrated_rpm.get(host, 30)
-
-            host_next = self._host_next_req_time.get(host, 0.0)
-            if not host_next and getattr(self, "_pawchive_unscoped_next", 0.0) > now:
-                host_next = self._pawchive_unscoped_next
-            global_next = getattr(self, "_pawchive_global_next_time", 0.0)
-
-            if respect_cooldown:
-                floor = max(now, host_cd, global_next)
-                slot = max(floor, host_next)
-            else:
-                slot = max(now, global_next, min(host_next, now + min_gap))
-
-            # Proactive sliding-window ceiling per host (10s burst guard + 60s rolling RPM cap)
-            ts_dq = self._host_req_timestamps[host]
-            while ts_dq and ts_dq[0] <= now - 60.0:
-                ts_dq.popleft()
-            if len(ts_dq) >= budget_60s:
-                slot = max(slot, ts_dq[-budget_60s] + 60.05)
-            if len(ts_dq) >= budget_10s:
-                slot = max(slot, ts_dq[-budget_10s] + 10.05)
-
-            ts_dq.append(slot)
-            self._host_next_req_time[host] = max(host_next, slot + min_gap)
-            self._pawchive_global_next_time = max(global_next, slot + cross_gap)
-            self._pawchive_next_req_time = max(self._pawchive_next_req_time, self._host_next_req_time[host])
-            wait_s = max(0.0, slot - now)
+        gov = getattr(self, "pawchive_governor", None)
+        if gov is not None:
+            wait_s = gov.reserve_pace_slot(host, respect_cooldown=respect_cooldown)
+            with self._pawchive_pace_lock:
+                self._pawchive_next_req_time = max(self._pawchive_next_req_time, time.time() + max(0.0, wait_s) + 0.45)
+        else:
+            wait_s = 0.0
 
         if wait_s <= 0.0:
             return self._wait_if_globally_paused(task) is None

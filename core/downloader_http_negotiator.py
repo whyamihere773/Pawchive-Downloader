@@ -186,6 +186,8 @@ class DownloaderHttpNegotiatorMixin:
                 if early_pause is not None:
                     return None, mode, existing_size, req_headers, early_pause
                 try:
+                    if "pawchive.pw" in attempt_host and getattr(self, "pawchive_governor", None) is not None:
+                        self.pawchive_governor.record_request_sent(attempt_host)
                     t_req_start = time.monotonic()
                     resp = session.get(attempt_url, stream=True, timeout=stream_timeout, headers=req_headers)
                     ttfb_s = max(0.0, time.monotonic() - t_req_start)

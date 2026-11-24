@@ -14,7 +14,8 @@
 
 ### ⚡ Smarter Pawchive Rate-Limit Protection
 
-* **Smoother downloads without 429 stalls**: Downloads now automatically spread across different Pawchive storage servers, balance large and small files, and pace requests per server before rate limits are ever reached. If one storage server does ask to slow down, files on other servers keep downloading normally instead of stalling the whole queue.
+* **Two-layer anti-ban speed & connection calibration**: Pawchive Downloader now balances both per-server (`n1`–`n4`) and shared IP limits automatically, dynamically opening extra connections when transfers are smooth and closing them down on rate limits while steadily healing speed back up so downloads never crawl.
+* **Pawchive Rate Guard controls & Recalibrate**: Choose **Smart Auto**, **Cautious (Ban-Safe)**, or **Custom Manual** sliders under **Downloader → Structure & Engine**, watch live files-per-minute telemetry, or click **Recalibrate** anytime (with automatic emergency pause if repeated test files are still blocked).
 * **Instant local copy for reposted files**: When a creator attaches the exact same file in multiple posts (such as an individual post and a monthly pack), Pawchive Downloader now copies your already-verified local file instantly instead of downloading it all over again.
 
 ---

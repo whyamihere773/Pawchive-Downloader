@@ -69,6 +69,7 @@ from core.downloader_url_postprocess import DownloaderUrlPostprocessMixin
 from core.filter_engine import FilterEngine, FilterOptions, MediaTypes, fit_path_for_windows
 from core.known_manager import KnownManager
 from core.logger import logger
+from core.pawchive_rate_governor import PawchiveRateGovernor
 from core.providers import COOMER, KEMONO, PAWCHIVE, cookie_for_url, disabled_message, is_disabled, provider_for_host
 from core.session_manager import SessionManager
 from services.multipart_downloader import download_multipart_file
@@ -98,12 +99,14 @@ class KemonoDownloader(
         known_manager: KnownManager,
         session_manager: SessionManager,
         max_workers: int = 4,
-        archive_manager: Optional[ArchiveManager] = None
+        archive_manager: Optional[ArchiveManager] = None,
+        rate_governor: Optional[PawchiveRateGovernor] = None,
     ):
         self.known_manager = known_manager
         self.session_manager = session_manager
         self.max_workers = max_workers
         self.archive_manager = archive_manager
+        self.pawchive_governor: PawchiveRateGovernor = rate_governor or PawchiveRateGovernor(persist_path=None)
         self.ytdlp_manager = YtDlpManager()
 
         self.tasks: List[DownloadTask] = []
@@ -411,6 +414,8 @@ class KemonoDownloader(
             self._host_slow_ttfb_until.clear()
         with self._verified_hash_lock:
             self._verified_hash_paths.clear()
+        if getattr(self, "pawchive_governor", None) is not None:
+            self.pawchive_governor.reset_runtime()
         logger.info("Downloader state fully reset.", category="downloader")
 
     def status_counts(self) -> Dict[str, int]:

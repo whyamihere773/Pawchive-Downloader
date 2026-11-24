@@ -63,6 +63,7 @@ from core.path_utils import (
     unique_name_in_batch,
 )
 from core.post_metadata_index import parse_post_info_content
+from core.pawchive_rate_governor import PawchiveRateGovernor, normalize_rate_guard_mode
 from core.session_manager import SessionManager
 from core.text_utils import clean_text, safe_file_name, sanitize_filesystem_name
 from core.watchlist_manager import WatchlistManager
@@ -101,11 +102,44 @@ def init_bridge_core_state(self) -> None:
         enabled=self._enable_download_archive
     )
     self.archive_manager.on_repair_finished = self._on_archive_repaired
+    self._pawchive_rate_guard_mode = normalize_rate_guard_mode(saved_settings.get("pawchive_rate_guard_mode", "smart"))
+    try:
+        self._pawchive_manual_rpm = max(8.0, min(60.0, float(saved_settings.get("pawchive_manual_rpm", 24.0))))
+    except (TypeError, ValueError):
+        self._pawchive_manual_rpm = 24.0
+    try:
+        self._pawchive_manual_streams = max(1, min(6, int(saved_settings.get("pawchive_manual_streams", 3))))
+    except (TypeError, ValueError):
+        self._pawchive_manual_streams = 3
+    try:
+        self._pawchive_manual_cooldown = max(15, min(180, int(saved_settings.get("pawchive_manual_cooldown", 40))))
+    except (TypeError, ValueError):
+        self._pawchive_manual_cooldown = 40
+
+    _rate_prof_path = None
+    _cfg_dir = str(getattr(self.session_manager, "config_dir", "") or "")
+    if _cfg_dir and "pawchive_tests_" not in _cfg_dir and "bridge_rebuild_test_" not in _cfg_dir:
+        _rate_prof_path = os.path.join(_cfg_dir, "pawchive_rate_profile.json")
+    self.pawchive_governor = PawchiveRateGovernor(
+        persist_path=_rate_prof_path,
+        mode=self._pawchive_rate_guard_mode,
+        manual_rpm=self._pawchive_manual_rpm,
+        manual_max_streams=self._pawchive_manual_streams,
+        manual_cooldown_s=self._pawchive_manual_cooldown,
+        on_state_changed=lambda: self._callOnGui.emit(self.pawchiveRateGuardChanged.emit),
+    )
+    self.pawchive_governor.configure(
+        mode=self._pawchive_rate_guard_mode,
+        manual_rpm=self._pawchive_manual_rpm,
+        manual_max_streams=self._pawchive_manual_streams,
+        manual_cooldown_s=self._pawchive_manual_cooldown,
+    )
     self.downloader = KemonoDownloader(
         known_manager=self.known_manager,
         session_manager=self.session_manager,
         max_workers=4,
-        archive_manager=self.archive_manager
+        archive_manager=self.archive_manager,
+        rate_governor=self.pawchive_governor,
     )
     self.api_client = KemonoApiClient()
 

@@ -475,11 +475,16 @@ class DownloaderLoopMixin:
                                 task.status = "pending"
                                 break
 
-                    # Feature 5: Track Adaptive / Recovery Health State
+                    # Feature 5: Track Adaptive / Pawchive Rate Guard Health State
                     cd_rem_ui, cd_host_ui = self.max_active_cooldown_remaining(now)
                     probing_ui = self.any_host_probe_needed()
+                    gov_ui = getattr(self, "pawchive_governor", None)
+                    gov_snap = gov_ui.snapshot(now) if (gov_ui is not None and is_pawchive_queue) else None
                     host_suffix = f" [{cd_host_ui.split('.')[0]}]" if cd_host_ui else ""
-                    if is_locked:
+                    if gov_snap and gov_snap["state"] in ("cooldown", "probing", "recovering", "paused_shield"):
+                        self.adaptive_state = "cooldown" if gov_snap["state"] in ("cooldown", "paused_shield") else "scaling"
+                        self.adaptive_status_text = f"Pawchive Guard: {gov_snap['status_text']}"
+                    elif is_locked:
                         if cd_rem_ui > 0.0:
                             self.adaptive_state = "cooldown"
                             rem = max(1, int(round(cd_rem_ui)))
@@ -677,6 +682,10 @@ class DownloaderLoopMixin:
         remaining = list(enumerate(pending_tasks))
         selected: List[DownloadTask] = []
 
+        gov = getattr(self, "pawchive_governor", None)
+        paw_max_total, paw_max_node = gov.max_concurrent_streams() if gov is not None else (4, 2)
+        paw_probing = gov.is_probing() if gov is not None else False
+
         while len(selected) < slots_available and remaining:
             best_idx = -1
             best_score = None
@@ -690,11 +699,14 @@ class DownloaderLoopMixin:
 
                 h = self._task_primary_host(cand)
                 if h and "pawchive.pw" in h:
-                    if active_pawchive_total >= 4:
+                    if paw_probing and active_pawchive_total >= 1:
                         continue
-                    if is_pawchive_storage_host(h) and active_by_host[h] >= 2:
+                    if active_pawchive_total >= paw_max_total:
                         continue
-                if h and self.is_host_probe_needed(h) and active_by_host[h] >= 1:
+                    node_cap = gov.max_streams_for_node(h) if gov is not None else paw_max_node
+                    if is_pawchive_storage_host(h) and active_by_host[h] >= node_cap:
+                        continue
+                elif h and self.is_host_probe_needed(h) and active_by_host[h] >= 1:
                     continue
 
                 is_large = self._is_large_task(cand)

@@ -56,7 +56,7 @@ Item {
                 implicitWidth: adaptiveRow.implicitWidth + 24
                 radius: 6
                 visible: opacity > 0
-                opacity: (appBridge && appBridge.isDownloading && appBridge.adaptiveThreading && appBridge.adaptiveStatusText.length > 0) ? 1.0 : 0.0
+                opacity: (appBridge && appBridge.isDownloading && appBridge.adaptiveStatusText.length > 0 && (appBridge.adaptiveThreading || appBridge.adaptiveState === "cooldown" || appBridge.adaptiveStatusText.indexOf("Pawchive Guard") !== -1 || appBridge.adaptiveStatusText.indexOf("Probing") !== -1)) ? 1.0 : 0.0
                 scale: opacity > 0 ? 1.0 : 0.6
                 transformOrigin: Item.Center
 

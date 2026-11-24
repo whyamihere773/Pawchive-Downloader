@@ -245,7 +245,11 @@ class SessionManager:
             "privacy_idle_minutes": 5,
             "ui_scale": 1.0,
             "disabled_tabs": [],
-            "local_library_roots": []
+            "local_library_roots": [],
+            "pawchive_rate_guard_mode": "smart",
+            "pawchive_manual_rpm": 24.0,
+            "pawchive_manual_streams": 3,
+            "pawchive_manual_cooldown": 40,
         }
 
         if os.path.exists(self.settings_file):

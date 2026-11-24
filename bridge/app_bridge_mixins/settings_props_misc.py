@@ -602,3 +602,95 @@ class SettingsPropsMiscMixin(AppBridgeSignalsMixin):
         self.telegramLiabilityAcknowledgedChanged.emit()
         self.scheduleSaveSettings()
         logger.info("Telegram warning modals reset.", category="telegram")
+
+    # ── Pawchive Two-Layer Rate Guard Properties & Recalibration ──────────────
+
+    @Property(str, notify=AppBridgeSignalsMixin.pawchiveRateGuardChanged)
+    def pawchiveRateGuardMode(self) -> str:
+        return getattr(self, "_pawchive_rate_guard_mode", "smart")
+
+    @pawchiveRateGuardMode.setter
+    def pawchiveRateGuardMode(self, val: str):
+        from core.pawchive_rate_governor import normalize_rate_guard_mode
+        norm = normalize_rate_guard_mode(val)
+        if getattr(self, "_pawchive_rate_guard_mode", "smart") != norm:
+            self._pawchive_rate_guard_mode = norm
+            gov = getattr(self, "pawchive_governor", None)
+            if gov is not None:
+                gov.configure(mode=norm)
+            self.pawchiveRateGuardChanged.emit()
+            self.scheduleSaveSettings()
+
+    @Property(float, notify=AppBridgeSignalsMixin.pawchiveRateGuardChanged)
+    def pawchiveManualRpm(self) -> float:
+        return float(getattr(self, "_pawchive_manual_rpm", 24.0))
+
+    @pawchiveManualRpm.setter
+    def pawchiveManualRpm(self, val: float):
+        clamped = round(max(8.0, min(60.0, float(val))), 1)
+        if abs(getattr(self, "_pawchive_manual_rpm", 24.0) - clamped) >= 0.05:
+            self._pawchive_manual_rpm = clamped
+            gov = getattr(self, "pawchive_governor", None)
+            if gov is not None:
+                gov.configure(manual_rpm=clamped)
+            self.pawchiveRateGuardChanged.emit()
+            self.scheduleSaveSettings()
+
+    @Property(int, notify=AppBridgeSignalsMixin.pawchiveRateGuardChanged)
+    def pawchiveManualStreams(self) -> int:
+        return int(getattr(self, "_pawchive_manual_streams", 3))
+
+    @pawchiveManualStreams.setter
+    def pawchiveManualStreams(self, val: int):
+        clamped = max(1, min(6, int(val)))
+        if getattr(self, "_pawchive_manual_streams", 3) != clamped:
+            self._pawchive_manual_streams = clamped
+            gov = getattr(self, "pawchive_governor", None)
+            if gov is not None:
+                gov.configure(manual_max_streams=clamped)
+            self.pawchiveRateGuardChanged.emit()
+            self.scheduleSaveSettings()
+
+    @Property(int, notify=AppBridgeSignalsMixin.pawchiveRateGuardChanged)
+    def pawchiveManualCooldown(self) -> int:
+        return int(getattr(self, "_pawchive_manual_cooldown", 40))
+
+    @pawchiveManualCooldown.setter
+    def pawchiveManualCooldown(self, val: int):
+        clamped = max(15, min(180, int(val)))
+        if getattr(self, "_pawchive_manual_cooldown", 40) != clamped:
+            self._pawchive_manual_cooldown = clamped
+            gov = getattr(self, "pawchive_governor", None)
+            if gov is not None:
+                gov.configure(manual_cooldown_s=clamped)
+            self.pawchiveRateGuardChanged.emit()
+            self.scheduleSaveSettings()
+
+    @Property("QVariantMap", notify=AppBridgeSignalsMixin.pawchiveRateGuardChanged)
+    def pawchiveRateGuardInfo(self) -> Dict[str, Any]:
+        gov = getattr(self, "pawchive_governor", None)
+        if gov is not None:
+            return gov.snapshot()
+        return {
+            "mode": getattr(self, "_pawchive_rate_guard_mode", "smart"),
+            "state": "cruise",
+            "cooldown_remaining": 0.0,
+            "live_rpm": 0.0,
+            "effective_rpm": 26.0,
+            "target_rpm": 26.0,
+            "danger_rpm": 0.0,
+            "manual_rpm": float(getattr(self, "_pawchive_manual_rpm", 24.0)),
+            "manual_max_streams": int(getattr(self, "_pawchive_manual_streams", 3)),
+            "manual_cooldown_s": int(getattr(self, "_pawchive_manual_cooldown", 40)),
+            "max_streams": 3,
+            "node_streams": 2,
+            "status_text": "Cruise (0 req/min • Pace 26/min)",
+        }
+
+    @Slot(result="QVariantMap")
+    def recalibratePawchiveRateGuard(self) -> Dict[str, Any]:
+        """Reset learned Pawchive 429 ceilings and smoothly probe freshly."""
+        gov = getattr(self, "pawchive_governor", None)
+        snap = gov.recalibrate() if gov is not None else self.pawchiveRateGuardInfo
+        self.pawchiveRateGuardChanged.emit()
+        return snap

@@ -145,6 +145,11 @@ class DownloaderEventsMixin(AppBridgeSignalsMixin):
             self._elapsed_time_text = new_elapsed
             self.elapsedTimeTextChanged.emit()
 
+        now_rg = time.monotonic()
+        if now_rg - getattr(self, "_last_rate_guard_ui_emit", 0.0) >= 1.0:
+            self._last_rate_guard_ui_emit = now_rg
+            self.pawchiveRateGuardChanged.emit()
+
     @Slot(object)
     def _handle_task_status(self, task: DownloadTask):
         if self.downloader._is_running and not self._is_downloading:
