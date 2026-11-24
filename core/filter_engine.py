@@ -14,6 +14,7 @@ import unicodedata
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.filter_options import (
+    DATE_FOLDER_MODES,
     FILTER_PROFILES,
     FilenameStyles,
     FilterOptions,
@@ -29,6 +30,7 @@ from core.filter_options import (
     contains_term,
     fit_path_for_windows,
     format_duration_str,
+    normalize_date_folder_mode,
     normalize_duration_str,
     normalize_size_str,
     parse_duration_seconds,

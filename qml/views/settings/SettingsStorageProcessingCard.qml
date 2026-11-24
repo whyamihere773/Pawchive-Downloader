@@ -314,6 +314,36 @@ CardSection {
             }
         }
 
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 10
+
+            Text {
+                text: "📅 " + tr("opt_date_folder_mode_settings", "Sort creator downloads into date folders (Year / Month)")
+                font.family: "Segoe UI, Inter, sans-serif"
+                font.pixelSize: 12
+                color: (storageProcCard.view.bridge && storageProcCard.view.bridge.dateFolderMode !== "none") ? "#F1F5F9" : "#CBD5E1"
+                Layout.fillWidth: true
+                elide: Text.ElideRight
+                Behavior on color { ColorAnimation { duration: 150 } }
+            }
+
+            StyledComboBox {
+                id: settingsDateFolderCombo
+                implicitHeight: 30
+                implicitWidth: 210
+                model: [
+                    { text: tr("date_folder_none", "Off"), value: "none" },
+                    { text: tr("date_folder_year", "By Year (2025)"), value: "year" },
+                    { text: tr("date_folder_month", "By Month (2025-03)"), value: "month" },
+                    { text: tr("date_folder_year_month", "Year → Month (2025/03)"), value: "year_month" }
+                ]
+                value: storageProcCard.view.bridge ? storageProcCard.view.bridge.dateFolderMode : "none"
+                tooltip: tr("opt_date_folder_mode_tip", "Organize a creator's posts into date folders based on publication date:\n• By Year: Creator/2025/...\n• By Month: Creator/2025-03/...\n• Year → Month: Creator/2025/03 - March/...\nPosts without a date go into Unknown Date.")
+                onValuePicked: function(v) { if (storageProcCard.view.bridge) storageProcCard.view.bridge.dateFolderMode = v }
+            }
+        }
+
         // Download Archive Database Sub-Card (gallery-dl style)
         Rectangle {
             Layout.fillWidth: true

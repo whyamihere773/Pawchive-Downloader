@@ -56,6 +56,10 @@ Item {
         else parts.push(ft)
 
         if (appBridge.subfolderPerPost) parts.push("Subfolder per post")
+        var dfm = String(appBridge.dateFolderMode || "none")
+        if (dfm === "year") parts.push("Sort: Year")
+        else if (dfm === "month") parts.push("Sort: Month")
+        else if (dfm === "year_month") parts.push("Sort: Year/Month")
         if (appBridge.downloadThumbnailsOnly) parts.push("Thumbnails only")
         else if (appBridge.fallbackToThumbnails) parts.push("Thumbnail fallback")
         if (appBridge.downloadDms) parts.push("Include DMs")

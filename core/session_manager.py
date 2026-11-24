@@ -205,6 +205,7 @@ class SessionManager:
             "date_prefix": True,
             "file_index_prefix": False,
             "group_file_type": "none",
+            "date_folder_mode": "none",
             "separate_by_known": False,
             "download_revisions": False,
             "compress_webp": False,

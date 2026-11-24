@@ -48,6 +48,7 @@ from core.filter_engine import (
     FilterEngine,
     FilterOptions,
     classify_settings_change,
+    normalize_date_folder_mode,
 )
 from core.folder_naming import is_creator_folder, pick_creator_folder
 from core.hardware_detector import HardwareDetector
@@ -357,6 +358,20 @@ class SettingsPropsMiscMixin(AppBridgeSignalsMixin):
         if self._group_file_type != val:
             self._group_file_type = val
             self.groupFileTypeChanged.emit()
+            self.scheduleSaveSettings()
+
+    @Property(str, notify=AppBridgeSignalsMixin.dateFolderModeChanged)
+    def dateFolderMode(self) -> str:
+        """Date-based folder sorting mode: 'none', 'year', 'month', or 'year_month'."""
+        return self._date_folder_mode
+
+    @dateFolderMode.setter
+    def dateFolderMode(self, val: str):
+        norm = normalize_date_folder_mode(val)
+        if self._date_folder_mode != norm:
+            self._date_folder_mode = norm
+            logger.info(f"Date folder sorting mode changed to: '{norm}'", category="settings")
+            self.dateFolderModeChanged.emit()
             self.scheduleSaveSettings()
 
     @Property(str, notify=AppBridgeSignalsMixin.fileOrderChanged)

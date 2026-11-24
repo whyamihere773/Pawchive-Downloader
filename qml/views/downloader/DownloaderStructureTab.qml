@@ -80,6 +80,73 @@ ColumnLayout {
                 }
             }
 
+            // Sort posts into Year / Month / Year -> Month folders inside each creator directory
+            Row {
+                spacing: 8
+                height: 28
+
+                Text {
+                    text: subTab2Content.view.tr("opt_date_folder_mode", "Sort by Date Folder:")
+                    font.family: "Segoe UI, Inter, sans-serif"
+                    font.pixelSize: 12
+                    color: dateFolderCombo.value !== "none" ? "#F1F5F9" : "#94A3B8"
+                    anchors.verticalCenter: parent.verticalCenter
+                    Behavior on color { ColorAnimation { duration: 150 } }
+                }
+
+                StyledComboBox {
+                    id: dateFolderCombo
+                    objectName: "dateFolderModeCombo"
+                    implicitHeight: 28
+                    implicitWidth: 195
+                    anchors.verticalCenter: parent.verticalCenter
+                    model: [
+                        { text: subTab2Content.view.tr("date_folder_none", "Off"), value: "none" },
+                        { text: subTab2Content.view.tr("date_folder_year", "By Year (2025)"), value: "year" },
+                        { text: subTab2Content.view.tr("date_folder_month", "By Month (2025-03)"), value: "month" },
+                        { text: subTab2Content.view.tr("date_folder_year_month", "Year → Month (2025/03)"), value: "year_month" }
+                    ]
+                    value: subTab2Content.view.bridge ? subTab2Content.view.bridge.dateFolderMode : "none"
+                    tooltip: subTab2Content.view.tr("opt_date_folder_mode_tip", "Organize a creator's posts into date folders based on publication date:\n• By Year: Creator/2025/...\n• By Month: Creator/2025-03/...\n• Year → Month: Creator/2025/03 - March/...\nPosts without a date go into Unknown Date.")
+                    onValuePicked: function(v) { if (subTab2Content.view.bridge) subTab2Content.view.bridge.dateFolderMode = v }
+                }
+
+                Rectangle {
+                    id: dateFolderPreviewPill
+                    readonly property string curMode: dateFolderCombo.value || "none"
+                    readonly property bool shown: curMode !== "none"
+                    property real reveal: shown ? 1.0 : 0.0
+                    Behavior on reveal { SpringAnimation { spring: 4.6; damping: 0.36; mass: 0.85; epsilon: 0.005 } }
+                    visible: shown || reveal > 0.02
+                    opacity: Math.max(0.0, Math.min(1.0, reveal))
+                    scale: 0.86 + 0.14 * reveal
+                    anchors.verticalCenter: parent.verticalCenter
+                    implicitHeight: 22
+                    implicitWidth: dateFolderPreviewRow.implicitWidth + 14
+                    radius: 11
+                    color: "#132238"
+                    border.color: "#38BDF8"
+                    border.width: 1
+
+                    RowLayout {
+                        id: dateFolderPreviewRow
+                        anchors.centerIn: parent
+                        spacing: 4
+                        Text { text: "📅"; font.pixelSize: 10 }
+                        Text {
+                            text: dateFolderPreviewPill.curMode === "year"
+                                  ? "Creator/2025/…"
+                                  : (dateFolderPreviewPill.curMode === "month"
+                                     ? "Creator/2025-03/…"
+                                     : "Creator/2025/03 - March/…")
+                            font.family: "Cascadia Code, Consolas, monospace"
+                            font.pixelSize: 10
+                            color: "#7DD3FC"
+                        }
+                    }
+                }
+            }
+
             // Same switch as in the Quick tab (they stay in sync), with its quality level
             Row {
                 spacing: 8

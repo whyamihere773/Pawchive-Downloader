@@ -118,6 +118,23 @@ def fit_path_for_windows(path: str, max_len: int = WINDOWS_MAX_PATH) -> str:
 # "Compress to WebP" levels: Pillow quality (None = lossless)
 WEBP_QUALITY_LEVELS = {"lossless": None, "high": 95, "balanced": 85, "small": 70, "smallest": 50}
 
+# Date-based folder sorting modes inside each creator folder
+DATE_FOLDER_MODES = ("none", "year", "month", "year_month")
+
+
+def normalize_date_folder_mode(value: Any) -> str:
+    """Normalize a date folder sorting mode to one of DATE_FOLDER_MODES."""
+    v = str(value or "none").strip().lower().replace("-", "_").replace("/", "_")
+    if v in ("none", "off", "false", ""):
+        return "none"
+    if v in ("year", "years", "yearly"):
+        return "year"
+    if v in ("month", "months", "monthly"):
+        return "month"
+    if v in ("year_month", "yearmonth", "years_months", "both"):
+        return "year_month"
+    return "none"
+
 
 class FilenameStyles:
     POST_TITLE = "post_title"
@@ -280,6 +297,7 @@ class FilterOptions:
         exact_extensions: str = "",
         skip_retry_404: bool = False,
         group_file_type: str = "none",
+        date_folder_mode: str = "none",
         file_order: str = "posted",
         webp_quality: str = "balanced",
         write_sidecars: bool = False,
@@ -333,6 +351,7 @@ class FilterOptions:
         self.redownload_small_files = bool(redownload_small_files)
         self.skip_retry_404 = bool(skip_retry_404)
         self.group_file_type = str(group_file_type).lower() if str(group_file_type).lower() in ("none", "post", "creator") else "none"
+        self.date_folder_mode = normalize_date_folder_mode(date_folder_mode)
         # Order of the files inside a post: "posted", "reversed" or "name" (see core/file_order.py)
         from core.file_order import normalize_file_order
         self.file_order = normalize_file_order(file_order)
@@ -392,6 +411,7 @@ class FilterOptions:
             "exact_extensions": self.exact_extensions,
             "skip_retry_404": self.skip_retry_404,
             "group_file_type": self.group_file_type,
+            "date_folder_mode": self.date_folder_mode,
             "file_order": self.file_order,
             "webp_quality": self.webp_quality,
             "write_sidecars": self.write_sidecars,
@@ -452,6 +472,7 @@ class FilterOptions:
             exact_extensions=d.get("exact_extensions", ""),
             skip_retry_404=bool(d.get("skip_retry_404", False)),
             group_file_type=d.get("group_file_type", "none"),
+            date_folder_mode=d.get("date_folder_mode", "none"),
             file_order=d.get("file_order", "posted"),
             webp_quality=d.get("webp_quality", "balanced"),
             write_sidecars=bool(d.get("write_sidecars", False)),
@@ -575,6 +596,7 @@ def classify_settings_change(
         ("skip_post_covers", "Skip post covers"),
         ("download_pawchive_temporary_files", "Pawchive temporary files"),
         ("group_file_type", "Group by file type"),
+        ("date_folder_mode", "Sort by date folder"),
         ("file_order", "File order"),
         ("write_sidecars", "Metadata sidecars"),
         ("sidecar_format", "Sidecar format"),
@@ -656,8 +678,8 @@ def classify_settings_change(
 
     dest_changed = any(f in changed_fields for f in (
         "download_dir", "site_in_folder_name", "subfolder_per_post", "date_prefix",
-        "separate_by_known", "tag_folder_mode", "group_file_type", "filename_style",
-        "filename_template", "manga_mode", "file_index_prefix"
+        "separate_by_known", "tag_folder_mode", "group_file_type", "date_folder_mode",
+        "filename_style", "filename_template", "manga_mode", "file_index_prefix"
     ))
 
     if not labels:

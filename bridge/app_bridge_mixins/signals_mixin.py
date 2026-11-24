@@ -134,6 +134,7 @@ class AppBridgeSignalsMixin:
     archiveRebuildRecoveryChanged      = Signal()
     tagFolderModeChanged      = Signal()
     groupFileTypeChanged      = Signal()
+    dateFolderModeChanged     = Signal()
     fileOrderChanged          = Signal()
     watchlistChanged          = Signal()
     watchlistCheckStarted     = Signal()

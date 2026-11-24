@@ -131,6 +131,7 @@ class DownloadControlMixin(AppBridgeSignalsMixin):
             write_audio_metadata=self._write_audio_metadata,
             skip_retry_404=self._skip_retry_404,
             group_file_type=self._group_file_type,
+            date_folder_mode=self._date_folder_mode,
             file_order=self._file_order,
             write_sidecars=self._write_sidecars,
             sidecar_format=self._sidecar_format,

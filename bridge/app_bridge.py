@@ -210,6 +210,7 @@ class AppBridge(
             "telegram_liability_acknowledged": self._telegram_liability_acknowledged,
             "skip_retry_404": self._skip_retry_404,
             "group_file_type": self._group_file_type,
+            "date_folder_mode": self._date_folder_mode,
             "file_order": self._file_order,
             "watchlist_apply_global_settings": self._watchlist_apply_global_settings,
             "watchlist_check_on_startup": self._watchlist_check_on_startup,

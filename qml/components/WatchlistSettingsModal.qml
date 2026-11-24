@@ -28,6 +28,7 @@ Item {
     property var baseOptions: ({})
     property string optFileType: "all"
     property string optGroupFileType: "none"
+    property string optDateFolderMode: "none"
     property string optFilenameStyle: "post_title"
     property string optFilenameTemplate: "{title} - {orig_name}"
     property string optExactExtensions: ""
@@ -70,6 +71,7 @@ Item {
         root.baseOptions = Object.assign({}, o)
         root.optFileType = String(o.file_type || "all")
         root.optGroupFileType = String(o.group_file_type || "none")
+        root.optDateFolderMode = String(o.date_folder_mode || "none")
         root.optFilenameStyle = String(o.filename_style || "post_title")
         root.optFilenameTemplate = String(o.filename_template || "{title} - {orig_name}")
         root.optExactExtensions = String(o.exact_extensions || "")
@@ -109,6 +111,7 @@ Item {
         var opts = Object.assign({}, root.baseOptions || {})
         opts.file_type = root.optFileType
         opts.group_file_type = root.optGroupFileType
+        opts.date_folder_mode = root.optDateFolderMode
         opts.filename_style = root.optFilenameStyle
         opts.filename_template = root.optFilenameTemplate
         opts.exact_extensions = root.optExactExtensions
@@ -499,6 +502,23 @@ Item {
                                                 { text: "By Creator Root", value: "creator" }
                                             ]
                                             onValuePicked: function(val) { root.optGroupFileType = String(val) }
+                                        }
+                                    }
+
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 4
+                                        Text { text: "Sort by Date Folder"; font.pixelSize: 11; color: "#CBD5E1" }
+                                        StyledComboBox {
+                                            Layout.fillWidth: true
+                                            value: root.optDateFolderMode
+                                            model: [
+                                                { text: "Off", value: "none" },
+                                                { text: "By Year (2025)", value: "year" },
+                                                { text: "By Month (2025-03)", value: "month" },
+                                                { text: "Year → Month (2025/03)", value: "year_month" }
+                                            ]
+                                            onValuePicked: function(val) { root.optDateFolderMode = String(val) }
                                         }
                                     }
                                 }

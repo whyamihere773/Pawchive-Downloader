@@ -48,6 +48,7 @@ from core.filter_engine import (
     FilterEngine,
     FilterOptions,
     classify_settings_change,
+    normalize_date_folder_mode,
 )
 from core.folder_naming import is_creator_folder, pick_creator_folder
 from core.hardware_detector import HardwareDetector
@@ -302,6 +303,7 @@ def init_bridge_core_state(self) -> None:
     self._creator_name = ""
     self._tag_folder_mode = bool(saved_settings.get("tag_folder_mode", False))
     self._group_file_type = str(saved_settings.get("group_file_type", "none"))
+    self._date_folder_mode = normalize_date_folder_mode(saved_settings.get("date_folder_mode", "none"))
     self._file_order = normalize_file_order(saved_settings.get("file_order", "posted"))
     self._telegram_safety_acknowledged = bool(saved_settings.get("telegram_safety_acknowledged", False))
     self._telegram_liability_acknowledged = bool(saved_settings.get("telegram_liability_acknowledged", False))
@@ -477,7 +479,7 @@ def init_bridge_runtime_and_signals(self) -> None:
         "downloadDelayChanged", "savePostMetadataChanged", "writeSidecarsChanged",
         "sidecarFormatChanged", "sidecarScopeChanged", "downloadEmbedsChanged",
         "embedCookiesBrowserChanged", "knownRecognitionModeChanged", "aiRecognitionEnabledChanged",
-        "aiEngineModeChanged", "tagFolderModeChanged", "groupFileTypeChanged", "fileOrderChanged",
+        "aiEngineModeChanged", "tagFolderModeChanged", "groupFileTypeChanged", "dateFolderModeChanged", "fileOrderChanged",
     ):
         _sig = getattr(self, _sig_name, None)
         if _sig is not None:

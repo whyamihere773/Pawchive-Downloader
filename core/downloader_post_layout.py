@@ -4,12 +4,65 @@ Decomposed from core/downloader_task_builder.py for proactive modularity.
 """
 
 import os
+import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from core.filter_engine import FilterEngine, FilterOptions, fit_path_for_windows
+from core.filter_engine import (
+    FilterEngine,
+    FilterOptions,
+    fit_path_for_windows,
+    normalize_date_folder_mode,
+)
 from core.logger import logger
 from core.path_utils import post_info_name
 from services.link_extractor import LinkExtractor
+
+_DATE_PARTS_RE = re.compile(r"^(\d{4})(?:[-/](\d{1,2}))?")
+_MONTH_NAMES = (
+    "",
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+)
+
+
+def resolve_date_folder_parts(date_str: str, mode: str) -> List[str]:
+    """Resolve date-based subfolder segments for a post date and mode.
+
+    Modes:
+      - "none"       -> []
+      - "year"       -> ["2025"] (or ["Unknown Date"])
+      - "month"      -> ["2025-03"] (or ["2025"] if month absent, or ["Unknown Date"])
+      - "year_month" -> ["2025", "03 - March"] (or ["2025"] if month absent, or ["Unknown Date"])
+    """
+    norm_mode = normalize_date_folder_mode(mode)
+    if norm_mode == "none":
+        return []
+
+    raw = str(date_str or "").strip()
+    m = _DATE_PARTS_RE.match(raw)
+    if not m:
+        return ["Unknown Date"]
+
+    year_int = int(m.group(1))
+    if not (1900 <= year_int <= 2100):
+        return ["Unknown Date"]
+    year_str = f"{year_int:04d}"
+
+    month_int = 0
+    if m.group(2):
+        cand_m = int(m.group(2))
+        if 1 <= cand_m <= 12:
+            month_int = cand_m
+
+    if norm_mode == "year":
+        return [year_str]
+    if norm_mode == "month":
+        return [f"{year_str}-{month_int:02d}"] if month_int else [year_str]
+    if norm_mode == "year_month":
+        if month_int:
+            return [year_str, f"{month_int:02d} - {_MONTH_NAMES[month_int]}"]
+        return [year_str]
+    return []
 
 
 class DownloaderPostLayoutMixin:
@@ -99,6 +152,11 @@ class DownloaderPostLayoutMixin:
                 folder_parts.append(first_tag)
             else:
                 folder_parts.append("Untagged")
+
+        # Date-based subfolder sorting (Year / Month / Year -> Month)
+        date_folder_mode = getattr(options, "date_folder_mode", "none")
+        if date_folder_mode and date_folder_mode != "none":
+            folder_parts.extend(resolve_date_folder_parts(date_str, date_folder_mode))
 
         creator_base_parts = list(folder_parts)
         post_subfolder_name = ""
