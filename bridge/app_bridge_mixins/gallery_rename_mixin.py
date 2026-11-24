@@ -40,7 +40,7 @@ from core.downloader import (
     is_permanent_failure,
     is_task_non_retryable,
 )
-from core.file_order import normalize_file_order, order_files
+from core.file_order import name_sort_key, normalize_file_order, order_files
 from core.filter_engine import (
     FILTER_PROFILES,
     REMOVE_WORDS_PROFILES,
@@ -238,7 +238,7 @@ class GalleryRenameMixin(AppBridgeSignalsMixin):
         parent_folder_name = os.path.basename(os.path.dirname(os.path.normpath(folder_path)))
 
         def natural_sort_key(s):
-            return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', str(s))]
+            return name_sort_key(str(s if s is not None else ""))
 
         if include_subfolders:
             collected = []

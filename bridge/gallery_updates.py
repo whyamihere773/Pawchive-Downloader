@@ -22,6 +22,7 @@ from typing import Dict, List, Optional, Set
 
 from PySide6.QtCore import QObject, Signal, Slot
 
+from core.filter_options import normalize_post_timestamp_str
 from core.logger import logger
 from core.parser import KemonoURLParser, canonical_site_url
 from core.path_utils import is_post_info_name, post_info_files
@@ -76,13 +77,14 @@ def _post_id_from_info(info_path: str) -> str:
 
 def _published(post: dict) -> str:
     """Sortable date text of a post ("2025-03-01T12:00:00")."""
-    pub = post.get("published") or post.get("added") or ""
+    pub = post.get("published") or post.get("added") or post.get("createdAt")
     if isinstance(pub, (int, float)):
+        ts = float(pub) / 1000.0 if float(pub) >= 1e11 else float(pub)
         try:
-            return datetime.datetime.fromtimestamp(pub, datetime.timezone.utc).replace(tzinfo=None).isoformat()
+            return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).replace(tzinfo=None).isoformat()
         except Exception:
             return ""
-    return str(pub)
+    return normalize_post_timestamp_str(pub, fallback="")
 
 
 def _has_files(post: dict) -> bool:

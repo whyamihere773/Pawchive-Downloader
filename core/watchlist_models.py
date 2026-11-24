@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass, field
 import os
 from typing import Any, Dict, List, Optional
 
+from core.filter_options import normalize_post_date_ymd, normalize_post_timestamp_str
 from core.logger import logger
 
 
@@ -122,28 +123,36 @@ def post_id_is_newer(post_id: str, than_id: str) -> bool:
     so this is False (it used to be True for any other ID, which made every post from the last
     download's date "new" again on every check for Boosty / cum.st creators)."""
     a, b = str(post_id or "").strip(), str(than_id or "").strip()
-    if a.isdigit() and b.isdigit():
+    if a.isascii() and a.isdigit() and b.isascii() and b.isdigit():
         return int(a) > int(b)
     return False
 
 
-def _day(date_str: str) -> str:
-    s = str(date_str or "")
-    return s.split("T")[0] if "T" in s else s[:10]
+def _day(date_str: Any) -> str:
+    return normalize_post_date_ymd(date_str, fallback="")
 
 
 def trim_post(p: Dict[str, Any]) -> Dict[str, Any]:
     """The part of a found post that's kept across restarts: what the updates list shows (title,
     date, file count) and what marking it done / ignored needs (id, dates). Downloads fetch the post
     again."""
-    out = {k: p[k] for k in ("id", "title", "published", "added") if p.get(k) not in (None, "")}
+    out: Dict[str, Any] = {}
+    if p.get("id") not in (None, ""):
+        out["id"] = p["id"]
+    if p.get("title") not in (None, ""):
+        out["title"] = p["title"]
+    raw_pub = p.get("published") if p.get("published") not in (None, "") else p.get("createdAt")
+    if raw_pub not in (None, ""):
+        out["published"] = normalize_post_timestamp_str(raw_pub, fallback=str(raw_pub))
+    if p.get("added") not in (None, ""):
+        out["added"] = normalize_post_timestamp_str(p["added"], fallback=str(p["added"]))
 
     def _f(f):
         return {k: f[k] for k in ("name", "path", "storageKey") if f.get(k)}
     f = p.get("file")
     if isinstance(f, dict) and (f.get("path") or f.get("storageKey")):
         out["file"] = _f(f)
-    atts = [_f(a) for a in (p.get("attachments") or []) if isinstance(a, dict) and (a.get("path") or a.get("storageKey"))]
+    atts = [_f(a) for a in (p.get("attachments") or p.get("media") or []) if isinstance(a, dict) and (a.get("path") or a.get("storageKey"))]
     if atts:
         out["attachments"] = atts
     return out

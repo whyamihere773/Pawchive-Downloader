@@ -12,6 +12,7 @@ from PySide6.QtCore import Property, QAbstractListModel, QModelIndex, QObject, Q
 from bridge.queue_groups_model import QueueGroupsModel, _RowIndex
 from bridge.queue_model_ops import QueueModelOpsMixin
 from core.downloader import DownloadTask, is_task_non_retryable
+from core.filter_options import safe_int
 from core.logger import logger
 
 
@@ -154,7 +155,9 @@ class QueueModel(QAbstractListModel, QueueModelOpsMixin):
                 return False
 
         if self._min_file_size > 0:
-            effective_size = max(task.file_size, task.downloaded_bytes)
+            f_sz = max(0, safe_int(getattr(task, "file_size", 0), 0))
+            dl_sz = max(0, safe_int(getattr(task, "downloaded_bytes", 0), 0))
+            effective_size = max(f_sz, dl_sz)
             if effective_size < self._min_file_size:
                 return False
 
@@ -225,7 +228,7 @@ class QueueModel(QAbstractListModel, QueueModelOpsMixin):
 
     @minFileSize.setter
     def minFileSize(self, val: int):
-        val = max(0, int(val))
+        val = max(0, safe_int(val, 0))
         if self._min_file_size != val:
             self.beginResetModel()
             self._min_file_size = val
@@ -312,8 +315,10 @@ class QueueModel(QAbstractListModel, QueueModelOpsMixin):
         elif role == self.StatusRole:
             return task.status
         elif role == self.ProgressRole:
-            if task.file_size > 0:
-                return min(1.0, max(0.0, task.downloaded_bytes / task.file_size))
+            f_sz = max(0, safe_int(getattr(task, "file_size", 0), 0))
+            dl_sz = max(0, safe_int(getattr(task, "downloaded_bytes", 0), 0))
+            if f_sz > 0:
+                return min(1.0, max(0.0, dl_sz / f_sz))
             return 1.0 if task.status in ("completed", "skipped") else 0.0
         elif role == self.FileSizeRole:
             return self._format_size(task.file_size)
@@ -337,7 +342,7 @@ class QueueModel(QAbstractListModel, QueueModelOpsMixin):
         elif role == self.FileIdRole:
             return task.file_id
         elif role == self.RetryCountRole:
-            return getattr(task, "retry_count", 0)
+            return safe_int(getattr(task, "retry_count", 0), 0)
         elif role == self.BatchIdRole:
             return getattr(task, "batch_id", "") or f"{task.service}_{task.creator_name}_{task.post_id}"
         elif role == self.TargetPathRole:

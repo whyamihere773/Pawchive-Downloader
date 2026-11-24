@@ -404,6 +404,8 @@ class SettingsPropsExtendedMixin(AppBridgeSignalsMixin):
 
     @threadsCount.setter
     def threadsCount(self, val: int):
+        from core.filter_options import safe_int
+        val_i = safe_int(val, self._threads_count)
         # Strict Telegram ceiling: Under any circumstance, clamp to max 2 threads for Telegram
         is_pure_tg = False
         if hasattr(self, "downloader") and self.downloader.tasks:
@@ -412,10 +414,11 @@ class SettingsPropsExtendedMixin(AppBridgeSignalsMixin):
                 for t in self.downloader.tasks
             )
         if is_pure_tg:
-            val = min(val, 2)
+            val_i = min(val_i, 2)
 
-        if self._threads_count != val:
-            self._threads_count = max(1, min(self._max_cpu_threads, val))
+        clamped = max(1, min(self._max_cpu_threads, val_i))
+        if self._threads_count != clamped:
+            self._threads_count = clamped
             self.downloader.max_workers = self._threads_count
             self.threadsCountChanged.emit()
             self._settings_save_timer.start()
@@ -640,9 +643,10 @@ class SettingsPropsExtendedMixin(AppBridgeSignalsMixin):
 
     @downloadDelay.setter
     def downloadDelay(self, val: float):
-        val = round(float(val), 2)
-        if self._download_delay != val:
-            self._download_delay = val
+        from core.filter_options import safe_float
+        val_f = max(0.0, round(safe_float(val, self._download_delay), 2))
+        if self._download_delay != val_f:
+            self._download_delay = val_f
             self.downloadDelayChanged.emit()
             self.scheduleSaveSettings()
 

@@ -11,6 +11,7 @@ import time
 from typing import Any, Callable, Dict, Optional
 from urllib.parse import unquote
 
+from core.filter_options import safe_int
 from core.logger import logger
 from core.parser import URLParseResult
 from core.providers import is_disabled
@@ -172,9 +173,11 @@ class ApiListingsProfileMixin:
             except ValueError:
                 return None
             creators = data.get("creators") if isinstance(data, dict) else data
-            if isinstance(data, dict) and isinstance(data.get("total"), int):
-                total = data["total"]
-                self._listing_sizes["cum.st"] = total
+            if isinstance(data, dict) and data.get("total") is not None:
+                tot_val = safe_int(data.get("total"), -1)
+                if tot_val >= 0:
+                    total = tot_val
+                    self._listing_sizes["cum.st"] = total
             if not creators:
                 break
             for c in creators:

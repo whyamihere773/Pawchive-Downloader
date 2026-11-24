@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Set
 from PySide6.QtCore import QModelIndex, Slot
 
 from core.downloader import DownloadTask, is_task_non_retryable
+from core.filter_options import safe_int
 from core.logger import logger
 
 
@@ -364,8 +365,9 @@ class QueueModelOpsMixin:
 
             if self._groups_model:
                 self._groups_model.update_task(task)
-        except (ValueError, RuntimeError):
-            pass
+        except (ValueError, RuntimeError, TypeError) as e:
+            if isinstance(e, TypeError):
+                logger.debug(f"QueueModel.updateTask ignored type error: {e}", category="queue")
 
     @Slot()
     def clear(self):
@@ -553,6 +555,7 @@ class QueueModelOpsMixin:
                     t.url,
                 )
 
+                rc = safe_int(getattr(t, "retry_count", 0), 0)
                 failed.append({
                     "fileId": t.file_id,
                     "filename": t.filename,
@@ -564,8 +567,8 @@ class QueueModelOpsMixin:
                     "url": t.url,
                     "errorMsg": err_msg,
                     "fileSize": self._format_size(t.file_size),
-                    "retryCount": getattr(t, "retry_count", 0),
-                    "retryCapped": getattr(t, "retry_capped", False) or getattr(t, "retry_count", 0) >= 5,
+                    "retryCount": rc,
+                    "retryCapped": bool(getattr(t, "retry_capped", False)) or rc >= 5,
                     "isUnimported": unimp,
                 })
 
@@ -588,6 +591,7 @@ class QueueModelOpsMixin:
                                 d.get("post_url") or "",
                                 d.get("url", ""),
                             )
+                            d_rc = safe_int(d.get("retry_count", 0), 0)
                             failed.append({
                                 "fileId": d.get("file_id", ""),
                                 "filename": d.get("filename", ""),
@@ -599,8 +603,8 @@ class QueueModelOpsMixin:
                                 "url": d.get("url", ""),
                                 "errorMsg": err_msg,
                                 "fileSize": self._format_size(d.get("file_size", 0)),
-                                "retryCount": d.get("retry_count", 0),
-                                "retryCapped": d.get("retry_capped", False) or d.get("retry_count", 0) >= 5,
+                                "retryCount": d_rc,
+                                "retryCapped": bool(d.get("retry_capped", False)) or d_rc >= 5,
                                 "isUnimported": unimp,
                             })
             except Exception as e:

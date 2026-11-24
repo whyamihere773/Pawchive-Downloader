@@ -10,6 +10,7 @@ from typing import Any, Dict, List
 from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt, QTimer, Signal, Slot
 
 from core.downloader import DownloadTask, is_task_non_retryable
+from core.filter_options import safe_int
 from core.logger import logger
 
 
@@ -213,15 +214,16 @@ class QueueGroupsModel(QAbstractListModel):
 
     @staticmethod
     def _format_size(b: int) -> str:
-        if b <= 0:
+        sz = safe_int(b, 0)
+        if sz <= 0:
             return "-"
-        if b >= 1024 * 1024 * 1024:
-            return f"{b / (1024 * 1024 * 1024):.2f} GB"
-        elif b >= 1024 * 1024:
-            return f"{b / (1024 * 1024):.1f} MB"
-        elif b >= 1024:
-            return f"{b / 1024:.1f} KB"
-        return f"{b} B"
+        if sz >= 1024 * 1024 * 1024:
+            return f"{sz / (1024 * 1024 * 1024):.2f} GB"
+        elif sz >= 1024 * 1024:
+            return f"{sz / (1024 * 1024):.1f} MB"
+        elif sz >= 1024:
+            return f"{sz / 1024:.1f} KB"
+        return f"{sz} B"
 
     def _calc_group_stats(self, g: Dict[str, Any], tasks: List[DownloadTask]):
         completed_files = 0
@@ -237,9 +239,11 @@ class QueueGroupsModel(QAbstractListModel):
         active_task = None
 
         for t in tasks:
-            eff_size = max(t.file_size, t.downloaded_bytes)
+            f_sz = max(0, safe_int(getattr(t, "file_size", 0), 0))
+            dl_sz = max(0, safe_int(getattr(t, "downloaded_bytes", 0), 0))
+            eff_size = max(f_sz, dl_sz)
             total_bytes += eff_size
-            downloaded_bytes += t.downloaded_bytes
+            downloaded_bytes += dl_sz
             if t.status == "completed":
                 completed_files += 1
             elif t.status == "skipped":

@@ -19,6 +19,7 @@ import time
 from collections import defaultdict, deque
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
+from core.filter_options import normalize_post_date_ymd
 from core.logger import logger
 
 ROUND_MAX_AGE = 24 * 3600            # an unfinished round older than this starts over
@@ -38,7 +39,7 @@ def site_of(entry) -> str:
 
 def activity_day(entry) -> str:
     """Sorted in reverse: most recently active first, creators never downloaded from last ("")."""
-    return str(getattr(entry, "last_post_date", "") or "")[:10]
+    return normalize_post_date_ymd(getattr(entry, "last_post_date", ""), fallback="")
 
 
 class WatchlistChecker:

@@ -34,8 +34,13 @@ from core.filter_options import (
     normalize_date_folder_mode,
     normalize_disk_sync_mode,
     normalize_duration_str,
+    normalize_post_date_ymd,
+    normalize_post_timestamp_str,
     normalize_size_str,
     parse_duration_seconds,
+    post_id_sort_key,
+    safe_float,
+    safe_int,
 )
 
 
@@ -237,15 +242,16 @@ class FilterEngine:
     @staticmethod
     def format_size_str(size_bytes: int) -> str:
         """Formats a byte count into clean, human-readable units (B, KB, MB, GB, TB)."""
-        if size_bytes >= 1024**4:
-            return f"{size_bytes / (1024**4):.2f} TB"
-        if size_bytes >= 1024**3:
-            return f"{size_bytes / (1024**3):.2f} GB"
-        if size_bytes >= 1024**2:
-            return f"{size_bytes / (1024**2):.2f} MB"
-        if size_bytes >= 1024:
-            return f"{size_bytes / 1024:.1f} KB"
-        return f"{size_bytes} B"
+        sz = max(0, safe_int(size_bytes, 0))
+        if sz >= 1024**4:
+            return f"{sz / (1024**4):.2f} TB"
+        if sz >= 1024**3:
+            return f"{sz / (1024**3):.2f} GB"
+        if sz >= 1024**2:
+            return f"{sz / (1024**2):.2f} MB"
+        if sz >= 1024:
+            return f"{sz / 1024:.1f} KB"
+        return f"{sz} B"
 
     @classmethod
     def get_effective_size_limits(cls, options: Optional[FilterOptions]) -> Tuple[Optional[int], Optional[int]]:
@@ -327,15 +333,7 @@ class FilterEngine:
         Formats seconds into a human-readable duration string:
         e.g. 45 -> '0:45', 90 -> '1:30', 3665 -> '1:01:05'
         """
-        if seconds is None or seconds < 0:
-            return ""
-        total_secs = int(round(seconds))
-        hrs = total_secs // 3600
-        mins = (total_secs % 3600) // 60
-        secs = total_secs % 60
-        if hrs > 0:
-            return f"{hrs}:{mins:02d}:{secs:02d}"
-        return f"{mins}:{secs:02d}"
+        return format_duration_str(seconds)
 
     @classmethod
     def normalize_duration_str(cls, raw: str) -> str:
@@ -371,17 +369,18 @@ class FilterEngine:
         if min_dur is None and max_dur is None:
             return True, "No duration limits specified"
 
+        dur_val = safe_float(duration, -1.0) if (duration is not None and str(duration).strip() != "") else None
         # If duration is unknown, allow it through with warning so files are not lost
-        if duration is None or duration <= 0:
+        if dur_val is None or dur_val <= 0:
             return True, "Video duration could not be determined; passed filter"
 
-        if min_dur is not None and duration < min_dur:
-            cur_s = cls.format_duration_str(duration)
+        if min_dur is not None and dur_val < min_dur:
+            cur_s = cls.format_duration_str(dur_val)
             min_s = cls.format_duration_str(min_dur)
             return False, f"Video duration ({cur_s}) is below minimum threshold ({min_s})"
 
-        if max_dur is not None and duration > max_dur:
-            cur_s = cls.format_duration_str(duration)
+        if max_dur is not None and dur_val > max_dur:
+            cur_s = cls.format_duration_str(dur_val)
             max_s = cls.format_duration_str(max_dur)
             return False, f"Video duration ({cur_s}) exceeds maximum threshold ({max_s})"
 
@@ -394,16 +393,8 @@ class FilterEngine:
 
         # Date range filtering (From / To)
         if options.date_after or options.date_before:
-            published = post.get("published") or post.get("added") or ""
-            post_date = ""
-            if isinstance(published, (int, float)):
-                try:
-                    post_date = datetime.datetime.fromtimestamp(published).strftime("%Y-%m-%d")
-                except Exception:
-                    post_date = str(published)[:10]
-            elif published:
-                pub_str = str(published).strip()
-                post_date = pub_str.split("T")[0] if "T" in pub_str else pub_str[:10]
+            published = post.get("published") or post.get("added") or post.get("createdAt") or ""
+            post_date = normalize_post_date_ymd(published, fallback="")
 
             if not post_date or post_date == "0000-00-00":
                 return False, "Post has no valid publication date"
@@ -470,21 +461,23 @@ class FilterEngine:
 
         _, ext = os.path.splitext(filename.lower())
 
-        if duration is not None and duration > 0 and getattr(options, "video_duration_filter_enabled", False):
-            keep_dur, dur_reason = cls.should_keep_video_duration(duration, options)
+        dur_val = safe_float(duration, -1.0) if (duration is not None and str(duration).strip() != "") else None
+        if dur_val is not None and dur_val > 0 and getattr(options, "video_duration_filter_enabled", False):
+            keep_dur, dur_reason = cls.should_keep_video_duration(dur_val, options)
             if not keep_dur:
                 return False, dur_reason
 
-        if file_size is not None and file_size > 0:
+        sz_val = safe_int(file_size, -1) if (file_size is not None and str(file_size).strip() != "") else None
+        if sz_val is not None and sz_val > 0:
             min_size, max_size = cls.get_effective_size_limits(options)
 
-            if min_size is not None and file_size < min_size:
+            if min_size is not None and sz_val < min_size:
                 min_str = cls.format_size_str(min_size)
-                curr_str = cls.format_size_str(file_size)
+                curr_str = cls.format_size_str(sz_val)
                 return False, f"File size ({curr_str}) is below minimum threshold ({min_str})"
-            if max_size is not None and file_size > max_size:
+            if max_size is not None and sz_val > max_size:
                 max_str = cls.format_size_str(max_size)
-                curr_str = cls.format_size_str(file_size)
+                curr_str = cls.format_size_str(sz_val)
                 return False, f"File size ({curr_str}) exceeds maximum threshold ({max_str})"
 
         if options.skip_archives and ext in MediaTypes.ARCHIVE_EXTS:
@@ -699,11 +692,13 @@ class FilterEngine:
                 effective_title = clean_caption
         clean_title = cls.clean_filesystem_text(effective_title, max_len=100, fallback="Post")
         clean_artist = cls.clean_filesystem_text(artist, max_len=80, fallback="Artist")
-        date_str = (post_date or "")[:10]
+        date_str = normalize_post_date_ymd(post_date, fallback="")
         year = date_str[:4] if len(date_str) >= 4 else ""
         month = date_str[5:7] if len(date_str) >= 7 else ""
         day = date_str[8:10] if len(date_str) >= 10 else ""
-        f_idx = folder_index if folder_index is not None else file_index
+        p_idx = max(0, safe_int(post_index, 0))
+        fl_idx = max(0, safe_int(file_index, 0))
+        f_idx = max(0, safe_int(folder_index, fl_idx)) if folder_index is not None else fl_idx
 
         style = options.filename_style or FilenameStyles.POST_TITLE
 
@@ -728,10 +723,10 @@ class FilterEngine:
                 "{orig_name}": clean_orig,
                 "{name}": name_stem,
                 "{ext}": ext,
-                "{file_index}": f"{file_index:02d}",
-                "{post_index}": f"{post_index:03d}",
-                "{seq_idx}": f"{f_idx:03d}" if f_idx is not None else f"{file_index:03d}",
-                "{folder_index}": f"{f_idx:03d}" if f_idx is not None else f"{file_index:03d}",
+                "{file_index}": f"{fl_idx:02d}",
+                "{post_index}": f"{p_idx:03d}",
+                "{seq_idx}": f"{f_idx:03d}",
+                "{folder_index}": f"{f_idx:03d}",
             }
             res = tpl
             for k, v in replacements.items():
@@ -754,14 +749,14 @@ class FilterEngine:
         elif style == FilenameStyles.DATE_POST_TITLE:
             res = f"{date_str} - {clean_title} - {clean_orig}" if date_str else f"{clean_title} - {clean_orig}"
         elif style == FilenameStyles.DATE_BASED:
-            res = f"{date_str}_{post_index:03d}_{file_index:02d}{ext}" if date_str else f"{post_index:03d}_{file_index:02d}{ext}"
+            res = f"{date_str}_{p_idx:03d}_{fl_idx:02d}{ext}" if date_str else f"{p_idx:03d}_{fl_idx:02d}{ext}"
         elif style == FilenameStyles.POST_TITLE_GLOBAL_NUMBERING:
-            res = f"{post_index:03d}_{clean_title}_{file_index:02d}{ext}"
+            res = f"{p_idx:03d}_{clean_title}_{fl_idx:02d}{ext}"
         else:
             res = clean_orig
 
         if getattr(options, "file_index_prefix", False) and style != FilenameStyles.CUSTOM:
-            idx = folder_index if folder_index is not None else file_index
+            idx = f_idx if folder_index is not None else fl_idx
             if idx is not None and idx > 0:
                 res = f"{idx:03d}_{res}"
 

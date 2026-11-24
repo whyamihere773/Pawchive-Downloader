@@ -115,12 +115,13 @@ class PostSelectionQueueMixin(AppBridgeSignalsMixin):
         for f in files:
             extra = f.get("extra_data", {}) if isinstance(f.get("extra_data"), dict) else {}
             cid = str(f.get("channel_id") or extra.get("channel_id", ""))
-            mid = int(f.get("message_id") or extra.get("message_id", 0))
+            from core.filter_options import safe_int
+            mid = safe_int(f.get("message_id") or extra.get("message_id", 0), 0)
             f_obj = f.get("file") if isinstance(f.get("file"), dict) else {}
             # The uploader chooses this name: it must never lead outside the folder
             fn = safe_file_name(f.get("filename") or f_obj.get("name"), fallback=f"file_{mid}")
             url = f.get("url") or f_obj.get("path") or f"tg://{cid}/{mid}"
-            fsize = int(f.get("file_size") or f_obj.get("size") or 0)
+            fsize = max(0, safe_int(f.get("file_size") or f_obj.get("size") or 0, 0))
 
             t = DownloadTask(
                 url=url,
@@ -179,7 +180,8 @@ class PostSelectionQueueMixin(AppBridgeSignalsMixin):
             title = fn or m.get("title") or f"Telegram Media {mid}"
             caption = m.get("caption") or ""
             thumb = m.get("thumbnail") or ""
-            fsize = int(m.get("file_size") or 0)
+            from core.filter_options import safe_int
+            fsize = max(0, safe_int(m.get("file_size") or 0, 0))
             url = m.get("url") or f"tg://{m.get('channel_id')}/{mid}"
             dto = build_media_attachment_dto(
                 name=fn,
@@ -331,148 +333,237 @@ class PostSelectionQueueMixin(AppBridgeSignalsMixin):
             return
 
         options = FilterOptions.from_dict(self._get_filter_options().to_dict())
+        download_dir_snap = str(self._download_dir or "")
+        site_in_name_snap = bool(folder_naming.include_service)
 
-        sel_batch_id = f"{parsed.service}_{parsed.user_id}"
-        # Build download tasks
-        tasks = self.downloader.build_tasks_from_posts(
-            posts=filtered_posts,
-            creator_name=creator_name,
-            service=parsed.service,
-            domain=parsed.domain,
-            base_dir=self._download_dir,
-            options=options,
-            batch_id=sel_batch_id,
-            user_id=parsed.user_id if not parsed.is_external_provider else ""
-        )
-
-        unimp_info = dict(getattr(self.downloader, "last_build_unimported", {}) or {})
-        unimp_tasks = list(getattr(self.downloader, "last_build_unimported_tasks", []) or [])
-        if not tasks:
-            if int(unimp_info.get("files", 0) or 0) > 0:
-                if unimp_tasks:
-                    # Place pre-failed non-retryable entries into the queue & Retry Modal
-                    # without stopping any active or pending downloads.
-                    if self._is_downloading or self.downloader.tasks:
-                        self._handle_append_tasks(unimp_tasks)
-                        self.downloader.append_tasks(unimp_tasks, options=None)
-                    else:
-                        self._queue_model.clear()
-                        self._active_queue_model.clear()
-                        self.downloader.reset_state()
-                        self.downloader.tasks = list(unimp_tasks)
-                        self._handle_set_tasks(unimp_tasks)
-                    if self._queue_model:
-                        self._queue_model.failedCountChanged.emit()
-                has_pending_existing = any(t.status == "pending" for t in (self.downloader.tasks or []))
-                if has_pending_existing and not self.downloader._is_running:
-                    self.downloader.start_download_queue(
-                        tasks=self.downloader.tasks,
-                        options=options,
-                        cookie_str=self._cookie_string,
-                    )
-                    if not self._is_downloading:
-                        self._is_downloading = True
-                        self.isDownloadingChanged.emit()
-                if not self.downloader._is_running and not has_pending_existing:
-                    self._status_text = "Marked as Not Imported on Pawchive (full files aren't hosted on the site yet)"
-                    self.statusTextChanged.emit()
-                self._emit_unimported_notice_if_needed(
-                    unimp_info,
-                    queued_count=0,
-                    is_single_post=(len(filtered_posts) == 1),
-                    allow_modal=True,
-                )
-            else:
-                logger.warning("No downloadable files found matching active filters in selected posts.", category="downloader")
-            return
-        if int(unimp_info.get("files", 0) or 0) > 0 or int(unimp_info.get("queued_thumbnails", 0) or 0) > 0:
-            self._emit_unimported_notice_if_needed(
-                unimp_info,
-                queued_count=len(tasks),
-                is_single_post=(len(filtered_posts) == 1),
-                allow_modal=False,
-            )
-
-        queued_tasks = list(tasks) + unimp_tasks
-
-        self.downloader.register_batch_context(
-            BatchBuildContext(
-                batch_id=sel_batch_id,
+        if QCoreApplication.instance() is None:
+            self._run_selected_posts_build_worker(
+                filtered_posts=filtered_posts,
                 parsed=parsed,
                 creator_name=creator_name,
-                service=parsed.service,
-                user_id=parsed.user_id if not parsed.is_external_provider else "",
-                domain=parsed.domain,
-                base_dir=self._download_dir,
-                artist_dir=None,
-                from_watchlist=False,
-                posts=list(filtered_posts),
-                fetched_dms=bool(getattr(parsed, "is_dms", False)),
-                fetched_comments=(options.character_scope in ("comments", "all")),
-                scan_page_start=1,
-                scan_page_end=999999,
-                applied_options=options,
-                applied_download_dir=str(self._download_dir or ""),
-                applied_site_in_folder_name=bool(folder_naming.include_service),
+                options=options,
+                auto_start=bool(autoStart),
+                download_dir_snap=download_dir_snap,
+                site_in_name_snap=site_in_name_snap,
             )
-        )
+            return
 
-        if autoStart:
-            if self._is_downloading:
-                self._handle_append_tasks(queued_tasks)
-                self.downloader.append_tasks(queued_tasks, options=options, cookie_str=self._cookie_string)
-                logger.info(f"Appended {len(tasks)} tasks from {len(filtered_posts)} selected posts to active queue.", category="downloader")
-            else:
-                existing_tasks = list(self._queue_model.getTasks() if self._queue_model else [])
-                has_unfinished = any(
-                    getattr(t, "status", "") not in ("completed", "skipped")
-                    for t in existing_tasks
-                )
-                if has_unfinished:
-                    self._handle_append_tasks(queued_tasks)
-                    if not self.downloader.tasks and existing_tasks:
-                        self.downloader.tasks = list(existing_tasks)
-                    self.downloader.append_tasks(queued_tasks)
-                    tasks_to_run = list(self.downloader.tasks)
-                else:
-                    self._queue_model.clear()
-                    self._active_queue_model.clear()
-                    self._queued_links.clear()
-                    self._apply_cancel_event.set()
-                    self._settings_apply_gen += 1
-                    self._scan_ui_gen += 1
-                    self._update_scan_progress("", 0, 0, force=True, active=False, update_status_text=False)
-                    self._seen_session_archive_creators.clear()
-                    self._dirty_archive_completed = 0
-                    self._settings_dismissed_baseline = None
-                    if self._has_pending_download_settings_changes:
-                        self._has_pending_download_settings_changes = False
-                        self._pending_settings_diff_summary = ""
-                        self.hasPendingDownloadSettingsChangesChanged.emit()
-                        self.pendingSettingsDiffSummaryChanged.emit()
-                    self.downloader.reset_state()
-                    self.downloader.tasks = list(queued_tasks)
-                    self._handle_set_tasks(queued_tasks)
-                    tasks_to_run = queued_tasks
-
-                self._scan_cancel_event.clear()
-                self._has_error = False
-                self.hasErrorChanged.emit()
-                self._is_downloading = True
-                self.isDownloadingChanged.emit()
-                self.isPausedChanged.emit()
-                self._status_text = f"Starting download for {len(tasks)} selected files..."
-                self.statusTextChanged.emit()
-
-                logger.info(f"Starting download for {len(tasks)} file(s) across {len(filtered_posts)} selected posts...", category="downloader")
-                self.downloader.start_download_queue(
-                    tasks=tasks_to_run,
-                    options=options,
-                    cookie_str=self._cookie_string
-                )
-        else:
-            self._handle_append_tasks(queued_tasks)
-            self.downloader.append_tasks(queued_tasks)
-            self._status_text = f"Queued {len(tasks)} files ({creator_name})."
+        if autoStart and not self._is_downloading:
+            self._has_error = False
+            self.hasErrorChanged.emit()
+            self._is_downloading = True
+            self.isDownloadingChanged.emit()
+            self._status_text = f"Preparing {len(filtered_posts)} selected post(s)..."
             self.statusTextChanged.emit()
-            logger.success(f"Added {len(tasks)} tasks from {len(filtered_posts)} selected posts to queue.", category="queue")
+
+        worker_thread = threading.Thread(
+            target=self._run_selected_posts_build_worker,
+            kwargs={
+                "filtered_posts": list(filtered_posts),
+                "parsed": parsed,
+                "creator_name": creator_name,
+                "options": options,
+                "auto_start": bool(autoStart),
+                "download_dir_snap": download_dir_snap,
+                "site_in_name_snap": site_in_name_snap,
+            },
+            name="SelectedPostsBuildWorker",
+            daemon=True,
+        )
+        self._last_selection_queue_thread = worker_thread
+        worker_thread.start()
+
+    def _run_selected_posts_build_worker(
+        self,
+        *,
+        filtered_posts: List[Dict[str, Any]],
+        parsed: Any,
+        creator_name: str,
+        options: FilterOptions,
+        auto_start: bool,
+        download_dir_snap: str,
+        site_in_name_snap: bool,
+    ) -> None:
+        """Builds tasks for selected posts off the QML GUI thread and applies queue changes safely."""
+        scan_gen = self._scan_ui_gen
+        with self._scan_jobs_lock:
+            self._active_scan_jobs += 1
+        self._update_scan_progress(
+            f"Building queue ({len(filtered_posts):,} selected posts)...",
+            0,
+            len(filtered_posts),
+            force=True,
+            gen=scan_gen,
+            active=True,
+        )
+        try:
+            sel_batch_id = f"{parsed.service}_{parsed.user_id}"
+            tasks = self.downloader.build_tasks_from_posts(
+                posts=filtered_posts,
+                creator_name=creator_name,
+                service=parsed.service,
+                domain=parsed.domain,
+                base_dir=download_dir_snap,
+                options=options,
+                batch_id=sel_batch_id,
+                user_id=parsed.user_id if not parsed.is_external_provider else "",
+                progress_callback=lambda cur, tot, txt: self._update_scan_progress(txt, cur, tot, gen=scan_gen),
+            )
+            unimp_info = dict(getattr(self.downloader, "last_build_unimported", {}) or {})
+            unimp_tasks = list(getattr(self.downloader, "last_build_unimported_tasks", []) or [])
+
+            def _apply_on_gui():
+                if not tasks:
+                    if int(unimp_info.get("files", 0) or 0) > 0:
+                        if unimp_tasks:
+                            if self.downloader._is_running or self.downloader.tasks:
+                                self._handle_append_tasks(unimp_tasks)
+                                self.downloader.append_tasks(unimp_tasks, options=None)
+                            else:
+                                self._queue_model.clear()
+                                self._active_queue_model.clear()
+                                self.downloader.reset_state()
+                                self.downloader.tasks = list(unimp_tasks)
+                                self._handle_set_tasks(unimp_tasks)
+                            if self._queue_model:
+                                self._queue_model.failedCountChanged.emit()
+                        has_pending_existing = any(t.status == "pending" for t in (self.downloader.tasks or []))
+                        if has_pending_existing and not self.downloader._is_running:
+                            self.downloader.start_download_queue(
+                                tasks=self.downloader.tasks,
+                                options=options,
+                                cookie_str=self._cookie_string,
+                            )
+                            if not self._is_downloading:
+                                self._is_downloading = True
+                                self.isDownloadingChanged.emit()
+                        if not self.downloader._is_running and not has_pending_existing:
+                            if self._is_downloading:
+                                self._is_downloading = False
+                                self.isDownloadingChanged.emit()
+                            self._status_text = "Marked as Not Imported on Pawchive (full files aren't hosted on the site yet)"
+                            self.statusTextChanged.emit()
+                        self._emit_unimported_notice_if_needed(
+                            unimp_info,
+                            queued_count=0,
+                            is_single_post=(len(filtered_posts) == 1),
+                            allow_modal=True,
+                        )
+                    else:
+                        if not self.downloader._is_running and self._is_downloading:
+                            self._is_downloading = False
+                            self.isDownloadingChanged.emit()
+                            self._status_text = "Progress: Idle (All files filtered out)"
+                            self.statusTextChanged.emit()
+                        logger.warning("No downloadable files found matching active filters in selected posts.", category="downloader")
+                    return
+
+                if int(unimp_info.get("files", 0) or 0) > 0 or int(unimp_info.get("queued_thumbnails", 0) or 0) > 0:
+                    self._emit_unimported_notice_if_needed(
+                        unimp_info,
+                        queued_count=len(tasks),
+                        is_single_post=(len(filtered_posts) == 1),
+                        allow_modal=False,
+                    )
+
+                queued_tasks = list(tasks) + unimp_tasks
+                self.downloader.register_batch_context(
+                    BatchBuildContext(
+                        batch_id=sel_batch_id,
+                        parsed=parsed,
+                        creator_name=creator_name,
+                        service=parsed.service,
+                        user_id=parsed.user_id if not parsed.is_external_provider else "",
+                        domain=parsed.domain,
+                        base_dir=download_dir_snap,
+                        artist_dir=None,
+                        from_watchlist=False,
+                        posts=list(filtered_posts),
+                        fetched_dms=bool(getattr(parsed, "is_dms", False)),
+                        fetched_comments=(options.character_scope in ("comments", "all")),
+                        scan_page_start=1,
+                        scan_page_end=999999,
+                        applied_options=options,
+                        applied_download_dir=download_dir_snap,
+                        applied_site_in_folder_name=site_in_name_snap,
+                    )
+                )
+
+                if auto_start:
+                    if self.downloader._is_running:
+                        self._handle_append_tasks(queued_tasks)
+                        self.downloader.append_tasks(queued_tasks, options=options, cookie_str=self._cookie_string)
+                        logger.info(f"Appended {len(tasks)} tasks from {len(filtered_posts)} selected posts to active queue.", category="downloader")
+                    else:
+                        existing_tasks = list(self._queue_model.getTasks() if self._queue_model else [])
+                        has_unfinished = any(
+                            getattr(t, "status", "") not in ("completed", "skipped")
+                            for t in existing_tasks
+                        )
+                        if has_unfinished:
+                            self._handle_append_tasks(queued_tasks)
+                            if not self.downloader.tasks and existing_tasks:
+                                self.downloader.tasks = list(existing_tasks)
+                            self.downloader.append_tasks(queued_tasks)
+                            tasks_to_run = list(self.downloader.tasks)
+                        else:
+                            self._queue_model.clear()
+                            self._active_queue_model.clear()
+                            self._queued_links.clear()
+                            self._apply_cancel_event.set()
+                            self._settings_apply_gen += 1
+                            self._scan_ui_gen += 1
+                            self._update_scan_progress("", 0, 0, force=True, active=False, update_status_text=False)
+                            self._seen_session_archive_creators.clear()
+                            self._dirty_archive_completed = 0
+                            self._settings_dismissed_baseline = None
+                            if self._has_pending_download_settings_changes:
+                                self._has_pending_download_settings_changes = False
+                                self._pending_settings_diff_summary = ""
+                                self.hasPendingDownloadSettingsChangesChanged.emit()
+                                self.pendingSettingsDiffSummaryChanged.emit()
+                            self.downloader.reset_state()
+                            self.downloader.tasks = list(queued_tasks)
+                            self._handle_set_tasks(queued_tasks)
+                            tasks_to_run = queued_tasks
+
+                        self._scan_cancel_event.clear()
+                        self._has_error = False
+                        self.hasErrorChanged.emit()
+                        self._is_downloading = True
+                        self.isDownloadingChanged.emit()
+                        self.isPausedChanged.emit()
+                        self._status_text = f"Starting download for {len(tasks)} selected files..."
+                        self.statusTextChanged.emit()
+
+                        logger.info(f"Starting download for {len(tasks)} file(s) across {len(filtered_posts)} selected posts...", category="downloader")
+                        self.downloader.start_download_queue(
+                            tasks=tasks_to_run,
+                            options=options,
+                            cookie_str=self._cookie_string
+                        )
+                else:
+                    self._handle_append_tasks(queued_tasks)
+                    self.downloader.append_tasks(queued_tasks)
+                    self._status_text = f"Queued {len(tasks)} files ({creator_name})."
+                    self.statusTextChanged.emit()
+                    logger.success(f"Added {len(tasks)} tasks from {len(filtered_posts)} selected posts to queue.", category="queue")
+
+            if not hasattr(self, "thread") or QThread.currentThread() is self.thread():
+                _apply_on_gui()
+            else:
+                self._callOnGui.emit(_apply_on_gui)
+        except Exception as e:
+            logger.error(f"Error building tasks for selected posts: {e}", category="downloader")
+            self._set_ui_state(
+                is_downloading=bool(self.downloader._is_running),
+                has_error=True,
+                last_error_message=str(e),
+            )
+        finally:
+            should_hide = False
+            with self._scan_jobs_lock:
+                self._active_scan_jobs = max(0, self._active_scan_jobs - 1)
+                should_hide = (self._active_scan_jobs == 0)
+            if should_hide:
+                self._update_scan_progress("", 0, 0, force=True, active=False, update_status_text=False)

@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from core.atomic_io import atomic_write_text, replace_file
 from core.filter_engine import FilterEngine, FilterOptions, MediaTypes, fit_path_for_windows
+from core.filter_options import safe_int
 from core.logger import logger
 from core.path_utils import post_info_name
 from core.providers import COOMER, KEMONO, PAWCHIVE, is_disabled, provider_for_host
@@ -249,13 +250,16 @@ def needs_full_size_upgrade(existing_size: int, server_size: int, target_path: s
     if exist_ext in (".webp", ".avif") and target_ext not in (".webp", ".avif"):
         return False
 
-    if server_size and server_size > 0:
-        return existing_size < server_size * 0.75
+    existing_sz = max(0, safe_int(existing_size, 0))
+    server_sz = max(0, safe_int(server_size, 0))
+
+    if server_sz > 0:
+        return existing_sz < server_sz * 0.75
 
     if getattr(options, "redownload_small_files", False):
         min_lim, _ = FilterEngine.get_effective_size_limits(options)
         threshold = min_lim if min_lim else (150 * 1024)
-        return existing_size < threshold and (target_ext in MediaTypes.IMAGE_EXTS or target_ext in (".webp", ".avif"))
+        return existing_sz < threshold and (target_ext in MediaTypes.IMAGE_EXTS or target_ext in (".webp", ".avif"))
 
     return False
 
@@ -429,17 +433,17 @@ class DownloadTask:
         self.target_path = target_path
         self.post_title = post_title
         self.creator_name = creator_name
-        self.service = service
-        self.user_id = user_id
-        self.post_id = post_id
-        self.file_id = file_id
-        self.file_size = file_size
+        self.service = str(service or "")
+        self.user_id = str(user_id if user_id is not None else "")
+        self.post_id = str(post_id if post_id is not None else "")
+        self.file_id = str(file_id if file_id is not None else "")
+        self.file_size = max(0, safe_int(file_size, 0))
         self.expected_sha256 = expected_sha256
         self.is_ytdlp = is_ytdlp
         self.is_telegram = is_telegram
-        self.telegram_channel_id = telegram_channel_id
-        self.telegram_message_id = telegram_message_id
-        self.batch_id = batch_id or (f"{service}_{creator_name}_{post_id}".strip("_") if (service or creator_name or post_id) else "batch_default")
+        self.telegram_channel_id = str(telegram_channel_id or "")
+        self.telegram_message_id = safe_int(telegram_message_id, 0)
+        self.batch_id = batch_id or (f"{self.service}_{creator_name}_{self.post_id}".strip("_") if (self.service or creator_name or self.post_id) else "batch_default")
         self.post_url = post_url
         self.post_date = post_date
         self.downloaded_bytes = 0
@@ -499,14 +503,14 @@ class DownloadTask:
             post_title=d.get("post_title", ""),
             creator_name=d.get("creator_name", ""),
             service=d.get("service", ""),
-            post_id=str(d.get("post_id", "")),
-            file_id=d.get("file_id", ""),
-            file_size=int(d.get("file_size", 0)),
+            post_id=str(d.get("post_id", "") or ""),
+            file_id=str(d.get("file_id", "") or ""),
+            file_size=max(0, safe_int(d.get("file_size", 0), 0)),
             expected_sha256=d.get("expected_sha256", ""),
             is_ytdlp=bool(d.get("is_ytdlp", False)),
             is_telegram=bool(d.get("is_telegram", False)),
-            telegram_channel_id=str(d.get("telegram_channel_id", "")),
-            telegram_message_id=int(d.get("telegram_message_id", 0)),
+            telegram_channel_id=str(d.get("telegram_channel_id", "") or ""),
+            telegram_message_id=safe_int(d.get("telegram_message_id", 0), 0),
             batch_id=d.get("batch_id", ""),
             post_url=d.get("post_url", ""),
             post_date=d.get("post_date", ""),
@@ -515,10 +519,10 @@ class DownloadTask:
         t.fallback_urls = [u for u in (d.get("fallback_urls") or []) if isinstance(u, str)]
         t.used_preview = bool(d.get("used_preview", False))
         t.is_unimported = bool(d.get("is_unimported", False))
-        t.downloaded_bytes = int(d.get("downloaded_bytes", 0))
+        t.downloaded_bytes = max(0, safe_int(d.get("downloaded_bytes", 0), 0))
         t.status = d.get("status", "pending")
         t.error_msg = d.get("error_msg", "")
-        t.retry_count = int(d.get("retry_count", 0))
+        t.retry_count = max(0, safe_int(d.get("retry_count", 0), 0))
         opts_raw = d.get("options")
         if opts_raw and isinstance(opts_raw, dict):
             from core.filter_engine import FilterOptions

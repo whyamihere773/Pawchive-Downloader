@@ -18,10 +18,12 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt, Signal, Slot, Property, QThread, QTimer
 
+from core.filter_options import normalize_post_date_ymd, safe_int
+
 
 def _file_count(p: dict) -> int:
     f = p.get("file")
-    atts = [a for a in (p.get("attachments") or []) if isinstance(a, dict) and (a.get("path") or a.get("storageKey"))]
+    atts = [a for a in (p.get("attachments") or p.get("media") or []) if isinstance(a, dict) and (a.get("path") or a.get("storageKey"))]
     f_path = (f.get("path") or f.get("storageKey") or "").strip().lower() if isinstance(f, dict) else ""
     att_paths = {(a.get("path") or a.get("storageKey") or "").strip().lower() for a in atts}
     unique = len(att_paths)
@@ -34,8 +36,8 @@ def _posts_for_qml(e) -> list:
     return [
         {
             "id": str(p.get("id", "")),
-            "title": (p.get("title") or p.get("captionText") or p.get("caption") or "Untitled").strip(),
-            "published": str(p.get("published") or p.get("added") or "")[:10],
+            "title": str(p.get("title") or p.get("captionText") or p.get("caption") or "Untitled").strip(),
+            "published": normalize_post_date_ymd(p.get("published") or p.get("added") or p.get("createdAt"), fallback=""),
             "fileCount": _file_count(p),
         }
         for p in getattr(e, "cached_new_posts", None) or []
@@ -488,8 +490,8 @@ class WatchlistModel(QAbstractListModel):
         for entry in batch:
             key = id(entry)
             if key in self._n_of:
-                old = self._n_of[key]
-                new = getattr(entry, "new_post_count", 0) or 0
+                old = safe_int(self._n_of[key], 0)
+                new = safe_int(getattr(entry, "new_post_count", 0), 0)
                 if old != new:
                     self._n_of[key] = new
                     self._updated += (new > 0) - (old > 0)

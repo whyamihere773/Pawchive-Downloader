@@ -50,6 +50,7 @@ from core.filter_engine import (
     classify_settings_change,
     normalize_date_folder_mode,
 )
+from core.filter_options import safe_float, safe_int
 from core.folder_naming import is_creator_folder, pick_creator_folder
 from core.hardware_detector import HardwareDetector
 from core.known_manager import KnownManager
@@ -216,7 +217,7 @@ def init_bridge_core_state(self) -> None:
     self._privacy_lockout_active = False
     self._pending_pin_reset = bool(saved_settings.get("pending_pin_reset", False))
     self._safe_mode_active = self._pending_pin_reset
-    self._privacy_idle_minutes = max(0, min(60, int(saved_settings.get("privacy_idle_minutes", 5))))
+    self._privacy_idle_minutes = max(0, min(60, safe_int(saved_settings.get("privacy_idle_minutes", 5), 5)))
     self._manga_mode = saved_settings.get("manga_mode", False)
     self._filename_style = saved_settings.get("filename_style", "post_title")
     self._filename_template = saved_settings.get("filename_template", "{title} - {orig_name}")
@@ -250,7 +251,7 @@ def init_bridge_core_state(self) -> None:
         self._bandwidth_limit_unit
     )
     self._max_cpu_threads = max(4, os.cpu_count() or 16)
-    self._threads_count = int(saved_settings.get("threads", min(8, self._max_cpu_threads)))
+    self._threads_count = max(1, min(self._max_cpu_threads, safe_int(saved_settings.get("threads"), min(8, self._max_cpu_threads))))
     self.downloader.max_workers = self._threads_count
     try:
         from core.auth_manager import auth_manager
@@ -269,7 +270,7 @@ def init_bridge_core_state(self) -> None:
     self._settings_save_timer.setInterval(500)
     self._settings_save_timer.timeout.connect(self.saveSettings)
     self._user_agent = saved_settings.get("user_agent", "")
-    self._download_delay = float(saved_settings.get("download_delay", 2.0))
+    self._download_delay = max(0.0, safe_float(saved_settings.get("download_delay", 2.0), 2.0))
     self._save_post_metadata = bool(saved_settings.get("save_post_metadata", True))
     self._write_sidecars = bool(saved_settings.get("write_sidecars", False))
     self._sidecar_format = str(saved_settings.get("sidecar_format", "json"))
@@ -331,7 +332,7 @@ def init_bridge_core_state(self) -> None:
         self._active_ui_scale = max(0.5, min(3.5, round(act, 2)))
     except Exception:
         self._active_ui_scale = 1.0
-    self._console_width = int(saved_settings.get("console_width", 620))
+    self._console_width = max(200, safe_int(saved_settings.get("console_width", 620), 620))
     self._current_fps = 0
     self._screen_hz = 60
     self._creator_name = ""

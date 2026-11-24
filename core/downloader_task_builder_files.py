@@ -19,6 +19,7 @@ from core.downloader_models import (
     needs_full_size_upgrade,
 )
 from core.filter_engine import FilterEngine, FilterOptions, MediaTypes, fit_path_for_windows
+from core.filter_options import safe_int
 from core.logger import logger
 from core.path_utils import post_id_tag
 from core.providers import is_disabled
@@ -410,8 +411,19 @@ class DownloaderTaskBuilderFilesMixin:
             if not rel_path:
                 continue
 
-            # Filter file
-            file_bytes = fobj.get("bytes")
+            # Filter file (coerce stringified Postgres BIGINT bytes/size/fileSize safely)
+            raw_bytes = fobj.get("bytes")
+            if raw_bytes is None:
+                raw_bytes = fobj.get("size")
+            if raw_bytes is None:
+                raw_bytes = fobj.get("fileSize")
+            if raw_bytes is None and isinstance(fobj.get("variants"), list):
+                for _v in fobj["variants"]:
+                    if isinstance(_v, dict) and "original" in str(_v.get("name") or "").lower() and _v.get("bytes") is not None:
+                        raw_bytes = _v.get("bytes")
+                        break
+            parsed_bytes = safe_int(raw_bytes, -1) if (raw_bytes is not None and str(raw_bytes).strip() != "") else -1
+            file_bytes: Optional[int] = parsed_bytes if parsed_bytes >= 0 else None
             keep_file, f_reason = FilterEngine.should_keep_file(raw_name, options, file_size=file_bytes, duration=fobj.get("_probed_duration"))
             if not keep_file:
                 logger.debug(f"Skipped file '{raw_name}': {f_reason}", category="filter", to_file=False)
@@ -503,7 +515,7 @@ class DownloaderTaskBuilderFilesMixin:
                         service=service,
                         post_id=post_id,
                         file_id=unimp_file_id,
-                        file_size=int(file_bytes or 0),
+                        file_size=max(0, safe_int(file_bytes, 0)),
                         batch_id=batch_id,
                         post_url=task_post_url,
                         post_date=date_str,
@@ -596,7 +608,7 @@ class DownloaderTaskBuilderFilesMixin:
             sync_mode = str(getattr(options, "disk_sync_mode", "all") or "all").lower()
             is_disk_sync = sync_mode in ("missing_or_mismatched", "missing_only", "mismatched_only")
             check_size_mismatch = sync_mode in ("missing_or_mismatched", "mismatched_only")
-            api_file_bytes = int(file_bytes or 0)
+            api_file_bytes = max(0, safe_int(file_bytes, 0))
 
             def _is_disk_file_mismatched(dpath: str, dsz: int) -> bool:
                 if needs_full_size_upgrade(dsz, api_file_bytes, target_path, options, dpath):
@@ -657,7 +669,7 @@ class DownloaderTaskBuilderFilesMixin:
                 service=service,
                 post_id=post_id,
                 file_id=file_id,
-                file_size=int(file_bytes or 0),  # pre-populate from API metadata for progress
+                file_size=api_file_bytes,  # pre-populate from API metadata for progress
                 expected_sha256=expected_sha,
                 batch_id=batch_id,
                 post_url=task_post_url,

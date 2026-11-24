@@ -163,7 +163,7 @@ class DownloadFetchMixin(AppBridgeSignalsMixin):
         from_batch: bool = False,
         disk_sync_mode: str = "all",
     ):
-        from core.filter_options import normalize_disk_sync_mode
+        from core.filter_options import normalize_disk_sync_mode, safe_int
         norm_disk_sync = normalize_disk_sync_mode(disk_sync_mode)
         scan_gen = self._scan_ui_gen
         with self._scan_jobs_lock:
@@ -211,8 +211,8 @@ class DownloadFetchMixin(AppBridgeSignalsMixin):
             ctx_fav_ids: Optional[Set[str]] = None
             ctx_fetched_dms = bool(getattr(parsed, "is_dms", False))
             ctx_fetched_comments = False
-            ctx_page_start = int(getattr(options, "page_start", 1) or 1)
-            ctx_page_end = int(getattr(options, "page_end", 999999) or 999999)
+            ctx_page_start = max(1, safe_int(getattr(options, "page_start", 1), 1))
+            ctx_page_end = max(1, safe_int(getattr(options, "page_end", 999999), 999999))
             ctx_date_after = str(getattr(options, "date_after", "") or "")
             ctx_date_before = str(getattr(options, "date_before", "") or "")
             ctx_artist_dir: Optional[str] = None
@@ -417,8 +417,8 @@ class DownloadFetchMixin(AppBridgeSignalsMixin):
                     effective_page_end = scan_page_end
                     if not from_watchlist and self._date_auto_scan_pages and (scan_date_after or scan_date_before):
                         effective_page_end = 999999
-                    ctx_page_start = int(scan_page_start or 1)
-                    ctx_page_end = int(effective_page_end or 999999)
+                    ctx_page_start = max(1, safe_int(scan_page_start, 1))
+                    ctx_page_end = max(1, safe_int(effective_page_end, 999999))
                     ctx_date_after = str(scan_date_after or "")
                     ctx_date_before = str(scan_date_before or "")
 

@@ -6,12 +6,126 @@ media categories, and formats safe cross-platform filesystem filenames.
 
 import re
 import os
+import math
 import unicodedata
 import csv
 import io
 import datetime
 import html
 from typing import List, Dict, Any, Optional, Tuple
+
+
+_NUMERIC_STR_RE = re.compile(r"^[+-]?\d+(?:\.\d+)?$")
+
+
+def safe_int(value: Any, default: int = 0) -> int:
+    """Coerce arbitrary JSON/UI values (int, float, numeric str, bool, None) to int without raising."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if math.isfinite(value) else default
+    s = str(value).strip()
+    if not s:
+        return default
+    try:
+        return int(s)
+    except ValueError:
+        try:
+            f = float(s)
+            return int(f) if math.isfinite(f) else default
+        except (ValueError, OverflowError):
+            return default
+
+
+def safe_float(value: Any, default: float = 0.0) -> float:
+    """Coerce arbitrary JSON/UI values to finite float without raising."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return float(int(value))
+    if isinstance(value, (int, float)):
+        f = float(value)
+        return f if math.isfinite(f) else default
+    s = str(value).strip()
+    if not s:
+        return default
+    try:
+        f = float(s)
+        return f if math.isfinite(f) else default
+    except (ValueError, OverflowError):
+        return default
+
+
+def _timestamp_to_datetime(raw_ts: float) -> Optional[datetime.datetime]:
+    """Convert Unix seconds or milliseconds (>1e11) safely on all platforms including Windows."""
+    if not math.isfinite(raw_ts) or raw_ts <= 0:
+        return None
+    ts = raw_ts / 1000.0 if raw_ts >= 1e11 else raw_ts
+    try:
+        return datetime.datetime.fromtimestamp(ts)
+    except (OSError, OverflowError, ValueError):
+        try:
+            return datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc) + datetime.timedelta(seconds=ts)
+        except (OverflowError, ValueError):
+            return None
+
+
+def normalize_post_date_ymd(value: Any, fallback: str = "") -> str:
+    """Normalize any post date (ISO str, Unix sec/ms int/float/str, or None) into 'YYYY-MM-DD' or fallback."""
+    if value is None or isinstance(value, bool):
+        return fallback
+    if isinstance(value, (int, float)):
+        dt = _timestamp_to_datetime(float(value))
+        return dt.strftime("%Y-%m-%d") if dt is not None else fallback
+    s = str(value).strip()
+    if not s or s == "0000-00-00":
+        return fallback
+    if _NUMERIC_STR_RE.match(s):
+        # 4-digit year ("2025") is a partial year, whereas 9+ digits is a Unix s/ms timestamp
+        digits_only = s.lstrip("+-").split(".", 1)[0]
+        if len(digits_only) >= 9:
+            dt = _timestamp_to_datetime(safe_float(s, -1.0))
+            return dt.strftime("%Y-%m-%d") if dt is not None else fallback
+    m = re.match(r"^(\d{4}-\d{2}-\d{2})", s)
+    if m:
+        return m.group(1)
+    if "T" in s and not s.startswith("T"):
+        head = s.split("T", 1)[0].strip()
+        return head[:10] if head else fallback
+    if " " in s:
+        head = s.split(" ", 1)[0].strip()
+        return head[:10] if head else fallback
+    return s[:10] if s else fallback
+
+
+def normalize_post_timestamp_str(value: Any, fallback: str = "") -> str:
+    """Normalize any post date/timestamp into a homogeneous sortable ISO string (never int/None)."""
+    if value is None or isinstance(value, bool):
+        return fallback
+    if isinstance(value, (int, float)):
+        dt = _timestamp_to_datetime(float(value))
+        return dt.strftime("%Y-%m-%dT%H:%M:%S") if dt is not None else fallback
+    s = str(value).strip()
+    if not s:
+        return fallback
+    if _NUMERIC_STR_RE.match(s):
+        digits_only = s.lstrip("+-").split(".", 1)[0]
+        if len(digits_only) >= 9:
+            dt = _timestamp_to_datetime(safe_float(s, -1.0))
+            return dt.strftime("%Y-%m-%dT%H:%M:%S") if dt is not None else fallback
+    return s
+
+
+def post_id_sort_key(post_id: Any) -> Tuple[int, int, str]:
+    """Homogeneous sort key for numeric and alphanumeric post IDs (avoids Unicode isdigit traps)."""
+    s = str(post_id if post_id is not None else "").strip()
+    if s and s.isascii() and s.isdigit():
+        return (0, int(s), s)
+    return (1, 0, s)
 
 
 class MediaTypes:
@@ -251,9 +365,12 @@ def format_duration_str(seconds: Optional[float]) -> str:
     Formats seconds into a human-readable duration string:
     e.g. 45 -> '0:45', 90 -> '1:30', 3665 -> '1:01:05'
     """
-    if seconds is None or seconds < 0:
+    if seconds is None:
         return ""
-    total_secs = int(round(seconds))
+    sec_val = safe_float(seconds, -1.0)
+    if sec_val < 0:
+        return ""
+    total_secs = int(round(sec_val))
     hrs = total_secs // 3600
     mins = (total_secs % 3600) // 60
     secs = total_secs % 60
@@ -352,9 +469,9 @@ class FilterOptions:
         self.filename_style = filename_style
         self.filename_template = filename_template or "{title} - {orig_name}"
         self.proxy_url = proxy_url
-        self.page_start = page_start
-        self.page_end = page_end
-        self.download_delay = download_delay
+        self.page_start = max(1, safe_int(page_start, 1))
+        self.page_end = max(1, safe_int(page_end, 999999))
+        self.download_delay = max(0.0, safe_float(download_delay, 2.0))
         self.save_post_metadata = save_post_metadata
         self.download_embeds = download_embeds
         self.file_index_prefix = file_index_prefix
@@ -474,9 +591,9 @@ class FilterOptions:
             filename_style=d.get("filename_style", "post_title"),
             filename_template=d.get("filename_template", "{title} - {orig_name}"),
             proxy_url=d.get("proxy_url", ""),
-            page_start=int(d.get("page_start", 1)),
-            page_end=int(d.get("page_end", 999999)),
-            download_delay=float(d.get("download_delay", 2.0)),
+            page_start=max(1, safe_int(d.get("page_start", 1), 1)),
+            page_end=max(1, safe_int(d.get("page_end", 999999), 999999)),
+            download_delay=max(0.0, safe_float(d.get("download_delay", 2.0), 2.0)),
             save_post_metadata=bool(d.get("save_post_metadata", True)),
             download_embeds=bool(d.get("download_embeds", True)),
             file_index_prefix=bool(d.get("file_index_prefix", False)),
@@ -668,11 +785,13 @@ def classify_settings_change(
         _bump(4, "characters", "Character comment filter")
 
     bounds = scan_bounds or {}
-    scanned_p_start = int(bounds.get("page_start", getattr(old_opts, "page_start", 1)) or 1)
-    scanned_p_end = int(bounds.get("page_end", getattr(old_opts, "page_end", 999999)) or 999999)
-    new_p_start = int(getattr(new_opts, "page_start", 1) or 1)
-    new_p_end = int(getattr(new_opts, "page_end", 999999) or 999999)
-    if new_p_start != int(getattr(old_opts, "page_start", 1) or 1) or new_p_end != int(getattr(old_opts, "page_end", 999999) or 999999):
+    scanned_p_start = max(1, safe_int(bounds.get("page_start", getattr(old_opts, "page_start", 1)), 1))
+    scanned_p_end = max(1, safe_int(bounds.get("page_end", getattr(old_opts, "page_end", 999999)), 999999))
+    new_p_start = max(1, safe_int(getattr(new_opts, "page_start", 1), 1))
+    new_p_end = max(1, safe_int(getattr(new_opts, "page_end", 999999), 999999))
+    old_p_start = max(1, safe_int(getattr(old_opts, "page_start", 1), 1))
+    old_p_end = max(1, safe_int(getattr(old_opts, "page_end", 999999), 999999))
+    if new_p_start != old_p_start or new_p_end != old_p_end:
         if new_p_start < scanned_p_start or new_p_end > scanned_p_end:
             requires_window_expand = True
             _bump(4, "page_range", "Page range")

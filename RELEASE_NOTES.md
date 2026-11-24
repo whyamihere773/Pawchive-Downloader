@@ -21,6 +21,7 @@
 
 ### 🛠️ Fixes
 
+* **OnlyHaven / cum.st download crash fixed**: Starting a download from an OnlyHaven (`cum.st`) link — including when using custom filename patterns or saving directly into the creator folder without post subfolders — no longer fails with an unexpected comparison error.
 * **Broken cum.st post links fixed**: Opening, copying, or redownloading a `cum.st` post from Browser Mode, Gallery, or older saved folders now always uses the working `cum.st/creators/...` post link instead of broken `cum.st/.../post/...` addresses.
 * **Pause & recovery reliability fixes**: Clicking **Pause** immediately freezes active retry timers without re-waiting already-elapsed cooldowns on resume, and manual thread counts recover smoothly after temporary rate-limit slowdowns instead of staying stuck at 1 thread.
 * **Linux & Python 3.11/3.12 startup fix**: Fixed a startup crash affecting Linux builds and Python 3.11/3.12 environments.

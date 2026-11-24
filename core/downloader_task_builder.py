@@ -20,6 +20,7 @@ from core.downloader_models import (
 )
 from core.file_order import order_files
 from core.filter_engine import FilterEngine, FilterOptions, MediaTypes, fit_path_for_windows
+from core.filter_options import normalize_post_date_ymd, normalize_post_timestamp_str, post_id_sort_key
 from core.logger import logger
 from core.path_utils import post_info_name
 from core.video_probe import VideoProbe
@@ -41,13 +42,13 @@ class DownloaderTaskBuilderMixin:
         seen_post_file_keys: Dict[str, int] = {}
 
         main_file = post.get("file")
-        attachments = post.get("attachments", []) or []
+        attachments = post.get("attachments") or post.get("media") or []
 
         # If Pawchive post has temporary or deferred attachments, resolve signed download URLs
         if getattr(options, "download_pawchive_temporary_files", True):
             if ("pawchive" in (domain or "") or "pawchive" in str(post.get("origin", "")) or "pawchive" in str(post.get("domain", "")) or "pawchive" in str(post.get("service", ""))):
                 self._resolve_pawchive_deferred_attachments(post, domain=domain or "pawchive.pw")
-                attachments = post.get("attachments", []) or []
+                attachments = post.get("attachments") or post.get("media") or []
                 main_file = post.get("file")
 
         post_is_unimported = is_post_unimported_on_pawchive(post, domain=domain, service=service)
@@ -276,18 +277,18 @@ class DownloaderTaskBuilderMixin:
         if options.manga_mode:
             logger.info("Manga Mode active: Sorting posts chronologically (oldest first)...", category="downloader")
             def _post_date_key(p):
-                pub = p.get("published") or p.get("added") or "0000-00-00"
-                pid = str(p.get("id", "0"))
-                return (pub, pid)
+                raw_pub = p.get("published") or p.get("added") or p.get("createdAt")
+                pub = normalize_post_timestamp_str(raw_pub, fallback="0000-00-00")
+                return (pub, post_id_sort_key(p.get("id", "0")))
             posts_to_process.sort(key=_post_date_key)
         elif options.tag_folder_mode:
             logger.info("Tag Folder Mode active: Sorting posts by primary tag and chronological index...", category="downloader")
             def _post_tag_and_index_key(p):
                 tags = FilterEngine.normalize_tags(p.get("tags"))
                 primary_tag = tags[0].strip().lower() if tags else "zzz_untagged"
-                pub = p.get("published") or p.get("added") or "0000-00-00"
-                pid = str(p.get("id", "0"))
-                return (primary_tag, pub, pid)
+                raw_pub = p.get("published") or p.get("added") or p.get("createdAt")
+                pub = normalize_post_timestamp_str(raw_pub, fallback="0000-00-00")
+                return (primary_tag, pub, post_id_sort_key(p.get("id", "0")))
             posts_to_process.sort(key=_post_tag_and_index_key)
 
         # Character name discovery from post titles (reported only; nothing is added to the Known list)
@@ -347,24 +348,9 @@ class DownloaderTaskBuilderMixin:
             post_title, post_caption = FilterEngine.extract_post_title_and_caption(
                 post, max_title_len=80, fallback_title="Untitled"
             )
-            published = post.get("published", "") or ""
-            if isinstance(published, (int, float)):
-                try:
-                    date_str = datetime.datetime.fromtimestamp(published).strftime("%Y-%m-%d")
-                except Exception:
-                    date_str = str(published)
-            else:
-                pub_str = str(published).strip()
-                date_m = re.search(r'^\d{4}-\d{2}-\d{2}', pub_str)
-                if date_m:
-                    date_str = date_m.group(0)
-                elif "T" in pub_str and not pub_str.startswith("T"):
-                    date_str = pub_str.split("T")[0]
-                elif " " in pub_str:
-                    date_str = pub_str.split(" ")[0]
-                else:
-                    date_str = pub_str[:10] if pub_str else ""
-                date_str = FilterEngine.clean_filesystem_text(date_str, max_len=20, fallback="")
+            raw_published = post.get("published") or post.get("added") or post.get("createdAt") or ""
+            raw_ymd = normalize_post_date_ymd(raw_published, fallback="")
+            date_str = FilterEngine.clean_filesystem_text(raw_ymd, max_len=20, fallback="") if raw_ymd else ""
 
             # Construct canonical web post link for manual inspection/testing
             post_user = str(

@@ -60,8 +60,10 @@ from bridge.app_bridge_mixins.init_state import (
 
 
 def _post_order_key(date: str, post_id: str):
-    pid = str(post_id or "")
-    return (str(date or "")[:10], int(pid) if pid.isdigit() else -1)
+    from core.filter_options import normalize_post_date_ymd
+    pid = str(post_id or "").strip()
+    d_norm = normalize_post_date_ymd(date, fallback="")
+    return (d_norm, int(pid) if (pid.isascii() and pid.isdigit()) else -1)
 
 
 _PATH_SAFETY_CACHE: dict = {}      # path -> (time, getPathSafetyInfo answer)

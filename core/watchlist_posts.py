@@ -8,6 +8,7 @@ import json
 import threading
 from typing import Any, Dict, List, Optional
 
+from core.filter_options import normalize_post_date_ymd, normalize_post_timestamp_str, post_id_sort_key, safe_int
 from core.logger import logger
 from core.watchlist_models import WatchlistEntry, post_id_is_newer
 
@@ -43,11 +44,7 @@ class WatchlistPostsMixin:
             )
             return []
 
-        cutoff = entry.last_post_date  # "YYYY-MM-DD" or ISO string
-        if cutoff and "T" in cutoff:
-            cutoff = cutoff.split("T")[0]
-        elif cutoff:
-            cutoff = cutoff[:10]
+        cutoff = normalize_post_date_ymd(entry.last_post_date, fallback="")
         cutoff_id = str(entry.last_post_id or "")
         known_day_ids = {str(i) for i in getattr(entry, "cutoff_day_ids", []) or []}
         if cutoff_id:
@@ -79,10 +76,8 @@ class WatchlistPostsMixin:
                 pass
 
         new_posts: List[Dict[str, Any]] = []
-        if page_start < 1:
-            page_start = 1
-        if page_end < page_start:
-            page_end = page_start
+        page_start = max(1, safe_int(page_start, 1))
+        page_end = max(page_start, safe_int(page_end, 999999))
         current_page = page_start
         page_size = 50
         largest_page = 0
@@ -120,16 +115,8 @@ class WatchlistPostsMixin:
             page_new_count_before = len(new_posts)
 
             for p in page_posts:
-                pub = p.get("published") or p.get("added") or ""
-                if isinstance(pub, (int, float)):
-                    try:
-                        pub = datetime.datetime.fromtimestamp(pub).strftime("%Y-%m-%d")
-                    except Exception:
-                        pub = ""
-                elif isinstance(pub, str) and "T" in pub:
-                    pub = pub.split("T")[0]
-                elif isinstance(pub, str):
-                    pub = pub[:10]
+                raw_pub = p.get("published") or p.get("added") or p.get("createdAt") or ""
+                pub = normalize_post_date_ymd(raw_pub, fallback="")
 
                 post_id = str(p.get("id", ""))
 
@@ -147,7 +134,7 @@ class WatchlistPostsMixin:
                             found_cutoff_id_on_page = True
                         elif post_id in known_day_ids:
                             pass   # already downloaded on that day
-                        elif post_id and cutoff_id and post_id.isdigit() and cutoff_id.isdigit():
+                        elif post_id and cutoff_id and post_id.isascii() and post_id.isdigit() and cutoff_id.isascii() and cutoff_id.isdigit():
                             if int(post_id) > int(cutoff_id):
                                 new_posts.append(p)
                             # else: already downloaded (older post on same day)
@@ -196,19 +183,11 @@ class WatchlistPostsMixin:
 
             current_page += 1
 
-        # Sort oldest first for ordered downloading (normalize mixed int/float timestamps and ISO strings)
+        # Sort oldest first for ordered downloading (normalize mixed int/float/ms timestamps and ISO strings)
         def _post_sort_key(p: Dict[str, Any]):
-            raw_d = p.get("published") or p.get("added") or ""
-            if isinstance(raw_d, (int, float)):
-                try:
-                    d_norm = datetime.datetime.fromtimestamp(raw_d).strftime("%Y-%m-%dT%H:%M:%S")
-                except Exception:
-                    d_norm = "0"
-            else:
-                d_norm = str(raw_d).strip() or "0"
-            raw_id = str(p.get("id", "0") or "0")
-            id_key = (0, int(raw_id), raw_id) if raw_id.isdigit() else (1, 0, raw_id)
-            return (d_norm, id_key)
+            raw_d = p.get("published") or p.get("added") or p.get("createdAt")
+            d_norm = normalize_post_timestamp_str(raw_d, fallback="0")
+            return (d_norm, post_id_sort_key(p.get("id", "0")))
 
         new_posts.sort(key=_post_sort_key)
 
@@ -252,7 +231,7 @@ class WatchlistPostsMixin:
                     {
                         "id": str(p.get("id", "")),
                         "title": (p.get("title") or p.get("captionText") or p.get("caption") or "Untitled").strip(),
-                        "published": str(p.get("published") or p.get("added") or "")[:10],
+                        "published": normalize_post_date_ymd(p.get("published") or p.get("added") or p.get("createdAt"), fallback=""),
                         "fileCount": _post_file_count(p),
                     }
                     for p in getattr(e, "cached_new_posts", [])

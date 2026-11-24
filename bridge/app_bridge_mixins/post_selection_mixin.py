@@ -177,6 +177,7 @@ class PostSelectionMixin(AppBridgeSignalsMixin):
             return None
         from core.browser_providers.base import build_media_attachment_dto, resolve_kemono_media_urls
         from core.browser_providers.cumst_provider import resolve_cumst_media_dto
+        from core.filter_options import safe_int
 
         domain_lower = (domain or "").strip().lower()
         dto = None
@@ -190,7 +191,7 @@ class PostSelectionMixin(AppBridgeSignalsMixin):
                     name=fname,
                     url=full_url,
                     thumbnail_url=thumb_url,
-                    file_size=int(fobj.get("size") or fobj.get("file_size") or 0),
+                    file_size=max(0, safe_int(fobj.get("bytes") or fobj.get("size") or fobj.get("file_size") or 0, 0)),
                 )
         else:
             raw_url = str(fobj.get("temp_download_url") or fobj.get("temp_url") or fobj.get("url") or fobj.get("path") or "").strip()
@@ -201,7 +202,7 @@ class PostSelectionMixin(AppBridgeSignalsMixin):
                     name=fname,
                     url=raw_url,
                     thumbnail_url=thumb_url,
-                    file_size=int(fobj.get("size") or fobj.get("file_size") or 0),
+                    file_size=max(0, safe_int(fobj.get("bytes") or fobj.get("size") or fobj.get("file_size") or 0, 0)),
                 )
 
         if not dto:
@@ -219,7 +220,7 @@ class PostSelectionMixin(AppBridgeSignalsMixin):
             "ext": dto["ext"],
             "media_type": dto["media_type"],
             "is_loop": bool(dto["is_loop"]),
-            "file_size": int(dto.get("file_size") or 0),
+            "file_size": max(0, safe_int(dto.get("file_size") or 0, 0)),
             "provider_id": prov_id,
             "postUrl": post_url,
             "postId": str(post_id or ""),
@@ -275,10 +276,11 @@ class PostSelectionMixin(AppBridgeSignalsMixin):
         else:
             post_is_unimported = bool(creator_is_unimported and not is_ext)
 
+        from core.filter_options import normalize_post_date_ymd
         title, _ = FilterEngine.extract_post_title_and_caption(raw_post, fallback_title="Untitled Post")
         if title_prefix:
             title = f"{title_prefix}{title}"
-        published = str(raw_post.get("published") or raw_post.get("added") or "")[:10]
+        published = normalize_post_date_ymd(raw_post.get("published") or raw_post.get("added") or raw_post.get("createdAt"), fallback="")
 
         post_files: List[Dict[str, Any]] = []
         seen_selection_keys: Set[str] = set()
@@ -310,7 +312,7 @@ class PostSelectionMixin(AppBridgeSignalsMixin):
                 post_files.append(item)
 
         _append_fobj(raw_post.get("file"), is_main=True)
-        for att in raw_post.get("attachments", []) or []:
+        for att in (raw_post.get("attachments") or raw_post.get("media") or []):
             _append_fobj(att, is_main=False)
 
         thumb_url = str(raw_post.get("thumbnail") or "").strip()

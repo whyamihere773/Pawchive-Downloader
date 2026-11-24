@@ -13,6 +13,7 @@ try:
 except ImportError:
     BeautifulSoup = None
 
+from core.filter_options import normalize_post_date_ymd, safe_int
 from core.logger import logger
 from core.parser import URLParseResult
 
@@ -309,16 +310,8 @@ class ApiContentFetcherMixin:
                 if norm_after:
                     oldest = ""
                     for p in posts:
-                        pub = p.get("published") or p.get("added") or ""
-                        if isinstance(pub, (int, float)):
-                            try:
-                                import datetime as _dt
-                                d = _dt.datetime.fromtimestamp(pub).strftime("%Y-%m-%d")
-                            except Exception:
-                                d = ""
-                        else:
-                            pub_str = str(pub).strip()
-                            d = pub_str.split("T")[0] if "T" in pub_str else pub_str[:10]
+                        pub = p.get("published") or p.get("added") or p.get("createdAt") or ""
+                        d = normalize_post_date_ymd(pub, fallback="")
                         if d and (not oldest or d < oldest):
                             oldest = d
                     if oldest and oldest < norm_after:
@@ -397,15 +390,8 @@ class ApiContentFetcherMixin:
                 norm_after, norm_before = norm_before, norm_after
 
         def _dm_date_ymd(dm_item: Dict[str, Any]) -> str:
-            raw_d = dm_item.get("published") or dm_item.get("added") or dm_item.get("date") or ""
-            if isinstance(raw_d, (int, float)):
-                try:
-                    import datetime as _dt
-                    return _dt.datetime.fromtimestamp(raw_d).strftime("%Y-%m-%d")
-                except Exception:
-                    return ""
-            s = str(raw_d).strip()
-            return s.split("T")[0] if "T" in s else s[:10]
+            raw_d = dm_item.get("published") or dm_item.get("added") or dm_item.get("date") or dm_item.get("createdAt") or ""
+            return normalize_post_date_ymd(raw_d, fallback="")
 
         pawchive_domain = parsed.domain or "pawchive.pw"
         total_unique_seen = 0
@@ -667,7 +653,7 @@ class ApiContentFetcherMixin:
                 if isinstance(item, dict):
                     label = item.get("label") or item.get("slug") or ""
                     if label:
-                        tags.append((label, int(item.get("count", 0))))
+                        tags.append((label, safe_int(item.get("count", 0), 0)))
         else:
             # Pawchive: [ { "tag": str, "post_count": int }, ... ]
             raw_tags = data if isinstance(data, list) else []
@@ -675,7 +661,7 @@ class ApiContentFetcherMixin:
                 if isinstance(item, dict):
                     tag_name = item.get("tag") or ""
                     if tag_name:
-                        tags.append((tag_name, int(item.get("post_count", 0))))
+                        tags.append((tag_name, safe_int(item.get("post_count", 0), 0)))
 
         # Sort by count descending, return just the names
         tags.sort(key=lambda x: x[1], reverse=True)

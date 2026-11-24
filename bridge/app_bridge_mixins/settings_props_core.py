@@ -224,8 +224,10 @@ class SettingsPropsCoreMixin(AppBridgeSignalsMixin):
 
     @pageStart.setter
     def pageStart(self, val: int):
-        if self._page_start != val:
-            self._page_start = max(1, val)
+        from core.filter_options import safe_int
+        coerced = max(1, safe_int(val, 1))
+        if self._page_start != coerced:
+            self._page_start = coerced
             self.pageStartChanged.emit()
 
     @Property(int, notify=AppBridgeSignalsMixin.pageEndChanged)
@@ -234,8 +236,10 @@ class SettingsPropsCoreMixin(AppBridgeSignalsMixin):
 
     @pageEnd.setter
     def pageEnd(self, val: int):
-        if self._page_end != val:
-            self._page_end = max(1, val)
+        from core.filter_options import safe_int
+        coerced = max(1, safe_int(val, 999999))
+        if self._page_end != coerced:
+            self._page_end = coerced
             self.pageEndChanged.emit()
 
     @Property(str, notify=AppBridgeSignalsMixin.downloadDirChanged)

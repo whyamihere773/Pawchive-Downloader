@@ -25,6 +25,7 @@ if __name__ == "__main__" or "core" not in sys.modules:
 import contextlib
 import sqlite3
 
+from core.filter_options import normalize_post_timestamp_str
 from core.logger import logger
 from core.text_utils import strip_html_tags
 
@@ -459,7 +460,7 @@ class LinkVaultManager:
             # Sort creators by most recently updated
             sorted_creators = sorted(
                 self.data["creators"].values(),
-                key=lambda x: x.get("updated_at", ""),
+                key=lambda x: normalize_post_timestamp_str(x.get("updated_at"), fallback=""),
                 reverse=True
             )
 
@@ -471,7 +472,7 @@ class LinkVaultManager:
                 # Gather posts for this creator
                 c_posts = list(posts_by_creator.get(ckey, []))
                 # Sort posts by publication date descending
-                c_posts.sort(key=lambda x: x.get("published", ""), reverse=True)
+                c_posts.sort(key=lambda x: normalize_post_timestamp_str(x.get("published"), fallback=""), reverse=True)
 
                 creator_posts_list = []
                 creator_total_links = 0
@@ -722,7 +723,7 @@ class LinkVaultManager:
                 c_name = cinfo.get("creator_name", "Unknown")
                 c_svc = cinfo.get("service", "")
                 c_posts = list(posts_by_creator.get(ckey, []))
-                c_posts.sort(key=lambda x: x.get("published", ""), reverse=True)
+                c_posts.sort(key=lambda x: normalize_post_timestamp_str(x.get("published"), fallback=""), reverse=True)
 
                 total_c_links = sum(len(links_by_post.get((ckey, p.get("post_id", "")), [])) for p in c_posts)
                 if total_c_links == 0:
