@@ -228,7 +228,7 @@
         {
             "version": "1.4.4",
             "date": "2026-11-24",
-            "notes": "Added Date Folder Sorting option (By Year, By Month, and Year -> Month) across Downloader, Settings, Watchlist, and Browser summary; fixed Linux and Python 3.11/3.12 startup crash."
+            "notes": "Added Pawchive Rate Guard & Anti-Ban Calibration (Smart Auto, Cautious, and Custom Manual modes with persistent calibration, dynamic stream scaling, and Recalibrate), instant local copy reuse for reposted files, Browser Mode Missing & Mismatched disk sync with automatic folder and naming match, Date Folder Sorting (By Year, By Month, and Year -> Month), fixed OnlyHaven/cum.st download str/int comparison crash (#52), fixed cum.st canonical post links, pause/resume retry timer and thread recovery fixes, and Linux/Python 3.11-3.12 startup fix."
         }
     ]
 }
