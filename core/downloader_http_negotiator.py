@@ -50,7 +50,7 @@ def _parse_retry_after_seconds(raw_header: Any, default_s: float = 15.0) -> Tupl
 def _pawchive_user_agent() -> str:
     global _CACHED_PAWCHIVE_UA
     if _CACHED_PAWCHIVE_UA is None:
-        ver = "1.4.4"
+        ver = "1.4.5"
         try:
             from services.update_service import get_local_version_info
             v = str((get_local_version_info() or {}).get("version") or "").strip().lstrip("v")

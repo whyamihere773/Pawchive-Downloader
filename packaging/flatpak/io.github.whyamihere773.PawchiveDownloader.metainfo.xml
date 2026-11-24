@@ -20,6 +20,7 @@
   <url type="bugtracker">https://github.com/whyamihere773/Pawchive-Downloader/issues</url>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="1.4.5" date="2026-11-24" />
     <release version="1.4.4" date="2026-11-24" />
     <release version="1.4.3" date="2026-11-20" />
     <release version="1.4.2" date="2026-11-19" />

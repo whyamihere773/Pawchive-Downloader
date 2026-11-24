@@ -2,7 +2,7 @@
 # Experimental Arch / CachyOS / AUR binary package wrapping the portable Linux release.
 
 pkgname=pawchive-downloader-bin
-pkgver=1.4.4
+pkgver=1.4.5
 pkgrel=1
 pkgdesc="Media Downloader & Archival Suite for Pawchive, Kemono, Coomer, Bunkr & Fanbox (Experimental)"
 arch=('x86_64')
