@@ -328,7 +328,7 @@ class DownloadControlMixin(AppBridgeSignalsMixin):
         if current and all(t.status in ("completed", "skipped") for t in current):
             self._queue_model.clear()
             self._active_queue_model.clear()
-            self.downloader.reset_state()
+            self.downloader.reset_state(preserve_rate_guard=True)
         if self._has_recovery_session and not self.downloader.tasks and self._queue_model.rowCount() == 0:
             recovered = self._load_recovery_tasks()
             if recovered:

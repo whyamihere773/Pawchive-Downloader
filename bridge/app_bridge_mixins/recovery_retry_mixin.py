@@ -232,6 +232,9 @@ class RecoveryRetryMixin(AppBridgeSignalsMixin):
             if self._cookie_save_timer.isActive():
                 self._cookie_save_timer.stop()
                 self._persist_cookie()
+            gov = getattr(self, "pawchive_governor", None)
+            if gov is not None and hasattr(gov, "flush_to_disk"):
+                gov.flush_to_disk()
         except Exception as e:
             logger.debug(f"Couldn't save settings while closing: {e}", category="system")
 

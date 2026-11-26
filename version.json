@@ -2,7 +2,7 @@
     "version": "1.4.5",
     "commit": "",
     "short_commit": "",
-    "date": "2026-11-24",
+    "date": "2026-11-26",
     "channel": "release",
     "history": [
         {
@@ -232,8 +232,8 @@
         },
         {
             "version": "1.4.5",
-            "date": "2026-11-24",
-            "notes": "Added always-visible Pawchive Rate Guard readout in the bottom bar with selectable Full/Compact/Minimal/Tiny styles, full unshortened hover details, and 1-click mode/reset popover; eliminated multi-hour stop-and-go cooldown loops with steady Quota Cruise and automatic hourly recovery; added rolling 60-minute marathon self-pacing and cross-server load spreading; fixed active downloads getting interrupted when a rate-limit pause starts; and sped up skipping for missing Pawchive files."
+            "date": "2026-11-26",
+            "notes": "Added always-visible Pawchive Rate Guard readout in the bottom bar with selectable Full/Compact/Minimal/Tiny styles, full unshortened hover details, 1-click mode/reset popover, and full cross-session persistence of rolling 60-minute usage, cooldowns, and Quota Cruise state; eliminated multi-hour stop-and-go cooldown loops with steady Quota Cruise, marathon self-pacing, and cross-server load spreading; fixed newly added Watchlist creators auto-checking for updates on startup; fixed active downloads getting interrupted during rate-limit pauses; and sped up skipping for missing Pawchive files."
         }
     ]
 }

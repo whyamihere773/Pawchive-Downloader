@@ -405,6 +405,8 @@ class PawchiveRateGovernor(PawchiveRatePersistenceMixin):
             self._sent_60m_weight += weight
             if weight >= 1.0:
                 self._node_sent_ts.setdefault(h, deque()).append(ts)
+        if now is None:
+            self._save_async(force=False)
 
     def note_ttfb(self, host: str, ttfb_s: float) -> None:
         h = (host or "").strip().lower()

@@ -422,7 +422,7 @@ class PostSelectionQueueMixin(AppBridgeSignalsMixin):
                             else:
                                 self._queue_model.clear()
                                 self._active_queue_model.clear()
-                                self.downloader.reset_state()
+                                self.downloader.reset_state(preserve_rate_guard=True)
                                 self.downloader.tasks = list(unimp_tasks)
                                 self._handle_set_tasks(unimp_tasks)
                             if self._queue_model:
@@ -522,7 +522,7 @@ class PostSelectionQueueMixin(AppBridgeSignalsMixin):
                                 self._pending_settings_diff_summary = ""
                                 self.hasPendingDownloadSettingsChangesChanged.emit()
                                 self.pendingSettingsDiffSummaryChanged.emit()
-                            self.downloader.reset_state()
+                            self.downloader.reset_state(preserve_rate_guard=True)
                             self.downloader.tasks = list(queued_tasks)
                             self._handle_set_tasks(queued_tasks)
                             tasks_to_run = queued_tasks

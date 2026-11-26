@@ -362,7 +362,7 @@ class KemonoDownloader(
             except Exception as e:
                 logger.error(f"Error in on_pause_changed callback: {e}", category="downloader")
 
-    def reset_state(self):
+    def reset_state(self, preserve_rate_guard: bool = False):
         """Fully resets download state so a new session starts cleanly."""
         self._session_id += 1
         self._cancel_event.clear()
@@ -424,8 +424,12 @@ class KemonoDownloader(
             self._verified_hash_paths.clear()
         self._host_dispatch_seq.clear()
         self._dispatch_seq_counter = 0
-        if getattr(self, "pawchive_governor", None) is not None:
-            self.pawchive_governor.reset_runtime()
+        gov = getattr(self, "pawchive_governor", None)
+        if gov is not None:
+            if preserve_rate_guard:
+                self._rate_limit_cooldown_until = gov.get_cooldown_until()
+            else:
+                gov.reset_runtime()
         logger.info("Downloader state fully reset.", category="downloader")
 
     def status_counts(self) -> Dict[str, int]:

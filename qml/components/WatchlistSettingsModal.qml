@@ -19,7 +19,7 @@ Item {
     property string resolvedPreview: ""
     property bool pickedAsLeaf: false
     property string lastBrowsedResolved: ""
-    property bool autoCheck: true
+    property bool autoCheck: false
     property string lastPostDate: ""
     property bool useCustomSettings: false
     property string errorMsg: ""

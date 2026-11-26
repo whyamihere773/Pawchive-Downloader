@@ -207,14 +207,104 @@ class PawchiveRatePersistenceMixin:
                     saved_target = min(preset["start_rpm"], saved_target + 4.0 * (hours_since_429 / 6.0))
                 if hours_since_429 >= 6.0 and saved_streams < int(preset["start_streams"]):
                     saved_streams = min(int(preset["start_streams"]), saved_streams + int(hours_since_429 // 6.0))
-                # Keep temporary Quota Cruise only if restarted within 45 min of active throttling
-                self._quota_cruise_active = bool(
-                    self._mode != "manual" and hours_since_429 < 0.75 and saved_target < preset["floor_rpm"]
-                )
+
+                # Restore rolling 60m / 5m / 1m request history and 429 wave history
+                self._global_sent_1m.clear()
+                self._global_sent_5m.clear()
+                self._global_sent_60m.clear()
+                self._sent_1m_weight = 0.0
+                self._sent_5m_weight = 0.0
+                self._sent_60m_weight = 0.0
+                raw_sent = data.get("sent_ts_60m")
+                if isinstance(raw_sent, list):
+                    c_60m = now - 3600.0
+                    c_5m = now - 300.0
+                    c_1m = now - 60.0
+                    for pair in raw_sent:
+                        if not isinstance(pair, (list, tuple)) or len(pair) < 2:
+                            continue
+                        try:
+                            t_s = float(pair[0])
+                            w_s = float(pair[1])
+                        except (TypeError, ValueError):
+                            continue
+                        if c_60m < t_s <= now + 5.0 and w_s > 0.0:
+                            tup = (t_s, w_s)
+                            self._global_sent_60m.append(tup)
+                            self._sent_60m_weight += w_s
+                            if t_s > c_5m:
+                                self._global_sent_5m.append(tup)
+                                self._sent_5m_weight += w_s
+                            if t_s > c_1m:
+                                self._global_sent_1m.append(tup)
+                                self._sent_1m_weight += w_s
+
+                self._wave_ts_60m.clear()
+                raw_waves = data.get("wave_ts_60m")
+                if isinstance(raw_waves, list):
+                    c_60m = now - 3600.0
+                    for wt in raw_waves:
+                        try:
+                            wt_f = float(wt)
+                            if c_60m < wt_f <= now + 5.0:
+                                self._wave_ts_60m.append(wt_f)
+                        except (TypeError, ValueError):
+                            pass
+
+                raw_hot = data.get("hot_node_until")
+                if isinstance(raw_hot, dict):
+                    for hk, hv in raw_hot.items():
+                        try:
+                            hv_f = float(hv)
+                            if now < hv_f <= now + 900.0:
+                                self._hot_node_until[str(hk).lower()] = hv_f
+                        except (TypeError, ValueError):
+                            pass
+
+                raw_n429 = data.get("node_last_429_ts")
+                if isinstance(raw_n429, dict):
+                    for hk, hv in raw_n429.items():
+                        try:
+                            hv_f = float(hv)
+                            if (now - hv_f) < 3600.0 and hv_f <= now + 5.0:
+                                self._node_last_429_ts[str(hk).lower()] = hv_f
+                        except (TypeError, ValueError):
+                            pass
+
+                # Restore Quota Cruise across restarts for the full 60-minute rolling window
+                saved_qc = data.get("quota_cruise_active")
+                if saved_qc is not None:
+                    self._quota_cruise_active = bool(saved_qc and self._mode != "manual" and hours_since_429 < 1.0)
+                else:
+                    self._quota_cruise_active = bool(
+                        self._mode != "manual" and hours_since_429 < 1.0 and saved_target < preset["floor_rpm"]
+                    )
+
                 self._target_global_rpm = saved_target
                 self._target_streams = saved_streams
                 self._clamp_target_unlocked()
                 self._clamp_streams_unlocked()
+
+                # Restore active cooldown, probing, or recovery state
+                saved_cd_until = float(data.get("domain_cooldown_until") or 0.0)
+                saved_state = str(data.get("state") or "cruise")
+                if now < saved_cd_until <= (now + 600.0):
+                    self._domain_cooldown_until = saved_cd_until
+                    self._global_next_slot = saved_cd_until
+                    self._cooldown_id = 1
+                    self._state = "paused_shield" if saved_state == "paused_shield" else "cooldown"
+                elif (saved_cd_until > 0.0 or saved_state in ("cooldown", "probing")) and hours_since_429 < 0.25:
+                    self._state = "probing"
+                    self._cooldown_id = 1
+                elif saved_state == "recovering" and hours_since_429 < 0.5:
+                    self._state = "recovering"
+                    self._recovery_clean_files = max(0, min(14, int(data.get("recovery_clean_files") or 0)))
+                    self._recovery_started_at = min(now, float(data.get("recovery_started_at") or now))
+
+                if hours_since_429 * 3600.0 < 300.0 or self._wave_ts_60m:
+                    self._wave = max(0, int(data.get("wave") or 0))
+                    self._consecutive_failed_probes = max(0, min(3, int(data.get("consecutive_failed_probes") or 0)))
+                self._last_probe_up_ts = min(now, max(0.0, float(data.get("last_probe_up_ts") or 0.0)))
 
                 raw_nodes = data.get("node_rpm")
                 if isinstance(raw_nodes, dict) and hours_since_429 < 24.0:
@@ -227,6 +317,49 @@ class PawchiveRatePersistenceMixin:
         except Exception as ex:
             logger.debug(f"[PawchiveRateGovernor] Profile load skipped: {ex}", category="downloader")
 
+    def _build_persist_payload_unlocked(self, now: float) -> Dict[str, Any]:
+        return {
+            "version": 2,
+            "updated_at": now,
+            "mode": self._mode,
+            "manual_rpm": round(self._manual_rpm, 2),
+            "manual_max_streams": self._manual_max_streams,
+            "manual_cooldown_s": self._manual_cooldown_s,
+            "target_global_rpm": round(self._target_global_rpm, 2),
+            "danger_global_rpm": round(self._danger_global_rpm, 2) if self._danger_global_rpm is not None else None,
+            "target_streams": int(self._target_streams),
+            "danger_streams": int(self._danger_streams) if self._danger_streams is not None else None,
+            "last_429_wall_ts": self._last_429_wall_ts,
+            "node_rpm": {k: round(v, 2) for k, v in self._node_rpm.items()},
+            "state": self._state,
+            "quota_cruise_active": bool(self._quota_cruise_active),
+            "domain_cooldown_until": round(self._domain_cooldown_until, 2) if self._domain_cooldown_until > now else 0.0,
+            "wave": int(self._wave),
+            "consecutive_failed_probes": int(self._consecutive_failed_probes),
+            "recovery_started_at": round(self._recovery_started_at, 2),
+            "recovery_clean_files": int(self._recovery_clean_files),
+            "last_probe_up_ts": round(self._last_probe_up_ts, 2),
+            "hot_node_until": {k: round(v, 2) for k, v in self._hot_node_until.items() if v > now},
+            "node_last_429_ts": {k: round(v, 2) for k, v in self._node_last_429_ts.items() if (now - v) < 3600.0},
+            "wave_ts_60m": [round(t, 2) for t in self._wave_ts_60m if (now - t) < 3600.0],
+            "sent_ts_60m": [[round(t, 2), round(w, 2)] for t, w in self._global_sent_60m if (now - t) < 3600.0],
+        }
+
+    def flush_to_disk(self) -> None:
+        """Synchronously persist full Rate Guard state (called on clean application shutdown)."""
+        if not self._persist_path:
+            return
+        now = time.time()
+        with self._lock:
+            payload = self._build_persist_payload_unlocked(now)
+            self._last_save_ts = now
+            path = self._persist_path
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            atomic_write_json(path, payload)
+        except Exception as ex:
+            logger.debug(f"[PawchiveRateGovernor] Profile flush skipped: {ex}", category="downloader")
+
     def _save_async(self, force: bool = False) -> None:
         if not self._persist_path:
             return
@@ -236,20 +369,7 @@ class PawchiveRatePersistenceMixin:
                 return
             self._save_pending = True
             self._last_save_ts = now
-            payload = {
-                "version": 1,
-                "updated_at": now,
-                "mode": self._mode,
-                "manual_rpm": round(self._manual_rpm, 2),
-                "manual_max_streams": self._manual_max_streams,
-                "manual_cooldown_s": self._manual_cooldown_s,
-                "target_global_rpm": round(self._target_global_rpm, 2),
-                "danger_global_rpm": round(self._danger_global_rpm, 2) if self._danger_global_rpm is not None else None,
-                "target_streams": int(self._target_streams),
-                "danger_streams": int(self._danger_streams) if self._danger_streams is not None else None,
-                "last_429_wall_ts": self._last_429_wall_ts,
-                "node_rpm": {k: round(v, 2) for k, v in self._node_rpm.items()},
-            }
+            payload = self._build_persist_payload_unlocked(now)
             path = self._persist_path
 
         def _writer():

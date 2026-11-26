@@ -104,7 +104,7 @@ class WatchlistManager(WatchlistStorageMixin, WatchlistPostsMixin):
         domain: str,
         last_post_id: str = "",
         last_post_date: str = "",
-        auto_check: bool = True,
+        auto_check: bool = False,
         download_dir: str = "",
         options: Optional[Dict[str, Any]] = None,
         is_favorite: bool = False,
@@ -271,7 +271,7 @@ class WatchlistManager(WatchlistStorageMixin, WatchlistPostsMixin):
                     user_id=user_id,
                     creator_name=creator_name or user_id,
                     added_at=datetime.datetime.now().isoformat(timespec="seconds"),
-                    auto_check=True,
+                    auto_check=False,
                     is_favorite=is_favorite,
                 )
                 self.entries.insert(0, entry)
@@ -367,7 +367,7 @@ class WatchlistManager(WatchlistStorageMixin, WatchlistPostsMixin):
         with self._lock:
             changed = []
             for entry in self.entries:
-                if getattr(entry, "auto_check", True) != enabled:
+                if getattr(entry, "auto_check", False) != enabled:
                     entry.auto_check = enabled
                     changed.append(entry)
             if changed:

@@ -21,7 +21,7 @@ class WatchlistEntry:
     last_post_id: str = ""
     last_post_date: str = ""   # ISO date string: "YYYY-MM-DD"
     added_at: str = ""
-    auto_check: bool = True
+    auto_check: bool = False
     new_post_count: int = 0    # transient — not persisted, set after checks
     download_dir: str = ""
     download_dirs: List[str] = field(default_factory=list)
@@ -103,7 +103,7 @@ class WatchlistEntry:
             last_post_id=d.get("last_post_id", ""),
             last_post_date=d.get("last_post_date", ""),
             added_at=d.get("added_at", ""),
-            auto_check=bool(d.get("auto_check", True)),
+            auto_check=bool(d.get("auto_check", False)),
             new_post_count=0,
             download_dir=single_dir or (norm_dirs[0] if norm_dirs else ""),
             download_dirs=norm_dirs,
